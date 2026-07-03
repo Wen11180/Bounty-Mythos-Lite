@@ -6,9 +6,21 @@ from app.llm.base import LLMRequest, LLMResponse
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
 from app.repository import DatabaseRepository
+from app.scope_guard import (
+    ScopeGuardDecision,
+    ScopeGuardRule,
+    ValidationRequest,
+    evaluate_validation_request,
+)
+from pydantic import BaseModel
 
 
 app = FastAPI(title="Bounty Mythos-Lite API")
+
+
+class ScopeGuardEvaluationRequest(BaseModel):
+    rule: ScopeGuardRule
+    request: ValidationRequest
 
 
 @app.get("/health")
@@ -65,3 +77,8 @@ async def generate_with_llm(request: LLMRequest) -> LLMResponse:
     if response.error:
         raise HTTPException(status_code=503, detail=response.model_dump(mode="json"))
     return response
+
+
+@app.post("/scope-guard/evaluate", response_model=ScopeGuardDecision)
+def evaluate_scope_guard(request: ScopeGuardEvaluationRequest) -> ScopeGuardDecision:
+    return evaluate_validation_request(request.rule, request.request)
