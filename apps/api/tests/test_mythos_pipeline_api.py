@@ -102,3 +102,62 @@ def test_mythos_pipeline_dry_run_persists_artifact_run_without_plaintext_policy(
         assert "policy_text" not in detail["payload"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_mythos_pipeline_dry_run_links_artifact_and_validation_gate():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "artifact_kind": "postman",
+                "artifact_payload": {
+                    "item": [
+                        {
+                            "request": {
+                                "method": "GET",
+                                "url": "https://api.example.com/files/{file_id}/export",
+                                "header": [{"key": "Authorization", "value": "Bearer live-token"}],
+                            }
+                        }
+                    ]
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artifact"]["artifact_id"].startswith("artifact_")
+        assert body["artifact"]["kind"] == "postman"
+        assert body["artifact"]["source_type"] == "dry_run_inline"
+        assert body["artifact"]["evidence_count"] == 1
+        assert body["validation_gate"]["status"] == "awaiting_approval"
+        assert body["validation_gate"]["approval_required"] is True
+        assert body["validation_workspace"]["allowed_to_execute"] is False
+        assert body["validation_workspace"]["test_accounts_only"] is True
+        assert body["validation_workspace"]["no_real_user_data"] is True
+        assert body["validation_workspace"]["non_destructive_only"] is True
+
+        runs_response = client.get("/mythos/pipeline/runs")
+        assert runs_response.status_code == 200
+        run = runs_response.json()[0]
+        assert run["artifact"]["artifact_id"] == body["artifact"]["artifact_id"]
+        assert run["validation_gate"]["status"] == "awaiting_approval"
+        assert run["timeline"][0]["name"] == "policy_ingestion"
+
+        artifacts_response = client.get("/mythos/artifacts")
+        assert artifacts_response.status_code == 200
+        artifact = artifacts_response.json()[0]
+        serialized_artifact = str(artifact)
+        assert artifact["id"] == body["artifact"]["artifact_id"]
+        assert artifact["payload_summary"]["path_count"] == 1
+        assert "live-token" not in serialized_artifact
+        assert "SECRET POLICY" not in serialized_artifact
+
+        artifact_detail_response = client.get(f"/mythos/artifacts/{body['artifact']['artifact_id']}")
+        assert artifact_detail_response.status_code == 200
+        assert artifact_detail_response.json()["source_hash"] == artifact["source_hash"]
+    finally:
+        app.dependency_overrides.clear()

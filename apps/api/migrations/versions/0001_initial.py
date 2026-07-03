@@ -52,6 +52,21 @@ def upgrade() -> None:
         sa.Column("evidence_refs", sa.JSON(), nullable=False),
     )
     op.create_table(
+        "artifacts",
+        sa.Column("id", sa.String(length=100), primary_key=True),
+        sa.Column("program_id", sa.String(length=100), sa.ForeignKey("programs.id"), nullable=True),
+        sa.Column("asset", sa.String(length=255), nullable=False),
+        sa.Column("kind", sa.String(length=50), nullable=False),
+        sa.Column("source_type", sa.String(length=50), nullable=False),
+        sa.Column("source_hash", sa.String(length=100), nullable=False),
+        sa.Column("ingestion_status", sa.String(length=50), nullable=False),
+        sa.Column("provenance", sa.JSON(), nullable=False),
+        sa.Column("payload_summary", sa.JSON(), nullable=False),
+        sa.Column("derived_facts", sa.JSON(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("source_hash", name="uq_artifacts_source_hash"),
+    )
+    op.create_table(
         "reports",
         sa.Column("id", sa.String(length=100), primary_key=True),
         sa.Column("finding_id", sa.String(length=100), sa.ForeignKey("findings.id"), nullable=False),
@@ -84,6 +99,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("pipeline_runs")
+    op.drop_table("artifacts")
     op.drop_table("llm_runs")
     op.drop_table("reports")
     op.drop_table("findings")

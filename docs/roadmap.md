@@ -228,3 +228,105 @@
 - 不执行破坏性验证。
 - 不自动提交平台报告。
 - 不声称未人工确认的 evidence 已证明漏洞影响。
+
+## 10. Artifact Repository + Provenance
+
+目标：
+
+- 把已导入 artifact 从“pipeline 可用输入”升级为研究员可检索、可审计、可复用的资料库。
+- 让每个 endpoint、object、role、policy hint、hypothesis 和 evidence 都能回到明确来源。
+- 建立 artifact 版本、派生关系、脱敏状态和使用历史，避免研究材料变成不可解释的临时附件。
+
+输入：
+
+- 已归一化 artifact、原始文件 metadata、ingestion result、派生 target facts、pipeline run 引用、evidence 引用、人工 reviewer annotation 和脱敏记录。
+
+输出：
+
+- Artifact repository 视图与查询接口。
+- artifact version、source reference、derived fact、provenance edge、redaction status、sensitivity label 和 usage record。
+- 可供 pipeline、timeline、validation workspace 和报告草稿引用的稳定 provenance path。
+
+验收标准：
+
+- 研究员能按 program、asset、source type、capture time、sensitivity、ingestion status 和使用状态查找 artifact。
+- 任一派生事实都能展示 source artifact、解析阶段、派生时间和被哪些 run、hypothesis、evidence 使用。
+- artifact 重新导入或更新时保留历史版本，不静默覆盖已有 provenance。
+- 被标记为 secret、token、cookie 或真实用户数据的内容不得进入展示、导出或报告引用，必须先完成脱敏或拒绝使用。
+- Scope Guard 决策和人工批准状态会随 artifact 使用路径展示，blocked 或 human_approval_required 不能被下游阶段绕过。
+
+明确不做：
+
+- 不自动抓取公网目标作为资料来源。
+- 不触碰、保存或展示真实用户数据。
+- 不保存 raw secret、token、cookie 或授权凭据。
+- 不把 artifact 中的第三方结论当成已验证漏洞。
+- 不允许绕过 Scope Guard 或人工批准使用敏感 artifact。
+
+## 11. Stage-based Pipeline Run Timeline
+
+目标：
+
+- 把持久化 run 记录升级为按阶段展开的可解释 timeline。
+- 让研究员能复盘每个阶段的输入、输出、耗时、错误、Scope Guard 决策、人工审批和 provenance 引用。
+- 支持从一次 run 的 timeline 直接定位可重跑、可修正、可审查的阶段。
+
+输入：
+
+- pipeline run、stage record、artifact provenance path、Scope Guard decision、human approval record、refutation result、validation plan、evidence link、report draft link 和 stage error。
+
+输出：
+
+- Stage-based timeline API 和前端展示模型。
+- 每个 stage 的 status、started_at、finished_at、input summary、output summary、safety decision、approval requirement、error summary、provenance links 和 next allowed action。
+- run comparison 所需的 stage diff 数据。
+
+验收标准：
+
+- 单次 run 能按 Policy Ingestion、Target Understanding、Invariant、Hypothesis、Refutation、Safe Validation Plan、Evidence、Report Draft 等阶段清晰展示。
+- blocked、failed、human_approval_required 和 completed 状态有不同展示和可解释原因。
+- timeline 中的每个阶段都能跳转到相关 artifact、hypothesis、validation plan、evidence 或 report draft。
+- 失败阶段不会覆盖前序成功阶段；重跑必须产生新的 stage attempt 或新的 run 记录。
+- 没有人工批准时，human_approval_required 之后的执行入口保持禁用。
+
+明确不做：
+
+- 不在 timeline 中提供自动攻击公网目标的入口。
+- 不让 Agent 在 blocked 或 human_approval_required 后继续执行。
+- 不自动提交报告或自动外发 evidence。
+- 不隐藏 Scope Guard 拦截原因。
+- 不把 timeline 当成可随意改写的日志。
+
+## 12. Validation Workspace
+
+目标：
+
+- 把安全验证计划、evidence、人工审查和报告草稿连接成一个受控工作台。
+- 让研究员在 Scope Guard 和人工批准硬门内记录安全验证结果、整理证据、标注反证和决定是否进入报告。
+- 把“模型建议”与“人工观察事实”严格分开，减少误报和越界验证风险。
+
+输入：
+
+- Safe validation plan、hypothesis、Scope Guard decision、artifact provenance、pipeline timeline、evidence record、redaction status、reviewer annotation 和 report draft candidate。
+
+输出：
+
+- Validation workspace 页面与后端状态流。
+- validation task、manual check result、evidence attachment、redaction review、claim mapping、review decision 和 report readiness state。
+- 可回写到 report draft 的人工确认 claim 与安全说明。
+
+验收标准：
+
+- 研究员只能执行 Scope Guard 允许或人工批准后的非破坏性验证任务。
+- workspace 明确区分 unverified claim、model reasoning、manual observation、refuted finding 和 report-ready claim。
+- 每条 report-ready claim 都必须绑定已脱敏 evidence 和 provenance path。
+- 发现 raw secret、token、cookie 或真实用户数据时，系统必须阻断保存到报告链路并要求脱敏、替换或删除。
+- 提交报告前必须显示 human review required，且不会自动提交到任何平台。
+
+明确不做：
+
+- 不自动攻击公网、不扫描、不爆破、不做 DoS、不做社工。
+- 不触碰真实用户数据，不保存 raw secret、token、cookie 或授权凭据。
+- 不自动执行验证步骤，不自动提交平台报告。
+- 不把没有 evidence 和人工确认的 claim 标成已验证。
+- 不把 Scope Guard 或人工批准做成可选项；它们是硬门。

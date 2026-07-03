@@ -77,6 +77,41 @@ export type ScopeGuardDecision = {
   reason: string;
 };
 
+export type PipelineStage = {
+  name?: string;
+  label?: string;
+  stage?: string;
+  status?: string;
+  summary?: string;
+  input_summary?: string;
+  output_summary?: string;
+  safety_notes?: string[];
+  evidence_count?: number;
+};
+
+export type PipelineArtifactProvenance = {
+  artifact_id?: string;
+  artifact_type?: string;
+  kind?: string;
+  provenance?: string;
+  repository?: string;
+  source?: string;
+  source_type?: string;
+  summary?: string;
+  evidence_count?: number;
+  digest?: string;
+};
+
+export type PipelineValidationGate = {
+  status?: string;
+  decision?: string;
+  label?: string;
+  approval_required?: boolean;
+  approved_by?: string | null;
+  summary?: string;
+  evidence_count?: number;
+};
+
 export type PipelineRun = {
   id: string;
   asset: string;
@@ -87,6 +122,13 @@ export type PipelineRun = {
   evidence_count: number;
   report_title: string | null;
   created_at: string;
+  timeline?: PipelineStage[];
+  stages?: PipelineStage[];
+  artifact?: PipelineArtifactProvenance;
+  artifacts?: PipelineArtifactProvenance[];
+  provenance?: PipelineArtifactProvenance;
+  validation_gate?: PipelineValidationGate;
+  validationGate?: PipelineValidationGate;
 };
 
 async function apiGet<T>(path: string, fallback: T): Promise<T> {

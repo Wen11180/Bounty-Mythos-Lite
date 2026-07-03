@@ -29,7 +29,11 @@ import {
   fallbackScopeGuardRule,
 } from "@/lib/fallback-data";
 import { mythosPipelineStages } from "@/lib/mythos-pipeline-data";
-import { fallbackPipelineRuns, type PipelineRunSummary } from "@/lib/pipeline-runs-data";
+import {
+  fallbackPipelineRuns,
+  toPipelineRunSummary,
+  type PipelineRunSummary,
+} from "@/lib/pipeline-runs-data";
 import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
 
 const navigation = [
@@ -90,6 +94,52 @@ function formatSeverity(severity: string): string {
   return titleCase(severity);
 }
 
+function formatWorkbenchStatus(status: string): string {
+  return status === "waiting_human" ? "Waiting human" : titleCase(status);
+}
+
+function statusDotClass(
+  status:
+    | PipelineRunSummary["stages"][number]["status"]
+    | PipelineRunSummary["validationGate"]["status"],
+): string {
+  switch (status) {
+    case "approved":
+    case "complete":
+      return "bg-[var(--accent)]";
+    case "blocked":
+    case "failed":
+      return "bg-[var(--danger)]";
+    case "needs_review":
+    case "waiting_human":
+      return "bg-[var(--warning)]";
+    case "running":
+      return "bg-[var(--foreground)]";
+    default:
+      return "bg-[var(--muted)]";
+  }
+}
+
+function statusTextClass(
+  status:
+    | PipelineRunSummary["stages"][number]["status"]
+    | PipelineRunSummary["validationGate"]["status"],
+): string {
+  switch (status) {
+    case "approved":
+    case "complete":
+      return "text-[var(--accent-strong)]";
+    case "blocked":
+    case "failed":
+      return "text-[var(--danger)]";
+    case "needs_review":
+    case "waiting_human":
+      return "text-[var(--warning)]";
+    default:
+      return "text-[var(--muted)]";
+  }
+}
+
 function countPolicyBlocked(findings: Finding[]): number {
   return findings.filter((finding) => finding.policy_status === "blocked").length;
 }
@@ -133,14 +183,7 @@ export default async function Dashboard() {
   ];
   const runRows: PipelineRunSummary[] =
     pipelineRuns.length > 0
-      ? pipelineRuns.map((run) => ({
-          runId: run.id,
-          asset: run.asset,
-          hypothesisCount: run.hypothesis_count,
-          blockedCount: run.blocked_count,
-          reportTitle: run.report_title,
-          evidenceCount: run.evidence_count,
-        }))
+      ? pipelineRuns.map((run) => toPipelineRunSummary(run))
       : fallbackPipelineRuns;
 
   return (
@@ -251,31 +294,122 @@ export default async function Dashboard() {
                 {runRows.map((run) => (
                   <article
                     key={run.runId}
-                    className="grid min-w-0 gap-4 p-5 text-sm lg:grid-cols-[170px_130px_120px_100px_1fr_110px] lg:items-center"
+                    className="grid min-w-0 gap-5 p-5 text-sm xl:grid-cols-[210px_minmax(0,1fr)_300px]"
                   >
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Run ID</p>
-                      <p className="mt-1 break-all font-semibold">{run.runId}</p>
+                    <div className="grid content-start gap-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Run ID</p>
+                        <p className="mt-1 break-all font-semibold">{run.runId}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Asset</p>
+                        <p className="mt-1 break-words">{run.asset}</p>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3 tabular-nums">
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-[var(--muted)]">Hyp</p>
+                          <p className="mt-1 font-semibold">{run.hypothesisCount}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-[var(--muted)]">Blocked</p>
+                          <p className="mt-1 font-semibold text-[var(--warning)]">{run.blockedCount}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence</p>
+                          <p className="mt-1 font-semibold">{run.evidenceCount}</p>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Report</p>
+                        <p className="mt-1 break-words font-semibold">
+                          {run.reportTitle ?? "No draft yet"}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Asset</p>
-                      <p className="mt-1">{run.asset}</p>
+
+                    <div className="min-w-0">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                          Stage timeline
+                        </p>
+                        <p className="text-xs font-semibold text-[var(--muted)] tabular-nums">
+                          {run.stages.length} stages
+                        </p>
+                      </div>
+                      <ol className="grid gap-2">
+                        {run.stages.map((stage) => (
+                          <li
+                            key={`${run.runId}-${stage.label}`}
+                            className="grid gap-2 border-l-2 border-[var(--line)] pl-3 sm:grid-cols-[140px_130px_minmax(0,1fr)_76px] sm:items-start"
+                          >
+                            <p className="font-semibold">{stage.label}</p>
+                            <p className={`flex items-center gap-2 font-semibold ${statusTextClass(stage.status)}`}>
+                              <span
+                                className={`size-2 rounded-full ${statusDotClass(stage.status)}`}
+                                aria-hidden="true"
+                              />
+                              {formatWorkbenchStatus(stage.status)}
+                            </p>
+                            <p className="min-w-0 text-pretty text-[var(--muted)]">{stage.detail}</p>
+                            <p className="text-[var(--muted)] tabular-nums">
+                              {stage.evidenceCount} ev
+                            </p>
+                          </li>
+                        ))}
+                      </ol>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Hypotheses</p>
-                      <p className="mt-1 font-semibold">{run.hypothesisCount}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Blocked</p>
-                      <p className="mt-1 font-semibold text-[var(--warning)]">{run.blockedCount}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Report</p>
-                      <p className="mt-1 break-words font-semibold">{run.reportTitle ?? "No draft yet"}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence</p>
-                      <p className="mt-1 font-semibold">{run.evidenceCount}</p>
+
+                    <div className="grid content-start gap-5 xl:border-l xl:border-[var(--line)] xl:pl-5">
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                          Artifact / provenance
+                        </p>
+                        <dl className="mt-3 grid gap-2">
+                          <div className="grid gap-1">
+                            <dt className="text-xs font-semibold uppercase text-[var(--muted)]">Source</dt>
+                            <dd className="break-words font-semibold">{run.artifact.source}</dd>
+                          </div>
+                          <div className="grid gap-1">
+                            <dt className="text-xs font-semibold uppercase text-[var(--muted)]">Kind</dt>
+                            <dd>{run.artifact.kind}</dd>
+                          </div>
+                          <div className="grid gap-1">
+                            <dt className="text-xs font-semibold uppercase text-[var(--muted)]">
+                              Provenance
+                            </dt>
+                            <dd className="text-pretty text-[var(--muted)]">
+                              {run.artifact.provenance}
+                            </dd>
+                          </div>
+                        </dl>
+                      </div>
+
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                          Validation gate
+                        </p>
+                        <div className="mt-3 grid gap-2">
+                          <p
+                            className={`flex items-center gap-2 font-semibold ${statusTextClass(
+                              run.validationGate.status,
+                            )}`}
+                          >
+                            <span
+                              className={`size-2 rounded-full ${statusDotClass(
+                                run.validationGate.status,
+                              )}`}
+                              aria-hidden="true"
+                            />
+                            {run.validationGate.label}
+                          </p>
+                          <p className="text-pretty text-[var(--muted)]">
+                            {run.validationGate.approval}
+                          </p>
+                          <p className="text-xs font-semibold uppercase text-[var(--muted)] tabular-nums">
+                            {run.validationGate.evidenceCount} evidence items attached
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </article>
                 ))}

@@ -1,12 +1,16 @@
 from hashlib import sha256
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db_models import FindingRecord, PipelineRunRecord, ProgramRecord, ReportRecord
+from app.db_models import ArtifactRecord, FindingRecord, PipelineRunRecord, ProgramRecord, ReportRecord
 from app.models import Finding, Program, ReportDraft
 from app.sample_data import FINDINGS, PROGRAMS, REPORTS
+
+
+REDACTED = "[REDACTED]"
 
 
 class DatabaseRepository:
@@ -42,6 +46,53 @@ class DatabaseRepository:
         if record is None:
             return None
         return _report_from_record(record)
+
+    def save_artifact(
+        self,
+        *,
+        program_id: str | None,
+        asset: str,
+        kind: str,
+        source_type: str,
+        source_hash: str,
+        ingestion_status: str,
+        provenance: dict,
+        payload_summary: dict,
+        derived_facts: dict,
+    ) -> ArtifactRecord:
+        existing = self.session.scalars(
+            select(ArtifactRecord).where(ArtifactRecord.source_hash == source_hash)
+        ).first()
+        if existing is not None:
+            return existing
+
+        record = ArtifactRecord(
+            id=f"artifact_{uuid4().hex}",
+            program_id=program_id,
+            asset=asset,
+            kind=kind,
+            source_type=source_type,
+            source_hash=source_hash,
+            ingestion_status=ingestion_status,
+            provenance=_safe_display_value(provenance),
+            payload_summary=_safe_display_value(payload_summary),
+            derived_facts=_safe_display_value(derived_facts),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_artifacts(self) -> list[ArtifactRecord]:
+        return self.session.scalars(
+            select(ArtifactRecord).order_by(
+                ArtifactRecord.created_at.desc(),
+                ArtifactRecord.id.desc(),
+            )
+        ).all()
+
+    def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
+        return self.session.get(ArtifactRecord, artifact_id)
 
     def save_pipeline_run(
         self,
@@ -154,6 +205,44 @@ def _without_policy_text(value):
     if isinstance(value, list):
         return [_without_policy_text(item) for item in value]
     return value
+
+
+def _safe_display_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return REDACTED if _is_secret_like(value) else value
+    if isinstance(value, list):
+        return [_safe_display_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_safe_display_value(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: REDACTED
+            if _is_secret_key(str(key))
+            else _safe_display_value(nested_value)
+            for key, nested_value in value.items()
+        }
+    return value
+
+
+def _is_secret_key(value: str) -> bool:
+    normalized = value.lower().replace("-", "_")
+    return any(
+        marker in normalized
+        for marker in (
+            "authorization",
+            "api_key",
+            "apikey",
+            "token",
+            "secret",
+            "password",
+            "credential",
+        )
+    )
+
+
+def _is_secret_like(value: str) -> bool:
+    normalized = value.lower()
+    return "authorization:" in normalized or "bearer " in normalized or "sk-" in value
 
 
 def _program_from_record(record: ProgramRecord) -> Program:

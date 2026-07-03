@@ -22,6 +22,28 @@ class ProgramRecord(Base):
     priority: Mapped[str] = mapped_column(String(50), nullable=False)
 
 
+class ArtifactRecord(Base):
+    __tablename__ = "artifacts"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    program_id: Mapped[str | None] = mapped_column(ForeignKey("programs.id"), nullable=True)
+    asset: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    ingestion_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    provenance: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload_summary: Mapped[dict] = mapped_column(JSON, nullable=False)
+    derived_facts: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    program_record: Mapped[ProgramRecord | None] = relationship()
+
+
 class FindingRecord(Base):
     __tablename__ = "findings"
 
