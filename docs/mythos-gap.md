@@ -124,3 +124,14 @@ The next stage is about productizing the audit trail. The system already has rec
 - Does not: automatically attack public targets, scan, brute force, run DoS, perform social engineering, touch real user data, save raw secrets, execute validation steps autonomously, submit to platforms, or mark claims verified without evidence and human review.
 
 Across all three gaps, Scope Guard and human approval are hard gates. The product must not auto-attack the public internet, must not touch real user data, must not save raw secrets, and must not submit anything automatically.
+
+## Hunter Intelligence V1
+
+Hunter Intelligence adds the first top-hunter judgment layer on top of the safe pipeline. It does not validate a bug. It ranks and explains candidates before a human spends time on them.
+
+- Input: target model facts, hypotheses, refutation results, policy risk, validation mode, evidence hints, and artifact provenance.
+- Output: playbook match, hunter priority score, impact score, duplicate risk, policy risk, rejection risk, recommendation, next action, evidence focus, and safety notes.
+- Acceptance: BOLA/IDOR, role-boundary, and money-flow candidates produce distinct playbook matches; out-of-scope and real-user-data blockers collapse priority; human-approval-only blockers become review recommendations rather than execution permission; the workbench can show the hunter summary beside each run.
+- Does not: execute validation, attack public targets, prove impact, bypass Scope Guard, bypass Validation Workspace, touch real user data, save raw secrets, or submit reports automatically.
+
+This is the bridge from "candidate generation" to "hunter triage." The remaining gap is outcome learning: accepted, duplicate, informative, N/A, bounty amount, and triager feedback should eventually tune these scores.

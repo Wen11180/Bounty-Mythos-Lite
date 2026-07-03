@@ -8,6 +8,7 @@ from app.artifact_ingestion import normalize_artifact
 from app.db import get_session
 from app.db_models import ArtifactRecord, PipelineRunRecord
 from app.evidence import EvidenceBundle, build_evidence_bundle
+from app.hunter_intelligence import HunterIntelligence, assess_hunter_intelligence
 from app.llm.base import LLMRequest, LLMResponse
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
@@ -97,6 +98,7 @@ class MythosPipelineDryRunResponse(BaseModel):
     artifact: PipelineArtifactSummary | None = None
     validation_workspace: ValidationWorkspace | None = None
     validation_gate: PipelineValidationGate | None = None
+    hunter_intelligence: HunterIntelligence | None = None
 
 
 class MythosPipelineRunSummary(BaseModel):
@@ -112,6 +114,7 @@ class MythosPipelineRunSummary(BaseModel):
     timeline: list[PipelineStage] = Field(default_factory=list)
     artifact: PipelineArtifactSummary | None = None
     validation_gate: PipelineValidationGate | None = None
+    hunter_intelligence: HunterIntelligence | None = None
 
 
 class MythosPipelineRunDetail(MythosPipelineRunSummary):
@@ -130,6 +133,25 @@ class ArtifactResponse(BaseModel):
     payload_summary: dict
     derived_facts: dict
     created_at: str
+
+
+class ReportPreviewSections(BaseModel):
+    observed_facts: list[str] = Field(default_factory=list)
+    model_reasoning: list[str] = Field(default_factory=list)
+    unverified_claims: list[str] = Field(default_factory=list)
+
+
+class ReportPreviewResponse(BaseModel):
+    run_id: str
+    title: str
+    severity: str
+    scope_status: str
+    human_review_required: bool
+    submission_blocked: bool
+    claim_labels: dict[str, str]
+    sections: ReportPreviewSections
+    safety_notes: list[str]
+    evidence_refs: list[str]
 
 
 @app.get("/health")
@@ -274,6 +296,20 @@ def get_mythos_pipeline_run(
     return _pipeline_run_detail(record)
 
 
+@app.get(
+    "/mythos/pipeline/runs/{run_id}/report-preview",
+    response_model=ReportPreviewResponse,
+)
+def get_mythos_pipeline_report_preview(
+    run_id: str,
+    session: Session = Depends(get_session),
+) -> ReportPreviewResponse:
+    record = DatabaseRepository(session).get_pipeline_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    return _report_preview_response(record)
+
+
 def _build_mythos_pipeline_dry_run(
     request: MythosPipelineDryRunRequest,
 ) -> tuple[MythosPipelineDryRunResponse, dict, dict]:
@@ -313,6 +349,11 @@ def _build_mythos_pipeline_dry_run(
         hypotheses=hypotheses,
     )
     validation_gate = _build_validation_gate(validation_workspace, evidence_bundle)
+    hunter_intelligence = assess_hunter_intelligence(
+        target_model=target_model_payload,
+        hypotheses=[hypothesis.model_dump(mode="json") for hypothesis in hypotheses],
+        refutation=refutation.model_dump(mode="json") if refutation else None,
+    )
     timeline = _build_pipeline_timeline(
         request=request,
         artifact_kind=artifact_kind,
@@ -341,6 +382,7 @@ def _build_mythos_pipeline_dry_run(
         timeline=timeline,
         validation_workspace=validation_workspace,
         validation_gate=validation_gate,
+        hunter_intelligence=hunter_intelligence,
     )
     payload = response.model_dump(mode="json", exclude={"run_id"})
     return response, payload, openapi_like
@@ -501,6 +543,95 @@ def _artifact_response(record: ArtifactRecord) -> ArtifactResponse:
         derived_facts=record.derived_facts,
         created_at=record.created_at.isoformat(),
     )
+
+
+def _report_preview_response(record: PipelineRunRecord) -> ReportPreviewResponse:
+    payload = record.payload
+    report_draft = payload.get("report_draft")
+    if not isinstance(report_draft, dict):
+        raise HTTPException(status_code=404, detail="Report draft not found")
+
+    validation_gate = payload.get("validation_gate") if isinstance(payload.get("validation_gate"), dict) else {}
+    evidence_bundle = payload.get("evidence_bundle") if isinstance(payload.get("evidence_bundle"), dict) else {}
+    evidence_items = evidence_bundle.get("items", []) if isinstance(evidence_bundle, dict) else []
+    hypotheses = payload.get("hypotheses", []) if isinstance(payload.get("hypotheses"), list) else []
+    invariants = payload.get("invariants", []) if isinstance(payload.get("invariants"), list) else []
+    timeline = payload.get("timeline", []) if isinstance(payload.get("timeline"), list) else []
+
+    human_review_required = bool(report_draft.get("human_review_required", True))
+    submission_blocked = human_review_required or validation_gate.get("status") != "approved"
+
+    return ReportPreviewResponse(
+        run_id=record.id,
+        title=str(report_draft.get("title", record.report_title or "Untitled report preview")),
+        severity=str(report_draft.get("severity", "unknown")),
+        scope_status=str(report_draft.get("scope_status", record.scope_status)),
+        human_review_required=human_review_required,
+        submission_blocked=submission_blocked,
+        claim_labels={
+            "observed_facts": "observed_fact",
+            "model_reasoning": "model_reasoning",
+            "unverified_claims": "unverified_claim",
+        },
+        sections=ReportPreviewSections(
+            observed_facts=_observed_fact_lines(record, timeline, evidence_items),
+            model_reasoning=_model_reasoning_lines(hypotheses, invariants),
+            unverified_claims=_unverified_claim_lines(report_draft, validation_gate),
+        ),
+        safety_notes=_safe_string_list(report_draft.get("safety_notes", [])),
+        evidence_refs=[
+            str(item.get("type", "evidence_item"))
+            for item in evidence_items
+            if isinstance(item, dict)
+        ],
+    )
+
+
+def _observed_fact_lines(
+    record: PipelineRunRecord,
+    timeline: list,
+    evidence_items: list,
+) -> list[str]:
+    lines = [
+        f"Pipeline run {record.id} was created for asset {record.asset}.",
+        f"Scope status recorded as {record.scope_status}.",
+        f"{len(evidence_items)} sanitized evidence item(s) are attached to this run.",
+    ]
+    for stage in timeline:
+        if isinstance(stage, dict):
+            name = stage.get("name")
+            status = stage.get("status")
+            if name and status:
+                lines.append(f"Stage {name} recorded status {status}.")
+    return lines
+
+
+def _model_reasoning_lines(hypotheses: list, invariants: list) -> list[str]:
+    lines: list[str] = []
+    for invariant in invariants:
+        if isinstance(invariant, dict) and invariant.get("invariant"):
+            lines.append(f"Invariant considered: {invariant['invariant']}.")
+    for hypothesis in hypotheses:
+        if isinstance(hypothesis, dict) and hypothesis.get("hypothesis"):
+            lines.append(f"Candidate reasoning: {hypothesis['hypothesis']}")
+    return lines or ["No model reasoning was recorded for this run."]
+
+
+def _unverified_claim_lines(report_draft: dict, validation_gate: dict) -> list[str]:
+    lines = [
+        str(report_draft.get("actual_result", "Actual result still requires safe validation evidence.")),
+        "This preview is not submission-ready until human review approves the validation evidence.",
+    ]
+    gate_status = validation_gate.get("status")
+    if gate_status and gate_status != "approved":
+        lines.append(f"Validation gate is {gate_status}; live execution remains blocked.")
+    return lines
+
+
+def _safe_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _build_pipeline_timeline(
@@ -694,6 +825,7 @@ def _pipeline_run_summary(record: PipelineRunRecord) -> MythosPipelineRunSummary
         timeline=payload.get("timeline", []),
         artifact=payload.get("artifact"),
         validation_gate=payload.get("validation_gate"),
+        hunter_intelligence=payload.get("hunter_intelligence"),
     )
 
 
@@ -712,6 +844,7 @@ def _pipeline_run_detail(record: PipelineRunRecord) -> MythosPipelineRunDetail:
         timeline=summary.timeline,
         artifact=summary.artifact,
         validation_gate=summary.validation_gate,
+        hunter_intelligence=summary.hunter_intelligence,
         payload=record.payload,
     )
 

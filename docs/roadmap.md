@@ -330,3 +330,35 @@
 - 不自动执行验证步骤，不自动提交平台报告。
 - 不把没有 evidence 和人工确认的 claim 标成已验证。
 - 不把 Scope Guard 或人工批准做成可选项；它们是硬门。
+
+## 13. Hunter Intelligence
+
+目标：
+
+- 把顶级猎人的判断标准产品化：高价值 playbook、impact、duplicate risk、policy risk、rejection risk 和下一步行动建议。
+- 在验证前给候选排序和去噪，帮助研究员决定哪些值得投入人工时间。
+- 让候选报告从“模型觉得可能”升级为“猎人认为值得审查，但仍需证据和人工确认”。
+
+输入：
+
+- target model、hypothesis、refutation result、Scope Guard decision、artifact provenance、evidence hints 和 validation mode。
+
+输出：
+
+- hunter priority score、playbook match、impact score、duplicate risk、policy risk、rejection risk、recommendation、next action 和 evidence focus。
+- 可进入 pipeline run payload 和 workbench 的猎人视角摘要。
+
+验收标准：
+
+- BOLA/IDOR、role boundary、money-flow tampering 等高价值 playbook 能被稳定匹配。
+- out_of_scope、真实用户数据、best-practice-only、self-impact-only 等候选必须被降权或阻断。
+- human_approval_required 只能进入人工审查建议，不会触发任何自动验证。
+- 前端能展示 playbook、priority、recommendation、risk 和 next action。
+- 所有建议都保留 no_live_requests、test_accounts_only、no_real_user_data 和 human_review_required 安全说明。
+
+明确不做：
+
+- 不自动验证、不自动攻击公网、不自动提交报告。
+- 不把 hunter score 当成已确认漏洞。
+- 不绕过 Scope Guard、Validation Workspace 或人工批准。
+- 不使用真实用户数据或 raw secret 作为评分依据。

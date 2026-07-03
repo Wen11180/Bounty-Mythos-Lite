@@ -410,6 +410,32 @@ export default async function Dashboard() {
                           </p>
                         </div>
                       </div>
+
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                          Hunter priority
+                        </p>
+                        <div className="mt-3 grid gap-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <p className="font-semibold">{run.hunter.playbook}</p>
+                            <p className="text-lg font-semibold tabular-nums">
+                              {run.hunter.priorityScore}
+                            </p>
+                          </div>
+                          <p className="text-xs font-semibold uppercase text-[var(--accent-strong)]">
+                            {formatWorkbenchStatus(run.hunter.recommendation)}
+                          </p>
+                          <div className="grid grid-cols-2 gap-3 text-xs tabular-nums">
+                            <p className="text-[var(--muted)]">
+                              Impact <span className="font-semibold text-[var(--foreground)]">{run.hunter.impactScore}</span>
+                            </p>
+                            <p className="text-[var(--muted)]">
+                              Reject <span className="font-semibold text-[var(--foreground)]">{run.hunter.rejectionRiskScore}</span>
+                            </p>
+                          </div>
+                          <p className="text-pretty text-[var(--muted)]">{run.hunter.nextAction}</p>
+                        </div>
+                      </div>
                     </div>
                   </article>
                 ))}

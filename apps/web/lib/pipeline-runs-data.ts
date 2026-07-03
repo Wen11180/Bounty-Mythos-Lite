@@ -32,6 +32,15 @@ export type ValidationGateSummary = {
   evidenceCount: number;
 };
 
+export type HunterPrioritySummary = {
+  playbook: string;
+  recommendation: string;
+  priorityScore: number;
+  impactScore: number;
+  rejectionRiskScore: number;
+  nextAction: string;
+};
+
 export type PipelineRunSummary = {
   runId: string;
   asset: string;
@@ -42,6 +51,7 @@ export type PipelineRunSummary = {
   stages: PipelineRunStageSummary[];
   artifact: ArtifactProvenanceSummary;
   validationGate: ValidationGateSummary;
+  hunter: HunterPrioritySummary;
 };
 
 type RunSeed = Pick<
@@ -312,6 +322,46 @@ function resolveValidationGate(run: PipelineRun, seed: RunSeed): ValidationGateS
   };
 }
 
+function buildDefaultHunter(seed: RunSeed): HunterPrioritySummary {
+  const blocked = seed.scopeStatus === "out_of_scope" || seed.blockedCount > 0;
+
+  return {
+    playbook: seed.hypothesisCount > 0 ? "Candidate needs playbook match" : "No candidate",
+    recommendation: blocked ? "Needs review" : "Pursue with care",
+    priorityScore: blocked ? 42 : 62,
+    impactScore: seed.hypothesisCount > 0 ? 75 : 0,
+    rejectionRiskScore: blocked ? 55 : 25,
+    nextAction: blocked
+      ? "Resolve Scope Guard or approval blockers before validation."
+      : "Collect minimal safe evidence under human review.",
+  };
+}
+
+function resolveHunter(run: PipelineRun, seed: RunSeed): HunterPrioritySummary {
+  const fallback = buildDefaultHunter(seed);
+  const intelligence = run.hunter_intelligence ?? run.hunterIntelligence;
+  const assessment = intelligence?.assessments?.[0];
+
+  if (!assessment) {
+    return fallback;
+  }
+
+  return {
+    playbook: safeText(assessment.playbook_label ?? assessment.playbook_id, fallback.playbook),
+    recommendation: safeText(
+      intelligence?.top_recommendation ?? assessment.recommendation,
+      fallback.recommendation,
+    ),
+    priorityScore: numberOrFallback(assessment.hunter_priority_score, fallback.priorityScore),
+    impactScore: numberOrFallback(assessment.impact_score, fallback.impactScore),
+    rejectionRiskScore: numberOrFallback(
+      assessment.rejection_risk_score,
+      fallback.rejectionRiskScore,
+    ),
+    nextAction: safeText(assessment.next_action, fallback.nextAction),
+  };
+}
+
 export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
   const seed: RunSeed = {
     asset: safeText(run.asset, "unknown asset"),
@@ -331,6 +381,7 @@ export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
     stages: resolveStages(run, seed),
     artifact: resolveArtifact(run, seed),
     validationGate: resolveValidationGate(run, seed),
+    hunter: resolveHunter(run, seed),
   };
 }
 
@@ -386,6 +437,14 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       approval: "Human reviewer approved metadata-only validation.",
       evidenceCount: 4,
     },
+    hunter: {
+      playbook: "BOLA / IDOR object boundary",
+      recommendation: "needs_human_review",
+      priorityScore: 68,
+      impactScore: 85,
+      rejectionRiskScore: 30,
+      nextAction: "Prepare human-approved, test-account-only validation.",
+    },
   },
   {
     runId: "dry_run_2026_07_02_002",
@@ -438,6 +497,14 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       approval: "Two mutation checks are waiting for human approval.",
       evidenceCount: 1,
     },
+    hunter: {
+      playbook: "Role boundary / privilege escalation",
+      recommendation: "needs_human_review",
+      priorityScore: 61,
+      impactScore: 82,
+      rejectionRiskScore: 35,
+      nextAction: "Collect role-matrix evidence before any state-changing validation.",
+    },
   },
   {
     runId: "dry_run_2026_07_01_004",
@@ -489,6 +556,14 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       status: "waiting_human",
       approval: "Needs test fixture and scoped approval before validation.",
       evidenceCount: 0,
+    },
+    hunter: {
+      playbook: "Generic business logic candidate",
+      recommendation: "park",
+      priorityScore: 34,
+      impactScore: 62,
+      rejectionRiskScore: 55,
+      nextAction: "Park until stronger provenance or impact evidence appears.",
     },
   },
 ];

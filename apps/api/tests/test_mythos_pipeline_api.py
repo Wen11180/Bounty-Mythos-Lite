@@ -139,12 +139,18 @@ def test_mythos_pipeline_dry_run_links_artifact_and_validation_gate():
         assert body["validation_workspace"]["test_accounts_only"] is True
         assert body["validation_workspace"]["no_real_user_data"] is True
         assert body["validation_workspace"]["non_destructive_only"] is True
+        assert body["hunter_intelligence"]["top_recommendation"] == "needs_human_review"
+        hunter_assessment = body["hunter_intelligence"]["assessments"][0]
+        assert hunter_assessment["playbook_id"] == "bola_idor"
+        assert hunter_assessment["hunter_priority_score"] >= 55
+        assert hunter_assessment["next_action"] == "Prepare human-approved, test-account-only validation."
 
         runs_response = client.get("/mythos/pipeline/runs")
         assert runs_response.status_code == 200
         run = runs_response.json()[0]
         assert run["artifact"]["artifact_id"] == body["artifact"]["artifact_id"]
         assert run["validation_gate"]["status"] == "awaiting_approval"
+        assert run["hunter_intelligence"]["top_recommendation"] == "needs_human_review"
         assert run["timeline"][0]["name"] == "policy_ingestion"
 
         artifacts_response = client.get("/mythos/artifacts")
@@ -159,5 +165,47 @@ def test_mythos_pipeline_dry_run_links_artifact_and_validation_gate():
         artifact_detail_response = client.get(f"/mythos/artifacts/{body['artifact']['artifact_id']}")
         assert artifact_detail_response.status_code == 200
         assert artifact_detail_response.json()["source_hash"] == artifact["source_hash"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pipeline_run_report_preview_separates_fact_reasoning_and_unverified_claims():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        serialized_preview = str(preview)
+
+        assert preview["run_id"] == run_id
+        assert preview["title"] == response.json()["report_draft"]["title"]
+        assert preview["human_review_required"] is True
+        assert preview["submission_blocked"] is True
+        assert preview["sections"]["observed_facts"]
+        assert preview["sections"]["model_reasoning"]
+        assert preview["sections"]["unverified_claims"]
+        assert preview["claim_labels"]["observed_facts"] == "observed_fact"
+        assert preview["claim_labels"]["model_reasoning"] == "model_reasoning"
+        assert preview["claim_labels"]["unverified_claims"] == "unverified_claim"
+        assert "SECRET POLICY" not in serialized_preview
+        assert "policy_text" not in serialized_preview
     finally:
         app.dependency_overrides.clear()

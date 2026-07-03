@@ -112,6 +112,25 @@ export type PipelineValidationGate = {
   evidence_count?: number;
 };
 
+export type HunterAssessment = {
+  playbook_id?: string;
+  playbook_label?: string;
+  hunter_priority_score?: number;
+  impact_score?: number;
+  duplicate_risk_score?: number;
+  policy_risk_score?: number;
+  rejection_risk_score?: number;
+  recommendation?: string;
+  next_action?: string;
+  reasons?: string[];
+  evidence_focus?: string[];
+};
+
+export type HunterIntelligence = {
+  top_recommendation?: string;
+  assessments?: HunterAssessment[];
+};
+
 export type PipelineRun = {
   id: string;
   asset: string;
@@ -129,6 +148,8 @@ export type PipelineRun = {
   provenance?: PipelineArtifactProvenance;
   validation_gate?: PipelineValidationGate;
   validationGate?: PipelineValidationGate;
+  hunter_intelligence?: HunterIntelligence;
+  hunterIntelligence?: HunterIntelligence;
 };
 
 async function apiGet<T>(path: string, fallback: T): Promise<T> {
