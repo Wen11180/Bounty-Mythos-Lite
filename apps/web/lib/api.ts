@@ -57,9 +57,48 @@ export type ReportDraft = {
   draft: string;
 };
 
+export type ScopeGuardRule = {
+  asset: string;
+  scope_status: ScopeStatus;
+  automation: string;
+  allowed_validation: string[];
+  forbidden: string[];
+  human_approval_required: boolean;
+};
+
+export type ScopeGuardRequest = {
+  asset: string;
+  validation_type: string;
+  human_approved: boolean;
+};
+
+export type ScopeGuardDecision = {
+  allowed: boolean;
+  reason: string;
+};
+
 async function apiGet<T>(path: string, fallback: T): Promise<T> {
   try {
     const response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store" });
+
+    if (!response.ok) {
+      return fallback;
+    }
+
+    return (await response.json()) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function apiPost<T>(path: string, body: unknown, fallback: T): Promise<T> {
+  try {
+    const response = await fetch(new URL(path, API_BASE_URL), {
+      body: JSON.stringify(body),
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
 
     if (!response.ok) {
       return fallback;
@@ -81,4 +120,12 @@ export function getFindings(fallback: Finding[]): Promise<Finding[]> {
 
 export function getReports(fallback: ReportDraft[]): Promise<ReportDraft[]> {
   return apiGet("/reports", fallback);
+}
+
+export function evaluateScopeGuard(
+  rule: ScopeGuardRule,
+  request: ScopeGuardRequest,
+  fallback: ScopeGuardDecision,
+): Promise<ScopeGuardDecision> {
+  return apiPost("/scope-guard/evaluate", { rule, request }, fallback);
 }

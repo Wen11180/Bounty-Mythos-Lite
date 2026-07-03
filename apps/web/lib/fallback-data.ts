@@ -1,4 +1,11 @@
-import type { Finding, Program, ReportDraft } from "./api";
+import type {
+  Finding,
+  Program,
+  ReportDraft,
+  ScopeGuardDecision,
+  ScopeGuardRequest,
+  ScopeGuardRule,
+} from "./api";
 
 export const fallbackPrograms: Program[] = [
   {
@@ -68,3 +75,23 @@ export const fallbackReports: ReportDraft[] = [
     draft: "等待低风险验证计划和人工确认。",
   },
 ];
+
+export const fallbackScopeGuardRule: ScopeGuardRule = {
+  asset: "api.example.com",
+  scope_status: "in_scope",
+  automation: "limited",
+  allowed_validation: ["two_account_authorization_check"],
+  forbidden: ["DoS", "credential_stuffing", "real_user_data_access"],
+  human_approval_required: true,
+};
+
+export const fallbackScopeGuardRequest: ScopeGuardRequest = {
+  asset: "api.example.com",
+  validation_type: "two_account_authorization_check",
+  human_approved: false,
+};
+
+export const fallbackScopeGuardDecision: ScopeGuardDecision = {
+  allowed: false,
+  reason: "human_approval_required",
+};

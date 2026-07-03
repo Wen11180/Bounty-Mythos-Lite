@@ -19,11 +19,14 @@ import {
   Target,
   Upload,
 } from "lucide-react";
-import { getFindings, getPrograms, getReports } from "@/lib/api";
+import { evaluateScopeGuard, getFindings, getPrograms, getReports } from "@/lib/api";
 import {
   fallbackFindings,
   fallbackPrograms,
   fallbackReports,
+  fallbackScopeGuardDecision,
+  fallbackScopeGuardRequest,
+  fallbackScopeGuardRule,
 } from "@/lib/fallback-data";
 import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
 
@@ -104,6 +107,11 @@ export default async function Dashboard() {
     getFindings(fallbackFindings),
     getReports(fallbackReports),
   ]);
+  const scopeGuardDecision = await evaluateScopeGuard(
+    fallbackScopeGuardRule,
+    fallbackScopeGuardRequest,
+    fallbackScopeGuardDecision,
+  );
 
   const todayMetrics = [
     { label: "已解析项目", value: String(programs.length) },
@@ -228,6 +236,15 @@ export default async function Dashboard() {
                 <h3 className="text-lg font-semibold">Policy Guard</h3>
               </div>
               <div className="grid gap-3">
+                <div className="rounded-md border border-[var(--line)] bg-[#f7f7f4] p-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold">当前验证决策</span>
+                    <span className={scopeGuardDecision.allowed ? "text-[var(--accent-strong)]" : "text-[var(--danger)]"}>
+                      {scopeGuardDecision.allowed ? "Allowed" : "Blocked"}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[var(--muted)]">{titleCase(scopeGuardDecision.reason)}</p>
+                </div>
                 {guardRules.map((rule) => (
                   <div key={rule} className="flex items-start gap-3 text-sm">
                     <AlertTriangle size={16} className="mt-0.5 text-[var(--warning)]" aria-hidden="true" />
