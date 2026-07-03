@@ -77,6 +77,18 @@ export type ScopeGuardDecision = {
   reason: string;
 };
 
+export type PipelineRun = {
+  id: string;
+  asset: string;
+  policy_text_hash: string;
+  scope_status: string;
+  hypothesis_count: number;
+  blocked_count: number;
+  evidence_count: number;
+  report_title: string | null;
+  created_at: string;
+};
+
 async function apiGet<T>(path: string, fallback: T): Promise<T> {
   try {
     const response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store" });
@@ -120,6 +132,10 @@ export function getFindings(fallback: Finding[]): Promise<Finding[]> {
 
 export function getReports(fallback: ReportDraft[]): Promise<ReportDraft[]> {
   return apiGet("/reports", fallback);
+}
+
+export function getPipelineRuns(fallback: PipelineRun[]): Promise<PipelineRun[]> {
+  return apiGet("/mythos/pipeline/runs", fallback);
 }
 
 export function evaluateScopeGuard(

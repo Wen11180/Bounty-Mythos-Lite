@@ -19,7 +19,7 @@ import {
   Target,
   Upload,
 } from "lucide-react";
-import { evaluateScopeGuard, getFindings, getPrograms, getReports } from "@/lib/api";
+import { evaluateScopeGuard, getFindings, getPipelineRuns, getPrograms, getReports } from "@/lib/api";
 import {
   fallbackFindings,
   fallbackPrograms,
@@ -29,6 +29,7 @@ import {
   fallbackScopeGuardRule,
 } from "@/lib/fallback-data";
 import { mythosPipelineStages } from "@/lib/mythos-pipeline-data";
+import { fallbackPipelineRuns, type PipelineRunSummary } from "@/lib/pipeline-runs-data";
 import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
 
 const navigation = [
@@ -103,10 +104,11 @@ function countNeedsReview(findings: Finding[]): number {
 }
 
 export default async function Dashboard() {
-  const [programs, findings, reports] = await Promise.all([
+  const [programs, findings, reports, pipelineRuns] = await Promise.all([
     getPrograms(fallbackPrograms),
     getFindings(fallbackFindings),
     getReports(fallbackReports),
+    getPipelineRuns([]),
   ]);
   const scopeGuardDecision = await evaluateScopeGuard(
     fallbackScopeGuardRule,
@@ -129,6 +131,17 @@ export default async function Dashboard() {
     { label: "需要人工确认", value: String(countNeedsReview(findings)) },
     { label: "Policy 风险拦截", value: String(countPolicyBlocked(findings)) },
   ];
+  const runRows: PipelineRunSummary[] =
+    pipelineRuns.length > 0
+      ? pipelineRuns.map((run) => ({
+          runId: run.id,
+          asset: run.asset,
+          hypothesisCount: run.hypothesis_count,
+          blockedCount: run.blocked_count,
+          reportTitle: run.report_title,
+          evidenceCount: run.evidence_count,
+        }))
+      : fallbackPipelineRuns;
 
   return (
     <main className="min-h-screen lg:grid lg:grid-cols-[280px_1fr]">
@@ -222,6 +235,49 @@ export default async function Dashboard() {
                       {stage.risk}
                     </p>
                   </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-md border border-[var(--line)] bg-white">
+              <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
+                <div>
+                  <h3 className="text-lg font-semibold">Pipeline Runs / Evidence Snapshot</h3>
+                  <p className="mt-1 text-sm text-[var(--muted)]">Dry-run history with evidence chain counts</p>
+                </div>
+                <Database size={19} className="text-[var(--accent)]" aria-hidden="true" />
+              </div>
+              <div className="divide-y divide-[var(--line)]">
+                {runRows.map((run) => (
+                  <article
+                    key={run.runId}
+                    className="grid min-w-0 gap-4 p-5 text-sm lg:grid-cols-[170px_130px_120px_100px_1fr_110px] lg:items-center"
+                  >
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Run ID</p>
+                      <p className="mt-1 break-all font-semibold">{run.runId}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Asset</p>
+                      <p className="mt-1">{run.asset}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Hypotheses</p>
+                      <p className="mt-1 font-semibold">{run.hypothesisCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Blocked</p>
+                      <p className="mt-1 font-semibold text-[var(--warning)]">{run.blockedCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Report</p>
+                      <p className="mt-1 break-words font-semibold">{run.reportTitle ?? "No draft yet"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence</p>
+                      <p className="mt-1 font-semibold">{run.evidenceCount}</p>
+                    </div>
+                  </article>
                 ))}
               </div>
             </section>

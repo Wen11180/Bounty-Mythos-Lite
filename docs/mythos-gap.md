@@ -65,3 +65,30 @@ This is still not the full Mythos. It is the first testable spine.
 - Rich duplicate and bounty-impact scoring.
 - Evidence capture and audit trail.
 - Authentication, workspace isolation, and production permissions.
+
+## Next Workable Research Flow Gaps
+
+The next stage should turn the current dry-run reasoning spine into a working research flow. Dry-run can explain a target and propose safe next steps, but a researcher still needs durable inputs, reproducible runs, and reviewable evidence before the product can support real case work.
+
+### Artifact Ingestion
+
+- Input: user-provided HAR files, Postman collections, OpenAPI documents, local notes, code excerpts, SARIF output, and policy documents from authorized programs.
+- Output: normalized artifacts linked to a program, asset, source type, capture time, and ingestion status, with extracted endpoints, objects, roles, and policy hints available to the pipeline.
+- Acceptance: uploads or local imports are parsed deterministically; unsupported formats fail with a clear reason; every derived target-model fact points back to its source artifact; duplicate artifacts are detected without losing provenance.
+- Does not: crawl public targets, attack internet services, ingest real user data, collect secrets, bypass Scope Guard, or treat imported scanner output as confirmed vulnerability evidence.
+
+### Pipeline Run Persistence
+
+- Input: policy rules, normalized artifacts, target model, generated invariants, hypotheses, refutation decisions, validation plans, report draft candidates, and human review decisions for a single pipeline run.
+- Output: immutable run records with stage status, timestamps, inputs, outputs, safety decisions, errors, and links to the artifacts and evidence used to produce the result.
+- Acceptance: a run can be resumed or inspected without re-running every stage; two runs over the same inputs can be compared; blocked Scope Guard decisions remain visible; report drafts can cite the exact run that produced them.
+- Does not: execute background attacks, submit reports automatically, hide failed stages, overwrite prior run history, or allow agents to continue after a blocked safety decision.
+
+### Evidence Model
+
+- Input: safe validation notes, local request/response diffs, screenshots, role-matrix observations, sanitized logs, reproduction steps, and human reviewer annotations.
+- Output: evidence records linked to hypotheses, validation plans, and report drafts, with source metadata, sensitivity labels, redaction status, and reviewer approval state.
+- Acceptance: each reportable claim can reference specific evidence; evidence containing sensitive values is redacted before display or export; real user data is rejected or removed; human reviewers can distinguish observed facts from model-generated reasoning.
+- Does not: store raw secrets, retain real user data, perform destructive validation, prove impact without human review, or send evidence to a platform automatically.
+
+Together these gaps form the bridge from reasoning to research operations: Artifact Ingestion gives the system authorized material to understand, Pipeline Run Persistence makes each reasoning pass reproducible and auditable, and the Evidence Model turns safe observations into report-ready facts without crossing product safety boundaries.

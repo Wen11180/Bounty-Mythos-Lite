@@ -130,3 +130,101 @@
 - 不触碰真实用户数据。
 - 不自动提交报告。
 - 不把候选假设当成已验证漏洞。
+
+## 7. Artifact Ingestion
+
+目标：
+
+- 把 dry-run 的一次性示例输入升级为可复用的研究材料入口。
+- 支持研究员导入授权范围内的 HAR、Postman collection、OpenAPI 文档、本地笔记、代码片段、SARIF 输出和 policy 文档。
+- 为 Target Understanding、Invariant、Hypothesis 和 Evidence 后续阶段提供可追溯来源。
+
+输入：
+
+- 用户明确提供的项目 policy、资产说明、API 文档、请求样本、本地分析笔记、代码片段和工具输出。
+
+输出：
+
+- 归一化 artifact 记录。
+- artifact 与 program、asset、source type、capture time、ingestion status 的关联。
+- 可被 pipeline 使用的 endpoint、object、role、policy hint 和来源引用。
+
+验收标准：
+
+- 支持的格式能稳定解析，失败时返回清晰原因。
+- 每个派生事实都能追溯到原始 artifact。
+- 重复导入不会破坏 provenance。
+- 导入后不触发任何公网访问或主动验证。
+- 发现疑似 secret、token 或真实用户数据时必须标记并要求脱敏处理。
+
+明确不做：
+
+- 不爬取公网目标。
+- 不发起扫描、爆破、DoS 或破坏性请求。
+- 不导入真实用户数据作为研究素材。
+- 不把第三方工具输出直接当成已确认漏洞。
+
+## 8. Pipeline Run Persistence
+
+目标：
+
+- 把 dry-run 的即时推理结果保存为可复盘、可比较、可审计的 pipeline run。
+- 让研究员能看到每个阶段为什么继续、为什么停止、用了哪些输入、产出了哪些安全决策。
+- 为报告草稿、学习回路和后续复跑建立稳定记录。
+
+输入：
+
+- Scope Guard rule、artifact、target model、security invariant、hypothesis、refutation result、safe validation plan、report draft candidate 和人工审核结果。
+
+输出：
+
+- 持久化 pipeline run 记录。
+- 每个 stage 的状态、时间、输入摘要、输出摘要、错误、Scope Guard 决策和关联 artifact/evidence。
+- 可供前端展示和报告引用的 run timeline。
+
+验收标准：
+
+- 单次 run 可从数据库完整查看。
+- 同一批输入的多次 run 可以比较差异。
+- 被 Scope Guard 拦截的原因会持久保存并展示。
+- 失败阶段不会覆盖先前成功阶段。
+- 报告草稿能引用生成它的具体 run。
+
+明确不做：
+
+- 不在后台自动攻击公网。
+- 不允许 Agent 绕过 blocked 或 human_approval_required 决策。
+- 不自动提交报告。
+- 不把 run history 当成可随意覆盖的临时缓存。
+
+## 9. Evidence Model
+
+目标：
+
+- 把安全验证计划中的观察结果变成可审查、可脱敏、可引用的 evidence。
+- 区分模型推理、人工观察和实际验证材料，避免把候选假设误写成事实。
+- 支撑从 dry-run 推理到可工作研究流的关键闭环：安全输入、可复盘执行、可审查证据、人工确认报告。
+
+输入：
+
+- 本地请求/响应差异、测试账号观察、角色矩阵检查、截图、脱敏日志、复现步骤、验证备注和人工 reviewer annotation。
+
+输出：
+
+- 与 hypothesis、validation plan、pipeline run、report draft 关联的 evidence 记录。
+- source metadata、sensitivity label、redaction status、review status 和引用路径。
+
+验收标准：
+
+- 每条报告 claim 都能关联到具体 evidence。
+- evidence 在展示、导出或进入报告草稿前完成脱敏。
+- 真实用户数据必须被拒绝、移除或替换为安全说明。
+- reviewer 能清楚区分 observed fact、model reasoning 和 unverified claim。
+- evidence 不会绕过 Scope Guard 或人工审核。
+
+明确不做：
+
+- 不保存 raw secret、token、cookie 或真实用户数据。
+- 不执行破坏性验证。
+- 不自动提交平台报告。
+- 不声称未人工确认的 evidence 已证明漏洞影响。

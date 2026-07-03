@@ -1,4 +1,6 @@
-from sqlalchemy import JSON, Float, ForeignKey, String, Text
+from datetime import UTC, datetime
+
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -64,3 +66,21 @@ class LLMRunRecord(Base):
     mode: Mapped[str] = mapped_column(String(50), nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PipelineRunRecord(Base):
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    asset: Mapped[str] = mapped_column(String(255), nullable=False)
+    policy_text_hash: Mapped[str] = mapped_column(String(100), nullable=False)
+    scope_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    hypothesis_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    blocked_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    report_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)

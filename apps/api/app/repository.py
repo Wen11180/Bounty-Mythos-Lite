@@ -1,7 +1,10 @@
+from hashlib import sha256
+from uuid import uuid4
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db_models import FindingRecord, ProgramRecord, ReportRecord
+from app.db_models import FindingRecord, PipelineRunRecord, ProgramRecord, ReportRecord
 from app.models import Finding, Program, ReportDraft
 from app.sample_data import FINDINGS, PROGRAMS, REPORTS
 
@@ -39,6 +42,43 @@ class DatabaseRepository:
         if record is None:
             return None
         return _report_from_record(record)
+
+    def save_pipeline_run(
+        self,
+        *,
+        asset: str,
+        policy_text: str,
+        scope_status: str,
+        hypothesis_count: int,
+        blocked_count: int,
+        report_title: str | None,
+        payload: dict,
+    ) -> PipelineRunRecord:
+        record = PipelineRunRecord(
+            id=f"pipeline_run_{uuid4().hex}",
+            asset=asset,
+            policy_text_hash=sha256(policy_text.encode("utf-8")).hexdigest(),
+            scope_status=scope_status,
+            hypothesis_count=hypothesis_count,
+            blocked_count=blocked_count,
+            report_title=report_title,
+            payload=_without_policy_text(payload),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_pipeline_runs(self) -> list[PipelineRunRecord]:
+        return self.session.scalars(
+            select(PipelineRunRecord).order_by(
+                PipelineRunRecord.created_at.desc(),
+                PipelineRunRecord.id.desc(),
+            )
+        ).all()
+
+    def get_pipeline_run(self, run_id: str) -> PipelineRunRecord | None:
+        return self.session.get(PipelineRunRecord, run_id)
 
 
 def seed_sample_data(session: Session) -> None:
@@ -102,6 +142,18 @@ def _report_to_record(report: ReportDraft) -> ReportRecord:
         title=report.title,
         draft=report.draft,
     )
+
+
+def _without_policy_text(value):
+    if isinstance(value, dict):
+        return {
+            key: _without_policy_text(item)
+            for key, item in value.items()
+            if key != "policy_text"
+        }
+    if isinstance(value, list):
+        return [_without_policy_text(item) for item in value]
+    return value
 
 
 def _program_from_record(record: ProgramRecord) -> Program:

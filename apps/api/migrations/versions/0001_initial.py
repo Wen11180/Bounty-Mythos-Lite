@@ -68,9 +68,22 @@ def upgrade() -> None:
         sa.Column("latency_ms", sa.Integer(), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
     )
+    op.create_table(
+        "pipeline_runs",
+        sa.Column("id", sa.String(length=100), primary_key=True),
+        sa.Column("asset", sa.String(length=255), nullable=False),
+        sa.Column("policy_text_hash", sa.String(length=100), nullable=False),
+        sa.Column("scope_status", sa.String(length=50), nullable=False),
+        sa.Column("hypothesis_count", sa.Integer(), nullable=False),
+        sa.Column("blocked_count", sa.Integer(), nullable=False),
+        sa.Column("report_title", sa.String(length=255), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=False),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("pipeline_runs")
     op.drop_table("llm_runs")
     op.drop_table("reports")
     op.drop_table("findings")
