@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: bounty_mythos
+      POSTGRES_USER: bounty
+      POSTGRES_PASSWORD: bounty
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bounty -d bounty_mythos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ../apps/api
+    environment:
+      DATABASE_URL: postgresql+psycopg://bounty:bounty@postgres:5432/bounty_mythos
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../apps/api
+    command: celery -A app.worker.celery_app.celery_app worker --loglevel=info --pool=solo
+    environment:
+      DATABASE_URL: postgresql+psycopg://bounty:bounty@postgres:5432/bounty_mythos
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../apps/web
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
