@@ -28,6 +28,7 @@ import {
   fallbackScopeGuardRequest,
   fallbackScopeGuardRule,
 } from "@/lib/fallback-data";
+import { mythosPipelineStages } from "@/lib/mythos-pipeline-data";
 import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
 
 const navigation = [
@@ -205,6 +206,25 @@ export default async function Dashboard() {
                 </div>
               ))}
             </div>
+
+            <section className="rounded-md border border-[var(--line)] bg-white">
+              <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
+                <h3 className="text-lg font-semibold">Mythos Pipeline</h3>
+                <ShieldCheck size={19} className="text-[var(--accent)]" aria-hidden="true" />
+              </div>
+              <div className="grid gap-0 divide-y divide-[var(--line)] md:grid-cols-2 md:divide-x md:divide-y-0 xl:grid-cols-7">
+                {mythosPipelineStages.map((stage) => (
+                  <div key={stage.label} className="min-h-36 p-4">
+                    <p className="text-sm font-semibold">{stage.label}</p>
+                    <p className="mt-4 text-xl font-semibold">{stage.status}</p>
+                    <p className="mt-3 text-sm text-[var(--muted)]">{stage.count}</p>
+                    <p className="mt-2 text-xs font-semibold uppercase text-[var(--accent-strong)]">
+                      {stage.risk}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
 
             <section className="rounded-md border border-[var(--line)] bg-white">
               <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">

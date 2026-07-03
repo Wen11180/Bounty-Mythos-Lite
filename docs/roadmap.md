@@ -110,3 +110,23 @@
 - 不实现自动线上验证。
 - 不把规则做成不可解释的黑盒。
 
+## 6. Mythos-like Pipeline V1
+
+目标：
+
+- 串起第一条可测试链路：Policy Ingestion -> Target Understanding -> Security Invariants -> Hypothesis -> Refutation -> Safe Validation Plan -> Report Draft。
+- 让系统开始从“Dashboard + API 骨架”变成“能解释目标、提出假设、主动反证、生成安全验证计划”的研究工作台。
+
+验收标准：
+
+- 后端提供 dry-run pipeline，不调用真实目标，不消耗 LLM token。
+- 每个 hypothesis 都绑定 broken invariant 和 evidence needed。
+- Refutation 和 Scope Guard 决定验证是否可继续。
+- 验证计划只能包含非破坏性、测试账号、本地审查和请求/响应差异分析。
+
+明确不做：
+
+- 不自动攻击公网。
+- 不触碰真实用户数据。
+- 不自动提交报告。
+- 不把候选假设当成已验证漏洞。
