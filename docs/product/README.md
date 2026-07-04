@@ -19,6 +19,7 @@ Bounty Mythos-Lite 面向合法赏金项目：系统读取项目规则，完成�
 - 建模优先于扫描：先理解角色、对象、权限、业务流程和安全不变量，再生成候选。
 - 少量高质量候选：候选应高置信、高影响、能复现、能提交。
 - 反证优先：Refutation Agent 负责主动证明候选不是漏洞，降低噪声。
+- 记忆先于自动化：历史提交结果只能调整建议和排序，不能变成自动验证权限。
 - 人工确认：线上验证、报告提交和敏感动作必须有人确认。
 - 低风险验证：只允许测试账号、本地复现、非破坏性流程和请求响应差异分析。
 
@@ -30,13 +31,13 @@ Bounty Mythos-Lite 面向合法赏金项目：系统读取项目规则，完成�
 - Target Understanding：生成安全地图、对象模型、角色权限矩阵和业务流程图。
 - Security Invariant Engine：抽取系统应保证的业务安全不变量。
 - Hypothesis Engine：基于模型和不变量生成高价值漏洞假设。
+- Mythos Brain：沉淀 program 维度攻击面记忆、hunter 判断和学习信号。
 - Multi-Agent 研究团队：分工完成 policy、建模、审计、反证、证据和报告。
 - Validation Layer：生成并执行低风险验证计划。
 - Finding DB：保存结构化 finding、状态、证据、报告草稿和学习数据。
 - Report Builder：生成可人工复核后提交的 HackerOne/Bugcrowd 风格报告草稿。
-- Learning Loop：从提交结果、triager 反馈和奖金结果中沉淀经验。
+- Learning Loop：从提交结果、赏金、严重性变化、证据质量和脱敏 triager 反馈中沉淀经验。
 
 ## 源材料
 
 本目录内容整理自根目录中文 `.txt` 产品说明文件。原始文件保留在根目录，未移动、未删除。
-

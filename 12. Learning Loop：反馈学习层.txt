@@ -1,0 +1,25 @@
+这是长期接近 Mythos 的护城河。
+
+每次提交后系统记录：
+
+{
+  "program": "example",
+  "vuln_type": "IDOR",
+  "claimed_severity": "high",
+  "awarded_severity": "medium",
+  "status": "accepted",
+  "bounty": 1500,
+  "triager_feedback": "impact accepted, severity reduced",
+  "what_worked": "two-account proof was clear",
+  "what_failed": "business impact not strong enough",
+  "new_rule": "导出类接口比只读 metadata 更容易被评为 high"
+}
+
+它会沉淀：
+
+- 哪些项目适合做
+- 哪些漏洞类型容易被接受
+- 哪些 endpoint 容易 duplicate
+- 哪些证据最有说服力
+- 哪些报告会被判 informative
+- 哪些严重性评估容易偏高

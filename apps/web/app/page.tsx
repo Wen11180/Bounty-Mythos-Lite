@@ -19,9 +19,18 @@ import {
   Target,
   Upload,
 } from "lucide-react";
-import { evaluateScopeGuard, getFindings, getPipelineRuns, getPrograms, getReports } from "@/lib/api";
+import Link from "next/link";
+import {
+  evaluateScopeGuard,
+  getFindings,
+  getMythosBrainProgram,
+  getPipelineRuns,
+  getPrograms,
+  getReports,
+} from "@/lib/api";
 import {
   fallbackFindings,
+  fallbackMythosBrainProfile,
   fallbackPrograms,
   fallbackReports,
   fallbackScopeGuardDecision,
@@ -40,6 +49,7 @@ const navigation = [
   { label: "Dashboard", icon: Home },
   { label: "Programs", icon: Target },
   { label: "Assets", icon: Layers },
+  { label: "Artifact Repository", icon: Database, href: "/artifacts" },
   { label: "API Model", icon: GitBranch },
   { label: "Business Flows", icon: ListChecks },
   { label: "Hypotheses", icon: Bot },
@@ -73,7 +83,9 @@ const reportReadyStatuses: ValidationStatus[] = [
 
 function titleCase(value: string): string {
   return value
-    .split("_")
+    .replace(/:/g, ": ")
+    .split(/[\s_]+/)
+    .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
 }
@@ -160,6 +172,12 @@ export default async function Dashboard() {
     getReports(fallbackReports),
     getPipelineRuns([]),
   ]);
+  const activeProgramId = programs[0]?.id ?? fallbackMythosBrainProfile.program_id;
+  const brainProfile = await getMythosBrainProgram(activeProgramId, {
+    ...fallbackMythosBrainProfile,
+    program_id: activeProgramId,
+    program_name: programs[0]?.name ?? fallbackMythosBrainProfile.program_name,
+  });
   const scopeGuardDecision = await evaluateScopeGuard(
     fallbackScopeGuardRule,
     fallbackScopeGuardRequest,
@@ -185,6 +203,8 @@ export default async function Dashboard() {
     pipelineRuns.length > 0
       ? pipelineRuns.map((run) => toPipelineRunSummary(run))
       : fallbackPipelineRuns;
+  const topBrainSurfaces = brainProfile.high_value_surfaces.slice(0, 3);
+  const recentLearningSignals = brainProfile.recent_learning_signals.slice(0, 3);
 
   return (
     <main className="min-h-screen lg:grid lg:grid-cols-[280px_1fr]">
@@ -203,15 +223,15 @@ export default async function Dashboard() {
 
         <nav className="grid gap-1">
           {navigation.map((item) => (
-            <a
-              href="#"
+            <Link
+              href={item.href ?? "#"}
               key={item.label}
               className="flex min-h-10 items-center gap-3 rounded-md px-3 text-sm font-medium text-[#303433] hover:bg-white"
               title={item.label}
             >
               <item.icon size={18} aria-hidden="true" />
               <span>{item.label}</span>
-            </a>
+            </Link>
           ))}
         </nav>
       </aside>
@@ -324,6 +344,22 @@ export default async function Dashboard() {
                         <p className="mt-1 break-words font-semibold">
                           {run.reportTitle ?? "No draft yet"}
                         </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <WorkbenchLink href={`/runs/${encodeURIComponent(run.runId)}`}>
+                          Run
+                        </WorkbenchLink>
+                        {run.artifact.artifactId ? (
+                          <WorkbenchLink href={`/artifacts/${encodeURIComponent(run.artifact.artifactId)}`}>
+                            Artifact
+                          </WorkbenchLink>
+                        ) : null}
+                        <WorkbenchLink href={`/validation-workspace/${encodeURIComponent(run.runId)}`}>
+                          Validate
+                        </WorkbenchLink>
+                        <WorkbenchLink href={`/reports/${encodeURIComponent(run.runId)}`}>
+                          Report
+                        </WorkbenchLink>
                       </div>
                     </div>
 
@@ -453,6 +489,18 @@ export default async function Dashboard() {
                     <div>
                       <h4 className="font-semibold">{finding.title}</h4>
                       <p className="mt-2 text-sm text-[var(--muted)]">{formatGuard(finding)}</p>
+                      {finding.operating_reasons.length > 0 ? (
+                        <ul className="mt-3 flex flex-wrap gap-1.5">
+                          {finding.operating_reasons.slice(0, 2).map((reason) => (
+                            <li
+                              key={`${finding.id}-${reason}`}
+                              className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold text-[var(--muted)]"
+                            >
+                              {titleCase(reason)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
                     </div>
                     <p className="text-sm font-semibold">{formatStatus(finding.validation_status)}</p>
                     <p className="text-sm">
@@ -466,6 +514,114 @@ export default async function Dashboard() {
           </section>
 
           <aside className="grid content-start gap-5">
+            <section className="rounded-md border border-[var(--line)] bg-white p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Bot size={19} className="shrink-0 text-[var(--accent)]" aria-hidden="true" />
+                    <h3 className="text-lg font-semibold">Mythos Brain</h3>
+                  </div>
+                  <p className="mt-1 break-words text-sm text-[var(--muted)]">
+                    {brainProfile.program_name}
+                  </p>
+                </div>
+                <p className="shrink-0 text-3xl font-semibold tabular-nums">
+                  {brainProfile.program_score}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 border-y border-[var(--line)] py-3 text-xs tabular-nums">
+                <div>
+                  <p className="font-semibold text-[var(--muted)]">Objects</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">
+                    {brainProfile.attack_surface_memory.objects.length}
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-[var(--muted)]">Roles</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">
+                    {brainProfile.attack_surface_memory.roles.length}
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-[var(--muted)]">Signals</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">
+                    {brainProfile.recent_learning_signals.length}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 border-b border-[var(--line)] py-3 text-xs tabular-nums">
+                <div>
+                  <p className="font-semibold text-[var(--muted)]">Strong</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">
+                    {brainProfile.learning_summary.strong_evidence_count}
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-[var(--muted)]">Adequate</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">
+                    {brainProfile.learning_summary.adequate_evidence_count}
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-[var(--muted)]">Weak</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">
+                    {brainProfile.learning_summary.weak_evidence_count}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                  High-value surfaces
+                </p>
+                <div className="mt-3 grid gap-3">
+                  {topBrainSurfaces.map((surface) => (
+                    <div
+                      key={surface.surface_key}
+                      className="min-w-0 rounded-md border border-[var(--line)] bg-[#f7f7f4] p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="break-words font-semibold">{surface.surface_key}</p>
+                        <p className="shrink-0 font-semibold tabular-nums">{surface.score}</p>
+                      </div>
+                      <p className="mt-2 break-words text-sm text-[var(--muted)]">
+                        {surface.paths[0] ?? titleCase(surface.action)}
+                      </p>
+                    </div>
+                  ))}
+                  {topBrainSurfaces.length === 0 ? (
+                    <p className="text-sm text-[var(--muted)]">No surfaces learned yet.</p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                  Recent learning
+                </p>
+                <div className="mt-3 grid gap-2 text-sm">
+                  {recentLearningSignals.map((signal) => (
+                    <div
+                      key={signal.id ?? `${signal.playbook_id}-${signal.surface_key}`}
+                      className="grid gap-1"
+                    >
+                      <p className="break-words font-semibold">
+                        {titleCase(signal.outcome)} - {signal.playbook_id}
+                      </p>
+                      <p className="break-words text-[var(--muted)]">
+                        {signal.surface_key ?? "program-level signal"}
+                      </p>
+                    </div>
+                  ))}
+                  {recentLearningSignals.length === 0 ? (
+                    <p className="text-[var(--muted)]">No learning signals yet.</p>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+
             <section className="rounded-md border border-[var(--line)] bg-white p-5">
               <div className="mb-4 flex items-center gap-2">
                 <Lock size={19} className="text-[var(--accent)]" aria-hidden="true" />
@@ -507,5 +663,16 @@ export default async function Dashboard() {
         </div>
       </section>
     </main>
+  );
+}
+
+function WorkbenchLink({ children, href }: { children: React.ReactNode; href: string }) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex min-h-8 items-center rounded-md border border-[var(--line)] px-2 text-xs font-semibold hover:bg-[#f7f7f4]"
+    >
+      {children}
+    </Link>
   );
 }

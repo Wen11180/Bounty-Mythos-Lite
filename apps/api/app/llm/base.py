@@ -19,6 +19,7 @@ class LLMRequest(BaseModel):
     provider: ProviderName
     model: str
     prompt: str = Field(min_length=1)
+    purpose: str = Field(default="general", max_length=100)
     mode: LLMMode = LLMMode.DRY_RUN
     system_prompt: str | None = None
     temperature: float = Field(default=0.2, ge=0, le=2)

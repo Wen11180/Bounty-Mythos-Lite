@@ -76,6 +76,45 @@ def test_generates_invariants_from_target_model_objects_and_sensitive_actions():
     assert invariants[0].actions == ["export"]
 
 
+def test_generates_invariants_from_operation_provenance_linked_objects_and_actions():
+    operation_edge = {
+        "ref": "openapi.paths./shares.post",
+        "source_type": "openapi",
+        "stage": "target_model",
+        "source_path": "/shares",
+        "source_method": "post",
+        "fact_type": "object",
+    }
+    target_model = {
+        "objects": [
+            {
+                "name": "file_id",
+                "provenance_edges": [operation_edge],
+            }
+        ],
+        "sensitive_actions": [
+            {
+                "action": "share",
+                "path": "/shares",
+                "provenance_edges": [
+                    {
+                        **operation_edge,
+                        "fact_type": "sensitive_action",
+                    }
+                ],
+            }
+        ],
+    }
+
+    invariants = generate_invariants(target_model)
+
+    assert [invariant.rule_id for invariant in invariants] == [
+        "private_file_access_control"
+    ]
+    assert invariants[0].objects == ["file_id"]
+    assert invariants[0].actions == ["share"]
+
+
 def test_generates_required_high_value_hypothesis_fields_from_invariants():
     invariants = generate_invariants(
         {

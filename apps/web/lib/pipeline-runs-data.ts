@@ -16,9 +16,11 @@ export type PipelineRunStageSummary = {
   status: PipelineStageStatus;
   detail: string;
   evidenceCount: number;
+  safetyNotes?: string[];
 };
 
 export type ArtifactProvenanceSummary = {
+  artifactId: string | null;
   source: string;
   kind: string;
   provenance: string;
@@ -95,6 +97,14 @@ function safeText(value: string | null | undefined, fallback: string): string {
   return stripUrlQuery(text)
     .replace(/\b(policy_text|secret|token)\b\s*[:=]\s*[^,;\s]+/gi, "$1=[redacted]")
     .replace(/\b(policy_text|secret|token)\b/gi, "[redacted]");
+}
+
+function readableStageLabel(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function normalizeStageStatus(
@@ -219,6 +229,7 @@ function buildDefaultStages(seed: RunSeed): PipelineRunStageSummary[] {
 
 function buildDefaultArtifact(seed: RunSeed): ArtifactProvenanceSummary {
   return {
+    artifactId: null,
     source: "Pipeline response summary",
     kind: "Run artifact manifest",
     provenance: "Artifact repository pending; safe counters are shown from the run.",
@@ -269,13 +280,19 @@ function resolveStages(run: PipelineRun, seed: RunSeed): PipelineRunStageSummary
       status: "queued" as const,
       detail: "Awaiting pipeline metadata.",
       evidenceCount: 0,
+      safetyNotes: [],
     };
 
     return {
-      label: safeText(stage.label ?? stage.name ?? stage.stage, fallbackStage.label),
+      label: readableStageLabel(
+        safeText(stage.label ?? stage.name ?? stage.stage, fallbackStage.label),
+      ),
       status: normalizeStageStatus(stage.status, fallbackStage.status),
       detail: safeText(stage.summary ?? stage.output_summary ?? stage.input_summary, fallbackStage.detail),
       evidenceCount: numberOrFallback(stage.evidence_count, fallbackStage.evidenceCount),
+      safetyNotes: Array.isArray(stage.safety_notes)
+        ? stage.safety_notes.map((note) => safeText(note, "safety_note"))
+        : fallbackStage.safetyNotes ?? [],
     };
   });
 }
@@ -288,6 +305,7 @@ function resolveArtifact(run: PipelineRun, seed: RunSeed): ArtifactProvenanceSum
   }
 
   return {
+    artifactId: artifact.artifact_id ?? null,
     source: safeText(artifact.source ?? artifact.repository, "Pipeline artifact repository"),
     kind: safeText(
       artifact.artifact_type ?? artifact.kind ?? artifact.source_type,
@@ -426,6 +444,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       },
     ],
     artifact: {
+      artifactId: "artifact_fallback_001",
       source: "Research vault: HAR capture + OpenAPI schema",
       kind: "API artifact bundle",
       provenance: "Captured from researcher test account and linked to dry-run manifest.",
@@ -486,6 +505,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       },
     ],
     artifact: {
+      artifactId: "artifact_fallback_002",
       source: "Research vault: UI trace + role matrix",
       kind: "Browser workflow artifact",
       provenance: "Generated from seeded test tenant with no production user data.",
@@ -546,6 +566,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       },
     ],
     artifact: {
+      artifactId: "artifact_fallback_004",
       source: "Research vault: docs + export-flow notes",
       kind: "Documentation artifact",
       provenance: "Manual notes only; artifact repository ingest is pending.",

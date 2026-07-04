@@ -26,6 +26,7 @@ Backend tests:
 
 ```powershell
 cd apps/api
+python -m pip install -r requirements.txt
 python -m pytest
 ```
 
@@ -33,5 +34,9 @@ Frontend build:
 
 ```powershell
 cd apps/web
+npm install
 npm run build
 ```
+
+The API Docker image uses Python 3.12. Local development should use the pinned
+`apps/api/requirements.txt` dependencies before running tests.

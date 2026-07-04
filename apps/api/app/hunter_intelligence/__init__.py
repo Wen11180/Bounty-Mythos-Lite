@@ -31,6 +31,13 @@ class HunterIntelligence(BaseModel):
     assessments: list[HunterAssessment] = Field(default_factory=list)
 
 
+class HunterOperatingSignal(BaseModel):
+    action: str
+    claim_quality_score: int = Field(ge=0, le=100)
+    reasons: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+
+
 _PLAYBOOKS = {
     "bola_idor": HunterPlaybook(
         id="bola_idor",
@@ -91,12 +98,70 @@ def assess_hunter_intelligence(
     )
 
 
+def recommend_hunter_operating_action(
+    assessment: HunterAssessment,
+    *,
+    claim_quality_score: int,
+    readiness_level: str,
+) -> HunterOperatingSignal:
+    reasons = [
+        f"hunter_recommendation:{assessment.recommendation}",
+        f"readiness:{readiness_level}",
+    ]
+    safety_notes = [
+        "advisory_only",
+        "human_gate:still_required",
+        "no_live_requests",
+        "no_auto_submission",
+    ]
+
+    if assessment.recommendation == "blocked" or assessment.policy_risk_score >= 75:
+        reasons.append("policy_or_scope_blocked")
+        return HunterOperatingSignal(
+            action="do_not_pursue_policy_blocked",
+            claim_quality_score=claim_quality_score,
+            reasons=reasons,
+            safety_notes=safety_notes,
+        )
+
+    if assessment.duplicate_risk_score >= 50:
+        reasons.append("duplicate_risk:high")
+        return HunterOperatingSignal(
+            action="park_duplicate_risk",
+            claim_quality_score=claim_quality_score,
+            reasons=reasons,
+            safety_notes=safety_notes,
+        )
+
+    if claim_quality_score >= 80 and readiness_level in {
+        "human_reviewed_gated",
+        "needs_human_review",
+        "ready_for_human_review",
+    }:
+        reasons.append("claim_quality:high")
+        return HunterOperatingSignal(
+            action="promote_to_finding_candidate",
+            claim_quality_score=claim_quality_score,
+            reasons=reasons,
+            safety_notes=safety_notes,
+        )
+
+    reasons.append("claim_quality:needs_stronger_evidence")
+    return HunterOperatingSignal(
+        action="needs_stronger_evidence",
+        claim_quality_score=claim_quality_score,
+        reasons=reasons,
+        safety_notes=safety_notes,
+    )
+
+
 def _assess_hypothesis(
     target_model: dict[str, Any],
     hypothesis: dict[str, Any],
     refutation: dict[str, Any],
 ) -> HunterAssessment:
     playbook = _match_playbook(target_model, hypothesis)
+    relationship_signals = _relationship_signals(target_model)
     impact_score = _impact_score(str(hypothesis.get("risk_level", "medium")), playbook.id)
     duplicate_risk_score = _duplicate_risk_score(playbook.id)
     policy_risk_score = _policy_risk_score(str(hypothesis.get("policy_risk", "medium")))
@@ -107,6 +172,12 @@ def _assess_hypothesis(
         policy_risk_score,
         rejection_risk_score,
     )
+    if rejection_risk_score < 90:
+        hunter_priority_score = min(
+            100,
+            hunter_priority_score
+            + _relationship_priority_bonus(playbook.id, relationship_signals),
+        )
     recommendation = _recommendation(
         hunter_priority_score,
         policy_risk_score,
@@ -125,8 +196,8 @@ def _assess_hypothesis(
         rejection_risk_score=rejection_risk_score,
         recommendation=recommendation,
         next_action=_next_action(recommendation, playbook.id),
-        reasons=_reasons(playbook, hypothesis, refutation),
-        evidence_focus=playbook.evidence_focus,
+        reasons=_reasons(playbook, hypothesis, refutation, relationship_signals),
+        evidence_focus=_evidence_focus(playbook, relationship_signals),
         safety_notes=[
             "no_live_requests",
             "test_accounts_only",
@@ -137,22 +208,108 @@ def _assess_hypothesis(
 
 
 def _match_playbook(target_model: dict[str, Any], hypothesis: dict[str, Any]) -> HunterPlaybook:
-    text = " ".join(
+    hypothesis_text = " ".join(
         [
             str(hypothesis.get("hypothesis", "")),
             str(hypothesis.get("vuln_type", "")),
             str(hypothesis.get("validation_mode", "")),
-            " ".join(_target_terms(target_model)),
         ]
     ).lower()
+    target_text = " ".join(_target_terms(target_model)).lower()
 
-    if any(term in text for term in ("refund", "payment", "invoice", "checkout", "money")):
-        return _PLAYBOOKS["money_flow_tampering"]
-    if any(term in text for term in ("privilege", "admin", "member", "role", "invite", "settings")):
+    if "two_account_authorization_check" in hypothesis_text:
+        return _PLAYBOOKS["bola_idor"]
+    if "role_based_authorization_check" in hypothesis_text:
         return _PLAYBOOKS["role_boundary"]
-    if any(term in text for term in ("file", "document", "attachment", "idor", "bola", "object")):
+    if (
+        "business_logic_authorization" in hypothesis_text
+        or "non_destructive_request_review" in hypothesis_text
+    ):
+        return _PLAYBOOKS["money_flow_tampering"]
+
+    if any(
+        term in hypothesis_text
+        for term in ("refund", "payment", "invoice", "checkout", "money")
+    ):
+        return _PLAYBOOKS["money_flow_tampering"]
+    if any(
+        term in hypothesis_text
+        for term in ("privilege", "admin", "member", "role", "invite", "settings")
+    ):
+        return _PLAYBOOKS["role_boundary"]
+    if any(
+        term in hypothesis_text
+        for term in ("file", "document", "attachment", "idor", "bola", "object")
+    ):
+        return _PLAYBOOKS["bola_idor"]
+    if any(term in target_text for term in ("refund", "payment", "invoice", "checkout", "money")):
+        return _PLAYBOOKS["money_flow_tampering"]
+    if any(term in target_text for term in ("privilege", "admin", "member", "role", "invite", "settings")):
+        return _PLAYBOOKS["role_boundary"]
+    if any(term in target_text for term in ("file", "document", "attachment", "idor", "bola", "object")):
         return _PLAYBOOKS["bola_idor"]
     return _PLAYBOOKS["generic_logic"]
+
+
+def _relationship_signals(target_model: dict[str, Any]) -> list[str]:
+    edges: list[tuple[str, str]] = []
+    for item in target_model.get("relationships", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("relationship", "contains")) != "contains":
+            continue
+        parent = str(item.get("parent_object", "")).strip()
+        child = str(item.get("child_object", "")).strip()
+        if parent and child and (parent, child) not in edges:
+            edges.append((parent, child))
+
+    children_by_parent: dict[str, list[str]] = {}
+    parents: set[str] = set()
+    children: set[str] = set()
+    for parent, child in edges:
+        children_by_parent.setdefault(parent, []).append(child)
+        parents.add(parent)
+        children.add(child)
+
+    roots = sorted(parents - children) or sorted(parents)
+    signals: list[str] = []
+    for root in roots:
+        for path in _relationship_paths(root, children_by_parent, []):
+            if len(path) >= 2:
+                signal = ">".join(path)
+                if signal not in signals:
+                    signals.append(signal)
+    return signals
+
+
+def _relationship_paths(
+    node: str,
+    children_by_parent: dict[str, list[str]],
+    path: list[str],
+) -> list[list[str]]:
+    if node in path:
+        return [path]
+
+    next_path = [*path, node]
+    children = children_by_parent.get(node, [])
+    if not children:
+        return [next_path]
+
+    paths: list[list[str]] = []
+    for child in children:
+        paths.extend(_relationship_paths(child, children_by_parent, next_path))
+    return paths
+
+
+def _relationship_priority_bonus(
+    playbook_id: str,
+    relationship_signals: list[str],
+) -> int:
+    if not relationship_signals:
+        return 0
+    if playbook_id in {"bola_idor", "role_boundary"}:
+        return 8
+    return 0
 
 
 def _target_terms(target_model: dict[str, Any]) -> list[str]:
@@ -266,10 +423,21 @@ def _next_action(recommendation: str, playbook_id: str) -> str:
     return "Park until stronger provenance or impact evidence appears."
 
 
+def _evidence_focus(
+    playbook: HunterPlaybook,
+    relationship_signals: list[str],
+) -> list[str]:
+    focus = list(playbook.evidence_focus)
+    if relationship_signals and "parent_child_authorization_matrix" not in focus:
+        focus.append("parent_child_authorization_matrix")
+    return focus
+
+
 def _reasons(
     playbook: HunterPlaybook,
     hypothesis: dict[str, Any],
     refutation: dict[str, Any],
+    relationship_signals: list[str] | None = None,
 ) -> list[str]:
     reasons = [playbook.match_reason]
     risk_level = hypothesis.get("risk_level")
@@ -278,6 +446,8 @@ def _reasons(
         reasons.append(f"impact:{risk_level}")
     if policy_risk:
         reasons.append(f"policy_risk:{policy_risk}")
+    for signal in relationship_signals or []:
+        reasons.append(f"target_relationship:{signal}")
     for reason in refutation.get("reasons", []):
         reasons.append(f"refutation:{reason}")
     return reasons
@@ -297,6 +467,8 @@ def _top_recommendation(assessments: list[HunterAssessment]) -> str:
 __all__ = [
     "HunterAssessment",
     "HunterIntelligence",
+    "HunterOperatingSignal",
     "HunterPlaybook",
     "assess_hunter_intelligence",
+    "recommend_hunter_operating_action",
 ]

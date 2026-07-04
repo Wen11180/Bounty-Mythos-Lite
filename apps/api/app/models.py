@@ -62,6 +62,7 @@ class Finding(BaseModel):
     duplicate_likelihood: str
     submission_recommendation: str
     evidence_refs: list[str]
+    operating_reasons: list[str] = Field(default_factory=list)
 
 
 class ReportDraft(BaseModel):

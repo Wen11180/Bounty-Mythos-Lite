@@ -63,6 +63,7 @@ class FindingRecord(Base):
     duplicate_likelihood: Mapped[str] = mapped_column(String(100), nullable=False)
     submission_recommendation: Mapped[str] = mapped_column(String(100), nullable=False)
     evidence_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    operating_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     program_record: Mapped[ProgramRecord | None] = relationship()
 
@@ -84,16 +85,24 @@ class LLMRunRecord(Base):
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(100), nullable=False, default="general")
     prompt_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     mode: Mapped[str] = mapped_column(String(50), nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    safety_notes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
 
 
 class PipelineRunRecord(Base):
     __tablename__ = "pipeline_runs"
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    program_id: Mapped[str | None] = mapped_column(ForeignKey("programs.id"), nullable=True)
     asset: Mapped[str] = mapped_column(String(255), nullable=False)
     policy_text_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     scope_status: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -106,3 +115,28 @@ class PipelineRunRecord(Base):
         default=lambda: datetime.now(UTC),
     )
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+    program_record: Mapped[ProgramRecord | None] = relationship()
+
+
+class LearningSignalRecord(Base):
+    __tablename__ = "learning_signals"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    program_id: Mapped[str] = mapped_column(ForeignKey("programs.id"), nullable=False)
+    playbook_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(50), nullable=False)
+    surface_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    bounty_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    severity_delta: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    evidence_quality: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    triager_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_relationships: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    program_record: Mapped[ProgramRecord] = relationship()

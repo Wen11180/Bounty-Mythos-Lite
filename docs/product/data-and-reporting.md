@@ -24,6 +24,8 @@
 }
 ```
 
+Hunter Operating Loop 可以从已审查的 claim ledger 生成 `finding_candidate_*`。这类记录只代表候选沉淀：`validation_status` 仍应停留在人工验证前的状态，`submission_recommendation` 只能是 hunter operating action，不能等同于 report ready。
+
 如果接入静态分析结果，建议支持 SARIF，用于统一承接 CodeQL、Semgrep 等工具输出。
 
 ## Report Builder
@@ -62,7 +64,9 @@ Learning Loop 记录每次提交后的结果。
   "claimed_severity": "high",
   "awarded_severity": "medium",
   "status": "accepted",
-  "bounty": 1500,
+  "bounty_amount": 1500,
+  "severity_delta": "down",
+  "evidence_quality": "strong",
   "triager_feedback": "impact accepted, severity reduced",
   "what_worked": "two-account proof was clear",
   "what_failed": "business impact not strong enough",
@@ -76,6 +80,6 @@ Learning Loop 记录每次提交后的结果。
 - 哪些漏洞类型容易被接受
 - 哪些 endpoint 容易 duplicate
 - 哪些证据最有说服力
+- 哪些证据质量和严重性变化会提升或降低后续优先级
 - 哪些报告会被判 informative
 - 哪些严重性评估容易偏高
-

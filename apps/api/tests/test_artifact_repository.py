@@ -67,6 +67,12 @@ def test_save_artifact_persists_safe_summary_and_is_listed():
         assert fetched.provenance == {
             "imported_by": "dry_run",
             "source_name": "example.postman_collection.json",
+            "safety": {
+                "sensitivity_label": "sensitive",
+                "redaction_status": "redacted",
+                "report_chain_allowed": False,
+                "safety_blockers": ["contains_secret_like_value"],
+            },
         }
         assert fetched.payload_summary == {
             "endpoint_count": 2,
@@ -100,6 +106,85 @@ def test_save_artifact_persists_safe_summary_and_is_listed():
         session.close()
 
 
+def test_save_artifact_records_safety_classification_for_sensitive_material():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+
+        clean = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="notes",
+            source_type="manual_upload",
+            source_hash=sha256(b"clean notes").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "clean-notes.md"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/files/{file_id}/export"]},
+        )
+        sensitive = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="har",
+            source_type="manual_upload",
+            source_hash=sha256(b"sensitive har").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "capture.har"},
+            payload_summary={
+                "request": "Authorization: Bearer live-token",
+                "headers": {"cookie": "session=live-cookie"},
+                "email": "alice@example.com",
+            },
+            derived_facts={
+                "notes": [
+                    "customer data appeared in response body",
+                    (
+                        "eyJhbGciOiJIUzI1NiJ9."
+                        "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+                        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+                    ),
+                    "session=secondary-live-cookie",
+                ],
+                "paths": ["/files/{file_id}/export"],
+            },
+        )
+
+        fetched_clean = repository.get_artifact(clean.id)
+        fetched_sensitive = repository.get_artifact(sensitive.id)
+
+        assert fetched_clean is not None
+        assert fetched_sensitive is not None
+        assert fetched_clean.provenance["safety"] == {
+            "sensitivity_label": "low",
+            "redaction_status": "clean",
+            "report_chain_allowed": True,
+            "safety_blockers": [],
+        }
+        assert fetched_sensitive.provenance["safety"] == {
+            "sensitivity_label": "sensitive",
+            "redaction_status": "redacted",
+            "report_chain_allowed": False,
+            "safety_blockers": [
+                "contains_secret_like_value",
+                "contains_real_user_data_risk",
+            ],
+        }
+        serialized_sensitive = json.dumps(
+            {
+                "provenance": fetched_sensitive.provenance,
+                "payload_summary": fetched_sensitive.payload_summary,
+                "derived_facts": fetched_sensitive.derived_facts,
+            }
+        )
+        assert "live-token" not in serialized_sensitive
+        assert "live-cookie" not in serialized_sensitive
+        assert "alice@example.com" not in serialized_sensitive
+        assert "eyJhbGciOiJIUzI1NiJ9" not in serialized_sensitive
+        assert "secondary-live-cookie" not in serialized_sensitive
+    finally:
+        session.close()
+
+
 def test_save_artifact_returns_existing_record_for_duplicate_source_hash():
     session = build_session()
     try:
@@ -128,16 +213,199 @@ def test_save_artifact_returns_existing_record_for_duplicate_source_hash():
             payload_summary={"endpoint_count": 99},
             derived_facts={"paths": ["/v2/changed"]},
         )
+        repeated_duplicate = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=source_hash,
+            ingestion_status="normalized",
+            provenance={"source_name": "second-openapi.json"},
+            payload_summary={"endpoint_count": 99},
+            derived_facts={"paths": ["/v2/changed"]},
+        )
 
         session.expire_all()
         fetched = repository.get_artifact(first.id)
         artifacts = repository.list_artifacts()
 
         assert duplicate.id == first.id
+        assert repeated_duplicate.id == first.id
         assert fetched is not None
-        assert fetched.provenance == {"source_name": "first-openapi.json"}
+        assert fetched.provenance == {
+            "source_name": "first-openapi.json",
+            "safety": {
+                "sensitivity_label": "low",
+                "redaction_status": "clean",
+                "report_chain_allowed": True,
+                "safety_blockers": [],
+            },
+            "duplicate_imports": [{"source_name": "second-openapi.json"}],
+        }
         assert fetched.payload_summary == {"endpoint_count": 1}
         assert fetched.derived_facts == {"paths": ["/v1/files"]}
         assert [artifact.id for artifact in artifacts] == [first.id]
+    finally:
+        session.close()
+
+
+def test_list_artifacts_filters_by_structured_provenance_edge():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        file_artifact = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"file artifact").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "file-openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={
+                "sensitive_actions": [
+                    {
+                        "action": "export",
+                        "provenance_edges": [
+                            {
+                                "ref": "openapi.paths./files/{file_id}/export.get",
+                                "source_type": "openapi",
+                                "stage": "target_model",
+                                "source_path": "/files/{file_id}/export",
+                                "source_method": "get",
+                                "fact_type": "sensitive_action",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"team artifact").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "team-openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={
+                "sensitive_actions": [
+                    {
+                        "action": "invite",
+                        "provenance_edges": [
+                            {
+                                "ref": "openapi.paths./teams/{team_id}/invite.post",
+                                "source_type": "openapi",
+                                "stage": "target_model",
+                                "source_path": "/teams/{team_id}/invite",
+                                "source_method": "post",
+                                "fact_type": "sensitive_action",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+        artifacts = repository.list_artifacts(
+            provenance_ref="openapi.paths./files/{file_id}/export.get",
+            fact_type="sensitive_action",
+        )
+
+        assert [artifact.id for artifact in artifacts] == [file_artifact.id]
+    finally:
+        session.close()
+
+
+def test_list_artifacts_filters_by_program_asset_source_type_and_status():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        matching = repository.save_artifact(
+            program_id="program_example",
+            asset="api.example.com",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"matching artifact").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "matching-openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/files/{file_id}/export"]},
+        )
+        repository.save_artifact(
+            program_id="other_program",
+            asset="api.example.com",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"other program").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "other-program.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/files/{file_id}/export"]},
+        )
+        repository.save_artifact(
+            program_id="program_example",
+            asset="app.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=sha256(b"other source").hexdigest(),
+            ingestion_status="failed",
+            provenance={"source_name": "other-source.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/teams/{team_id}"]},
+        )
+
+        artifacts = repository.list_artifacts(
+            program_id="program_example",
+            asset="api.example.com",
+            source_type="dry_run_inline",
+            ingestion_status="normalized",
+        )
+
+        assert [artifact.id for artifact in artifacts] == [matching.id]
+    finally:
+        session.close()
+
+
+def test_list_artifacts_filters_by_safety_metadata():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        safe_artifact = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="notes",
+            source_type="manual_upload",
+            source_hash=sha256(b"safe notes").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "safe-notes.md"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/files/{file_id}/export"]},
+        )
+        sensitive_artifact = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="har",
+            source_type="manual_upload",
+            source_hash=sha256(b"sensitive capture").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "sensitive.har"},
+            payload_summary={"header": "Authorization: Bearer live-token"},
+            derived_facts={"notes": ["customer data in fixture"]},
+        )
+
+        sensitive_artifacts = repository.list_artifacts(
+            sensitivity_label="sensitive",
+            redaction_status="redacted",
+            report_chain_allowed=False,
+        )
+        safe_artifacts = repository.list_artifacts(
+            sensitivity_label="low",
+            report_chain_allowed=True,
+        )
+
+        assert [artifact.id for artifact in sensitive_artifacts] == [sensitive_artifact.id]
+        assert [artifact.id for artifact in safe_artifacts] == [safe_artifact.id]
     finally:
         session.close()

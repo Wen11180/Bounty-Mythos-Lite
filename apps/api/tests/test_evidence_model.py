@@ -76,6 +76,28 @@ def test_build_evidence_bundle_redacts_secret_like_strings_in_nested_content():
     }
 
 
+def test_build_evidence_bundle_redacts_cookie_bearer_and_token_keys():
+    bundle = build_evidence_bundle(
+        "finding-secret-markers",
+        [
+            {
+                "type": "request_response_diff",
+                "content": {
+                    "bearer_only": "Bearer live-token-123456789",
+                    "headers": {"Cookie": "session=live-cookie-123456789"},
+                    "access_token": "live-token-123456789",
+                },
+            }
+        ],
+    )
+
+    assert bundle.items[0].content == {
+        "bearer_only": "[REDACTED]",
+        "headers": {"Cookie": "[REDACTED]"},
+        "access_token": "[REDACTED]",
+    }
+
+
 def test_build_evidence_bundle_rejects_unsupported_evidence_type():
     with pytest.raises(ValueError, match="unsupported evidence type"):
         build_evidence_bundle(

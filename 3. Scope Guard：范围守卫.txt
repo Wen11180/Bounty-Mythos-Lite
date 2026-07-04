@@ -1,0 +1,35 @@
+这是最终版的“刹车系统”。
+
+它负责拦截：
+
+- 非 scope 资产
+- 禁止测试类型
+- 破坏性行为
+- 高频请求
+- 未授权账号
+- 真实用户数据访问
+- 自动提交报告
+- 未经人工确认的线上验证
+
+最终版里，所有 Agent 都不能绕过 Scope Guard。
+
+规则示例：
+
+{
+  "asset": "api.example.com",
+  "scope_status": "in_scope",
+  "automation": "limited",
+  "allowed_validation": [
+    "two_account_authorization_check",
+    "local_code_review",
+    "non_destructive_business_logic_test"
+  ],
+  "forbidden": [
+    "DoS",
+    "credential_stuffing",
+    "social_engineering",
+    "destructive_testing",
+    "real_user_data_access"
+  ],
+  "human_approval_required": true
+}

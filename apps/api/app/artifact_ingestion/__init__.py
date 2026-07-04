@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urlparse
 
 from pydantic import BaseModel
@@ -56,6 +57,31 @@ def normalize_har(har: dict) -> dict:
     return {"paths": paths}
 
 
+def normalize_notes(notes: dict) -> dict:
+    return _normalize_text_artifact(notes, "notes")
+
+
+def normalize_code_excerpt(code_excerpt: dict) -> dict:
+    return _normalize_text_artifact(code_excerpt, "code_excerpt")
+
+
+def normalize_policy(policy: dict) -> dict:
+    return _normalize_text_artifact(policy, "policy")
+
+
+def normalize_sarif(sarif: dict) -> dict:
+    paths = _extract_paths_from_text(_collect_sarif_text(sarif), "sarif")
+    for uri in _collect_sarif_uris(sarif):
+        path = _path_from_source_uri(uri)
+        if path is None:
+            continue
+        method = _infer_method_from_path(path)
+        paths.setdefault(path, {})[method] = {
+            "operationId": _operation_id("sarif", method, path),
+        }
+    return {"paths": paths}
+
+
 def normalize_artifact(kind: str, payload: dict) -> NormalizedArtifact:
     normalized_kind = kind.lower()
     if normalized_kind == "openapi":
@@ -64,10 +90,127 @@ def normalize_artifact(kind: str, payload: dict) -> NormalizedArtifact:
         openapi_like = normalize_postman(payload)
     elif normalized_kind == "har":
         openapi_like = normalize_har(payload)
+    elif normalized_kind == "notes":
+        openapi_like = normalize_notes(payload)
+    elif normalized_kind == "code_excerpt":
+        openapi_like = normalize_code_excerpt(payload)
+    elif normalized_kind == "policy":
+        openapi_like = normalize_policy(payload)
+    elif normalized_kind == "sarif":
+        openapi_like = normalize_sarif(payload)
     else:
         raise ValueError(f"Unsupported artifact kind: {kind}")
 
     return NormalizedArtifact(kind=normalized_kind, openapi_like=openapi_like)
+
+
+def _normalize_text_artifact(payload: dict, source: str) -> dict:
+    return {"paths": _extract_paths_from_text(_text_payload(payload), source)}
+
+
+def _text_payload(payload: dict) -> str:
+    values = []
+    for key in ("text", "content", "body", "notes", "markdown"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            values.append(value)
+    return "\n".join(values)
+
+
+def _extract_paths_from_text(text: str, source: str) -> dict:
+    paths: dict = {}
+    for match in re.finditer(
+        r"\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+([^\s,;\"'`]+)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        method = match.group(1).lower()
+        path = _clean_path(match.group(2))
+        if path:
+            paths.setdefault(path, {})[method] = {
+                "operationId": _operation_id(source, method, path),
+            }
+
+    for match in re.finditer(
+        r"\.(get|post|put|patch|delete|options|head)\(\s*[\"']([^\"']+)[\"']",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        method = match.group(1).lower()
+        path = _clean_path(match.group(2))
+        if path:
+            paths.setdefault(path, {})[method] = {
+                "operationId": _operation_id(source, method, path),
+            }
+    return paths
+
+
+def _collect_sarif_text(value: object) -> str:
+    texts: list[str] = []
+    _collect_sarif_text_values(value, texts)
+    return "\n".join(texts)
+
+
+def _collect_sarif_text_values(value: object, texts: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, nested_value in value.items():
+            if key in {"text", "markdown"} and isinstance(nested_value, str):
+                texts.append(nested_value)
+            else:
+                _collect_sarif_text_values(nested_value, texts)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_sarif_text_values(item, texts)
+
+
+def _collect_sarif_uris(value: object) -> list[str]:
+    uris: list[str] = []
+    _collect_sarif_uri_values(value, uris)
+    return uris
+
+
+def _collect_sarif_uri_values(value: object, uris: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, nested_value in value.items():
+            if key == "uri" and isinstance(nested_value, str):
+                uris.append(nested_value)
+            else:
+                _collect_sarif_uri_values(nested_value, uris)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_sarif_uri_values(item, uris)
+
+
+def _path_from_source_uri(uri: str) -> str | None:
+    path = uri.split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+    path = re.sub(r"\.[A-Za-z0-9]+$", "", path)
+    segments = [segment for segment in path.split("/") if segment and segment not in {"src", "app"}]
+    if not segments or "{" not in "/".join(segments):
+        return None
+    return _ensure_leading_slash("/".join(segments))
+
+
+def _clean_path(value: str) -> str | None:
+    parsed = urlparse(value)
+    path = parsed.path if parsed.scheme or parsed.netloc else value
+    path = path.strip().rstrip(".:)")
+    if not path.startswith("/"):
+        return None
+    return path
+
+
+def _operation_id(source: str, method: str, path: str) -> str:
+    suffix = re.sub(r"[^a-zA-Z0-9]+", "_", path.replace("{", "").replace("}", "")).strip("_")
+    return f"{source}_{method}_{suffix}" if suffix else f"{source}_{method}_root"
+
+
+def _infer_method_from_path(path: str) -> str:
+    lowered = path.lower()
+    if any(term in lowered for term in ("refund", "invite", "share", "checkout", "payment")):
+        return "post"
+    if any(term in lowered for term in ("delete", "remove")):
+        return "delete"
+    return "get"
 
 
 def _walk_postman_items(items: list) -> list[dict]:
@@ -130,7 +273,11 @@ __all__ = [
     "ArtifactInput",
     "NormalizedArtifact",
     "normalize_artifact",
+    "normalize_code_excerpt",
     "normalize_har",
+    "normalize_notes",
     "normalize_openapi",
+    "normalize_policy",
     "normalize_postman",
+    "normalize_sarif",
 ]

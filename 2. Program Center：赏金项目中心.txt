@@ -1,0 +1,14 @@
+每个项目会生成一张卡：
+
+项目：Example Program
+平台：HackerOne / Bugcrowd / 自建 VDP
+奖金范围：Medium $500 / High $3000 / Critical $10000
+Scope 清晰度：高
+自动化允许程度：有限
+测试账号：已配置
+API 文档：已导入
+公开代码：有
+历史重复率：中
+推荐优先级：A
+
+系统第一步一定是读取项目 policy。HackerOne 的行为准则明确要求研究员遵守平台规则和每个项目自己的规则；项目方也可能有额外规则和处罚机制，所以你的系统必须把 program policy 变成机器可执行限制。

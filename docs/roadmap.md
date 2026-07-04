@@ -313,6 +313,7 @@
 
 - Validation workspace 页面与后端状态流。
 - validation task、manual check result、evidence attachment、redaction review、claim mapping、review decision 和 report readiness state。
+- claim quality score、quality reasons、readiness level 和不可绕过的 submission blockers。
 - 可回写到 report draft 的人工确认 claim 与安全说明。
 
 验收标准：
@@ -320,6 +321,7 @@
 - 研究员只能执行 Scope Guard 允许或人工批准后的非破坏性验证任务。
 - workspace 明确区分 unverified claim、model reasoning、manual observation、refuted finding 和 report-ready claim。
 - 每条 report-ready claim 都必须绑定已脱敏 evidence 和 provenance path。
+- 每条 claim 都显示质量分、证据/provenance/脱敏/人审原因和 readiness level；分数不能解锁自动提交。
 - 发现 raw secret、token、cookie 或真实用户数据时，系统必须阻断保存到报告链路并要求脱敏、替换或删除。
 - 提交报告前必须显示 human review required，且不会自动提交到任何平台。
 
@@ -362,3 +364,68 @@
 - 不把 hunter score 当成已确认漏洞。
 - 不绕过 Scope Guard、Validation Workspace 或人工批准。
 - 不使用真实用户数据或 raw secret 作为评分依据。
+
+## 14. Mythos Brain V1
+
+目标：
+
+- 把 program 维度的攻击面、hunter playbook、历史提交结果和 triager 反馈沉淀成可复用的猎人记忆。
+- 用 Attack Surface Memory 标出哪些 object/action/role 组合值得继续投入人工时间。
+- 用 Learning Signals 把 accepted、duplicate、informative、N/A、rejected、bounty、severity delta、evidence quality 和脱敏 triager feedback 转成未来优先级调整。
+
+输入：
+
+- program metadata、pipeline run、target model、hunter intelligence、artifact provenance 和人工录入的 learning signal。
+
+输出：
+
+- program intelligence profile、program score、attack surface memory、高价值 surface 排序、learning summary、recent learning signals、evidence-aware outcome intake API 和 advisory score reasons。
+
+验收标准：
+
+- Brain 能从已有 run 中提取 objects、roles 和 sensitive actions。
+- accepted signal 会提升相似 playbook 或 surface 的优先级。
+- duplicate、N/A 和 rejected signal 会提高 rejection risk 并降低相似候选优先级。
+- outcome intake 能从 run_id 派生 playbook/surface，写入 learning signal，并返回更新后的 Brain profile。
+- outcome intake 能保存 bounty amount、severity delta、evidence quality 和脱敏 triager feedback。
+- Dashboard 能展示 program score、高价值 surfaces 和最近学习信号。
+- 所有输出都带 no_live_requests、test_accounts_only、human_review_required、no_real_user_data 和 advisory_memory_only 边界。
+
+明确不做：
+
+- 不做完整知识图谱或自动学习执行器。
+- 不自动验证、不自动攻击公网、不扫描、不爆破、不做 DoS、不做社工。
+- 不触碰真实用户数据，不保存 raw secret、token、cookie 或授权凭据。
+- 不把 learning signal 或 brain score 当成已验证漏洞。
+- 不解析 triager 自由文本来授予执行权限。
+- 不绕过 Scope Guard、Validation Workspace 或人工批准。
+
+## 15. Hunter Operating Loop V1
+
+目标：
+
+- 把 run、claim quality、hunter assessment、LLM audit 和 Finding DB 接成一个可审计的候选沉淀闭环。
+- 让高质量、已人工审查但仍被 submission gate 锁住的 claim 可以进入 finding candidate。
+- 记录 LLM/Agent 辅助判断的 provider、model、purpose、prompt hash、latency、error 和 safety notes。
+
+输入：
+
+- pipeline run、report preview、claim ledger、claim review decision、hunter assessment、LLM request/response metadata。
+
+输出：
+
+- finding candidate 记录、hunter operating action、LLM run audit record。
+
+验收标准：
+
+- reviewed observed claim 可以生成 `finding_candidate_*`，但 validation status 仍停留在 `validation_plan_ready`。
+- finding candidate 带 evidence refs、broken invariant、duplicate likelihood、policy status 和 hunter operating recommendation。
+- LLM audit 不保存 prompt 原文，只保存 prompt hash 和安全说明。
+- hunter operating action 至少区分 promote、needs stronger evidence、park duplicate risk、policy blocked。
+
+明确不做：
+
+- 不自动验证、不访问公网、不扫描、不提交报告。
+- 不把 LLM 输出或 hunter action 当作事实证明。
+- 不把 finding candidate 标成 accepted、report ready 或 human submitted。
+- 不保存 raw secret、token、cookie 或真实用户数据。

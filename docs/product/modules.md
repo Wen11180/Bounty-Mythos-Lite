@@ -168,6 +168,32 @@ Scope Guard 是产品的刹车系统，负责拦截：
 
 候选目标不是数量，而是少量、高置信、高影响、能复现、能提交。
 
+## Mythos Brain
+
+Mythos Brain 是 program 维度的猎人记忆层，不是自动执行器。
+
+它记录和计算：
+
+- Attack Surface Memory：哪些 object、role、sensitive action 和 path 组合值得继续投入。
+- Learning Signals：accepted、duplicate、informative、N/A、rejected、bounty、severity delta、evidence quality 和脱敏 triager 反馈。
+- Program Intelligence：program score、高价值 surface 排序、boosted playbook 和 penalized playbook。
+
+Brain 的输出只能用于建议、排序和解释下一步人工判断。triager feedback 只做脱敏保存和计数，不被自由文本解析成执行权限。它不能绕过 Scope Guard，不能自动验证，不能访问公网目标，不能触碰真实用户数据，不能保存 raw secret/token/cookie，不能自动提交报告。
+
+## Hunter Operating Loop
+
+Hunter Operating Loop 把 run、claim quality、hunter assessment、LLM audit 和 Finding DB 接成闭环。
+
+它允许系统把高质量、已人工审查、仍被提交门锁住的 observed claim 生成 finding candidate。candidate 只代表“值得继续跟进的结构化发现”，不代表漏洞已验证或报告可提交。
+
+它记录：
+
+- Finding candidate：title、asset、severity estimate、broken invariant、evidence refs、duplicate likelihood、policy status、hunter operating recommendation。
+- LLM audit：provider、model、purpose、prompt hash、latency、error、safety notes。
+- Hunter operating action：promote、needs stronger evidence、park duplicate risk、policy blocked。
+
+它不能自动验证，不能访问公网目标，不能保存 prompt 原文里的 secret，不能把 LLM 输出当事实，不能自动提交报告。
+
 ## Multi-Agent 研究团队
 
 最终版本至少包含这些 Agent：
@@ -208,6 +234,7 @@ Scope Guard 是产品的刹车系统，负责拦截：
 - 非破坏性业务流程验证
 - 请求响应差异分析
 - 证据截图和日志留存
+- Claim Quality 评分：只根据已脱敏 evidence、provenance、人审决定和 gate 状态解释 claim readiness
 
 验证层不能做：
 
@@ -219,4 +246,4 @@ Scope Guard 是产品的刹车系统，负责拦截：
 - 社工
 - 自动提交报告
 - 未经确认的破坏性利用
-
+- 用 claim quality 分数绕过人工审核或提交门

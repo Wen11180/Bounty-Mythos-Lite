@@ -1,0 +1,34 @@
+最终版验证层只能做：
+
+- 双账号权限对比
+- 多角色权限矩阵
+- 本地代码复现
+- 单元测试回归测试
+- 非破坏性业务流程验证
+- 请求响应差异分析
+- 证据截图和日志留存
+
+不能做：
+
+- 自动攻击公网
+- 高频扫描
+- DoS
+- 碰真实用户数据
+- 凭证撞库
+- 社工
+- 自动提交报告
+- 未经确认的破坏性利用
+
+验证状态机：
+
+candidate
+→ plausible
+→ policy_checked
+→ validation_plan_ready
+→ human_approved
+→ safely_validated
+→ refuted_or_confirmed
+→ report_ready
+→ human_submitted
+→ accepted  duplicate  informative  NA
+→ learned

@@ -1,5 +1,6 @@
 import type {
   Finding,
+  ProgramIntelligenceProfile,
   Program,
   ReportDraft,
   ScopeGuardDecision,
@@ -40,6 +41,7 @@ export const fallbackFindings: Finding[] = [
     duplicate_likelihood: "medium",
     submission_recommendation: "human_review_required",
     evidence_refs: ["evidence/request-user-a-to-user-b-metadata.json"],
+    operating_reasons: ["hunter_recommendation:needs_human_review", "claim_quality:high"],
   },
   {
     id: "finding_2026_002",
@@ -57,6 +59,7 @@ export const fallbackFindings: Finding[] = [
     duplicate_likelihood: "medium",
     submission_recommendation: "human_review_required",
     evidence_refs: [],
+    operating_reasons: ["hunter_recommendation:needs_human_review", "claim_quality:needs_stronger_evidence"],
   },
 ];
 
@@ -94,4 +97,91 @@ export const fallbackScopeGuardRequest: ScopeGuardRequest = {
 export const fallbackScopeGuardDecision: ScopeGuardDecision = {
   allowed: false,
   reason: "human_approval_required",
+};
+
+export const fallbackMythosBrainProfile: ProgramIntelligenceProfile = {
+  program_id: "program_example",
+  program_name: "Example Program",
+  program_score: 88,
+  attack_surface_memory: {
+    objects: ["file_id", "team_id"],
+    roles: ["admin", "member"],
+    sensitive_actions: [
+      {
+        action: "export",
+        method: "GET",
+        path: "/files/{file_id}/export",
+        roles: ["member"],
+        operation_id: "exportFile",
+      },
+      {
+        action: "share",
+        method: "POST",
+        path: "/teams/{team_id}/shares",
+        roles: ["admin", "member"],
+        operation_id: "shareTeam",
+      },
+    ],
+    run_count: 3,
+  },
+  high_value_surfaces: [
+    {
+      surface_key: "file_id:export",
+      object_name: "file_id",
+      action: "export",
+      score: 94,
+      paths: ["/files/{file_id}/export"],
+      playbooks: ["bola_idor"],
+      reasons: ["action:export", "learning:accepted", "playbook:bola_idor"],
+    },
+    {
+      surface_key: "team_id:share",
+      object_name: "team_id",
+      action: "share",
+      score: 78,
+      paths: ["/teams/{team_id}/shares"],
+      playbooks: ["role_boundary"],
+      reasons: ["action:share", "playbook:role_boundary"],
+    },
+  ],
+  learning_summary: {
+    accepted_count: 1,
+    duplicate_count: 0,
+    informative_count: 0,
+    na_count: 0,
+    rejected_count: 0,
+    rejection_risk_delta: 0,
+    bounty_total: 3000,
+    strong_evidence_count: 1,
+    adequate_evidence_count: 1,
+    weak_evidence_count: 0,
+    severity_up_count: 1,
+    severity_down_count: 0,
+    triager_feedback_count: 1,
+    evidence_score_delta: 12,
+    boosted_playbooks: ["bola_idor"],
+    penalized_playbooks: [],
+  },
+  recent_learning_signals: [
+    {
+      id: "learning_signal_fallback_001",
+      program_id: "program_example",
+      playbook_id: "bola_idor",
+      outcome: "accepted",
+      surface_key: "file_id:export",
+      notes: "Accepted BOLA report improved file export priority.",
+      bounty_amount: 3000,
+      severity_delta: "up",
+      evidence_quality: "strong",
+      triager_feedback: "Triager confirmed impact and reproducibility.",
+      created_at: "2026-07-03T00:00:00.000Z",
+    },
+  ],
+  safety_notes: [
+    "no_live_requests",
+    "test_accounts_only",
+    "human_review_required",
+    "no_real_user_data",
+    "advisory_memory_only",
+  ],
 };

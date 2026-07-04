@@ -154,11 +154,19 @@ def _extract_object_action_facts(
         if not actions and sensitive_actions:
             actions = [
                 action
-                for action, path in sensitive_actions
+                for action, path, _refs in sensitive_actions
                 if path and object_name in _clean_term(path)
             ]
         if not actions and sensitive_actions:
-            actions = [action for action, path in sensitive_actions if not path]
+            object_refs = _provenance_refs(item)
+            if object_refs:
+                actions = [
+                    action
+                    for action, _path, action_refs in sensitive_actions
+                    if object_refs & action_refs
+                ]
+        if not actions and sensitive_actions:
+            actions = [action for action, path, _refs in sensitive_actions if not path]
         actions = [action for action in actions if action]
         if object_name and actions:
             facts.append((object_name, actions))
@@ -166,18 +174,28 @@ def _extract_object_action_facts(
     return facts
 
 
-def _extract_sensitive_actions(value: Any) -> list[tuple[str, str]]:
-    actions: list[tuple[str, str]] = []
+def _extract_sensitive_actions(value: Any) -> list[tuple[str, str, set[str]]]:
+    actions: list[tuple[str, str, set[str]]] = []
     for item in _as_list(value):
         if isinstance(item, dict):
             action = _clean_term(item.get("action") or item.get("name") or "")
             path = _clean_term(item.get("path") or "")
+            refs = _provenance_refs(item)
         else:
             action = _clean_term(item)
             path = ""
+            refs = set()
         if action:
-            actions.append((action, path))
+            actions.append((action, path, refs))
     return actions
+
+
+def _provenance_refs(item: dict[str, Any]) -> set[str]:
+    refs = {str(ref) for ref in _as_list(item.get("provenance_refs", [])) if ref}
+    for edge in _as_list(item.get("provenance_edges", [])):
+        if isinstance(edge, dict) and edge.get("ref"):
+            refs.add(str(edge["ref"]))
+    return refs
 
 
 def _rule_by_id(rule_id: str) -> dict[str, Any] | None:

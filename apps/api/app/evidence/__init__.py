@@ -58,15 +58,42 @@ def _redact_secret_like_strings(value: Any) -> Any:
     if isinstance(value, dict):
         return {
             key: REDACTED
-            if _is_secret_like(str(key))
+            if _is_secret_key(str(key))
             else _redact_secret_like_strings(nested_value)
             for key, nested_value in value.items()
         }
     return value
 
 
+def _is_secret_key(value: str) -> bool:
+    normalized = value.lower().replace("-", "_")
+    return any(
+        marker in normalized
+        for marker in (
+            "authorization",
+            "api_key",
+            "apikey",
+            "cookie",
+            "token",
+            "secret",
+            "password",
+            "credential",
+        )
+    )
+
+
 def _is_secret_like(value: str) -> bool:
-    return "authorization:" in value.lower() or "sk-" in value
+    normalized = value.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "authorization:",
+            "bearer ",
+            "cookie:",
+            "set-cookie:",
+            "sk-",
+        )
+    )
 
 
 __all__ = [

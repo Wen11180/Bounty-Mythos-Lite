@@ -1,32 +1,51 @@
-from hashlib import sha256
-import json
+from datetime import UTC, datetime
+from typing import Literal
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
-from app.artifact_ingestion import normalize_artifact
 from app.db import get_session
-from app.db_models import ArtifactRecord, PipelineRunRecord
-from app.evidence import EvidenceBundle, build_evidence_bundle
-from app.hunter_intelligence import HunterIntelligence, assess_hunter_intelligence
+from app.db_models import ArtifactRecord, LearningSignalRecord, PipelineRunRecord
+from app.hunter_intelligence import (
+    HunterIntelligence,
+)
 from app.llm.base import LLMRequest, LLMResponse
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
-from app.mythos_hypothesis import (
-    SecurityInvariant,
-    VulnerabilityHypothesis,
-    generate_hypotheses,
-    generate_invariants,
+from app.mythos_brain import (
+    LearningEvidenceQuality,
+    LearningOutcome,
+    LearningSignal,
+    LearningSeverityDelta,
+    ProgramIntelligenceProfile,
+    build_learning_signal_from_outcome,
+    build_program_intelligence,
 )
-from app.mythos_triage import (
-    RefutationResult,
-    ReportDraftCandidate,
-    ValidationPlan,
-    build_report_draft,
-    build_validation_plan,
-    refute_hypothesis,
+from app.mythos_finding import promote_pipeline_run_to_finding_candidate
+from app.mythos_pipeline import (
+    MythosPipelineDryRunRequest,
+    MythosPipelineDryRunResponse,
+    PipelineArtifactSummary,
+    PipelineStage,
+    PipelineValidationGate,
+    artifact_payload_summary,
+    artifact_source_hash,
+    build_mythos_pipeline_dry_run,
+    count_blocked,
 )
-from app.policy_ingestion import parse_policy_text
+from app.mythos_report import (
+    ClaimLedgerEntry,
+    ClaimReviewDecisionValue,
+    ClaimReviewDecisionResponse,
+    ReportPreviewResponse,
+    best_finding_candidate_claim,
+    build_report_preview_response,
+    review_evidence_refs_are_report_safe,
+    safe_preview_lines,
+    safe_preview_text,
+    safe_string_list,
+)
 from app.repository import DatabaseRepository
 from app.scope_guard import (
     ScopeGuardDecision,
@@ -34,8 +53,6 @@ from app.scope_guard import (
     ValidationRequest,
     evaluate_validation_request,
 )
-from app.target_model import TargetModel, build_target_model
-from app.validation_workspace import ValidationWorkspace, build_validation_workspace
 from pydantic import BaseModel, Field
 
 
@@ -47,62 +64,9 @@ class ScopeGuardEvaluationRequest(BaseModel):
     request: ValidationRequest
 
 
-class MythosPipelineDryRunRequest(BaseModel):
-    asset: str
-    policy_text: str
-    openapi: dict | None = None
-    artifact_kind: str | None = None
-    artifact_payload: dict | None = None
-
-
-class PipelineStage(BaseModel):
-    name: str
-    status: str
-    input_summary: str
-    output_summary: str
-    safety_notes: list[str]
-
-
-class PipelineArtifactSummary(BaseModel):
-    artifact_id: str
-    kind: str
-    source_type: str
-    source: str
-    provenance: str
-    summary: str
-    evidence_count: int
-    digest: str
-
-
-class PipelineValidationGate(BaseModel):
-    status: str
-    label: str
-    approval_required: bool
-    approved_by: str | None = None
-    summary: str
-    evidence_count: int
-
-
-class MythosPipelineDryRunResponse(BaseModel):
-    run_id: str | None = None
-    artifact_kind: str = "openapi"
-    scope_rule: ScopeGuardRule
-    target_model: TargetModel
-    invariants: list[SecurityInvariant]
-    hypotheses: list[VulnerabilityHypothesis]
-    refutation: RefutationResult | None
-    validation_plan: ValidationPlan | None
-    report_draft: ReportDraftCandidate | None
-    evidence_bundle: EvidenceBundle | None = None
-    timeline: list[PipelineStage]
-    artifact: PipelineArtifactSummary | None = None
-    validation_workspace: ValidationWorkspace | None = None
-    validation_gate: PipelineValidationGate | None = None
-    hunter_intelligence: HunterIntelligence | None = None
-
-
 class MythosPipelineRunSummary(BaseModel):
     id: str
+    program_id: str | None = None
     asset: str
     policy_text_hash: str
     scope_status: str
@@ -132,26 +96,77 @@ class ArtifactResponse(BaseModel):
     provenance: dict
     payload_summary: dict
     derived_facts: dict
+    sensitivity_label: str
+    redaction_status: str
+    report_chain_allowed: bool
+    safety_blockers: list[str] = Field(default_factory=list)
+    usage_records: list[dict] = Field(default_factory=list)
     created_at: str
 
 
-class ReportPreviewSections(BaseModel):
-    observed_facts: list[str] = Field(default_factory=list)
-    model_reasoning: list[str] = Field(default_factory=list)
-    unverified_claims: list[str] = Field(default_factory=list)
+class ClaimReviewDecisionRequest(BaseModel):
+    claim_id: str
+    decision: ClaimReviewDecisionValue
+    reviewer: str = Field(min_length=1, max_length=100)
+    rationale: str = Field(default="", max_length=1000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+
+ManualObservationType = Literal[
+    "manual_observation",
+    "role_matrix_observation",
+    "request_response_diff",
+    "redaction_note",
+]
 
 
-class ReportPreviewResponse(BaseModel):
-    run_id: str
-    title: str
-    severity: str
-    scope_status: str
-    human_review_required: bool
-    submission_blocked: bool
-    claim_labels: dict[str, str]
-    sections: ReportPreviewSections
-    safety_notes: list[str]
-    evidence_refs: list[str]
+class ManualObservationRequest(BaseModel):
+    claim_id: str
+    observation_type: ManualObservationType = "manual_observation"
+    observer: str = Field(min_length=1, max_length=100)
+    observation: str = Field(min_length=1, max_length=1000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+    safety_notes: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ManualObservationResponse(BaseModel):
+    observation_id: str
+    claim_id: str
+    observation_type: ManualObservationType
+    observer: str
+    observation: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    redaction_status: str = "redacted"
+    execution_allowed: bool = False
+    report_chain_blocked: bool = True
+    created_at: str
+
+
+class LearningSignalRequest(BaseModel):
+    program_id: str
+    playbook_id: str
+    outcome: LearningOutcome
+    surface_key: str | None = None
+    notes: str = Field(default="", max_length=1000)
+    bounty_amount: int | None = Field(default=None, ge=0)
+    severity_delta: LearningSeverityDelta | None = None
+    evidence_quality: LearningEvidenceQuality | None = None
+    triager_feedback: str | None = Field(default=None, max_length=1000)
+    target_relationships: list[str] = Field(default_factory=list, max_length=20)
+
+
+class LearningOutcomeRequest(BaseModel):
+    outcome: LearningOutcome
+    program_id: str | None = None
+    run_id: str | None = None
+    playbook_id: str | None = None
+    surface_key: str | None = None
+    notes: str = Field(default="", max_length=1000)
+    bounty_amount: int | None = Field(default=None, ge=0)
+    severity_delta: LearningSeverityDelta | None = None
+    evidence_quality: LearningEvidenceQuality | None = None
+    triager_feedback: str | None = Field(default=None, max_length=1000)
+    target_relationships: list[str] | None = Field(default=None, max_length=20)
 
 
 @app.get("/health")
@@ -199,8 +214,36 @@ def get_report(report_id: str, session: Session = Depends(get_session)) -> Repor
 
 
 @app.get("/mythos/artifacts", response_model=list[ArtifactResponse])
-def list_mythos_artifacts(session: Session = Depends(get_session)) -> list[ArtifactResponse]:
-    return [_artifact_response(record) for record in DatabaseRepository(session).list_artifacts()]
+def list_mythos_artifacts(
+    program_id: str | None = None,
+    asset: str | None = None,
+    source_type: str | None = None,
+    ingestion_status: str | None = None,
+    provenance_ref: str | None = None,
+    fact_type: str | None = None,
+    usage_type: str | None = None,
+    usage_run_id: str | None = None,
+    sensitivity_label: str | None = None,
+    redaction_status: str | None = None,
+    report_chain_allowed: bool | None = None,
+    session: Session = Depends(get_session),
+) -> list[ArtifactResponse]:
+    return [
+        _artifact_response(record)
+        for record in DatabaseRepository(session).list_artifacts(
+            program_id=program_id,
+            asset=asset,
+            source_type=source_type,
+            ingestion_status=ingestion_status,
+            provenance_ref=provenance_ref,
+            fact_type=fact_type,
+            usage_type=usage_type,
+            usage_run_id=usage_run_id,
+            sensitivity_label=sensitivity_label,
+            redaction_status=redaction_status,
+            report_chain_allowed=report_chain_allowed,
+        )
+    ]
 
 
 @app.get("/mythos/artifacts/{artifact_id}", response_model=ArtifactResponse)
@@ -214,13 +257,127 @@ def get_mythos_artifact(
     return _artifact_response(record)
 
 
+@app.get(
+    "/mythos/brain/programs/{program_id}",
+    response_model=ProgramIntelligenceProfile,
+)
+def get_mythos_brain_program(
+    program_id: str,
+    session: Session = Depends(get_session),
+) -> ProgramIntelligenceProfile:
+    repository = DatabaseRepository(session)
+    program = repository.get_program(program_id)
+    if program is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    return _program_intelligence_profile(repository, program_id)
+
+
+@app.post("/mythos/brain/learning-signals", response_model=LearningSignal)
+def create_mythos_brain_learning_signal(
+    request: LearningSignalRequest,
+    session: Session = Depends(get_session),
+) -> LearningSignal:
+    repository = DatabaseRepository(session)
+    if repository.get_program(request.program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    record = repository.save_learning_signal(
+        program_id=request.program_id,
+        playbook_id=request.playbook_id,
+        outcome=request.outcome,
+        surface_key=request.surface_key,
+        notes=request.notes,
+        bounty_amount=request.bounty_amount,
+        severity_delta=request.severity_delta,
+        evidence_quality=request.evidence_quality,
+        triager_feedback=request.triager_feedback,
+        target_relationships=request.target_relationships,
+    )
+    return _learning_signal_response(record)
+
+
+@app.post("/mythos/brain/outcomes", response_model=ProgramIntelligenceProfile)
+def create_mythos_brain_outcome(
+    request: LearningOutcomeRequest,
+    session: Session = Depends(get_session),
+) -> ProgramIntelligenceProfile:
+    repository = DatabaseRepository(session)
+    run_record = None
+    if request.run_id is not None:
+        run_record = repository.get_pipeline_run(request.run_id)
+        if run_record is None:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    program_id = request.program_id or (run_record.program_id if run_record else None)
+    if program_id is None:
+        raise HTTPException(status_code=422, detail="program_id or run_id is required")
+    if run_record is not None and run_record.program_id not in {None, program_id}:
+        raise HTTPException(status_code=409, detail="Outcome program does not match run")
+    if repository.get_program(program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+
+    evidence_quality = request.evidence_quality
+    if evidence_quality is None and run_record is not None:
+        evidence_quality = _evidence_quality_from_reviewed_claims(run_record)
+
+    signal = build_learning_signal_from_outcome(
+        program_id=program_id,
+        outcome=request.outcome,
+        notes=request.notes,
+        pipeline_run=_pipeline_run_brain_payload(run_record) if run_record else None,
+        playbook_id=request.playbook_id,
+        surface_key=request.surface_key,
+        bounty_amount=request.bounty_amount,
+        severity_delta=request.severity_delta,
+        evidence_quality=evidence_quality,
+        triager_feedback=request.triager_feedback,
+        target_relationships=request.target_relationships,
+    )
+    signal_record = repository.save_learning_signal(
+        program_id=signal.program_id,
+        playbook_id=signal.playbook_id,
+        outcome=signal.outcome,
+        surface_key=signal.surface_key,
+        notes=signal.notes,
+        bounty_amount=signal.bounty_amount,
+        severity_delta=signal.severity_delta,
+        evidence_quality=signal.evidence_quality,
+        triager_feedback=signal.triager_feedback,
+        target_relationships=signal.target_relationships,
+    )
+    if run_record is not None:
+        usage_record = _artifact_usage_record_for_learning_signal(
+            record=run_record,
+            signal=_learning_signal_response(signal_record),
+        )
+        if usage_record is not None:
+            artifact_id, usage = usage_record
+            repository.append_artifact_usage_records(
+                artifact_id=artifact_id,
+                usage_records=[usage],
+            )
+    return _program_intelligence_profile(repository, program_id)
+
+
 @app.post("/internal/llm/generate", response_model=LLMResponse)
-async def generate_with_llm(request: LLMRequest) -> LLMResponse:
+async def generate_with_llm(
+    request: LLMRequest,
+    session: Session = Depends(get_session),
+) -> LLMResponse:
     registry = build_default_registry()
     try:
         response = await registry.generate(request)
     except UnknownProviderError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    DatabaseRepository(session).save_llm_run(
+        provider=response.provider,
+        model=response.model,
+        purpose=request.purpose,
+        prompt_hash=response.prompt_hash,
+        mode=response.mode,
+        latency_ms=response.latency_ms,
+        error=response.error,
+        safety_notes=_llm_audit_safety_notes(response),
+    )
     if response.error:
         raise HTTPException(status_code=503, detail=response.model_dump(mode="json"))
     return response
@@ -237,26 +394,59 @@ def run_mythos_pipeline_dry_run(
     session: Session = Depends(get_session),
 ) -> MythosPipelineDryRunResponse:
     repository = DatabaseRepository(session)
-    response, payload, openapi_like = _build_mythos_pipeline_dry_run(request)
+    if request.program_id is not None and repository.get_program(request.program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    try:
+        response, payload, openapi_like = build_mythos_pipeline_dry_run(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if request.program_id is not None:
+        learning_signals = repository.list_learning_signals(request.program_id)
+        applied_reasons, skipped_reasons = _apply_program_learning_to_hunter_intelligence(
+            response.hunter_intelligence,
+            learning_signals,
+        )
+        if response.hunter_intelligence is not None:
+            _sync_hypothesis_assessment_hunter_scores(response)
+            payload["hunter_intelligence"] = response.hunter_intelligence.model_dump(mode="json")
+            payload["hypothesis_assessments"] = [
+                item.model_dump(mode="json")
+                for item in response.hypothesis_assessments
+            ]
+        if applied_reasons or skipped_reasons:
+            learning_stage = _program_learning_stage(
+                len(learning_signals),
+                applied_reasons or skipped_reasons,
+                "completed" if applied_reasons else "skipped",
+            )
+            response.timeline.append(learning_stage)
+            payload["timeline"] = [stage.model_dump(mode="json") for stage in response.timeline]
     artifact_record = repository.save_artifact(
-        program_id=None,
+        program_id=request.program_id,
         asset=request.asset,
         kind=response.artifact_kind,
         source_type="dry_run_inline",
-        source_hash=_artifact_source_hash(request, response.artifact_kind),
+        source_hash=artifact_source_hash(request, response.artifact_kind),
         ingestion_status="normalized",
         provenance={
             "source": "dry-run inline artifact",
             "asset": request.asset,
             "kind": response.artifact_kind,
         },
-        payload_summary=_artifact_payload_summary(openapi_like, response.target_model),
+        payload_summary=artifact_payload_summary(openapi_like, response.target_model),
         derived_facts={
             "paths": sorted(openapi_like.get("paths", {}).keys()),
-            "objects": [item.name for item in response.target_model.objects],
+            "objects": [
+                item.model_dump(mode="json")
+                for item in response.target_model.objects
+            ],
             "sensitive_actions": [
                 item.model_dump(mode="json")
                 for item in response.target_model.sensitive_actions
+            ],
+            "relationships": [
+                item.model_dump(mode="json")
+                for item in response.target_model.relationships
             ],
         },
     )
@@ -266,13 +456,18 @@ def run_mythos_pipeline_dry_run(
     )
     payload["artifact"] = response.artifact.model_dump(mode="json")
     record = repository.save_pipeline_run(
+        program_id=request.program_id,
         asset=request.asset,
         policy_text=request.policy_text,
         scope_status=response.scope_rule.scope_status,
         hypothesis_count=len(response.hypotheses),
-        blocked_count=_count_blocked(response.refutation),
+        blocked_count=count_blocked(response.hypothesis_assessments),
         report_title=response.report_draft.title if response.report_draft else None,
         payload=payload,
+    )
+    repository.append_artifact_usage_records(
+        artifact_id=artifact_record.id,
+        usage_records=_artifact_usage_records_for_run(record, artifact_record.id),
     )
     response.run_id = record.id
     return response
@@ -307,205 +502,140 @@ def get_mythos_pipeline_report_preview(
     record = DatabaseRepository(session).get_pipeline_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    return _report_preview_response(record)
+    return _build_report_preview_response_or_404(record)
 
 
-def _build_mythos_pipeline_dry_run(
-    request: MythosPipelineDryRunRequest,
-) -> tuple[MythosPipelineDryRunResponse, dict, dict]:
-    scope_rule = parse_policy_text(request.policy_text, request.asset)
-    artifact_kind, openapi_like = _normalize_pipeline_input(request)
-    target_model = build_target_model(openapi_like)
-    target_model_payload = target_model.model_dump(mode="json")
-    invariants = generate_invariants(target_model_payload)
-    hypotheses = generate_hypotheses(invariants)
+@app.post(
+    "/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+    response_model=ClaimReviewDecisionResponse,
+)
+def create_claim_review_decision(
+    run_id: str,
+    request: ClaimReviewDecisionRequest,
+    session: Session = Depends(get_session),
+) -> ClaimReviewDecisionResponse:
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
 
-    scope_decision = None
-    refutation = None
-    validation_plan = None
-    report_draft = None
-    if hypotheses:
-        hypothesis_payload = hypotheses[0].model_dump(mode="json")
-        validation_type = hypothesis_payload["validation_mode"]
-        scope_decision = evaluate_validation_request(
-            scope_rule,
-            ValidationRequest(
-                asset=request.asset,
-                validation_type=validation_type,
-                human_approved=False,
-            ),
+    preview = _build_report_preview_response_or_404(record)
+    claims_by_id = {claim.claim_id: claim for claim in preview.claim_ledger}
+    claim = claims_by_id.get(request.claim_id)
+    if claim is None:
+        raise HTTPException(status_code=404, detail="Claim not found")
+
+    decision = ClaimReviewDecisionResponse(
+        claim_id=safe_preview_text(request.claim_id),
+        decision=request.decision,
+        reviewer=safe_preview_text(request.reviewer),
+        rationale=safe_preview_text(request.rationale),
+        evidence_refs=safe_preview_lines(request.evidence_refs),
+        reviewed_at=datetime.now(UTC).isoformat(),
+    )
+    updated_record = repository.append_claim_review_decision(
+        run_id=run_id,
+        decision=decision.model_dump(mode="json"),
+    )
+    if updated_record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    usage_record = _artifact_usage_record_for_claim_review_decision(
+        record=updated_record,
+        claim=claim,
+        decision=decision,
+    )
+    if usage_record is not None:
+        artifact_id, usage = usage_record
+        repository.append_artifact_usage_records(
+            artifact_id=artifact_id,
+            usage_records=[usage],
         )
-        refutation = refute_hypothesis(
-            hypothesis_payload,
-            scope_decision.model_dump(mode="json"),
+    return decision
+
+
+@app.post("/mythos/pipeline/runs/{run_id}/finding-candidates", response_model=Finding)
+def create_finding_candidate_from_pipeline_run(
+    run_id: str,
+    session: Session = Depends(get_session),
+) -> Finding:
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    preview = _build_report_preview_response_or_404(record)
+    try:
+        finding = promote_pipeline_run_to_finding_candidate(
+            repository=repository,
+            record=record,
+            preview=preview,
         )
-        validation_plan = build_validation_plan(hypothesis_payload, refutation)
-        report_draft = build_report_draft(hypothesis_payload, validation_plan, refutation)
-    evidence_bundle = _build_dry_run_evidence_bundle(report_draft, validation_plan)
-    validation_workspace = _build_dry_run_validation_workspace(
-        scope_decision=scope_decision,
-        refutation=refutation,
-        validation_plan=validation_plan,
-        hypotheses=hypotheses,
-    )
-    validation_gate = _build_validation_gate(validation_workspace, evidence_bundle)
-    hunter_intelligence = assess_hunter_intelligence(
-        target_model=target_model_payload,
-        hypotheses=[hypothesis.model_dump(mode="json") for hypothesis in hypotheses],
-        refutation=refutation.model_dump(mode="json") if refutation else None,
-    )
-    timeline = _build_pipeline_timeline(
-        request=request,
-        artifact_kind=artifact_kind,
-        openapi_like=openapi_like,
-        scope_rule=scope_rule,
-        target_model=target_model,
-        invariants=invariants,
-        hypotheses=hypotheses,
-        scope_decision=scope_decision,
-        refutation=refutation,
-        validation_plan=validation_plan,
-        report_draft=report_draft,
-        evidence_bundle=evidence_bundle,
-    )
-
-    response = MythosPipelineDryRunResponse(
-        artifact_kind=artifact_kind,
-        scope_rule=scope_rule,
-        target_model=target_model,
-        invariants=invariants,
-        hypotheses=hypotheses,
-        refutation=refutation,
-        validation_plan=validation_plan,
-        report_draft=report_draft,
-        evidence_bundle=evidence_bundle,
-        timeline=timeline,
-        validation_workspace=validation_workspace,
-        validation_gate=validation_gate,
-        hunter_intelligence=hunter_intelligence,
-    )
-    payload = response.model_dump(mode="json", exclude={"run_id"})
-    return response, payload, openapi_like
-
-
-def _normalize_pipeline_input(request: MythosPipelineDryRunRequest) -> tuple[str, dict]:
-    if request.artifact_kind is not None or request.artifact_payload is not None:
-        if request.artifact_kind is None or request.artifact_payload is None:
-            raise HTTPException(
-                status_code=422,
-                detail="artifact_kind and artifact_payload must be provided together",
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    claim = best_finding_candidate_claim(preview)
+    if claim is not None:
+        usage_record = _artifact_usage_record_for_finding_candidate(
+            record=record,
+            claim=claim,
+            finding=finding,
+        )
+        if usage_record is not None:
+            artifact_id, usage = usage_record
+            repository.append_artifact_usage_records(
+                artifact_id=artifact_id,
+                usage_records=[usage],
             )
-        try:
-            artifact = normalize_artifact(request.artifact_kind, request.artifact_payload)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return artifact.kind, artifact.openapi_like
+    return finding
 
-    if request.openapi is None:
-        raise HTTPException(
-            status_code=422,
-            detail="openapi or artifact_kind/artifact_payload is required",
+
+@app.post(
+    "/mythos/pipeline/runs/{run_id}/manual-observations",
+    response_model=ManualObservationResponse,
+)
+def create_manual_observation(
+    run_id: str,
+    request: ManualObservationRequest,
+    session: Session = Depends(get_session),
+) -> ManualObservationResponse:
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    preview = _build_report_preview_response_or_404(record)
+    claims_by_id = {claim.claim_id: claim for claim in preview.claim_ledger}
+    claim = claims_by_id.get(request.claim_id)
+    if claim is None:
+        raise HTTPException(status_code=404, detail="Claim not found")
+
+    observation = ManualObservationResponse(
+        observation_id=f"manual_observation_{uuid4().hex}",
+        claim_id=safe_preview_text(request.claim_id),
+        observation_type=request.observation_type,
+        observer=safe_preview_text(request.observer),
+        observation=safe_preview_text(request.observation),
+        evidence_refs=safe_preview_lines(request.evidence_refs),
+        safety_notes=safe_preview_lines(request.safety_notes),
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    updated_record = repository.append_manual_observation(
+        run_id=run_id,
+        observation=observation.model_dump(mode="json"),
+    )
+    if updated_record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    usage_record = _artifact_usage_record_for_manual_observation(
+        record=updated_record,
+        claim=claim,
+        observation=observation,
+    )
+    if usage_record is not None:
+        artifact_id, usage = usage_record
+        repository.append_artifact_usage_records(
+            artifact_id=artifact_id,
+            usage_records=[usage],
         )
-    return "openapi", normalize_artifact("openapi", request.openapi).openapi_like
-
-
-def _build_dry_run_evidence_bundle(
-    report_draft: ReportDraftCandidate | None,
-    validation_plan: ValidationPlan | None,
-) -> EvidenceBundle | None:
-    if report_draft is None or validation_plan is None:
-        return None
-    return build_evidence_bundle(
-        "dry_run_candidate",
-        [
-            {
-                "type": "request_response_diff",
-                "content": {
-                    "status": validation_plan.status,
-                    "steps": validation_plan.steps,
-                    "note": "Dry-run placeholder; no live request was executed.",
-                },
-            }
-        ],
-    )
-
-
-def _build_dry_run_validation_workspace(
-    *,
-    scope_decision: ScopeGuardDecision | None,
-    refutation: RefutationResult | None,
-    validation_plan: ValidationPlan | None,
-    hypotheses: list[VulnerabilityHypothesis],
-) -> ValidationWorkspace | None:
-    if validation_plan is None or refutation is None or scope_decision is None:
-        return None
-
-    evidence_hints = [
-        {"type": "evidence_needed", "purpose": item}
-        for item in (hypotheses[0].evidence_needed if hypotheses else [])
-    ]
-    return build_validation_workspace(
-        validation_plan=validation_plan.model_dump(mode="json"),
-        scope_decision=scope_decision.model_dump(mode="json"),
-        refutation=refutation.model_dump(mode="json"),
-        evidence_hints=evidence_hints,
-        human_approved=False,
-    )
-
-
-def _build_validation_gate(
-    workspace: ValidationWorkspace | None,
-    evidence_bundle: EvidenceBundle | None,
-) -> PipelineValidationGate | None:
-    if workspace is None:
-        return None
-
-    evidence_count = len(evidence_bundle.items) if evidence_bundle else 0
-    return PipelineValidationGate(
-        status=workspace.approval_gate.status,
-        label=workspace.approval_gate.reason,
-        approval_required=workspace.approval_gate.human_approval_required,
-        approved_by=None,
-        summary=(
-            "Validation workspace is prepared for human-controlled review; "
-            "no live execution is allowed by this dry-run."
-        ),
-        evidence_count=evidence_count,
-    )
-
-
-def _artifact_source_hash(
-    request: MythosPipelineDryRunRequest,
-    artifact_kind: str,
-) -> str:
-    source_payload = request.artifact_payload if request.artifact_payload is not None else request.openapi
-    serialized = json.dumps(
-        {
-            "asset": request.asset,
-            "kind": artifact_kind,
-            "payload": source_payload,
-        },
-        default=str,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return sha256(serialized.encode("utf-8")).hexdigest()
-
-
-def _artifact_payload_summary(openapi_like: dict, target_model: TargetModel) -> dict:
-    paths = openapi_like.get("paths", {})
-    endpoint_count = 0
-    if isinstance(paths, dict):
-        for path_item in paths.values():
-            if isinstance(path_item, dict):
-                endpoint_count += len(path_item)
-
-    return {
-        "path_count": len(paths) if isinstance(paths, dict) else 0,
-        "endpoint_count": endpoint_count,
-        "object_count": len(target_model.objects),
-        "sensitive_action_count": len(target_model.sensitive_actions),
-    }
+    return observation
 
 
 def _pipeline_artifact_summary(
@@ -514,6 +644,7 @@ def _pipeline_artifact_summary(
     evidence_count: int,
 ) -> PipelineArtifactSummary:
     source = str(record.provenance.get("source", "dry-run inline artifact"))
+    safety = _artifact_safety(record)
     return PipelineArtifactSummary(
         artifact_id=record.id,
         kind=record.kind,
@@ -526,10 +657,15 @@ def _pipeline_artifact_summary(
         ),
         evidence_count=evidence_count,
         digest=record.source_hash,
+        sensitivity_label=safety["sensitivity_label"],
+        redaction_status=safety["redaction_status"],
+        report_chain_allowed=safety["report_chain_allowed"],
+        safety_blockers=safety["safety_blockers"],
     )
 
 
 def _artifact_response(record: ArtifactRecord) -> ArtifactResponse:
+    safety = _artifact_safety(record)
     return ArtifactResponse(
         id=record.id,
         program_id=record.program_id,
@@ -541,279 +677,691 @@ def _artifact_response(record: ArtifactRecord) -> ArtifactResponse:
         provenance=record.provenance,
         payload_summary=record.payload_summary,
         derived_facts=record.derived_facts,
+        sensitivity_label=safety["sensitivity_label"],
+        redaction_status=safety["redaction_status"],
+        report_chain_allowed=safety["report_chain_allowed"],
+        safety_blockers=safety["safety_blockers"],
+        usage_records=_artifact_usage_records(record),
         created_at=record.created_at.isoformat(),
     )
 
 
-def _report_preview_response(record: PipelineRunRecord) -> ReportPreviewResponse:
-    payload = record.payload
-    report_draft = payload.get("report_draft")
-    if not isinstance(report_draft, dict):
-        raise HTTPException(status_code=404, detail="Report draft not found")
+def _artifact_safety(record: ArtifactRecord) -> dict:
+    safety = record.provenance.get("safety")
+    if not isinstance(safety, dict):
+        return {
+            "sensitivity_label": "unknown",
+            "redaction_status": "unknown",
+            "report_chain_allowed": False,
+            "safety_blockers": ["missing_safety_metadata"],
+        }
 
-    validation_gate = payload.get("validation_gate") if isinstance(payload.get("validation_gate"), dict) else {}
-    evidence_bundle = payload.get("evidence_bundle") if isinstance(payload.get("evidence_bundle"), dict) else {}
+    blockers = safety.get("safety_blockers", [])
+    return {
+        "sensitivity_label": safe_preview_text(safety.get("sensitivity_label", "unknown")),
+        "redaction_status": safe_preview_text(safety.get("redaction_status", "unknown")),
+        "report_chain_allowed": safety.get("report_chain_allowed") is True,
+        "safety_blockers": _artifact_safety_blockers(blockers),
+    }
+
+
+def _artifact_safety_blockers(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    known_blockers = {
+        "contains_secret_like_value",
+        "contains_real_user_data_risk",
+        "missing_safety_metadata",
+    }
+    blockers: list[str] = []
+    for item in value:
+        blocker = str(item)
+        blockers.append(blocker if blocker in known_blockers else safe_preview_text(blocker))
+    return blockers
+
+
+def _artifact_usage_records(record: ArtifactRecord) -> list[dict]:
+    usage_records = record.provenance.get("usage_records", [])
+    if not isinstance(usage_records, list):
+        return []
+    return [usage_record for usage_record in usage_records if isinstance(usage_record, dict)]
+
+
+def _artifact_usage_records_for_run(
+    record: PipelineRunRecord,
+    artifact_id: str,
+) -> list[dict]:
+    usage_records = [
+        {
+            "usage_type": "pipeline_run",
+            "ref": f"run:{record.id}",
+            "run_id": record.id,
+            "stage": "pipeline_persistence",
+        }
+    ]
+
+    evidence_bundle = record.payload.get("evidence_bundle")
     evidence_items = evidence_bundle.get("items", []) if isinstance(evidence_bundle, dict) else []
-    hypotheses = payload.get("hypotheses", []) if isinstance(payload.get("hypotheses"), list) else []
-    invariants = payload.get("invariants", []) if isinstance(payload.get("invariants"), list) else []
-    timeline = payload.get("timeline", []) if isinstance(payload.get("timeline"), list) else []
+    for index, item in enumerate(evidence_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        evidence_type = safe_preview_text(item.get("type", "evidence_item"))
+        usage_records.append(
+            {
+                "usage_type": "evidence_bundle",
+                "ref": f"evidence:{record.id}:{index}",
+                "run_id": record.id,
+                "stage": "evidence_model",
+                "evidence_type": evidence_type,
+            }
+        )
 
-    human_review_required = bool(report_draft.get("human_review_required", True))
-    submission_blocked = human_review_required or validation_gate.get("status") != "approved"
+    hypothesis_assessments = record.payload.get("hypothesis_assessments", [])
+    if isinstance(hypothesis_assessments, list):
+        for index, assessment in enumerate(hypothesis_assessments, start=1):
+            if not isinstance(assessment, dict):
+                continue
+            hypothesis = assessment.get("hypothesis")
+            hunter_assessment = assessment.get("hunter_assessment")
+            refutation = assessment.get("refutation")
+            candidate_id = safe_preview_text(
+                assessment.get("candidate_id", f"hypothesis_{index}")
+            )
+            usage_records.append(
+                {
+                    "usage_type": "hypothesis_candidate",
+                    "ref": f"candidate:{record.id}:{candidate_id}",
+                    "run_id": record.id,
+                    "stage": "hypothesis_lifecycle",
+                    "candidate_id": candidate_id,
+                    "candidate_index": index - 1,
+                    "candidate_status": safe_preview_text(
+                        assessment.get("candidate_status", "unknown")
+                    ),
+                    "validation_mode": safe_preview_text(
+                        hypothesis.get("validation_mode", "unknown")
+                        if isinstance(hypothesis, dict)
+                        else "unknown"
+                    ),
+                    "refutation_status": safe_preview_text(
+                        refutation.get("status", "unknown")
+                        if isinstance(refutation, dict)
+                        else "unknown"
+                    ),
+                    "playbook_id": safe_preview_text(
+                        hunter_assessment.get("playbook_id", "unknown")
+                        if isinstance(hunter_assessment, dict)
+                        else "unknown"
+                    ),
+                    "hunter_priority_score": (
+                        hunter_assessment.get("hunter_priority_score")
+                        if isinstance(hunter_assessment, dict)
+                        else None
+                    ),
+                }
+            )
 
-    return ReportPreviewResponse(
-        run_id=record.id,
-        title=str(report_draft.get("title", record.report_title or "Untitled report preview")),
-        severity=str(report_draft.get("severity", "unknown")),
-        scope_status=str(report_draft.get("scope_status", record.scope_status)),
-        human_review_required=human_review_required,
-        submission_blocked=submission_blocked,
-        claim_labels={
-            "observed_facts": "observed_fact",
-            "model_reasoning": "model_reasoning",
-            "unverified_claims": "unverified_claim",
-        },
-        sections=ReportPreviewSections(
-            observed_facts=_observed_fact_lines(record, timeline, evidence_items),
-            model_reasoning=_model_reasoning_lines(hypotheses, invariants),
-            unverified_claims=_unverified_claim_lines(report_draft, validation_gate),
+    try:
+        preview = build_report_preview_response(record)
+    except ValueError:
+        return usage_records
+    for claim in preview.claim_ledger:
+        if artifact_id not in claim.provenance_refs:
+            continue
+        usage_records.append(
+            {
+                "usage_type": "report_claim",
+                "ref": f"claim:{claim.claim_id}",
+                "run_id": record.id,
+                "stage": "report_preview",
+                "claim_id": claim.claim_id,
+                "claim_type": claim.claim_type,
+            }
+        )
+    return usage_records
+
+
+def _artifact_usage_record_for_manual_observation(
+    *,
+    record: PipelineRunRecord,
+    claim: ClaimLedgerEntry,
+    observation: ManualObservationResponse,
+) -> tuple[str, dict] | None:
+    artifact = record.payload.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+
+    artifact_id = artifact.get("artifact_id")
+    if not artifact_id or str(artifact_id) not in claim.provenance_refs:
+        return None
+
+    return str(artifact_id), {
+        "usage_type": "manual_observation",
+        "ref": f"manual_observation:{observation.observation_id}",
+        "run_id": record.id,
+        "stage": "validation_workspace",
+        "claim_id": observation.claim_id,
+        "observation_id": observation.observation_id,
+        "observation_type": observation.observation_type,
+        "evidence_refs": observation.evidence_refs,
+        "safety_notes": observation.safety_notes,
+    }
+
+
+def _artifact_usage_record_for_claim_review_decision(
+    *,
+    record: PipelineRunRecord,
+    claim: ClaimLedgerEntry,
+    decision: ClaimReviewDecisionResponse,
+) -> tuple[str, dict] | None:
+    artifact = record.payload.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+
+    artifact_id = artifact.get("artifact_id")
+    if not artifact_id or str(artifact_id) not in claim.provenance_refs:
+        return None
+
+    return str(artifact_id), {
+        "usage_type": "claim_review_decision",
+        "ref": f"claim_review:{decision.claim_id}",
+        "run_id": record.id,
+        "stage": "report_review",
+        "claim_id": decision.claim_id,
+        "decision": decision.decision,
+        "reviewer": decision.reviewer,
+        "reviewed_at": decision.reviewed_at,
+        "evidence_refs": decision.evidence_refs,
+    }
+
+
+def _artifact_usage_record_for_finding_candidate(
+    *,
+    record: PipelineRunRecord,
+    claim: ClaimLedgerEntry,
+    finding: Finding,
+) -> tuple[str, dict] | None:
+    artifact = record.payload.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+
+    artifact_id = artifact.get("artifact_id")
+    if not artifact_id or str(artifact_id) not in claim.provenance_refs:
+        return None
+
+    return str(artifact_id), {
+        "usage_type": "finding_candidate",
+        "ref": f"finding_candidate:{finding.id}",
+        "run_id": record.id,
+        "stage": "finding_promotion",
+        "claim_id": claim.claim_id,
+        "finding_id": finding.id,
+        "submission_recommendation": finding.submission_recommendation,
+        "evidence_refs": finding.evidence_refs,
+    }
+
+
+def _artifact_usage_record_for_learning_signal(
+    *,
+    record: PipelineRunRecord,
+    signal: LearningSignal,
+) -> tuple[str, dict] | None:
+    artifact = record.payload.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+
+    artifact_id = artifact.get("artifact_id")
+    if not artifact_id or signal.id is None:
+        return None
+
+    usage = {
+        "usage_type": "learning_signal",
+        "ref": f"learning_signal:{signal.id}",
+        "run_id": record.id,
+        "stage": "mythos_brain",
+        "learning_signal_id": signal.id,
+        "outcome": signal.outcome,
+        "playbook_id": signal.playbook_id,
+        "surface_key": signal.surface_key,
+    }
+    if signal.bounty_amount is not None:
+        usage["bounty_amount"] = signal.bounty_amount
+    if signal.severity_delta is not None:
+        usage["severity_delta"] = signal.severity_delta
+    if signal.evidence_quality is not None:
+        usage["evidence_quality"] = signal.evidence_quality
+    if signal.target_relationships:
+        usage["target_relationships"] = signal.target_relationships
+    return str(artifact_id), usage
+
+
+def _learning_signal_response(record: LearningSignalRecord) -> LearningSignal:
+    return LearningSignal(
+        id=record.id,
+        program_id=record.program_id,
+        playbook_id=record.playbook_id,
+        outcome=record.outcome,
+        surface_key=record.surface_key,
+        notes=record.notes,
+        bounty_amount=record.bounty_amount,
+        severity_delta=record.severity_delta,
+        evidence_quality=record.evidence_quality,
+        triager_feedback=record.triager_feedback,
+        target_relationships=record.target_relationships,
+        created_at=record.created_at.isoformat(),
+    )
+
+
+def _evidence_quality_from_reviewed_claims(
+    record: PipelineRunRecord,
+) -> LearningEvidenceQuality | None:
+    try:
+        preview = build_report_preview_response(record)
+    except ValueError:
+        return None
+
+    weak_evidence_seen = False
+    for claim in preview.claim_ledger:
+        if claim.claim_type != "observed_fact":
+            continue
+        if claim.review_status == "needs_evidence":
+            weak_evidence_seen = True
+            continue
+        if claim.review_status != "confirmed_observed_fact":
+            continue
+        has_security_impact_observation = (
+            "has_security_impact_observation" in claim.quality_reasons
+            and "missing_security_impact_observation" not in claim.readiness_blockers
+        )
+        if not has_security_impact_observation:
+            weak_evidence_seen = True
+            continue
+        if review_evidence_refs_are_report_safe(claim.review_evidence_refs):
+            return "strong"
+
+    for claim in preview.claim_ledger:
+        if (
+            claim.claim_type == "observed_fact"
+            and claim.review_status == "confirmed_observed_fact"
+            and claim.quality_score >= 80
+            and (claim.provenance_edges or claim.provenance_refs)
+            and "has_security_impact_observation" in claim.quality_reasons
+            and "missing_security_impact_observation" not in claim.readiness_blockers
+        ):
+            return "adequate"
+    if weak_evidence_seen:
+        return "weak"
+    return None
+
+
+def _apply_program_learning_to_hunter_intelligence(
+    intelligence: HunterIntelligence | None,
+    learning_signals: list[LearningSignalRecord],
+) -> tuple[list[str], list[str]]:
+    if intelligence is None:
+        return [], []
+
+    playbook_boosts: dict[str, int] = {}
+    playbook_penalties: dict[str, int] = {}
+    playbook_outcomes: dict[str, set[str]] = {}
+    weak_accepted_playbooks: set[str] = set()
+    for signal in learning_signals:
+        if signal.outcome == "accepted":
+            if signal.evidence_quality == "weak":
+                weak_accepted_playbooks.add(signal.playbook_id)
+                continue
+            boost = 12 if signal.evidence_quality == "strong" else 8
+            playbook_boosts[signal.playbook_id] = min(
+                24,
+                playbook_boosts.get(signal.playbook_id, 0) + boost,
+            )
+            playbook_outcomes.setdefault(signal.playbook_id, set()).add(signal.outcome)
+            continue
+
+        penalty = {
+            "duplicate": 20,
+            "na": 12,
+            "rejected": 10,
+        }.get(signal.outcome)
+        if penalty is None:
+            continue
+        playbook_penalties[signal.playbook_id] = min(
+            40,
+            playbook_penalties.get(signal.playbook_id, 0) + penalty,
+        )
+        playbook_outcomes.setdefault(signal.playbook_id, set()).add(signal.outcome)
+
+    applied_reasons: list[str] = []
+    skipped_reasons: list[str] = []
+    for assessment in intelligence.assessments:
+        boost = playbook_boosts.get(assessment.playbook_id, 0)
+        penalty = playbook_penalties.get(assessment.playbook_id, 0)
+        hard_gate_blocked = assessment.recommendation == "blocked" or assessment.rejection_risk_score >= 90
+        if hard_gate_blocked:
+            if boost or penalty:
+                skipped_reasons.append("learning:safety_gate_blocked")
+            boost = 0
+            penalty = 0
+        if boost == 0 and penalty == 0:
+            if assessment.playbook_id in weak_accepted_playbooks:
+                skipped_reasons.append("learning:weak_accepted_evidence_not_boosted")
+            continue
+        if boost:
+            assessment.hunter_priority_score = min(
+                100,
+                assessment.hunter_priority_score + boost,
+            )
+        assessment.duplicate_risk_score = min(
+            100,
+            assessment.duplicate_risk_score + penalty,
+        )
+        assessment.hunter_priority_score = max(
+            0,
+            assessment.hunter_priority_score - round(penalty * 0.25),
+        )
+        outcomes = playbook_outcomes.get(assessment.playbook_id, set())
+        if "accepted" in outcomes and "learning:accepted_history" not in assessment.reasons:
+            assessment.reasons.append("learning:accepted_history")
+            applied_reasons.append("learning:accepted_history")
+        if "duplicate" in outcomes and "learning:duplicate_history" not in assessment.reasons:
+            assessment.reasons.append("learning:duplicate_history")
+            applied_reasons.append("learning:duplicate_history")
+        if outcomes & {"na", "rejected"} and "learning:rejection_history" not in assessment.reasons:
+            assessment.reasons.append("learning:rejection_history")
+            applied_reasons.append("learning:rejection_history")
+        if "advisory_memory_only" not in assessment.safety_notes:
+            assessment.safety_notes.append("advisory_memory_only")
+    return sorted(set(applied_reasons)), sorted(set(skipped_reasons))
+
+
+def _program_learning_stage(
+    signal_count: int,
+    reasons: list[str],
+    status: str,
+) -> PipelineStage:
+    action = "adjusted hunter intelligence priorities" if status == "completed" else "left hunter intelligence unchanged"
+    return PipelineStage(
+        name="program_learning",
+        status=status,
+        input_summary=f"{signal_count} program learning signal(s) reviewed.",
+        output_summary=(
+            f"Program memory {action}: "
+            f"{', '.join(reasons)}."
         ),
-        safety_notes=_safe_string_list(report_draft.get("safety_notes", [])),
-        evidence_refs=[
-            str(item.get("type", "evidence_item"))
-            for item in evidence_items
-            if isinstance(item, dict)
+        safety_notes=[
+            "advisory_memory_only",
+            "human_review_required",
+            "no_execution_permission",
         ],
     )
 
 
-def _observed_fact_lines(
-    record: PipelineRunRecord,
-    timeline: list,
-    evidence_items: list,
-) -> list[str]:
-    lines = [
-        f"Pipeline run {record.id} was created for asset {record.asset}.",
-        f"Scope status recorded as {record.scope_status}.",
-        f"{len(evidence_items)} sanitized evidence item(s) are attached to this run.",
+def _sync_hypothesis_assessment_hunter_scores(
+    response: MythosPipelineDryRunResponse,
+) -> None:
+    if response.hunter_intelligence is None:
+        return
+    for index, assessment in enumerate(response.hunter_intelligence.assessments):
+        if index >= len(response.hypothesis_assessments):
+            break
+        response.hypothesis_assessments[index].hunter_assessment = assessment
+
+
+def _pipeline_run_brain_payload(record: PipelineRunRecord) -> dict:
+    return {
+        "id": record.id,
+        "program_id": record.program_id,
+        "asset": record.asset,
+        "payload": record.payload,
+    }
+
+
+def _program_intelligence_profile(
+    repository: DatabaseRepository,
+    program_id: str,
+) -> ProgramIntelligenceProfile:
+    program = repository.get_program(program_id)
+    if program is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    pipeline_runs = [
+        _pipeline_run_brain_payload(record)
+        for record in repository.list_pipeline_runs_for_program(program_id)
     ]
-    for stage in timeline:
-        if isinstance(stage, dict):
-            name = stage.get("name")
-            status = stage.get("status")
-            if name and status:
-                lines.append(f"Stage {name} recorded status {status}.")
-    return lines
-
-
-def _model_reasoning_lines(hypotheses: list, invariants: list) -> list[str]:
-    lines: list[str] = []
-    for invariant in invariants:
-        if isinstance(invariant, dict) and invariant.get("invariant"):
-            lines.append(f"Invariant considered: {invariant['invariant']}.")
-    for hypothesis in hypotheses:
-        if isinstance(hypothesis, dict) and hypothesis.get("hypothesis"):
-            lines.append(f"Candidate reasoning: {hypothesis['hypothesis']}")
-    return lines or ["No model reasoning was recorded for this run."]
-
-
-def _unverified_claim_lines(report_draft: dict, validation_gate: dict) -> list[str]:
-    lines = [
-        str(report_draft.get("actual_result", "Actual result still requires safe validation evidence.")),
-        "This preview is not submission-ready until human review approves the validation evidence.",
+    learning_signals = [
+        _learning_signal_response(record)
+        for record in repository.list_learning_signals(program_id)
     ]
-    gate_status = validation_gate.get("status")
-    if gate_status and gate_status != "approved":
-        lines.append(f"Validation gate is {gate_status}; live execution remains blocked.")
-    return lines
+    return build_program_intelligence(
+        program=program,
+        pipeline_runs=pipeline_runs,
+        learning_signals=learning_signals,
+    )
 
 
-def _safe_string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
-
-
-def _build_pipeline_timeline(
-    *,
-    request: MythosPipelineDryRunRequest,
-    artifact_kind: str,
-    openapi_like: dict,
-    scope_rule: ScopeGuardRule,
-    target_model: TargetModel,
-    invariants: list[SecurityInvariant],
-    hypotheses: list[VulnerabilityHypothesis],
-    scope_decision: ScopeGuardDecision | None,
-    refutation: RefutationResult | None,
-    validation_plan: ValidationPlan | None,
-    report_draft: ReportDraftCandidate | None,
-    evidence_bundle: EvidenceBundle | None,
-) -> list[PipelineStage]:
-    path_count = len(openapi_like.get("paths", {}))
-
-    if refutation is None:
-        refutation_stage = PipelineStage(
-            name="refutation",
-            status="skipped",
-            input_summary="No hypotheses available.",
-            output_summary="No refutation performed.",
-            safety_notes=["no_live_requests"],
-        )
-    else:
-        scope_notes = []
-        if scope_decision is not None and not scope_decision.allowed:
-            scope_notes.append(f"scope_guard:{scope_decision.reason}")
-        if refutation.human_review_required:
-            scope_notes.append("human_review_required")
-        refutation_stage = PipelineStage(
-            name="refutation",
-            status=refutation.status,
-            input_summary=(
-                f"First hypothesis validation mode: {hypotheses[0].validation_mode}."
-            ),
-            output_summary=(
-                f"Refutation {refutation.status}; reasons: "
-                f"{', '.join(refutation.reasons) if refutation.reasons else 'none'}."
-            ),
-            safety_notes=_safety_notes(scope_notes, ["no_live_requests"]),
-        )
-
-    if validation_plan is None:
-        validation_plan_stage = PipelineStage(
-            name="validation_plan",
-            status="skipped",
-            input_summary=f"{len(hypotheses)} hypothesis/hypotheses.",
-            output_summary="No validation plan generated.",
-            safety_notes=["no_live_requests"],
-        )
-    else:
-        validation_plan_stage = PipelineStage(
-            name="validation_plan",
-            status=validation_plan.status,
-            input_summary=f"{len(hypotheses)} hypothesis/hypotheses.",
-            output_summary=(
-                f"{validation_plan.status}; {len(validation_plan.steps)} step(s) planned."
-            ),
-            safety_notes=_safety_notes(
-                ["no_live_requests"],
-                ["human_approval_required"]
-                if validation_plan.human_approval_required
-                else [],
-            ),
-        )
-
-    if report_draft is None:
-        report_draft_stage = PipelineStage(
-            name="report_draft",
-            status="skipped",
-            input_summary="No validation plan available.",
-            output_summary="No report draft generated.",
-            safety_notes=["human_review_required"],
-        )
-    else:
-        report_draft_stage = PipelineStage(
-            name="report_draft",
-            status=(
-                "human_review_required"
-                if report_draft.human_review_required
-                else "completed"
-            ),
-            input_summary=(
-                f"Validation result for {report_draft.severity} severity candidate."
-            ),
-            output_summary=f"Drafted report candidate: {report_draft.title}.",
-            safety_notes=_safety_notes(
-                report_draft.safety_notes,
-                ["human_review_required"] if report_draft.human_review_required else [],
-            ),
-        )
-
-    if evidence_bundle is None:
-        evidence_stage = PipelineStage(
-            name="evidence",
-            status="skipped",
-            input_summary="No report draft available.",
-            output_summary="No evidence bundle generated.",
-            safety_notes=["no_live_requests"],
-        )
-    else:
-        evidence_stage = PipelineStage(
-            name="evidence",
-            status="completed",
-            input_summary=evidence_bundle.finding_id,
-            output_summary=f"Bundled {len(evidence_bundle.items)} evidence item(s).",
-            safety_notes=_safety_notes(evidence_bundle.safety_notes, ["no_live_requests"]),
-        )
-
-    return [
-        PipelineStage(
-            name="policy_ingestion",
-            status="completed",
-            input_summary=f"Policy text for {request.asset}.",
-            output_summary=(
-                f"Scope status {scope_rule.scope_status}; automation {scope_rule.automation}."
-            ),
-            safety_notes=_safety_notes(
-                ["human_review_required"] if scope_rule.human_approval_required else [],
-                [f"forbidden:{item}" for item in scope_rule.forbidden],
-            ),
-        ),
-        PipelineStage(
-            name="artifact_normalization",
-            status="completed",
-            input_summary=f"Dry-run {artifact_kind} artifact.",
-            output_summary=f"Normalized {path_count} path(s).",
-            safety_notes=["local_artifact_only", "no_live_requests"],
-        ),
-        PipelineStage(
-            name="target_model",
-            status="completed",
-            input_summary=f"Normalized {artifact_kind} paths.",
-            output_summary=(
-                f"{len(target_model.endpoints)} endpoint(s), "
-                f"{len(target_model.objects)} object(s), "
-                f"{len(target_model.sensitive_actions)} sensitive action(s)."
-            ),
-            safety_notes=["static_analysis_only"],
-        ),
-        PipelineStage(
-            name="invariants",
-            status="completed",
-            input_summary="Target model facts.",
-            output_summary=f"Generated {len(invariants)} security invariant(s).",
-            safety_notes=["policy_risk_preserved"],
-        ),
-        PipelineStage(
-            name="hypotheses",
-            status="completed",
-            input_summary=f"{len(invariants)} security invariant(s).",
-            output_summary=f"Generated {len(hypotheses)} vulnerability candidate(s).",
-            safety_notes=["non_destructive_candidates_only"],
-        ),
-        refutation_stage,
-        validation_plan_stage,
-        report_draft_stage,
-        evidence_stage,
+def _llm_audit_safety_notes(response: LLMResponse) -> list[str]:
+    notes = [
+        "prompt_hash_only",
+        "no_prompt_storage",
+        "provider_response_not_fact",
     ]
-
-
-def _safety_notes(*groups: list[str]) -> list[str]:
-    notes: list[str] = []
-    for group in groups:
-        for note in group:
-            if note not in notes:
-                notes.append(note)
+    if response.mode == "dry_run":
+        notes.append("dry_run_no_provider_call")
+    if response.error:
+        notes.append("provider_error_recorded")
     return notes
 
 
-def _count_blocked(refutation: RefutationResult | None) -> int:
-    return 1 if refutation is not None and refutation.status == "blocked" else 0
+def _build_report_preview_response_or_404(
+    record: PipelineRunRecord,
+) -> ReportPreviewResponse:
+    try:
+        return build_report_preview_response(record)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+SECURITY_IMPACT_REQUIRED_OBSERVATION_TYPES = [
+    "request_response_diff",
+    "role_matrix_observation",
+]
+
+
+def _pipeline_run_detail_payload(record: PipelineRunRecord) -> dict:
+    payload = dict(record.payload)
+    workspace = payload.get("validation_workspace")
+    if isinstance(workspace, dict):
+        enriched_workspace = dict(workspace)
+        enriched_workspace["claim_validation_tasks"] = _claim_validation_tasks(record)
+        payload["validation_workspace"] = enriched_workspace
+    return payload
+
+
+def _claim_validation_tasks(record: PipelineRunRecord) -> list[dict]:
+    try:
+        preview = build_report_preview_response(record)
+    except ValueError:
+        return []
+
+    eligible_claim = best_finding_candidate_claim(preview)
+    eligible_claim_id = eligible_claim.claim_id if eligible_claim is not None else None
+    return [
+        _claim_validation_task(
+            claim,
+            eligible_claim_id,
+            _claim_relationship_contexts(record.payload, claim),
+        )
+        for claim in preview.claim_ledger
+    ]
+
+
+def _claim_validation_task(
+    claim: ClaimLedgerEntry,
+    eligible_claim_id: str | None,
+    relationship_contexts: list[str] | None = None,
+) -> dict:
+    relationship_contexts = relationship_contexts or []
+    required_observation_types = (
+        SECURITY_IMPACT_REQUIRED_OBSERVATION_TYPES.copy()
+        if "missing_security_impact_observation" in claim.readiness_blockers
+        else []
+    )
+    return {
+        "claim_id": claim.claim_id,
+        "claim_type": claim.claim_type,
+        "claim_text": claim.text,
+        "status": _claim_validation_task_status(
+            claim,
+            eligible_claim_id,
+            relationship_contexts,
+        ),
+        "promotion_eligible": claim.claim_id == eligible_claim_id,
+        "required_observation_types": required_observation_types,
+        "relationship_contexts": relationship_contexts,
+        "evidence_focus": (
+            ["parent_child_authorization_matrix"]
+            if relationship_contexts
+            else []
+        ),
+        "evidence_refs": claim.evidence_refs,
+        "review_evidence_refs": claim.review_evidence_refs,
+        "readiness_blockers": claim.readiness_blockers,
+        "quality_reasons": claim.quality_reasons,
+        "quality_score": claim.quality_score,
+        "readiness_level": claim.readiness_level,
+        "review_status": claim.review_status,
+        "human_review_required": claim.human_review_required,
+        "execution_allowed": False,
+        "safety_notes": [
+            "advisory_only",
+            "human_review_required",
+            "test_accounts_only",
+            "no_live_requests",
+            "no_real_user_data",
+        ],
+    }
+
+
+def _claim_validation_task_status(
+    claim: ClaimLedgerEntry,
+    eligible_claim_id: str | None,
+    relationship_contexts: list[str] | None = None,
+) -> str:
+    blockers = set(claim.readiness_blockers)
+    if claim.claim_id == eligible_claim_id:
+        return "promotion_eligible"
+    if "artifact_report_chain_blocked" in blockers:
+        return "blocked_report_chain"
+    if claim.claim_type != "observed_fact":
+        return "not_reportable"
+    if "missing_security_impact_observation" in blockers:
+        if relationship_contexts:
+            return "needs_boundary_matrix_observation"
+        return "needs_security_impact_observation"
+    if blockers & {"missing_evidence_refs", "missing_provenance_refs"}:
+        return "needs_evidence"
+    if claim.review_status == "confirmed_observed_fact":
+        return "human_reviewed_gated"
+    return "needs_human_review"
+
+
+def _claim_relationship_contexts(
+    payload: dict,
+    claim: ClaimLedgerEntry,
+) -> list[str]:
+    target_model = payload.get("target_model")
+    if not isinstance(target_model, dict):
+        return []
+
+    claim_refs = {str(ref) for ref in claim.provenance_refs if ref}
+    claim_edge_refs = {
+        edge.ref
+        for edge in claim.provenance_edges
+        if edge.fact_type == "object_relationship" and edge.ref
+    }
+    if not claim_refs and not claim_edge_refs:
+        return []
+
+    relationships = [
+        relationship
+        for relationship in target_model.get("relationships", [])
+        if _relationship_matches_claim(relationship, claim_refs, claim_edge_refs)
+    ]
+    return _relationship_context_chains(relationships)
+
+
+def _relationship_matches_claim(
+    relationship: object,
+    claim_refs: set[str],
+    claim_edge_refs: set[str],
+) -> bool:
+    if not isinstance(relationship, dict):
+        return False
+    refs = {
+        str(ref)
+        for ref in relationship.get("provenance_refs", [])
+        if ref
+    }
+    for edge in relationship.get("provenance_edges", []):
+        if isinstance(edge, dict) and edge.get("ref"):
+            refs.add(str(edge["ref"]))
+    return bool(refs & (claim_refs | claim_edge_refs))
+
+
+def _relationship_context_chains(relationships: list[dict]) -> list[str]:
+    children_by_parent: dict[str, list[str]] = {}
+    parents: set[str] = set()
+    children: set[str] = set()
+
+    for relationship in relationships:
+        if relationship.get("relationship", "contains") != "contains":
+            continue
+        parent = safe_preview_text(relationship.get("parent_object", ""))
+        child = safe_preview_text(relationship.get("child_object", ""))
+        if not parent or not child or "[REDACTED]" in {parent, child}:
+            continue
+        children_by_parent.setdefault(parent, [])
+        if child not in children_by_parent[parent]:
+            children_by_parent[parent].append(child)
+        parents.add(parent)
+        children.add(child)
+
+    roots = sorted(parents - children) or sorted(parents)
+    contexts: list[str] = []
+    for root in roots:
+        for path in _relationship_context_paths(root, children_by_parent, []):
+            if len(path) < 2:
+                continue
+            context = ">".join(path)
+            if context not in contexts:
+                contexts.append(context)
+    return contexts
+
+
+def _relationship_context_paths(
+    node: str,
+    children_by_parent: dict[str, list[str]],
+    path: list[str],
+) -> list[list[str]]:
+    if node in path:
+        return [path]
+
+    next_path = [*path, node]
+    children = children_by_parent.get(node, [])
+    if not children:
+        return [next_path]
+
+    paths: list[list[str]] = []
+    for child in sorted(children):
+        paths.extend(_relationship_context_paths(child, children_by_parent, next_path))
+    return paths
 
 
 def _pipeline_run_summary(record: PipelineRunRecord) -> MythosPipelineRunSummary:
     payload = record.payload
     return MythosPipelineRunSummary(
         id=record.id,
+        program_id=record.program_id,
         asset=record.asset,
         policy_text_hash=record.policy_text_hash,
         scope_status=record.scope_status,
@@ -831,8 +1379,10 @@ def _pipeline_run_summary(record: PipelineRunRecord) -> MythosPipelineRunSummary
 
 def _pipeline_run_detail(record: PipelineRunRecord) -> MythosPipelineRunDetail:
     summary = _pipeline_run_summary(record)
+    payload = _pipeline_run_detail_payload(record)
     return MythosPipelineRunDetail(
         id=summary.id,
+        program_id=summary.program_id,
         asset=summary.asset,
         policy_text_hash=summary.policy_text_hash,
         scope_status=summary.scope_status,
@@ -845,7 +1395,7 @@ def _pipeline_run_detail(record: PipelineRunRecord) -> MythosPipelineRunDetail:
         artifact=summary.artifact,
         validation_gate=summary.validation_gate,
         hunter_intelligence=summary.hunter_intelligence,
-        payload=record.payload,
+        payload=payload,
     )
 
 
@@ -855,3 +1405,7 @@ def _count_evidence_items(payload: dict) -> int:
         return 0
     items = evidence_bundle.get("items")
     return len(items) if isinstance(items, list) else 0
+
+
+def _safe_string_list(value: object) -> list[str]:
+    return safe_string_list(value)

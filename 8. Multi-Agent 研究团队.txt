@@ -1,0 +1,30 @@
+最终版至少 12 个 Agent：
+
+1. Policy Agent：解析项目规则
+2. Scope Guard Agent：拦截越界行为
+3. ROI Agent：判断哪个项目值得做
+4. Recon Agent：整理授权范围内资料
+5. API Modeling Agent：建 endpoint / object / role 模型
+6. Business Invariant Agent：生成业务安全不变量
+7. Code Audit Agent：审公开代码和补丁 diff
+8. Hypothesis Agent：生成漏洞假设
+9. Validation Planner Agent：设计低风险验证计划
+10. Refutation Agent：专门证明这是误报
+11. Evidence Agent：整理证据
+12. Report Agent：生成赏金报告
+
+关键是 Refutation Agent。
+
+它要专门问：
+
+是否真的 in scope？
+是否违反项目规则？
+是否只影响自己账号？
+是否只是 best practice？
+是否没有真实安全影响？
+是否已有重复披露？
+是否可稳定复现？
+是否会被判 informative / N/A？
+是否触碰真实用户数据？
+
+Cloudflare 对 AI 漏洞研究的观察也提到，signal-to-noise 是关键问题：疑似发现很多，但真正可用需要验证、去重和 triage。你的系统必须把“反证”和“降噪”放在核心位置。

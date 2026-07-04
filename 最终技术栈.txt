@@ -1,0 +1,44 @@
+前端：
+- Next.js
+- Tailwind
+- Dashboard + Report Editor
+
+后端：
+- Python
+- FastAPI
+- Celery
+- Redis
+
+数据库：
+- PostgreSQL
+- pgvector / Qdrant
+- Neo4j，可选
+
+代码分析：
+- Tree-sitter
+- Semgrep
+- CodeQL
+- Syft / Grype
+- SARIF importer
+
+API 分析：
+- 各家的API parser
+- Postman parser
+- HAR parser
+-
+
+验证：
+- Playwright，仅限测试账号和低风险流程
+- Docker sandbox
+- 本地 unit test / regression test
+
+模型：
+- 可以选择各家的模型：推理、建模、反证、报告
+- 小模型：分类、去重、模板化任务
+
+安全：
+- Scope Guard
+- Rate limiter
+- Secret manager
+- 全量审计日志
+- 人工审批队列
