@@ -59,6 +59,9 @@ The first implementation should reuse these surfaces rather than introduce a new
 ## Proposed Approach
 
 Add a closed-loop summary derived from existing persisted payloads and records.
+The summary should be a compact lifecycle narrative, not just counters. The goal is
+to show where the candidate is in the safe research loop, why it is there, which
+safety gate applies, and what the next allowed human action is.
 
 The backend should compute a small summary for a run:
 
@@ -75,6 +78,48 @@ The backend should compute a small summary for a run:
     "test_accounts_only",
     "human_review_required",
     "candidate_not_validated"
+  ],
+  "steps": [
+    {
+      "key": "manual_observation",
+      "label": "Manual Observation",
+      "status": "complete",
+      "reason": "1 sanitized manual observation recorded.",
+      "safety_gate": "test_accounts_only",
+      "next_allowed_action": "Review the observed claim against redacted evidence."
+    },
+    {
+      "key": "claim_review",
+      "label": "Claim Review",
+      "status": "complete",
+      "reason": "1 claim review decision recorded.",
+      "safety_gate": "human_review_required",
+      "next_allowed_action": "Promote eligible observed claims to finding candidates."
+    },
+    {
+      "key": "finding_candidate",
+      "label": "Finding Candidate",
+      "status": "complete",
+      "reason": "1 finding candidate created.",
+      "safety_gate": "candidate_not_validated",
+      "next_allowed_action": "Record an advisory learning outcome without changing validation state."
+    },
+    {
+      "key": "learning_signal",
+      "label": "Learning Signal",
+      "status": "complete",
+      "reason": "1 learning signal linked to this run.",
+      "safety_gate": "advisory_memory_only",
+      "next_allowed_action": "Refresh the Mythos Brain profile for future prioritization."
+    },
+    {
+      "key": "brain_memory",
+      "label": "Brain Memory",
+      "status": "complete",
+      "reason": "Learning memory is available for the program brain.",
+      "safety_gate": "no_execution_permission",
+      "next_allowed_action": "Use memory as advisory context only."
+    }
   ]
 }
 ```
@@ -89,6 +134,12 @@ Status values should be simple and ordered:
 - `blocked`
 
 The summary can live inside the existing pipeline run detail payload. If a frontend page needs report preview access, reuse existing `getPipelineRun` and avoid adding a new fetch path.
+
+The run detail and run list should also expose an `evidence_support_summary`
+derived from the report preview claim ledger. It is advisory and exists to explain
+whether report claims are missing required evidence, partially supported, human
+gated and supported, or blocked by unsafe/redacted evidence. It must not unlock
+submission or validation.
 
 ## Data Flow
 
@@ -118,6 +169,7 @@ It should show:
 
 - Current loop status.
 - Counts for observations, reviewed claims, finding candidates, and learning signals.
+- Lifecycle steps with status, reason, safety gate, and next allowed action.
 - Safety notes.
 - Blocked reasons when present.
 
