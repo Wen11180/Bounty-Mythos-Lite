@@ -1,7 +1,16 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { ArrowLeft, ClipboardCheck, FileText, ListChecks, ShieldCheck, Target } from "lucide-react";
-import { createFindingCandidate, getPipelineRun, getReportPreview } from "@/lib/api";
+import {
+  createFindingCandidate,
+  getPipelineRun,
+  getReportPreview,
+  recordMythosBrainOutcome,
+  type LearningEvidenceQuality,
+  type LearningOutcome,
+  type LearningSeverityDelta,
+} from "@/lib/api";
+import { fallbackMythosBrainProfile } from "@/lib/fallback-data";
 import {
   fallbackReportPreview,
   fallbackRunDetail,
@@ -31,6 +40,11 @@ const sectionMeta = [
   },
 ] as const;
 
+const promotionBlockingReadinessBlockers = new Set([
+  "artifact_report_chain_blocked",
+  "missing_security_impact_observation",
+]);
+
 export default async function ReportPreviewPage({ params }: PageProps) {
   const { runId } = await params;
   const [run, preview] = await Promise.all([
@@ -57,8 +71,10 @@ export default async function ReportPreviewPage({ params }: PageProps) {
       claim.claim_type === "observed_fact" &&
       claim.review_status === "confirmed_observed_fact" &&
       claim.readiness_level === "human_reviewed_gated" &&
+      claim.quality_score >= 80 &&
       claim.evidence_refs.length > 0 &&
-      claim.review_evidence_refs.length > 0,
+      claim.review_evidence_refs.some((ref) => ref !== "[REDACTED]") &&
+      claim.readiness_blockers.every((blocker) => !promotionBlockingReadinessBlockers.has(blocker)),
   );
   const canPromoteFindingCandidate = reportDataMode === "Live data" && hasPromotionCandidate;
 
@@ -66,6 +82,34 @@ export default async function ReportPreviewPage({ params }: PageProps) {
     "use server";
 
     await createFindingCandidate(currentRunId, null);
+    revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);
+    revalidatePath(`/runs/${encodeURIComponent(currentRunId)}`);
+  }
+
+  async function recordLearningOutcomeAction(formData: FormData) {
+    "use server";
+
+    const outcome = formData.get("outcome")?.toString() as LearningOutcome;
+    const bountyAmount = optionalFormValue(formData, "bounty_amount");
+
+    await recordMythosBrainOutcome(
+      {
+        bounty_amount: bountyAmount === null ? null : Number(bountyAmount),
+        evidence_quality: optionalFormValue(
+          formData,
+          "evidence_quality",
+        ) as LearningEvidenceQuality | null,
+        notes: optionalFormValue(formData, "notes") ?? "",
+        outcome,
+        run_id: currentRunId,
+        severity_delta: optionalFormValue(
+          formData,
+          "severity_delta",
+        ) as LearningSeverityDelta | null,
+      },
+      fallbackMythosBrainProfile,
+    );
+    revalidatePath("/");
     revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);
     revalidatePath(`/runs/${encodeURIComponent(currentRunId)}`);
   }
@@ -285,10 +329,80 @@ export default async function ReportPreviewPage({ params }: PageProps) {
               </p>
             )}
           </section>
+
+          <section className="border border-[var(--line)] bg-white">
+            <SectionHeader icon={ClipboardCheck} title="Learning Outcome" />
+            <form action={recordLearningOutcomeAction} className="grid gap-4 p-5 text-sm">
+              <p className="font-semibold text-[var(--muted)]">
+                advisory_memory_only. Records triage learning for future prioritization without changing validation
+                permission.
+              </p>
+              <label className="grid gap-1">
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Outcome</span>
+                <select name="outcome" className="min-h-10 border border-[var(--line)] bg-white px-3">
+                  <option value="accepted">Accepted</option>
+                  <option value="duplicate">Duplicate</option>
+                  <option value="informative">Informative</option>
+                  <option value="na">N/A</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence quality</span>
+                <select name="evidence_quality" className="min-h-10 border border-[var(--line)] bg-white px-3">
+                  <option value="">Unspecified</option>
+                  <option value="strong">Strong</option>
+                  <option value="adequate">Adequate</option>
+                  <option value="weak">Weak</option>
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Severity delta</span>
+                <select name="severity_delta" className="min-h-10 border border-[var(--line)] bg-white px-3">
+                  <option value="">Unspecified</option>
+                  <option value="up">Up</option>
+                  <option value="same">Same</option>
+                  <option value="down">Down</option>
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Bounty amount</span>
+                <input
+                  name="bounty_amount"
+                  type="number"
+                  min="0"
+                  className="min-h-10 border border-[var(--line)] bg-white px-3"
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Notes</span>
+                <textarea
+                  name="notes"
+                  className="min-h-24 border border-[var(--line)] bg-white p-3"
+                  defaultValue="Outcome recorded from human report review."
+                />
+              </label>
+              <button
+                type="submit"
+                className="min-h-10 rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
+              >
+                Record Learning Outcome
+              </button>
+            </form>
+          </section>
         </aside>
       </div>
     </main>
   );
+}
+
+function optionalFormValue(formData: FormData, name: string) {
+  const value = formData.get(name);
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 function PageBack() {

@@ -388,12 +388,29 @@ test("report preview can promote reviewed claims to finding candidates", async (
 
   assert.match(page, /hasPromotionCandidate/);
   assert.match(page, /reportDataMode === "Live data"/);
+  assert.match(page, /promotionBlockingReadinessBlockers/);
+  assert.match(page, /claim\.quality_score >= 80/);
   assert.match(page, /createFindingCandidate/);
   assert.match(page, /promoteFindingCandidateAction/);
   assert.match(page, /Promote Finding Candidate/);
   assert.match(page, /human-reviewed observed claim/);
   assert.match(page, /Promotion waits for a live, human-reviewed observed claim/);
   assert.match(page, /submission_blocked/);
+});
+
+test("report preview can record advisory learning outcomes", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /recordMythosBrainOutcome/);
+  assert.match(page, /recordLearningOutcomeAction/);
+  assert.match(page, /name="outcome"/);
+  assert.match(page, /name="evidence_quality"/);
+  assert.match(page, /name="severity_delta"/);
+  assert.match(page, /name="bounty_amount"/);
+  assert.match(page, /name="notes"/);
+  assert.match(page, /advisory_memory_only/);
 });
 
 test("validation workspace labels fallback workspaces as demo data", async () => {
