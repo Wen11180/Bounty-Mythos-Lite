@@ -116,6 +116,20 @@ export function fallbackRunDetail(runId: string): PipelineRunDetail | null {
       artifact,
       validation_workspace: validationWorkspace,
       validation_gate: validationGate,
+      closed_loop_summary: {
+        status: "not_started",
+        manual_observation_count: 0,
+        reviewed_claim_count: 0,
+        finding_candidate_count: 0,
+        learning_signal_count: 0,
+        blocked_reasons: [],
+        safety_notes: [
+          "no_live_requests",
+          "test_accounts_only",
+          "human_review_required",
+          "candidate_not_validated",
+        ],
+      },
       report_draft: {
         title: summary.reportTitle ?? "Fallback report preview",
         severity: "medium",

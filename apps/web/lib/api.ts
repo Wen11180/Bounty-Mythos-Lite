@@ -215,6 +215,27 @@ export type ValidationWorkspace = {
   claim_validation_tasks?: ValidationWorkspaceClaimTask[];
 };
 
+export type ClosedLoopSummary = {
+  status: string;
+  manual_observation_count: number;
+  reviewed_claim_count: number;
+  finding_candidate_count: number;
+  learning_signal_count: number;
+  blocked_reasons: string[];
+  safety_notes: string[];
+};
+
+export type EvidenceSupportSummary = {
+  total_count: number;
+  status_counts: Record<string, number>;
+  missing_required_count: number;
+  partially_supported_count: number;
+  satisfied_human_gated_count: number;
+  unsafe_or_redacted_requirement_count: number;
+  top_support_status?: string | null;
+  safety_notes: string[];
+};
+
 export type PipelineArtifactProvenance = {
   artifact_id?: string;
   artifact_type?: string;
@@ -337,6 +358,7 @@ export type PipelineRunPayload = {
   validation_workspace?: ValidationWorkspace | null;
   validation_gate?: PipelineValidationGate | null;
   hunter_intelligence?: HunterIntelligence | null;
+  closed_loop_summary?: ClosedLoopSummary | null;
 };
 
 export type PipelineRun = {
@@ -359,6 +381,8 @@ export type PipelineRun = {
   validationGate?: PipelineValidationGate;
   hunter_intelligence?: HunterIntelligence;
   hunterIntelligence?: HunterIntelligence;
+  evidence_support_summary?: EvidenceSupportSummary | null;
+  evidenceSupportSummary?: EvidenceSupportSummary | null;
 };
 
 export type PipelineRunDetail = PipelineRun & {

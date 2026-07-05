@@ -46,6 +46,9 @@ export default async function RunDetailPage({ params }: PageProps) {
   const targetModel = payload?.target_model;
   const hunterAssessment = run.hunter_intelligence?.assessments?.[0];
   const hunterReasons = safeStringList(hunterAssessment?.reasons);
+  const closedLoop = payload?.closed_loop_summary;
+  const closedLoopBlockedReasons = safeStringList(closedLoop?.blocked_reasons);
+  const closedLoopSafetyNotes = safeStringList(closedLoop?.safety_notes);
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -81,12 +84,13 @@ export default async function RunDetailPage({ params }: PageProps) {
         </div>
       </header>
 
-      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
         <Metric label="Hypotheses" value={summary.hypothesisCount} />
         <Metric label="Blocked" value={summary.blockedCount} />
         <Metric label="Evidence" value={summary.evidenceCount} />
         <Metric label="Scope" value={formatLabel(run.scope_status)} />
         <Metric label="Gate" value={formatLabel(summary.validationGate.status)} />
+        <Metric label="Loop" value={formatLabel(closedLoop?.status ?? "not_started")} />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -188,6 +192,43 @@ export default async function RunDetailPage({ params }: PageProps) {
         </section>
 
         <aside className="grid content-start gap-5">
+          <section className="border border-[var(--line)] bg-white">
+            <SectionHeader icon={ClipboardCheck} title="Closed Loop" />
+            <div className="grid gap-4 p-5 text-sm">
+              <p className="font-semibold text-[var(--accent-strong)]">
+                {formatLabel(closedLoop?.status ?? "not_started")}
+              </p>
+              <dl className="grid grid-cols-2 gap-3">
+                <Field label="Observations" value={closedLoop?.manual_observation_count ?? 0} />
+                <Field label="Reviews" value={closedLoop?.reviewed_claim_count ?? 0} />
+                <Field label="Candidates" value={closedLoop?.finding_candidate_count ?? 0} />
+                <Field label="Learning" value={closedLoop?.learning_signal_count ?? 0} />
+              </dl>
+              {closedLoopSafetyNotes.length > 0 ? (
+                <ul className="flex flex-wrap gap-1.5">
+                  {closedLoopSafetyNotes.map((note) => (
+                    <li
+                      key={`closed-loop-note-${note}`}
+                      className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold text-[var(--muted)]"
+                    >
+                      {formatLabel(note)}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {closedLoopBlockedReasons.length > 0 ? (
+                <div className="border-t border-[var(--line)] pt-3">
+                  <p className="font-semibold">Blocked</p>
+                  <ul className="mt-2 grid gap-1 text-[var(--muted)]">
+                    {closedLoopBlockedReasons.map((reason) => (
+                      <li key={`closed-loop-blocked-${reason}`}>{formatLabel(reason)}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          </section>
+
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={ShieldCheck} title="Validation Gate" />
             <div className="grid gap-3 p-5 text-sm">

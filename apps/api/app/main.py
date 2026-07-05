@@ -485,10 +485,11 @@ def get_mythos_pipeline_run(
     run_id: str,
     session: Session = Depends(get_session),
 ) -> MythosPipelineRunDetail:
-    record = DatabaseRepository(session).get_pipeline_run(run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    return _pipeline_run_detail(record)
+    return _pipeline_run_detail(record, repository)
 
 
 @app.get(
@@ -1167,13 +1168,17 @@ SECURITY_IMPACT_REQUIRED_OBSERVATION_TYPES = [
 ]
 
 
-def _pipeline_run_detail_payload(record: PipelineRunRecord) -> dict:
+def _pipeline_run_detail_payload(
+    record: PipelineRunRecord,
+    repository: DatabaseRepository,
+) -> dict:
     payload = dict(record.payload)
     workspace = payload.get("validation_workspace")
     if isinstance(workspace, dict):
         enriched_workspace = dict(workspace)
         enriched_workspace["claim_validation_tasks"] = _claim_validation_tasks(record)
         payload["validation_workspace"] = enriched_workspace
+    payload["closed_loop_summary"] = _closed_loop_summary(record, repository)
     return payload
 
 
@@ -1193,6 +1198,116 @@ def _claim_validation_tasks(record: PipelineRunRecord) -> list[dict]:
         )
         for claim in preview.claim_ledger
     ]
+
+
+def _closed_loop_summary(
+    record: PipelineRunRecord,
+    repository: DatabaseRepository,
+) -> dict:
+    payload = record.payload
+    manual_observations = _safe_record_list(payload.get("manual_observations"))
+    claim_review_decisions = _safe_record_list(payload.get("claim_review_decisions"))
+    usage_records = _closed_loop_artifact_usage_records(record, repository)
+    finding_candidate_count = _closed_loop_usage_count(
+        usage_records,
+        "finding_candidate",
+        record.id,
+    )
+    learning_signal_count = _closed_loop_usage_count(
+        usage_records,
+        "learning_signal",
+        record.id,
+    )
+    blocked_reasons = _closed_loop_blocked_reasons(record)
+
+    return {
+        "status": _closed_loop_status(
+            manual_observation_count=len(manual_observations),
+            reviewed_claim_count=len(claim_review_decisions),
+            finding_candidate_count=finding_candidate_count,
+            learning_signal_count=learning_signal_count,
+            blocked_reasons=blocked_reasons,
+        ),
+        "manual_observation_count": len(manual_observations),
+        "reviewed_claim_count": len(claim_review_decisions),
+        "finding_candidate_count": finding_candidate_count,
+        "learning_signal_count": learning_signal_count,
+        "blocked_reasons": blocked_reasons,
+        "safety_notes": [
+            "no_live_requests",
+            "test_accounts_only",
+            "human_review_required",
+            "candidate_not_validated",
+        ],
+    }
+
+
+def _closed_loop_status(
+    *,
+    manual_observation_count: int,
+    reviewed_claim_count: int,
+    finding_candidate_count: int,
+    learning_signal_count: int,
+    blocked_reasons: list[str],
+) -> str:
+    if blocked_reasons:
+        return "blocked"
+    if learning_signal_count:
+        return "candidate_learning_recorded"
+    if finding_candidate_count:
+        return "finding_candidate_created"
+    if reviewed_claim_count:
+        return "claim_reviewed"
+    if manual_observation_count:
+        return "manual_observation_recorded"
+    return "not_started"
+
+
+def _closed_loop_artifact_usage_records(
+    record: PipelineRunRecord,
+    repository: DatabaseRepository,
+) -> list[dict]:
+    artifact = record.payload.get("artifact")
+    artifact_id = artifact.get("artifact_id") if isinstance(artifact, dict) else None
+    if not artifact_id:
+        return []
+
+    artifact_record = repository.get_artifact(str(artifact_id))
+    if artifact_record is None:
+        return []
+    return _artifact_usage_records(artifact_record)
+
+
+def _closed_loop_usage_count(
+    usage_records: list[dict],
+    usage_type: str,
+    run_id: str,
+) -> int:
+    return sum(
+        1
+        for usage in usage_records
+        if usage.get("usage_type") == usage_type and usage.get("run_id") == run_id
+    )
+
+
+def _closed_loop_blocked_reasons(record: PipelineRunRecord) -> list[str]:
+    payload = record.payload
+    try:
+        preview = build_report_preview_response(record)
+    except ValueError:
+        return ["report_preview_unavailable"]
+
+    claim_review_decisions = _safe_record_list(payload.get("claim_review_decisions"))
+    if claim_review_decisions and best_finding_candidate_claim(preview) is None:
+        return ["no_promotion_eligible_claim"]
+
+    return []
+
+
+def _safe_record_list(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _claim_validation_task(
@@ -1377,9 +1492,12 @@ def _pipeline_run_summary(record: PipelineRunRecord) -> MythosPipelineRunSummary
     )
 
 
-def _pipeline_run_detail(record: PipelineRunRecord) -> MythosPipelineRunDetail:
+def _pipeline_run_detail(
+    record: PipelineRunRecord,
+    repository: DatabaseRepository,
+) -> MythosPipelineRunDetail:
     summary = _pipeline_run_summary(record)
-    payload = _pipeline_run_detail_payload(record)
+    payload = _pipeline_run_detail_payload(record, repository)
     return MythosPipelineRunDetail(
         id=summary.id,
         program_id=summary.program_id,
