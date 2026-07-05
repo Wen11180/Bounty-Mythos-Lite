@@ -680,9 +680,63 @@ class DatabaseRepository:
         record.decision_reason = _safe_display_value(reason)
         record.decided_at = datetime.now(UTC)
         self.session.add(record)
+        self._sync_validation_runs_for_approval_decision(record)
         self.session.commit()
         self.session.refresh(record)
         return record
+
+    def _sync_validation_runs_for_approval_decision(self, approval: ApprovalRecord) -> None:
+        if approval.validation_mode is None or approval.plan_digest is None:
+            return
+        if approval.asset is None:
+            return
+
+        query = (
+            select(ValidationRunRecord)
+            .where(ValidationRunRecord.approval_required.is_(True))
+            .where(ValidationRunRecord.validation_mode == approval.validation_mode)
+            .where(ValidationRunRecord.plan_digest == approval.plan_digest)
+            .where(
+                (ValidationRunRecord.allowed_to_execute.is_(False))
+                | (ValidationRunRecord.approval_id == approval.id)
+            )
+        )
+        if approval.campaign_id is not None:
+            query = query.where(ValidationRunRecord.campaign_id == approval.campaign_id)
+        if approval.task_id is not None:
+            query = query.where(ValidationRunRecord.task_id == approval.task_id)
+
+        for validation_run in self.session.scalars(query).all():
+            if not self._validation_run_asset_matches_approval(validation_run, approval):
+                continue
+            validation_run.approval_id = approval.id
+            if approval.status == "approved":
+                validation_run.status = "ready"
+                validation_run.safety_gate_state = "approved_validation_record"
+                validation_run.allowed_to_execute = True
+            else:
+                validation_run.status = "blocked"
+                validation_run.safety_gate_state = "blocked"
+                validation_run.allowed_to_execute = False
+                validation_run.finished_at = datetime.now(UTC)
+            self.session.add(validation_run)
+
+    def _validation_run_asset_matches_approval(
+        self,
+        validation_run: ValidationRunRecord,
+        approval: ApprovalRecord,
+    ) -> bool:
+        if approval.asset is None:
+            return False
+
+        validation_asset = validation_run.target_ref
+        if validation_run.target_ref == f"campaign:{validation_run.campaign_id}":
+            campaign = self.session.get(CampaignRecord, validation_run.campaign_id)
+            if campaign is None:
+                return False
+            validation_asset = campaign.default_asset
+
+        return validation_asset == approval.asset
 
     def list_approval_records(self, *, run_id: str | None = None) -> list[ApprovalRecord]:
         query = select(ApprovalRecord)

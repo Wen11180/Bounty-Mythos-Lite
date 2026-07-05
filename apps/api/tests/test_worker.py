@@ -4,7 +4,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.repository import DatabaseRepository, seed_sample_data
-from app.worker.tasks import ping, run_agent_task
+from app.worker import tasks as worker_tasks
+from app.worker.tasks import dispatch_agent_task, ping, run_agent_task
 
 
 def build_repository():
@@ -21,6 +22,27 @@ def build_repository():
 
 def test_ping_task_returns_pong():
     assert ping.run() == "pong"
+
+
+def test_dispatch_agent_task_enqueues_only_campaign_task_id(monkeypatch):
+    calls: list[tuple[tuple, dict]] = []
+
+    class FakeAsyncResult:
+        id = "celery_task_1"
+
+    def fake_delay(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeAsyncResult()
+
+    monkeypatch.setattr(worker_tasks.run_agent_task_from_queue, "delay", fake_delay)
+
+    result = dispatch_agent_task(campaign_task_id="campaign_task_1")
+
+    assert calls == [(("campaign_task_1",), {})]
+    assert result == {
+        "campaign_task_id": "campaign_task_1",
+        "celery_task_id": "celery_task_1",
+    }
 
 
 def test_run_agent_task_reloads_task_by_id_and_completes_safe_read_only_work():

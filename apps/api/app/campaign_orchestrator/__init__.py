@@ -36,6 +36,9 @@ ACTIVE_TASK_STATUSES = {
     "running",
     "awaiting_approval",
 }
+READ_ONLY_RESEARCH_TASK_TYPES = {
+    task["task_type"] for task in READ_ONLY_RESEARCH_TASKS
+}
 
 
 def tick_campaign(
@@ -83,6 +86,10 @@ def tick_campaign(
             "dispatched_task_ids": [],
             "stop_reasons": ["active_tasks_exist"],
         }
+
+    review_gate = _completed_research_cycle_review(campaign, repository)
+    if review_gate is not None:
+        return review_gate
 
     dispatched_task_ids: list[str] = []
     for stage_order, task_spec in enumerate(READ_ONLY_RESEARCH_TASKS):
@@ -157,3 +164,106 @@ def _campaign_stop_reason(
     if any(value is not None and value <= 0 for value in budgets):
         return "budget_exhausted"
     return None
+
+
+def _completed_research_cycle_review(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> dict | None:
+    tasks = repository.list_campaign_tasks(campaign.id)
+    completed_task_types = {
+        task.task_type
+        for task in tasks
+        if task.status == "completed" and task.task_type in READ_ONLY_RESEARCH_TASK_TYPES
+    }
+    if completed_task_types != READ_ONLY_RESEARCH_TASK_TYPES:
+        return None
+
+    approvals = repository.list_campaign_approval_records(campaign.id)
+    validation_runs = repository.list_campaign_validation_runs(campaign.id)
+    hypothesis_output_refs = [
+        ref
+        for task in tasks
+        if task.task_type == "hypothesis_generation"
+        for ref in task.output_refs
+        if ref.startswith("pipeline_run:")
+    ]
+    codebase_facts = repository.list_campaign_codebase_facts(campaign.id)
+
+    pending_approvals = [
+        approval for approval in approvals
+        if approval.status in {"pending", "requested"}
+    ]
+    awaiting_validation_runs = [
+        run for run in validation_runs
+        if run.approval_required
+        and not run.allowed_to_execute
+        and (
+            run.status == "awaiting_approval"
+            or run.safety_gate_state == "awaiting_approval"
+        )
+    ]
+
+    next_actions: list[str] = []
+    stop_reasons: list[str] = []
+    if pending_approvals:
+        next_actions.append("review_approval_queue")
+        stop_reasons.append("approval_required")
+    if awaiting_validation_runs:
+        next_actions.append("review_validation_queue")
+        stop_reasons.append("validation_approval_required")
+    if hypothesis_output_refs:
+        next_actions.append("review_hypothesis_board")
+    if codebase_facts:
+        next_actions.append("review_attack_surface_map")
+
+    if not next_actions:
+        return None
+
+    stop_reason = (
+        "validation_approval_required"
+        if awaiting_validation_runs
+        else stop_reasons[0] if stop_reasons else "campaign_cycle_review_required"
+    )
+    safety_gate_state = "awaiting_approval" if stop_reasons else "allowed"
+    output_refs = [
+        *[f"approval:{approval.id}" for approval in pending_approvals],
+        *[f"validation_run:{run.id}" for run in awaiting_validation_runs],
+        *hypothesis_output_refs,
+        *[f"codebase_fact:{fact.id}" for fact in codebase_facts],
+    ]
+    payload = {
+        "review_gate": "human_review_required",
+        "completed_task_types": sorted(completed_task_types),
+        "pending_approval_count": len(pending_approvals),
+        "awaiting_validation_count": len(awaiting_validation_runs),
+        "hypothesis_ref_count": len(hypothesis_output_refs),
+        "codebase_fact_count": len(codebase_facts),
+        "next_actions": next_actions,
+    }
+    existing_review_stages = [
+        stage for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "campaign_cycle_review"
+        and stage.status == "awaiting_review"
+    ]
+    if not existing_review_stages:
+        repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=campaign.id,
+            task_id=None,
+            stage_key="campaign_cycle_review",
+            stage_order=len(READ_ONLY_RESEARCH_TASKS),
+            status="awaiting_review",
+            input_refs=[f"campaign:{campaign.id}"],
+            output_refs=output_refs,
+            safety_gate_state=safety_gate_state,
+            stop_reason=stop_reason,
+            payload=payload,
+        )
+
+    return {
+        "status": "awaiting_review",
+        "dispatched_task_ids": [],
+        "stop_reasons": stop_reasons or ["campaign_cycle_review_required"],
+        "next_actions": next_actions,
+    }

@@ -5,6 +5,7 @@ from sqlalchemy.pool import StaticPool
 from app.campaign_orchestrator import tick_campaign
 from app.db import Base
 from app.repository import DatabaseRepository, seed_sample_data
+from app.worker.tasks import run_agent_task
 
 
 def build_repository():
@@ -250,5 +251,78 @@ def test_tick_does_not_duplicate_active_research_queue():
         assert len(repository.list_campaign_tasks(campaign.id)) == 4
         assert len(repository.list_campaign_agent_runs(campaign.id)) == 4
         assert len(dispatched) == 4
+    finally:
+        session.close()
+
+
+def test_tick_enters_review_gate_after_research_cycle_materializes_artifacts():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Cycle review campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed. Authorization: Bearer secret-token",
+            default_asset="api.example.com",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=1,
+        )
+
+        first = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        for task_id in first["dispatched_task_ids"]:
+            run_agent_task(task_id, repository=repository)
+
+        second = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert first["status"] == "dispatched"
+        assert second["status"] == "awaiting_review"
+        assert second["dispatched_task_ids"] == []
+        assert second["stop_reasons"] == [
+            "approval_required",
+            "validation_approval_required",
+        ]
+        assert second["next_actions"] == [
+            "review_approval_queue",
+            "review_validation_queue",
+            "review_hypothesis_board",
+            "review_attack_surface_map",
+        ]
+        assert len(repository.list_campaign_tasks(campaign.id)) == 4
+        assert len(dispatched) == 4
+
+        assert len(repository.list_campaign_codebase_facts(campaign.id)) == 1
+        assert len(repository.list_campaign_approval_records(campaign.id)) == 1
+        assert len(repository.list_campaign_validation_runs(campaign.id)) == 1
+        assert repository.list_campaign_validation_runs(campaign.id)[0].allowed_to_execute is False
+
+        review_stages = [
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign.id)
+            if stage.stage_key == "campaign_cycle_review"
+        ]
+        assert len(review_stages) == 1
+        assert review_stages[0].status == "awaiting_review"
+        assert review_stages[0].safety_gate_state == "awaiting_approval"
+        assert review_stages[0].stop_reason == "validation_approval_required"
+        assert "secret-token" not in str(second)
+        assert "secret-token" not in str(review_stages)
     finally:
         session.close()

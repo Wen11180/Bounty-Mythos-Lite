@@ -18,6 +18,14 @@ def run_agent_task_from_queue(campaign_task_id: str) -> dict:
         return run_agent_task(campaign_task_id, repository=DatabaseRepository(session))
 
 
+def dispatch_agent_task(*, campaign_task_id: str) -> dict:
+    queued_task = run_agent_task_from_queue.delay(campaign_task_id)
+    return {
+        "campaign_task_id": campaign_task_id,
+        "celery_task_id": queued_task.id,
+    }
+
+
 def run_agent_task(
     campaign_task_id: str,
     *,

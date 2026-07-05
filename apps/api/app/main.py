@@ -73,6 +73,7 @@ from app.scope_guard import (
     ValidationRequest,
     evaluate_validation_request,
 )
+from app.worker.tasks import dispatch_agent_task
 from pydantic import BaseModel, Field
 
 
@@ -488,7 +489,7 @@ def start_mythos_campaign(
     tick_result = tick_campaign(
         campaign_id,
         repository=repository,
-        dispatcher=lambda **_: None,
+        dispatcher=dispatch_agent_task,
     )
     if tick_result["status"] == "blocked":
         campaign = repository.update_campaign_status(campaign_id, "blocked")
@@ -628,6 +629,7 @@ def get_mythos_campaign_control_center(
     tasks = repository.list_campaign_tasks(campaign_id)
     agent_runs = repository.list_campaign_agent_runs(campaign_id)
     approvals = repository.list_campaign_approval_records(campaign_id)
+    validation_runs = repository.list_campaign_validation_runs(campaign_id)
     stages = repository.list_campaign_pipeline_stages(campaign_id)
     blocked_reasons = _campaign_control_center_blocked_reasons(
         campaign=campaign,
@@ -648,6 +650,7 @@ def get_mythos_campaign_control_center(
             tasks=tasks,
             agent_runs=agent_runs,
             approvals=approvals,
+            validation_runs=validation_runs,
             blocked_reasons=blocked_reasons,
         ),
         blocked_reasons=blocked_reasons,
@@ -1524,10 +1527,21 @@ def _campaign_control_center_safe_next_action(
     tasks: list[CampaignTaskRecord],
     agent_runs: list[AgentRunRecord],
     approvals: list[ApprovalRecord],
+    validation_runs: list[ValidationRunRecord],
     blocked_reasons: list[str],
 ) -> str:
     if any(record.status == "pending" for record in approvals):
         return "review_approval_queue"
+    if any(
+        record.approval_required
+        and not record.allowed_to_execute
+        and (
+            record.status == "awaiting_approval"
+            or record.safety_gate_state == "awaiting_approval"
+        )
+        for record in validation_runs
+    ):
+        return "review_validation_queue"
     if blocked_reasons:
         return "resolve_blockers"
     if campaign.status != "running":

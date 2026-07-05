@@ -437,3 +437,137 @@ def test_repository_records_validation_runs_with_approval_gate_safety():
         assert local_run.evidence_ref_count == 1
     finally:
         session.close()
+
+
+def test_repository_does_not_unlock_validation_run_for_mismatched_approval_asset():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Asset mismatch validation campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve different asset",
+            requested_action="two_account_authorization_check",
+            asset="other.example.com",
+            validation_mode="two_account_authorization_check",
+            plan_digest="plan_digest_asset_mismatch",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="plan_digest_asset_mismatch",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Awaiting approval",
+            payload={},
+        )
+
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for other asset only.",
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        assert run.approval_id is None
+        assert run.status == "awaiting_approval"
+        assert run.safety_gate_state == "awaiting_approval"
+        assert run.allowed_to_execute is False
+    finally:
+        session.close()
+
+
+def test_repository_matches_approval_asset_to_validation_target_ref_when_present():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Target ref mismatch campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve default campaign asset",
+            requested_action="two_account_authorization_check",
+            asset=campaign.default_asset,
+            validation_mode="two_account_authorization_check",
+            plan_digest="plan_digest_target_mismatch",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref="other.example.com",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="plan_digest_target_mismatch",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Awaiting approval",
+            payload={},
+        )
+
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for default asset only.",
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        assert run.approval_id is None
+        assert run.status == "awaiting_approval"
+        assert run.safety_gate_state == "awaiting_approval"
+        assert run.allowed_to_execute is False
+    finally:
+        session.close()
