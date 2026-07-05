@@ -65,10 +65,12 @@ def test_dry_run_response_and_detail_include_stage_timeline():
                 "input_summary",
                 "output_summary",
                 "safety_notes",
+                "details",
             }
             assert stage["input_summary"]
             assert stage["output_summary"]
             assert isinstance(stage["safety_notes"], list)
+            assert stage["details"] == {}
 
         by_name = {stage["name"]: stage for stage in timeline}
         assert by_name["refutation"]["status"] == "blocked"

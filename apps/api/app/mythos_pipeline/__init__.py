@@ -50,6 +50,7 @@ class PipelineStage(BaseModel):
     input_summary: str
     output_summary: str
     safety_notes: list[str]
+    details: dict = Field(default_factory=dict)
 
 
 class PipelineArtifactSummary(BaseModel):

@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -433,7 +433,11 @@ def run_mythos_pipeline_dry_run(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if request.program_id is not None:
         learning_signals = repository.list_learning_signals(request.program_id)
-        applied_reasons, skipped_reasons = _apply_program_learning_to_hunter_intelligence(
+        (
+            applied_reasons,
+            skipped_reasons,
+            lesson_traces,
+        ) = _apply_program_learning_to_hunter_intelligence(
             response.hunter_intelligence,
             learning_signals,
         )
@@ -449,6 +453,7 @@ def run_mythos_pipeline_dry_run(
                 len(learning_signals),
                 applied_reasons or skipped_reasons,
                 "completed" if applied_reasons else "skipped",
+                lesson_traces,
             )
             response.timeline.append(learning_stage)
             payload["timeline"] = [stage.model_dump(mode="json") for stage in response.timeline]
@@ -1030,9 +1035,9 @@ def _evidence_quality_from_reviewed_claims(
 def _apply_program_learning_to_hunter_intelligence(
     intelligence: HunterIntelligence | None,
     learning_signals: list[LearningSignalRecord],
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     if intelligence is None:
-        return [], []
+        return [], [], []
 
     lesson_inputs = [_learning_signal_response(signal) for signal in learning_signals]
     lessons = build_mythos_lessons(lesson_inputs)
@@ -1048,6 +1053,7 @@ def _apply_program_learning_to_hunter_intelligence(
 
     applied_reasons: list[str] = []
     skipped_reasons: list[str] = []
+    lesson_traces: list[dict[str, Any]] = []
     for assessment in intelligence.assessments:
         matching_lessons = lessons_by_playbook.get(assessment.playbook_id, [])
         hard_gate_blocked = (
@@ -1057,6 +1063,8 @@ def _apply_program_learning_to_hunter_intelligence(
         if hard_gate_blocked:
             if matching_lessons:
                 skipped_reasons.append("learning:safety_gate_blocked")
+                for lesson in matching_lessons:
+                    lesson_traces.append(_lesson_trace(lesson, action="skipped"))
             continue
         if not matching_lessons:
             if assessment.playbook_id in weak_accepted_playbooks:
@@ -1074,6 +1082,7 @@ def _apply_program_learning_to_hunter_intelligence(
                 if "learning:accepted_history" not in assessment.reasons:
                     assessment.reasons.append("learning:accepted_history")
                 applied_reasons.append("learning:accepted_history")
+                lesson_traces.append(_lesson_trace(lesson, action="applied"))
             elif lesson.recommendation == "duplicate_watch":
                 assessment.duplicate_risk_score = min(
                     100,
@@ -1086,6 +1095,7 @@ def _apply_program_learning_to_hunter_intelligence(
                 if "learning:duplicate_history" not in assessment.reasons:
                     assessment.reasons.append("learning:duplicate_history")
                 applied_reasons.append("learning:duplicate_history")
+                lesson_traces.append(_lesson_trace(lesson, action="applied"))
             elif lesson.recommendation == "penalize":
                 assessment.hunter_priority_score = max(
                     0,
@@ -1094,20 +1104,39 @@ def _apply_program_learning_to_hunter_intelligence(
                 if "learning:rejection_history" not in assessment.reasons:
                     assessment.reasons.append("learning:rejection_history")
                 applied_reasons.append("learning:rejection_history")
+                lesson_traces.append(_lesson_trace(lesson, action="applied"))
             elif lesson.recommendation == "evidence_needed":
                 skipped_reasons.append("learning:weak_accepted_evidence_not_boosted")
+                lesson_traces.append(_lesson_trace(lesson, action="skipped"))
             for reason in lesson.reasons:
                 if reason not in assessment.reasons:
                     assessment.reasons.append(reason)
         if "advisory_memory_only" not in assessment.safety_notes:
             assessment.safety_notes.append("advisory_memory_only")
-    return sorted(set(applied_reasons)), sorted(set(skipped_reasons))
+    return sorted(set(applied_reasons)), sorted(set(skipped_reasons)), lesson_traces
+
+
+def _lesson_trace(lesson: MythosLesson, *, action: str) -> dict[str, Any]:
+    return {
+        "lesson_id": (
+            f"{lesson.scope_type}:{lesson.scope_key}:{lesson.playbook_id}:"
+            f"{lesson.surface_pattern}:{lesson.recommendation}"
+        ),
+        "playbook_id": lesson.playbook_id,
+        "surface_pattern": lesson.surface_pattern,
+        "recommendation": lesson.recommendation,
+        "action": action,
+        "source_signal_count": len(lesson.source_signal_ids),
+        "source_signal_ids": lesson.source_signal_ids,
+        "reasons": lesson.reasons,
+    }
 
 
 def _program_learning_stage(
     signal_count: int,
     reasons: list[str],
     status: str,
+    lesson_traces: list[dict[str, Any]] | None = None,
 ) -> PipelineStage:
     action = "adjusted hunter intelligence priorities" if status == "completed" else "left hunter intelligence unchanged"
     return PipelineStage(
@@ -1123,6 +1152,7 @@ def _program_learning_stage(
             "human_review_required",
             "no_execution_permission",
         ],
+        details={"lesson_traces": lesson_traces or []},
     )
 
 

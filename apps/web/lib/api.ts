@@ -89,6 +89,7 @@ export type PipelineStage = {
   output_summary?: string;
   safety_notes?: string[];
   evidence_count?: number;
+  details?: Record<string, unknown>;
 };
 
 export type PipelineTargetModel = {

@@ -384,6 +384,7 @@ def test_mythos_pipeline_records_program_learning_stage_when_memory_adjusts_hunt
             },
         )
         assert signal_response.status_code == 200
+        signal_id = signal_response.json()["id"]
 
         response = client.post(
             "/mythos/pipeline/dry-run",
@@ -410,12 +411,30 @@ def test_mythos_pipeline_records_program_learning_stage_when_memory_adjusts_hunt
         assert "1 program learning signal(s)" in learning_stage["input_summary"]
         assert "adjusted hunter intelligence" in learning_stage["output_summary"]
         assert "learning:duplicate_history" in learning_stage["output_summary"]
+        assert learning_stage["details"]["lesson_traces"] == [
+            {
+                "lesson_id": "program:program_example:bola_idor:file_id:export:duplicate_watch",
+                "playbook_id": "bola_idor",
+                "surface_pattern": "file_id:export",
+                "recommendation": "duplicate_watch",
+                "action": "applied",
+                "source_signal_count": 1,
+                "source_signal_ids": [signal_id],
+                "reasons": ["lesson:duplicate_watch:repeated_duplicate"],
+            }
+        ]
         assert "advisory_memory_only" in learning_stage["safety_notes"]
 
         detail_response = client.get(f"/mythos/pipeline/runs/{body['run_id']}")
         assert detail_response.status_code == 200
         detail_timeline = detail_response.json()["payload"]["timeline"]
-        assert any(stage["name"] == "program_learning" for stage in detail_timeline)
+        detail_learning_stage = {
+            stage["name"]: stage for stage in detail_timeline
+        }["program_learning"]
+        assert (
+            detail_learning_stage["details"]["lesson_traces"]
+            == learning_stage["details"]["lesson_traces"]
+        )
     finally:
         app.dependency_overrides.clear()
 
@@ -441,6 +460,7 @@ def test_mythos_pipeline_dry_run_uses_accepted_learning_for_hunter_priority():
         assert baseline_response.status_code == 200
         baseline_assessment = baseline_response.json()["hunter_intelligence"]["assessments"][0]
 
+        signal_ids = []
         for index in range(2):
             signal_response = client.post(
                 "/mythos/brain/learning-signals",
@@ -454,6 +474,7 @@ def test_mythos_pipeline_dry_run_uses_accepted_learning_for_hunter_priority():
                 },
             )
             assert signal_response.status_code == 200
+            signal_ids.append(signal_response.json()["id"])
 
         learned_response = client.post(
             "/mythos/pipeline/dry-run",
@@ -481,6 +502,21 @@ def test_mythos_pipeline_dry_run_uses_accepted_learning_for_hunter_priority():
         )
         assert "learning:accepted_history" in learned_assessment["reasons"]
         assert "advisory_memory_only" in learned_assessment["safety_notes"]
+        learning_stage = {
+            stage["name"]: stage for stage in learned_response.json()["timeline"]
+        }["program_learning"]
+        assert learning_stage["details"]["lesson_traces"] == [
+            {
+                "lesson_id": "program:program_example:bola_idor:file_id:export:boost",
+                "playbook_id": "bola_idor",
+                "surface_pattern": "file_id:export",
+                "recommendation": "boost",
+                "action": "applied",
+                "source_signal_count": 2,
+                "source_signal_ids": sorted(signal_ids),
+                "reasons": ["lesson:boost:accepted_strong_evidence"],
+            }
+        ]
     finally:
         app.dependency_overrides.clear()
 
