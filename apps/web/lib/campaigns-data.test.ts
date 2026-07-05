@@ -120,6 +120,20 @@ test("campaign control page stays read-only with no execution entrypoints", asyn
     fs.readFile(new URL("../app/campaigns/page.tsx", import.meta.url), "utf8"),
   );
 
+  assert.match(page, /getCampaigns/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaign\.id\)\}/);
+  assert.doesNotMatch(page, /getCampaignControlCenter/);
+  assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign detail page reads the audited control center and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /executionAllowed/);
   assert.match(page, /safeNextAction/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
