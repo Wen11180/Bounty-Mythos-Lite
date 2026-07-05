@@ -80,6 +80,99 @@ def test_campaign_api_creates_lists_and_controls_campaign_lifecycle():
         app.dependency_overrides.clear()
 
 
+def test_campaign_api_start_runs_first_safe_orchestrator_tick():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Start orchestrator campaign",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "Testing allowed. Authorization: Bearer secret-token",
+                "default_asset": "api.example.com",
+                "created_by": "operator",
+                "budget": {
+                    "time_budget_minutes": 30,
+                    "token_budget": 1000,
+                    "tool_call_budget": 10,
+                    "validation_budget": 1,
+                },
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        start_response = client.post(f"/mythos/campaigns/{campaign_id}/start")
+
+        assert start_response.status_code == 200
+        assert start_response.json()["status"] == "running"
+
+        tasks_response = client.get(f"/mythos/campaigns/{campaign_id}/tasks")
+        agent_runs_response = client.get(f"/mythos/campaigns/{campaign_id}/agent-runs")
+        stages_response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+
+        assert tasks_response.status_code == 200
+        assert agent_runs_response.status_code == 200
+        assert stages_response.status_code == 200
+        tasks = tasks_response.json()
+        agent_runs = agent_runs_response.json()
+        stages = stages_response.json()
+        assert tasks[0]["task_type"] == "campaign_observation"
+        assert agent_runs[0]["agent_type"] == "orchestrator_agent"
+        assert agent_runs[0]["safety_gate_state"] == "allowed"
+        assert stages[0]["stage_key"] == "campaign_tick"
+        assert stages[0]["status"] == "dispatched"
+        assert "secret-token" not in str(tasks + agent_runs + stages)
+        assert "Authorization" not in str(tasks + agent_runs + stages)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_api_start_blocks_out_of_scope_without_dispatch():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Out of scope start",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "out_of_scope",
+                "policy_text": "Testing is not allowed",
+                "default_asset": "api.example.com",
+                "created_by": "operator",
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        start_response = client.post(f"/mythos/campaigns/{campaign_id}/start")
+
+        assert start_response.status_code == 200
+        assert start_response.json()["status"] == "blocked"
+        assert client.get(f"/mythos/campaigns/{campaign_id}/tasks").json() == []
+        stages = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages").json()
+        assert stages[0]["stage_key"] == "campaign_tick"
+        assert stages[0]["status"] == "blocked"
+        assert stages[0]["stop_reason"] == "scope_not_in_scope"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_api_rejects_missing_program():
     testing_session = build_testing_session()
 

@@ -21,6 +21,7 @@ from app.db_models import (
     ScannerRunRecord,
     ValidationRunRecord,
 )
+from app.campaign_orchestrator import tick_campaign
 from app.hunter_intelligence import (
     HunterIntelligence,
 )
@@ -480,7 +481,18 @@ def start_mythos_campaign(
     campaign_id: str,
     session: Session = Depends(get_session),
 ) -> CampaignResponse:
-    return _update_campaign_status(campaign_id, "running", session)
+    repository = DatabaseRepository(session)
+    campaign = repository.update_campaign_status(campaign_id, "running")
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    tick_result = tick_campaign(
+        campaign_id,
+        repository=repository,
+        dispatcher=lambda **_: None,
+    )
+    if tick_result["status"] == "blocked":
+        campaign = repository.update_campaign_status(campaign_id, "blocked")
+    return _campaign_response(campaign, repository)
 
 
 @app.post("/mythos/campaigns/{campaign_id}/pause", response_model=CampaignResponse)
