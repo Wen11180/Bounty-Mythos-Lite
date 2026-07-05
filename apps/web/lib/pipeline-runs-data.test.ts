@@ -287,6 +287,20 @@ test("dashboard labels fallback pipeline runs as demo data", async () => {
   assert.match(page, /Demo data/);
 });
 
+test("dashboard labels fallback shell data as demo data", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /dashboardDataMode/);
+  assert.match(page, /programs === fallbackPrograms/);
+  assert.match(page, /findings === fallbackFindings/);
+  assert.match(page, /reports === fallbackReports/);
+  assert.match(page, /brainProfile === fallbackBrainProfile/);
+  assert.match(page, /scopeGuardDecision === fallbackScopeGuardDecision/);
+  assert.match(page, /Demo data/);
+});
+
 test("run detail labels fallback run records as demo data", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),

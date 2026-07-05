@@ -173,11 +173,12 @@ export default async function Dashboard() {
     getPipelineRuns([]),
   ]);
   const activeProgramId = programs[0]?.id ?? fallbackMythosBrainProfile.program_id;
-  const brainProfile = await getMythosBrainProgram(activeProgramId, {
+  const fallbackBrainProfile = {
     ...fallbackMythosBrainProfile,
     program_id: activeProgramId,
     program_name: programs[0]?.name ?? fallbackMythosBrainProfile.program_name,
-  });
+  };
+  const brainProfile = await getMythosBrainProgram(activeProgramId, fallbackBrainProfile);
   const scopeGuardDecision = await evaluateScopeGuard(
     fallbackScopeGuardRule,
     fallbackScopeGuardRequest,
@@ -200,6 +201,13 @@ export default async function Dashboard() {
     { label: "Policy 风险拦截", value: String(countPolicyBlocked(findings)) },
   ];
   const { dataMode: pipelineRunDataMode, runs: runRows } = resolvePipelineRunRows(pipelineRuns);
+  const dashboardUsesFallbackData =
+    programs === fallbackPrograms ||
+    findings === fallbackFindings ||
+    reports === fallbackReports ||
+    brainProfile === fallbackBrainProfile ||
+    scopeGuardDecision === fallbackScopeGuardDecision;
+  const dashboardDataMode = dashboardUsesFallbackData ? "Demo data" : "Live data";
   const intelligenceRadar = deriveIntelligenceRadar(runRows);
   const radarSignalsByRunId = new Map(
     intelligenceRadar.runSignals.map((signal) => [signal.run.runId, signal]),
@@ -252,10 +260,26 @@ export default async function Dashboard() {
             </h2>
           </div>
           <div className="max-w-sm rounded-md border border-[var(--line)] bg-white p-4">
-            <p className="text-sm font-semibold text-[var(--muted)]">当前模式</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-semibold text-[var(--muted)]">当前模式</p>
+              <span
+                className={`rounded-sm border border-[var(--line)] px-2 py-1 text-xs font-semibold uppercase ${
+                  dashboardDataMode === "Demo data"
+                    ? "text-[var(--warning)]"
+                    : "text-[var(--accent-strong)]"
+                }`}
+              >
+                {dashboardDataMode}
+              </span>
+            </div>
             <p className="mt-1 text-lg font-semibold">安全初始化骨架</p>
           </div>
         </header>
+        {dashboardDataMode === "Demo data" ? (
+          <p className="-mt-4 mb-5 rounded-md border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
+            Demo data is shown because one or more dashboard panels came from fallback records.
+          </p>
+        ) : null}
 
         <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <section className="grid min-w-0 gap-5">
