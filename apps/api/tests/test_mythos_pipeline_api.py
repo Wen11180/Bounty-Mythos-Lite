@@ -2166,6 +2166,8 @@ def test_pipeline_run_detail_exposes_closed_loop_summary_after_candidate_learnin
             "reviewed_claim_count": 1,
             "finding_candidate_count": 1,
             "learning_signal_count": 1,
+            "lesson_count": 0,
+            "brain_memory_status": "learning_recorded",
             "blocked_reasons": [],
             "safety_notes": [
                 "no_live_requests",
@@ -2209,10 +2211,10 @@ def test_pipeline_run_detail_exposes_closed_loop_summary_after_candidate_learnin
                 {
                     "key": "brain_memory",
                     "label": "Brain Memory",
-                    "status": "complete",
-                    "reason": "Learning memory is available for the program brain.",
+                    "status": "waiting",
+                    "reason": "Learning signal is recorded; reusable lesson needs more evidence.",
                     "safety_gate": "no_execution_permission",
-                    "next_allowed_action": "Use memory as advisory context only.",
+                    "next_allowed_action": "Record another corroborating outcome before advisory lesson use.",
                 },
             ],
         }
@@ -2226,6 +2228,61 @@ def test_pipeline_run_detail_exposes_closed_loop_summary_after_candidate_learnin
         assert any(usage["usage_type"] == "finding_candidate" for usage in usage_records)
         assert any(usage["usage_type"] == "learning_signal" for usage in usage_records)
         assert "Safe test-account diff" not in str(usage_records)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pipeline_run_detail_marks_brain_memory_complete_when_lesson_is_ready():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        for index in range(2):
+            outcome_response = client.post(
+                "/mythos/brain/outcomes",
+                json={
+                    "run_id": run_id,
+                    "outcome": "accepted",
+                    "notes": f"Accepted safe fixture outcome {index}.",
+                    "evidence_quality": "strong",
+                },
+            )
+            assert outcome_response.status_code == 200
+
+        detail_response = client.get(f"/mythos/pipeline/runs/{run_id}")
+        assert detail_response.status_code == 200
+        summary = detail_response.json()["payload"]["closed_loop_summary"]
+        brain_step = next(
+            step for step in summary["steps"] if step["key"] == "brain_memory"
+        )
+
+        assert summary["learning_signal_count"] == 2
+        assert summary["lesson_count"] == 1
+        assert summary["brain_memory_status"] == "lesson_ready"
+        assert brain_step == {
+            "key": "brain_memory",
+            "label": "Brain Memory",
+            "status": "complete",
+            "reason": "1 reusable advisory lesson available for future prioritization.",
+            "safety_gate": "no_execution_permission",
+            "next_allowed_action": "Use lesson memory as advisory context only.",
+        }
     finally:
         app.dependency_overrides.clear()
 

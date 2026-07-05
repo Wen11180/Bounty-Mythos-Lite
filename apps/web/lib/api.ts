@@ -222,6 +222,8 @@ export type ClosedLoopSummary = {
   reviewed_claim_count: number;
   finding_candidate_count: number;
   learning_signal_count: number;
+  lesson_count?: number;
+  brain_memory_status?: string;
   blocked_reasons: string[];
   safety_notes: string[];
   steps?: ClosedLoopStep[];

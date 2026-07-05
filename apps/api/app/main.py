@@ -1340,6 +1340,16 @@ def _closed_loop_summary(
         "learning_signal",
         record.id,
     )
+    run_learning_signals = _closed_loop_learning_signals(
+        usage_records,
+        record,
+        repository,
+    )
+    lesson_count = len(build_mythos_lessons(run_learning_signals))
+    brain_memory_status = _closed_loop_brain_memory_status(
+        learning_signal_count=learning_signal_count,
+        lesson_count=lesson_count,
+    )
     blocked_reasons = _closed_loop_blocked_reasons(record)
 
     return {
@@ -1354,6 +1364,8 @@ def _closed_loop_summary(
         "reviewed_claim_count": len(claim_review_decisions),
         "finding_candidate_count": finding_candidate_count,
         "learning_signal_count": learning_signal_count,
+        "lesson_count": lesson_count,
+        "brain_memory_status": brain_memory_status,
         "blocked_reasons": blocked_reasons,
         "safety_notes": [
             "no_live_requests",
@@ -1366,6 +1378,8 @@ def _closed_loop_summary(
             reviewed_claim_count=len(claim_review_decisions),
             finding_candidate_count=finding_candidate_count,
             learning_signal_count=learning_signal_count,
+            lesson_count=lesson_count,
+            brain_memory_status=brain_memory_status,
             blocked_reasons=blocked_reasons,
         ),
     }
@@ -1398,6 +1412,8 @@ def _closed_loop_steps(
     reviewed_claim_count: int,
     finding_candidate_count: int,
     learning_signal_count: int,
+    lesson_count: int,
+    brain_memory_status: str,
     blocked_reasons: list[str],
 ) -> list[dict]:
     claim_blocked = "no_promotion_eligible_claim" in blocked_reasons
@@ -1493,20 +1509,51 @@ def _closed_loop_steps(
         {
             "key": "brain_memory",
             "label": "Brain Memory",
-            "status": "complete" if learning_signal_count else "waiting",
-            "reason": (
-                "Learning memory is available for the program brain."
-                if learning_signal_count
-                else "Program brain is waiting for a learning signal."
+            "status": "complete" if brain_memory_status == "lesson_ready" else "waiting",
+            "reason": _closed_loop_brain_memory_reason(
+                learning_signal_count=learning_signal_count,
+                lesson_count=lesson_count,
             ),
             "safety_gate": "no_execution_permission",
-            "next_allowed_action": (
-                "Use memory as advisory context only."
-                if learning_signal_count
-                else "Keep the candidate gated until outcome memory exists."
+            "next_allowed_action": _closed_loop_brain_memory_next_action(
+                brain_memory_status,
             ),
         },
     ]
+
+
+def _closed_loop_brain_memory_status(
+    *,
+    learning_signal_count: int,
+    lesson_count: int,
+) -> str:
+    if lesson_count:
+        return "lesson_ready"
+    if learning_signal_count:
+        return "learning_recorded"
+    return "waiting_for_learning"
+
+
+def _closed_loop_brain_memory_reason(
+    *,
+    learning_signal_count: int,
+    lesson_count: int,
+) -> str:
+    if lesson_count:
+        return (
+            f"{lesson_count} reusable advisory lesson available for future prioritization."
+        )
+    if learning_signal_count:
+        return "Learning signal is recorded; reusable lesson needs more evidence."
+    return "Program brain is waiting for a learning signal."
+
+
+def _closed_loop_brain_memory_next_action(status: str) -> str:
+    if status == "lesson_ready":
+        return "Use lesson memory as advisory context only."
+    if status == "learning_recorded":
+        return "Record another corroborating outcome before advisory lesson use."
+    return "Keep the candidate gated until outcome memory exists."
 
 
 def _closed_loop_artifact_usage_records(
@@ -1522,6 +1569,31 @@ def _closed_loop_artifact_usage_records(
     if artifact_record is None:
         return []
     return _artifact_usage_records(artifact_record)
+
+
+def _closed_loop_learning_signals(
+    usage_records: list[dict],
+    record: PipelineRunRecord,
+    repository: DatabaseRepository,
+) -> list[LearningSignal]:
+    if record.program_id is None:
+        return []
+
+    run_signal_ids = {
+        str(usage.get("learning_signal_id"))
+        for usage in usage_records
+        if usage.get("usage_type") == "learning_signal"
+        and usage.get("run_id") == record.id
+        and usage.get("learning_signal_id")
+    }
+    if not run_signal_ids:
+        return []
+
+    return [
+        _learning_signal_response(signal)
+        for signal in repository.list_learning_signals(record.program_id)
+        if signal.id in run_signal_ids
+    ]
 
 
 def _closed_loop_usage_count(

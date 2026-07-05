@@ -234,6 +234,8 @@ export default async function RunDetailPage({ params }: PageProps) {
                 <Field label="Reviews" value={closedLoop?.reviewed_claim_count ?? 0} />
                 <Field label="Candidates" value={closedLoop?.finding_candidate_count ?? 0} />
                 <Field label="Learning" value={closedLoop?.learning_signal_count ?? 0} />
+                <Field label="Lessons" value={closedLoop?.lesson_count ?? 0} />
+                <Field label="Memory" value={formatLabel(closedLoop?.brain_memory_status ?? "waiting_for_learning")} />
               </dl>
               {closedLoopSteps.length > 0 ? (
                 <ol className="grid gap-3 border-t border-[var(--line)] pt-4">
