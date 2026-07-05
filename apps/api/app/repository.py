@@ -1022,6 +1022,39 @@ class DatabaseRepository:
             )
         ).all()
 
+    def get_validation_run(self, validation_run_id: str) -> ValidationRunRecord | None:
+        return self.session.get(ValidationRunRecord, validation_run_id)
+
+    def record_validation_run_preflight(
+        self,
+        validation_run_id: str,
+        *,
+        allowed: bool,
+        reason: str,
+    ) -> ValidationRunRecord | None:
+        record = self.get_validation_run(validation_run_id)
+        if record is None:
+            return None
+        if allowed:
+            record.status = "preflight_passed"
+            record.safety_gate_state = "scope_guard_preflight_passed"
+            record.allowed_to_execute = True
+        else:
+            record.status = "blocked"
+            record.safety_gate_state = "blocked"
+            record.allowed_to_execute = False
+            record.finished_at = datetime.now(UTC)
+        payload = dict(record.payload)
+        payload["scope_guard_preflight"] = _safe_display_value({
+            "allowed": allowed,
+            "reason": reason,
+        })
+        record.payload = payload
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
     def save_learning_signal(
         self,
         *,

@@ -394,6 +394,7 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
   assert.equal(summary.campaignId, "campaign_1");
   assert.equal(summary.executionAllowed, false);
   assert.equal(summary.safeNextAction, "Review approval queue");
+  assert.equal(summary.safeNextHref, "/campaigns/campaign_1/validation-queue");
   assert.deepEqual(summary.blockedReasons, ["Approval required"]);
   assert.equal(summary.budgetLabel, "30m / 5000 tokens / 10 tools / 1 validations");
   assert.equal(summary.taskCount, 1);
@@ -402,6 +403,19 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
   assert.equal(summary.blockedStageCount, 1);
   assert.equal(summary.defaultAsset, "api.example.com/path");
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|token=secret/i);
+});
+
+test("toCampaignControlSummary routes validation review actions to validation queue", () => {
+  const summary = toCampaignControlSummary({
+    ...controlCenter,
+    safe_next_action: "review_validation_queue",
+    approvals: [],
+    blocked_reasons: [],
+    pipeline_stages: [],
+  });
+
+  assert.equal(summary.safeNextAction, "Review validation queue");
+  assert.equal(summary.safeNextHref, "/campaigns/campaign_1/validation-runs");
 });
 
 test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {

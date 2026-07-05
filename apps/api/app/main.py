@@ -293,6 +293,12 @@ class ValidationRunResponse(BaseModel):
     finished_at: str | None = None
 
 
+class ValidationRunPreflightResponse(BaseModel):
+    decision: ScopeGuardDecision
+    validation_run: ValidationRunResponse
+    execution_started: bool = False
+
+
 class CampaignCodebaseMapResponse(BaseModel):
     maps: list[CodebaseMapResponse] = Field(default_factory=list)
     facts: list[CodebaseFactResponse] = Field(default_factory=list)
@@ -583,6 +589,64 @@ def list_mythos_campaign_validation_runs(
         _validation_run_response(record)
         for record in repository.list_campaign_validation_runs(campaign_id)
     ]
+
+
+@app.post(
+    "/mythos/validation-runs/{validation_run_id}/preflight",
+    response_model=ValidationRunPreflightResponse,
+)
+def preflight_mythos_validation_run(
+    validation_run_id: str,
+    session: Session = Depends(get_session),
+) -> ValidationRunPreflightResponse:
+    repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(validation_run_id)
+    if validation_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+
+    campaign = repository.get_campaign(validation_run.campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if validation_run.status not in {"ready", "preflight_passed"}:
+        decision = ScopeGuardDecision(
+            allowed=False,
+            reason="validation_run_not_ready",
+        )
+    else:
+        asset = _validation_run_scope_asset(validation_run, campaign)
+        decision = evaluate_scope_guard(
+            ScopeGuardEvaluationRequest(
+                rule=ScopeGuardRule(
+                    asset=asset,
+                    scope_status=campaign.scope_status,
+                    automation="human_controlled_validation",
+                    allowed_validation=[validation_run.validation_mode],
+                    forbidden=["DoS"],
+                    human_approval_required=validation_run.approval_required,
+                ),
+                request=ValidationRequest(
+                    asset=asset,
+                    validation_type=validation_run.validation_mode,
+                    human_approved=False,
+                    plan_digest=validation_run.plan_digest,
+                ),
+            ),
+            session,
+        )
+
+    updated_run = repository.record_validation_run_preflight(
+        validation_run.id,
+        allowed=decision.allowed,
+        reason=decision.reason,
+    )
+    if updated_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+    return ValidationRunPreflightResponse(
+        decision=decision,
+        validation_run=_validation_run_response(updated_run),
+        execution_started=False,
+    )
 
 
 @app.get(
@@ -1491,6 +1555,15 @@ def _validation_run_response(record: ValidationRunRecord) -> ValidationRunRespon
         created_at=record.created_at.isoformat(),
         finished_at=record.finished_at.isoformat() if record.finished_at else None,
     )
+
+
+def _validation_run_scope_asset(
+    record: ValidationRunRecord,
+    campaign: CampaignRecord,
+) -> str:
+    if record.target_ref == f"campaign:{campaign.id}":
+        return campaign.default_asset
+    return record.target_ref
 
 
 def _campaign_control_center_blocked_reasons(

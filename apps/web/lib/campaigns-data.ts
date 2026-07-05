@@ -100,6 +100,7 @@ export type CampaignControlSummary = {
   name: string;
   pendingApprovalCount: number;
   safeNextAction: string;
+  safeNextHref: string | null;
   scopeStatus: string;
   status: string;
   taskCount: number;
@@ -536,22 +537,40 @@ function budgetLabel(controlCenter: CampaignControlCenter): string {
   );
 }
 
+function safeNextHref(campaignId: string, action: string): string | null {
+  const encodedCampaignId = encodeURIComponent(campaignId);
+  const routeByAction: Record<string, string> = {
+    dispatch_ready_tasks: "tasks",
+    monitor_agent_runs: "agent-runs",
+    review_approval_queue: "validation-queue",
+    review_attack_surface_map: "attack-surface-map",
+    review_hypothesis_board: "hypothesis-board",
+    review_validation_queue: "validation-runs",
+  };
+  const route = routeByAction[action];
+
+  return route ? `/campaigns/${encodedCampaignId}/${route}` : null;
+}
+
 export function toCampaignControlSummary(
   controlCenter: CampaignControlCenter,
 ): CampaignControlSummary {
+  const campaignId = safeText(controlCenter.campaign.id, "campaign");
+
   return {
     agentRunCount: controlCenter.agent_runs.length,
     blockedReasons: controlCenter.blocked_reasons.map((reason) => safeText(humanize(reason), "Blocked")),
     blockedStageCount: controlCenter.pipeline_stages.filter((stage) => stage.status === "blocked")
       .length,
     budgetLabel: budgetLabel(controlCenter),
-    campaignId: safeText(controlCenter.campaign.id, "campaign"),
+    campaignId,
     defaultAsset: safeText(controlCenter.campaign.default_asset, "unknown asset"),
     executionAllowed: controlCenter.execution_allowed === true,
     name: safeText(controlCenter.campaign.name, "Untitled campaign"),
     pendingApprovalCount: controlCenter.approvals.filter((approval) => approval.status === "pending")
       .length,
     safeNextAction: safeText(humanize(controlCenter.safe_next_action), "Review campaign state"),
+    safeNextHref: safeNextHref(campaignId, controlCenter.safe_next_action),
     scopeStatus: safeText(humanize(controlCenter.campaign.scope_status), "Unknown scope"),
     status: safeText(humanize(controlCenter.campaign.status), "Unknown status"),
     taskCount: controlCenter.tasks.length,

@@ -91,7 +91,17 @@ export default async function CampaignDetailPage({ params }: PageProps) {
           </div>
           <div className="border border-[var(--line)] bg-white p-4">
             <p className="text-xs font-semibold uppercase text-[var(--muted)]">Safe next action</p>
-            <p className="mt-2 font-semibold text-[var(--accent-strong)]">{safeNextAction}</p>
+            {summary.safeNextHref ? (
+              <Link
+                href={summary.safeNextHref}
+                className="mt-2 inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] px-3 text-sm font-semibold text-[var(--accent-strong)]"
+              >
+                <ClipboardCheck size={17} aria-hidden="true" />
+                {safeNextAction}
+              </Link>
+            ) : (
+              <p className="mt-2 font-semibold text-[var(--accent-strong)]">{safeNextAction}</p>
+            )}
           </div>
         </div>
       </header>
