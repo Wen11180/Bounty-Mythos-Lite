@@ -441,18 +441,19 @@ def test_mythos_pipeline_dry_run_uses_accepted_learning_for_hunter_priority():
         assert baseline_response.status_code == 200
         baseline_assessment = baseline_response.json()["hunter_intelligence"]["assessments"][0]
 
-        signal_response = client.post(
-            "/mythos/brain/learning-signals",
-            json={
-                "program_id": "program_example",
-                "playbook_id": "bola_idor",
-                "outcome": "accepted",
-                "surface_key": "file_id:export",
-                "notes": "Prior BOLA file export report was accepted.",
-                "evidence_quality": "strong",
-            },
-        )
-        assert signal_response.status_code == 200
+        for index in range(2):
+            signal_response = client.post(
+                "/mythos/brain/learning-signals",
+                json={
+                    "program_id": "program_example",
+                    "playbook_id": "bola_idor",
+                    "outcome": "accepted",
+                    "surface_key": "file_id:export",
+                    "notes": f"Prior BOLA file export report {index} was accepted.",
+                    "evidence_quality": "strong",
+                },
+            )
+            assert signal_response.status_code == 200
 
         learned_response = client.post(
             "/mythos/pipeline/dry-run",
@@ -480,6 +481,72 @@ def test_mythos_pipeline_dry_run_uses_accepted_learning_for_hunter_priority():
         )
         assert "learning:accepted_history" in learned_assessment["reasons"]
         assert "advisory_memory_only" in learned_assessment["safety_notes"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_pipeline_single_accepted_learning_does_not_boost_hunter_priority():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        baseline_response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "In scope: api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert baseline_response.status_code == 200
+        baseline_assessment = baseline_response.json()["hunter_intelligence"]["assessments"][0]
+
+        signal_response = client.post(
+            "/mythos/brain/learning-signals",
+            json={
+                "program_id": "program_example",
+                "playbook_id": "bola_idor",
+                "outcome": "accepted",
+                "surface_key": "file_id:export",
+                "notes": "One accepted signal is not enough to form a boost lesson.",
+                "evidence_quality": "strong",
+            },
+        )
+        assert signal_response.status_code == 200
+
+        learned_response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "In scope: api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+
+        assert learned_response.status_code == 200
+        learned_assessment = learned_response.json()["hunter_intelligence"]["assessments"][0]
+
+        assert (
+            learned_assessment["hunter_priority_score"]
+            == baseline_assessment["hunter_priority_score"]
+        )
+        assert "learning:accepted_history" not in learned_assessment["reasons"]
+        learning_stage = {
+            stage["name"]: stage for stage in learned_response.json()["timeline"]
+        }["program_learning"]
+        assert "learning:lesson_not_ready" in learning_stage["output_summary"]
     finally:
         app.dependency_overrides.clear()
 
@@ -556,18 +623,19 @@ def test_mythos_pipeline_weak_accepted_learning_does_not_boost_hunter_priority()
 def test_mythos_pipeline_learning_boost_does_not_raise_blocked_hunter_priority():
     app.dependency_overrides[get_session] = override_session()
     try:
-        signal_response = client.post(
-            "/mythos/brain/learning-signals",
-            json={
-                "program_id": "program_example",
-                "playbook_id": "bola_idor",
-                "outcome": "accepted",
-                "surface_key": "file_id:export",
-                "notes": "Prior BOLA file export report was accepted.",
-                "evidence_quality": "strong",
-            },
-        )
-        assert signal_response.status_code == 200
+        for index in range(2):
+            signal_response = client.post(
+                "/mythos/brain/learning-signals",
+                json={
+                    "program_id": "program_example",
+                    "playbook_id": "bola_idor",
+                    "outcome": "accepted",
+                    "surface_key": "file_id:export",
+                    "notes": f"Prior BOLA file export report {index} was accepted.",
+                    "evidence_quality": "strong",
+                },
+            )
+            assert signal_response.status_code == 200
 
         response = client.post(
             "/mythos/pipeline/dry-run",

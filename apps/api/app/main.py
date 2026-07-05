@@ -1034,74 +1034,71 @@ def _apply_program_learning_to_hunter_intelligence(
     if intelligence is None:
         return [], []
 
-    playbook_boosts: dict[str, int] = {}
-    playbook_penalties: dict[str, int] = {}
-    playbook_outcomes: dict[str, set[str]] = {}
-    weak_accepted_playbooks: set[str] = set()
-    for signal in learning_signals:
-        if signal.outcome == "accepted":
-            if signal.evidence_quality == "weak":
-                weak_accepted_playbooks.add(signal.playbook_id)
-                continue
-            boost = 12 if signal.evidence_quality == "strong" else 8
-            playbook_boosts[signal.playbook_id] = min(
-                24,
-                playbook_boosts.get(signal.playbook_id, 0) + boost,
-            )
-            playbook_outcomes.setdefault(signal.playbook_id, set()).add(signal.outcome)
-            continue
-
-        penalty = {
-            "duplicate": 20,
-            "na": 12,
-            "rejected": 10,
-        }.get(signal.outcome)
-        if penalty is None:
-            continue
-        playbook_penalties[signal.playbook_id] = min(
-            40,
-            playbook_penalties.get(signal.playbook_id, 0) + penalty,
-        )
-        playbook_outcomes.setdefault(signal.playbook_id, set()).add(signal.outcome)
+    lesson_inputs = [_learning_signal_response(signal) for signal in learning_signals]
+    lessons = build_mythos_lessons(lesson_inputs)
+    lessons_by_playbook: dict[str, list[MythosLesson]] = {}
+    for lesson in lessons:
+        lessons_by_playbook.setdefault(lesson.playbook_id, []).append(lesson)
+    weak_accepted_playbooks = {
+        signal.playbook_id
+        for signal in learning_signals
+        if signal.outcome == "accepted" and signal.evidence_quality == "weak"
+    }
+    lesson_candidate_playbooks = {signal.playbook_id for signal in learning_signals}
 
     applied_reasons: list[str] = []
     skipped_reasons: list[str] = []
     for assessment in intelligence.assessments:
-        boost = playbook_boosts.get(assessment.playbook_id, 0)
-        penalty = playbook_penalties.get(assessment.playbook_id, 0)
-        hard_gate_blocked = assessment.recommendation == "blocked" or assessment.rejection_risk_score >= 90
+        matching_lessons = lessons_by_playbook.get(assessment.playbook_id, [])
+        hard_gate_blocked = (
+            assessment.recommendation == "blocked"
+            or assessment.rejection_risk_score >= 90
+        )
         if hard_gate_blocked:
-            if boost or penalty:
+            if matching_lessons:
                 skipped_reasons.append("learning:safety_gate_blocked")
-            boost = 0
-            penalty = 0
-        if boost == 0 and penalty == 0:
+            continue
+        if not matching_lessons:
             if assessment.playbook_id in weak_accepted_playbooks:
                 skipped_reasons.append("learning:weak_accepted_evidence_not_boosted")
+            elif assessment.playbook_id in lesson_candidate_playbooks:
+                skipped_reasons.append("learning:lesson_not_ready")
             continue
-        if boost:
-            assessment.hunter_priority_score = min(
-                100,
-                assessment.hunter_priority_score + boost,
-            )
-        assessment.duplicate_risk_score = min(
-            100,
-            assessment.duplicate_risk_score + penalty,
-        )
-        assessment.hunter_priority_score = max(
-            0,
-            assessment.hunter_priority_score - round(penalty * 0.25),
-        )
-        outcomes = playbook_outcomes.get(assessment.playbook_id, set())
-        if "accepted" in outcomes and "learning:accepted_history" not in assessment.reasons:
-            assessment.reasons.append("learning:accepted_history")
-            applied_reasons.append("learning:accepted_history")
-        if "duplicate" in outcomes and "learning:duplicate_history" not in assessment.reasons:
-            assessment.reasons.append("learning:duplicate_history")
-            applied_reasons.append("learning:duplicate_history")
-        if outcomes & {"na", "rejected"} and "learning:rejection_history" not in assessment.reasons:
-            assessment.reasons.append("learning:rejection_history")
-            applied_reasons.append("learning:rejection_history")
+        for lesson in matching_lessons:
+            delta = max(-10, min(10, lesson.score_delta))
+            if lesson.recommendation == "boost":
+                assessment.hunter_priority_score = min(
+                    100,
+                    assessment.hunter_priority_score + delta,
+                )
+                if "learning:accepted_history" not in assessment.reasons:
+                    assessment.reasons.append("learning:accepted_history")
+                applied_reasons.append("learning:accepted_history")
+            elif lesson.recommendation == "duplicate_watch":
+                assessment.duplicate_risk_score = min(
+                    100,
+                    assessment.duplicate_risk_score + abs(delta),
+                )
+                assessment.hunter_priority_score = max(
+                    0,
+                    assessment.hunter_priority_score - round(abs(delta) * 0.25),
+                )
+                if "learning:duplicate_history" not in assessment.reasons:
+                    assessment.reasons.append("learning:duplicate_history")
+                applied_reasons.append("learning:duplicate_history")
+            elif lesson.recommendation == "penalize":
+                assessment.hunter_priority_score = max(
+                    0,
+                    assessment.hunter_priority_score + delta,
+                )
+                if "learning:rejection_history" not in assessment.reasons:
+                    assessment.reasons.append("learning:rejection_history")
+                applied_reasons.append("learning:rejection_history")
+            elif lesson.recommendation == "evidence_needed":
+                skipped_reasons.append("learning:weak_accepted_evidence_not_boosted")
+            for reason in lesson.reasons:
+                if reason not in assessment.reasons:
+                    assessment.reasons.append(reason)
         if "advisory_memory_only" not in assessment.safety_notes:
             assessment.safety_notes.append("advisory_memory_only")
     return sorted(set(applied_reasons)), sorted(set(skipped_reasons))
