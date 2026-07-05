@@ -615,27 +615,43 @@ def preflight_mythos_validation_run(
         )
     else:
         asset = _validation_run_scope_asset(validation_run, campaign)
-        decision = evaluate_scope_guard(
-            ScopeGuardEvaluationRequest(
-                rule=ScopeGuardRule(
-                    asset=asset,
-                    scope_status=campaign.scope_status,
-                    automation="human_controlled_validation",
-                    allowed_validation=safe_string_list(campaign.allowed_tools) or [
-                        validation_run.validation_mode
-                    ],
-                    forbidden=["DoS"],
-                    human_approval_required=validation_run.approval_required,
-                ),
-                request=ValidationRequest(
-                    asset=asset,
-                    validation_type=validation_run.validation_mode,
-                    human_approved=False,
-                    plan_digest=validation_run.plan_digest,
-                ),
-            ),
-            session,
+        rule = ScopeGuardRule(
+            asset=asset,
+            scope_status=campaign.scope_status,
+            automation="human_controlled_validation",
+            allowed_validation=safe_string_list(campaign.allowed_tools),
+            forbidden=["DoS"],
+            human_approval_required=validation_run.approval_required,
         )
+        decision = evaluate_validation_request(
+            rule,
+            ValidationRequest(
+                asset=asset,
+                validation_type=validation_run.validation_mode,
+                human_approved=True,
+                plan_digest=validation_run.plan_digest,
+            ),
+        )
+        if decision.allowed and validation_run.approval_required:
+            approval = (
+                repository.session.get(ApprovalRecord, validation_run.approval_id)
+                if validation_run.approval_id
+                else None
+            )
+            decision = (
+                ScopeGuardDecision(allowed=True, reason="approved_validation_record")
+                if approval is not None
+                and _validation_run_approval_matches(
+                    approval=approval,
+                    validation_run=validation_run,
+                    campaign=campaign,
+                    asset=asset,
+                )
+                else ScopeGuardDecision(
+                    allowed=False,
+                    reason="approval_record_required",
+                )
+            )
 
     updated_run = repository.record_validation_run_preflight(
         validation_run.id,
@@ -1566,6 +1582,23 @@ def _validation_run_scope_asset(
     if record.target_ref == f"campaign:{campaign.id}":
         return campaign.default_asset
     return record.target_ref
+
+
+def _validation_run_approval_matches(
+    *,
+    approval: ApprovalRecord,
+    validation_run: ValidationRunRecord,
+    campaign: CampaignRecord,
+    asset: str,
+) -> bool:
+    return (
+        approval.status == "approved"
+        and approval.campaign_id == campaign.id
+        and approval.task_id == validation_run.task_id
+        and approval.asset == asset
+        and approval.validation_mode == validation_run.validation_mode
+        and approval.plan_digest == validation_run.plan_digest
+    )
 
 
 def _campaign_control_center_blocked_reasons(

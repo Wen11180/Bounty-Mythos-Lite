@@ -801,6 +801,195 @@ def test_validation_run_preflight_blocks_modes_missing_from_campaign_allowlist()
         app.dependency_overrides.clear()
 
 
+def test_validation_run_preflight_blocks_empty_campaign_allowlist():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Empty allowlist preflight campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Review validation gate",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            approval = repository.create_approval_record(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                program_id=campaign.program_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approve test-account validation.",
+                requested_action="two_account_authorization_check",
+                asset=campaign.default_asset,
+                validation_mode="two_account_authorization_check",
+                plan_digest="plan_digest_empty_allowlist",
+                autonomy_level=campaign.autonomy_level,
+                safety_gate_state="awaiting_approval",
+            )
+            validation = repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=None,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="planned",
+                safety_gate_state="awaiting_approval",
+                plan_digest="plan_digest_empty_allowlist",
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=0,
+                summary="Awaiting approval",
+                payload={},
+            )
+            approval_id = approval.id
+            validation_id = validation.id
+
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for test accounts only.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        preflight_response = client.post(
+            f"/mythos/validation-runs/{validation_id}/preflight"
+        )
+
+        assert preflight_response.status_code == 200
+        body = preflight_response.json()
+        assert body["decision"] == {
+            "allowed": False,
+            "reason": "validation_not_allowed",
+        }
+        assert body["validation_run"]["status"] == "blocked"
+        assert body["validation_run"]["allowed_to_execute"] is False
+        assert body["execution_started"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_validation_run_preflight_rejects_unbound_cross_campaign_approval_record():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            approved_campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Approved source campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            approved_task = repository.create_campaign_task(
+                campaign_id=approved_campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Approved validation gate",
+                input_refs=[f"campaign:{approved_campaign.id}"],
+                payload={},
+            )
+            approval = repository.create_approval_record(
+                campaign_id=approved_campaign.id,
+                task_id=approved_task.id,
+                program_id=approved_campaign.program_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approved for the source campaign only.",
+                requested_action="two_account_authorization_check",
+                asset=approved_campaign.default_asset,
+                validation_mode="two_account_authorization_check",
+                plan_digest="shared_plan_digest",
+                autonomy_level=approved_campaign.autonomy_level,
+                safety_gate_state="awaiting_approval",
+            )
+            repository.decide_approval_record(
+                approval_id=approval.id,
+                decision="approved",
+                actor="lead_reviewer",
+                reason="Approved source campaign.",
+            )
+
+            target_campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Unbound target campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            target_task = repository.create_campaign_task(
+                campaign_id=target_campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Target validation gate",
+                input_refs=[f"campaign:{target_campaign.id}"],
+                payload={},
+            )
+            validation = repository.save_validation_run(
+                campaign_id=target_campaign.id,
+                task_id=target_task.id,
+                approval_id=approval.id,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{target_campaign.id}",
+                status="ready",
+                safety_gate_state="approved_validation_record",
+                plan_digest="shared_plan_digest",
+                approval_required=True,
+                allowed_to_execute=True,
+                evidence_ref_count=0,
+                summary="Incorrectly bound approval should not pass preflight",
+                payload={},
+            )
+            validation_id = validation.id
+
+        preflight_response = client.post(
+            f"/mythos/validation-runs/{validation_id}/preflight"
+        )
+
+        assert preflight_response.status_code == 200
+        body = preflight_response.json()
+        assert body["decision"] == {
+            "allowed": False,
+            "reason": "approval_record_required",
+        }
+        assert body["validation_run"]["status"] == "blocked"
+        assert body["validation_run"]["allowed_to_execute"] is False
+        assert body["execution_started"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_denied_approval_blocks_matching_validation_run():
     testing_session = build_testing_session()
 
