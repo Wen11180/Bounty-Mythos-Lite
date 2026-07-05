@@ -47,6 +47,7 @@ import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
 
 const navigation = [
   { label: "Dashboard", icon: Home },
+  { label: "Campaigns", icon: ShieldCheck, href: "/campaigns" },
   { label: "Programs", icon: Target },
   { label: "Assets", icon: Layers },
   { label: "Artifact Repository", icon: Database, href: "/artifacts" },

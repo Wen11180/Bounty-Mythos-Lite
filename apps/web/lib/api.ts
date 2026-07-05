@@ -1,3 +1,5 @@
+import type { CampaignControlCenter } from "./campaigns-data";
+
 const API_BASE_URL =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -31,6 +33,11 @@ export type Program = {
   public_code: string;
   duplicate_risk: string;
   priority: string;
+};
+
+export type CampaignListItem = CampaignControlCenter["campaign"] & {
+  budget?: CampaignControlCenter["budget"];
+  policy_text_hash?: string;
 };
 
 export type Finding = {
@@ -692,6 +699,20 @@ async function apiPost<T>(path: string, body: unknown, fallback: T): Promise<T> 
 
 export function getPrograms(fallback: Program[]): Promise<Program[]> {
   return apiGet("/programs", fallback);
+}
+
+export function getCampaigns(fallback: CampaignListItem[]): Promise<CampaignListItem[]> {
+  return apiGet("/mythos/campaigns", fallback);
+}
+
+export function getCampaignControlCenter(
+  campaignId: string,
+  fallback: CampaignControlCenter | null,
+): Promise<CampaignControlCenter | null> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/control-center`,
+    fallback,
+  );
 }
 
 export function getFindings(fallback: Finding[]): Promise<Finding[]> {

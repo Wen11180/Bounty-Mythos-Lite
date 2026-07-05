@@ -277,3 +277,73 @@ def test_campaign_control_center_returns_audited_read_only_summary():
         assert "session=secret" not in str(control_center)
     finally:
         app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_redacts_secret_like_display_fields():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Control campaign token=secret-token",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="https://api.example.com/path?session=secret",
+                target_classes=["idor"],
+                allowed_tools=["static_analyzer"],
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="campaign_observation",
+                agent_type="orchestrator_agent",
+                title="Observe campaign secret=abc",
+                input_refs=["campaign:campaign_1", "token=secret-token"],
+                payload={},
+            )
+            repository.save_agent_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                agent_type="orchestrator_agent",
+                status="blocked",
+                input_refs=["campaign_task:task_1"],
+                output_refs=[],
+                tool_calls=[],
+                safety_gate_state="blocked",
+                stop_reason="api_key=abc",
+                payload={},
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=task.id,
+                stage_key="campaign_tick",
+                stage_order=0,
+                status="blocked",
+                input_refs=["secret=abc"],
+                output_refs=[],
+                safety_gate_state="blocked",
+                stop_reason="api_key=abc",
+                payload={},
+            )
+            campaign_id = campaign.id
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        response_text = str(response.json())
+        assert "[REDACTED]" in response_text
+        assert "secret-token" not in response_text
+        assert "session=secret" not in response_text
+        assert "secret=abc" not in response_text
+        assert "api_key=abc" not in response_text
+    finally:
+        app.dependency_overrides.clear()
