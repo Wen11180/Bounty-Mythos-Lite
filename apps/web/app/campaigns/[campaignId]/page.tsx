@@ -65,6 +65,18 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                 href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
                 label="Validation Queue"
               />
+              <AuditLink
+                href={`/campaigns/${encodeURIComponent(campaignId)}/validation-runs`}
+                label="Validation Runs"
+              />
+              <AuditLink
+                href={`/campaigns/${encodeURIComponent(campaignId)}/hypothesis-board`}
+                label="Hypothesis Board"
+              />
+              <AuditLink
+                href={`/campaigns/${encodeURIComponent(campaignId)}/evidence-review`}
+                label="Evidence Review"
+              />
               <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/timeline`} label="Timeline" />
               <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/brain`} label="Brain" />
             </nav>

@@ -34,6 +34,7 @@ def test_database_schema_includes_core_tables():
         "codebase_maps",
         "codebase_facts",
         "scanner_runs",
+        "validation_runs",
     } <= tables
 
 
@@ -311,5 +312,73 @@ def test_repository_persists_codebase_and_scanner_fact_layer_safely():
         assert scanner_runs[0].id == scanner_run.id
         assert scanner_runs[0].summary == "[REDACTED]"
         assert scanner_runs[0].payload["raw_stdout"] == "[REDACTED]"
+    finally:
+        session.close()
+
+
+def test_repository_records_validation_runs_with_approval_gate_safety():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Validation campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="validation_planning",
+            agent_type="validation_harness_agent",
+            title="Plan validation",
+            input_refs=["hypothesis:1"],
+        )
+
+        gated_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref="candidate:idor?token=secret-token",
+            status="ready",
+            safety_gate_state="allowed",
+            plan_digest="plan_digest_1",
+            approval_required=True,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Needs two test accounts; Authorization: Bearer secret-token",
+            payload={"raw_request": "Cookie: session=secret"},
+        )
+        local_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="static_local_check",
+            target_ref="codebase_fact:route_1",
+            status="ready",
+            safety_gate_state="allowed",
+            plan_digest="plan_digest_2",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=1,
+            summary="Static local check against authorized code.",
+            payload={"command": "semgrep --config local"},
+        )
+
+        runs = repository.list_campaign_validation_runs(campaign.id)
+
+        assert [run.id for run in runs] == [local_run.id, gated_run.id]
+        assert gated_run.status == "awaiting_approval"
+        assert gated_run.allowed_to_execute is False
+        assert gated_run.target_ref == "candidate:idor"
+        assert gated_run.summary == "[REDACTED]"
+        assert gated_run.payload["raw_request"] == "[REDACTED]"
+        assert local_run.status == "ready"
+        assert local_run.allowed_to_execute is True
+        assert local_run.evidence_ref_count == 1
     finally:
         session.close()

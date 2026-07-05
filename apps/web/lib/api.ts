@@ -5,6 +5,7 @@ import type {
   CampaignControlCenter,
   CampaignPipelineStage,
   CampaignTask,
+  CampaignValidationRun,
 } from "./campaigns-data";
 
 const API_BASE_URL =
@@ -741,6 +742,13 @@ export function getCampaignApprovals(
   fallback: CampaignApproval[],
 ): Promise<CampaignApproval[]> {
   return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/approvals`, fallback);
+}
+
+export function getCampaignValidationRuns(
+  campaignId: string,
+  fallback: CampaignValidationRun[],
+): Promise<CampaignValidationRun[]> {
+  return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/validation-runs`, fallback);
 }
 
 export function getCampaignPipelineStages(

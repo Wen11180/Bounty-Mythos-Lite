@@ -1,4 +1,4 @@
-import type { ProgramIntelligenceProfile } from "./api";
+import type { PipelineRunDetail, ProgramIntelligenceProfile, ReportPreview } from "./api";
 
 export type CampaignControlCenter = {
   campaign: {
@@ -149,6 +149,41 @@ export type CampaignValidationQueueSummary = {
   validationMode: string | null;
 };
 
+export type CampaignValidationRun = {
+  allowed_to_execute: boolean;
+  approval_id: string | null;
+  approval_required: boolean;
+  campaign_id: string;
+  created_at: string;
+  evidence_ref_count: number;
+  finished_at?: string | null;
+  id: string;
+  plan_digest: string | null;
+  safety_gate_state: string;
+  status: string;
+  summary: string;
+  target_ref: string;
+  task_id: string | null;
+  validation_mode: string;
+};
+
+export type CampaignValidationRunSummary = {
+  allowedToExecute: boolean;
+  approvalId: string | null;
+  approvalRequired: boolean;
+  createdAt: string;
+  evidenceRefCount: number;
+  finishedAt: string | null;
+  id: string;
+  planDigest: string | null;
+  safetyGateState: string;
+  status: string;
+  summary: string;
+  targetRef: string;
+  taskId: string | null;
+  validationMode: string;
+};
+
 export type CampaignTimelineSummary = {
   id: string;
   inputRefCount: number;
@@ -297,6 +332,47 @@ export type CampaignCodebaseMapView = {
   scannerRuns: CampaignScannerRunSummary[];
   sensitiveSinkCount: number;
   facts: CampaignCodebaseFactSummary[];
+};
+
+export type CampaignEvidenceReviewSummary = {
+  claimId: string;
+  claimText: string;
+  claimType: string;
+  evidenceRefCount: number;
+  humanReviewRequired: boolean;
+  provenanceRefCount: number;
+  qualityScore: number;
+  readinessBlockers: string[];
+  readinessLevel: string;
+  redactionStatus: string;
+  reportChainEligible: boolean;
+  reviewEvidenceRefCount: number;
+  reviewRationale: string | null;
+  reviewStatus: string;
+  runId: string;
+  status: string;
+};
+
+export type CampaignHypothesisBoardSummary = {
+  brokenInvariant: string | null;
+  candidateId: string;
+  candidateStatus: string;
+  duplicateRiskScore: number;
+  evidenceFocusCount: number;
+  evidenceNeededCount: number;
+  hunterPriorityScore: number;
+  hypothesis: string;
+  impactScore: number;
+  nextAction: string | null;
+  playbook: string;
+  policyRisk: string | null;
+  policyRiskScore: number;
+  reasons: string[];
+  recommendation: string;
+  refutationStatus: string | null;
+  riskLevel: string | null;
+  runId: string;
+  validationMode: string | null;
 };
 
 function humanize(value: string): string {
@@ -465,6 +541,27 @@ export function toCampaignValidationQueueSummaries(
   }));
 }
 
+export function toCampaignValidationRunSummaries(
+  runs: CampaignValidationRun[],
+): CampaignValidationRunSummary[] {
+  return runs.map((run) => ({
+    allowedToExecute: run.allowed_to_execute === true,
+    approvalId: run.approval_id ? safeText(run.approval_id, "approval") : null,
+    approvalRequired: run.approval_required === true,
+    createdAt: run.created_at,
+    evidenceRefCount: run.evidence_ref_count,
+    finishedAt: run.finished_at ?? null,
+    id: safeText(run.id, "validation_run"),
+    planDigest: run.plan_digest ? safeText(run.plan_digest, "plan") : null,
+    safetyGateState: safeText(humanize(run.safety_gate_state), "Unknown gate"),
+    status: safeText(humanize(run.status), "Unknown status"),
+    summary: safeText(run.summary, "Summary redacted"),
+    targetRef: safeText(run.target_ref, "target"),
+    taskId: run.task_id ? safeText(run.task_id, "task") : null,
+    validationMode: safeText(humanize(run.validation_mode), "Validation mode"),
+  }));
+}
+
 export function toCampaignTimelineSummaries(
   stages: CampaignPipelineStage[],
 ): CampaignTimelineSummary[] {
@@ -576,4 +673,80 @@ export function toCampaignCodebaseMapView(
     scannerRuns,
     sensitiveSinkCount: maps.reduce((total, map) => total + map.sensitiveSinkCount, 0),
   };
+}
+
+export function toCampaignEvidenceReviewSummaries(
+  previews: ReportPreview[],
+): CampaignEvidenceReviewSummary[] {
+  return previews.flatMap((preview) =>
+    preview.claim_ledger.map((claim) => ({
+      claimId: safeText(claim.claim_id, "claim"),
+      claimText: safeText(claim.text, "Claim text redacted"),
+      claimType: safeText(humanize(claim.claim_type), "Claim"),
+      evidenceRefCount: claim.evidence_refs.length,
+      humanReviewRequired: claim.human_review_required === true,
+      provenanceRefCount: claim.provenance_refs.length,
+      qualityScore: claim.quality_score,
+      readinessBlockers: claim.readiness_blockers.map((blocker) =>
+        safeText(humanize(blocker), "Blocker"),
+      ),
+      readinessLevel: safeText(humanize(claim.readiness_level), "Readiness"),
+      redactionStatus: safeText(humanize(claim.redaction_status), "Redaction"),
+      reportChainEligible:
+        claim.review_status === "confirmed_observed_fact" &&
+        claim.readiness_level === "human_reviewed_gated" &&
+        claim.readiness_blockers.length === 0 &&
+        claim.review_evidence_refs.length > 0,
+      reviewEvidenceRefCount: claim.review_evidence_refs.length,
+      reviewRationale: claim.review_rationale
+        ? safeText(claim.review_rationale, "Review rationale redacted")
+        : null,
+      reviewStatus: safeText(humanize(claim.review_status), "Review status"),
+      runId: safeText(preview.run_id, "run"),
+      status: safeText(humanize(claim.status), "Status"),
+    })),
+  );
+}
+
+export function toCampaignHypothesisBoardSummaries(
+  runs: PipelineRunDetail[],
+): CampaignHypothesisBoardSummary[] {
+  return runs
+    .flatMap((run) =>
+      (run.payload?.hypothesis_assessments ?? []).map((assessment, index) => {
+        const hypothesis = assessment.hypothesis;
+        const hunter = assessment.hunter_assessment;
+
+        return {
+          brokenInvariant: hypothesis?.broken_invariant
+            ? safeText(hypothesis.broken_invariant, "Invariant")
+            : null,
+          candidateId: safeText(assessment.candidate_id ?? `candidate_${index + 1}`, "candidate"),
+          candidateStatus: safeText(humanize(assessment.candidate_status ?? "candidate"), "Candidate"),
+          duplicateRiskScore: hunter?.duplicate_risk_score ?? 0,
+          evidenceFocusCount: hunter?.evidence_focus?.length ?? 0,
+          evidenceNeededCount: hypothesis?.evidence_needed?.length ?? 0,
+          hunterPriorityScore: hunter?.hunter_priority_score ?? 0,
+          hypothesis: safeText(hypothesis?.hypothesis, "Hypothesis redacted"),
+          impactScore: hunter?.impact_score ?? 0,
+          nextAction: hunter?.next_action ? safeText(hunter.next_action, "Next action") : null,
+          playbook: safeText(hunter?.playbook_label ?? hunter?.playbook_id, "No playbook"),
+          policyRisk: hypothesis?.policy_risk
+            ? safeText(humanize(hypothesis.policy_risk), "Policy risk")
+            : null,
+          policyRiskScore: hunter?.policy_risk_score ?? 0,
+          reasons: (hunter?.reasons ?? []).slice(0, 4).map((reason) => safeReasonText(reason)),
+          recommendation: safeText(humanize(hunter?.recommendation ?? "needs_review"), "Recommendation"),
+          refutationStatus: assessment.refutation?.status
+            ? safeText(humanize(assessment.refutation.status), "Refutation")
+            : null,
+          riskLevel: hypothesis?.risk_level ? safeText(humanize(hypothesis.risk_level), "Risk") : null,
+          runId: safeText(run.id, "run"),
+          validationMode: hypothesis?.validation_mode
+            ? safeText(humanize(hypothesis.validation_mode), "Validation mode")
+            : null,
+        };
+      }),
+    )
+    .sort((left, right) => right.hunterPriorityScore - left.hunterPriorityScore);
 }

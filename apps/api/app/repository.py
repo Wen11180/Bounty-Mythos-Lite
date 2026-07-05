@@ -24,6 +24,7 @@ from app.db_models import (
     ProgramRecord,
     ReportRecord,
     ScannerRunRecord,
+    ValidationRunRecord,
 )
 from app.models import Finding, Program, ReportDraft
 from app.sample_data import FINDINGS, PROGRAMS, REPORTS
@@ -881,6 +882,58 @@ class DatabaseRepository:
             .order_by(
                 ScannerRunRecord.created_at.desc(),
                 ScannerRunRecord.id.desc(),
+            )
+        ).all()
+
+    def save_validation_run(
+        self,
+        *,
+        campaign_id: str,
+        task_id: str | None,
+        approval_id: str | None,
+        validation_mode: str,
+        target_ref: str,
+        status: str,
+        safety_gate_state: str,
+        plan_digest: str | None,
+        approval_required: bool,
+        allowed_to_execute: bool,
+        evidence_ref_count: int,
+        summary: str,
+        payload: dict | None = None,
+    ) -> ValidationRunRecord:
+        gated_without_approval = approval_required and approval_id is None
+        gated_status = "awaiting_approval" if gated_without_approval else _safe_display_value(status)
+        record = ValidationRunRecord(
+            id=f"validation_run_{uuid4().hex}",
+            campaign_id=campaign_id,
+            task_id=task_id,
+            approval_id=approval_id,
+            validation_mode=_safe_display_value(validation_mode),
+            target_ref=_safe_source_path(target_ref),
+            status=gated_status,
+            safety_gate_state="awaiting_approval"
+            if gated_without_approval
+            else _safe_display_value(safety_gate_state),
+            plan_digest=_safe_display_value(plan_digest),
+            approval_required=approval_required,
+            allowed_to_execute=allowed_to_execute and not gated_without_approval,
+            evidence_ref_count=max(0, evidence_ref_count),
+            summary=_safe_display_value(summary),
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_campaign_validation_runs(self, campaign_id: str) -> list[ValidationRunRecord]:
+        return self.session.scalars(
+            select(ValidationRunRecord)
+            .where(ValidationRunRecord.campaign_id == campaign_id)
+            .order_by(
+                ValidationRunRecord.created_at.desc(),
+                ValidationRunRecord.id.desc(),
             )
         ).all()
 

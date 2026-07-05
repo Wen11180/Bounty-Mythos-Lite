@@ -19,6 +19,7 @@ from app.db_models import (
     PipelineStageRecord,
     PipelineRunRecord,
     ScannerRunRecord,
+    ValidationRunRecord,
 )
 from app.hunter_intelligence import (
     HunterIntelligence,
@@ -270,6 +271,24 @@ class ScannerRunResponse(BaseModel):
     summary: str
     safety_gate_state: str
     created_at: str
+
+
+class ValidationRunResponse(BaseModel):
+    id: str
+    campaign_id: str
+    task_id: str | None = None
+    approval_id: str | None = None
+    validation_mode: str
+    target_ref: str
+    status: str
+    safety_gate_state: str
+    plan_digest: str | None = None
+    approval_required: bool
+    allowed_to_execute: bool
+    evidence_ref_count: int
+    summary: str
+    created_at: str
+    finished_at: str | None = None
 
 
 class CampaignCodebaseMapResponse(BaseModel):
@@ -536,6 +555,20 @@ def list_mythos_campaign_pipeline_stages(
     return [
         _pipeline_stage_response(record)
         for record in repository.list_campaign_pipeline_stages(campaign_id)
+    ]
+
+
+@app.get("/mythos/campaigns/{campaign_id}/validation-runs", response_model=list[ValidationRunResponse])
+def list_mythos_campaign_validation_runs(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[ValidationRunResponse]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        _validation_run_response(record)
+        for record in repository.list_campaign_validation_runs(campaign_id)
     ]
 
 
@@ -1398,6 +1431,26 @@ def _scanner_run_response(record: ScannerRunRecord) -> ScannerRunResponse:
         summary=safe_preview_text(record.summary),
         safety_gate_state=safe_preview_text(record.safety_gate_state),
         created_at=record.created_at.isoformat(),
+    )
+
+
+def _validation_run_response(record: ValidationRunRecord) -> ValidationRunResponse:
+    return ValidationRunResponse(
+        id=record.id,
+        campaign_id=record.campaign_id,
+        task_id=record.task_id,
+        approval_id=record.approval_id,
+        validation_mode=safe_preview_text(record.validation_mode),
+        target_ref=safe_preview_text(record.target_ref),
+        status=safe_preview_text(record.status),
+        safety_gate_state=safe_preview_text(record.safety_gate_state),
+        plan_digest=safe_preview_text(record.plan_digest) if record.plan_digest else None,
+        approval_required=bool(record.approval_required),
+        allowed_to_execute=bool(record.allowed_to_execute),
+        evidence_ref_count=record.evidence_ref_count,
+        summary=safe_preview_text(record.summary),
+        created_at=record.created_at.isoformat(),
+        finished_at=record.finished_at.isoformat() if record.finished_at else None,
     )
 
 

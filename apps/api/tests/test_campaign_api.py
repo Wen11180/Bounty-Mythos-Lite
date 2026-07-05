@@ -327,6 +327,74 @@ def test_campaign_api_returns_codebase_map_without_raw_scanner_or_secret_payload
         app.dependency_overrides.clear()
 
 
+def test_campaign_api_lists_validation_runs_without_execution_or_payload_leaks():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Validation runs campaign",
+                "autonomy_level": "level_1_local_validation",
+                "scope_status": "in_scope",
+                "policy_text": "Testing allowed",
+                "default_asset": "api.example.com",
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            task = repository.create_campaign_task(
+                campaign_id=campaign_id,
+                task_type="validation_planning",
+                agent_type="validation_harness_agent",
+                title="Plan validation",
+                input_refs=["hypothesis:1"],
+                payload={},
+            )
+            repository.save_validation_run(
+                campaign_id=campaign_id,
+                task_id=task.id,
+                approval_id=None,
+                validation_mode="two_account_authorization_check",
+                target_ref="candidate:idor?token=secret-token",
+                status="ready",
+                safety_gate_state="allowed",
+                plan_digest="plan_digest_1",
+                approval_required=True,
+                allowed_to_execute=True,
+                evidence_ref_count=0,
+                summary="Needs approval; Authorization: Bearer secret-token",
+                payload={"raw_request": "Cookie: session=secret"},
+            )
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/validation-runs")
+
+        assert response.status_code == 200
+        runs = response.json()
+        assert runs[0]["validation_mode"] == "two_account_authorization_check"
+        assert runs[0]["status"] == "awaiting_approval"
+        assert runs[0]["allowed_to_execute"] is False
+        assert runs[0]["approval_required"] is True
+        assert runs[0]["target_ref"] == "candidate:idor"
+        assert "payload" not in runs[0]
+        assert "raw_request" not in str(runs)
+        assert "secret-token" not in str(runs)
+        assert "session=secret" not in str(runs)
+        assert "authorization:" not in str(runs).lower()
+        assert "bearer" not in str(runs).lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_control_center_returns_audited_read_only_summary():
     testing_session = build_testing_session()
 

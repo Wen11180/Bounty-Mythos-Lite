@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -341,6 +341,35 @@ class ScannerRunRecord(Base):
 
     campaign: Mapped[CampaignRecord] = relationship()
     codebase_map: Mapped[CodebaseMapRecord | None] = relationship()
+
+
+class ValidationRunRecord(Base):
+    __tablename__ = "validation_runs"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("campaign_tasks.id"), nullable=True)
+    approval_id: Mapped[str | None] = mapped_column(ForeignKey("approval_records.id"), nullable=True)
+    validation_mode: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    safety_gate_state: Mapped[str] = mapped_column(String(100), nullable=False)
+    plan_digest: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    allowed_to_execute: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    evidence_ref_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+    task: Mapped[CampaignTaskRecord | None] = relationship()
+    approval: Mapped[ApprovalRecord | None] = relationship()
 
 
 class LearningSignalRecord(Base):
