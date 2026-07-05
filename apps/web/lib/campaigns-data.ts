@@ -164,10 +164,15 @@ function safeText(value: string | null | undefined, fallback: string): string {
 
   return stripUrlQuery(text)
     .replace(
-      /\b(session|secret|token|authorization|cookie)\b\s*[:=]\s*[^,;\s]+/gi,
+      /\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^,;\s]+/gi,
+      "Authorization=[redacted]",
+    )
+    .replace(
+      /\b(session|token|cookie)\b\s*[:=]\s*[^,;\s]+/gi,
       "$1=[redacted]",
     )
-    .replace(/\b(secret|token|authorization|cookie|session)\b/gi, "[redacted]");
+    .replace(/\bbearer\s+[^,;\s]+/gi, "Bearer [redacted]")
+    .replace(/\b[^\s,;]*(?:secret|token|cookie|session)[^\s,;]*\b/gi, "[redacted]");
 }
 
 function budgetPart(value: number | null | undefined, suffix: string): string | null {

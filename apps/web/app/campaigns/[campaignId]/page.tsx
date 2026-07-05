@@ -61,6 +61,13 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               <ClipboardCheck size={17} aria-hidden="true" />
               Agent Runs
             </Link>
+            <Link
+              href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
+              className="ml-2 mt-4 inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
+            >
+              <ClipboardCheck size={17} aria-hidden="true" />
+              Validation Queue
+            </Link>
           </div>
           <div className="border border-[var(--line)] bg-white p-4">
             <p className="text-xs font-semibold uppercase text-[var(--muted)]">Safe next action</p>

@@ -1,4 +1,4 @@
-import type { CampaignAgentRun, CampaignControlCenter } from "./campaigns-data";
+import type { CampaignAgentRun, CampaignApproval, CampaignControlCenter } from "./campaigns-data";
 
 const API_BASE_URL =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -720,6 +720,13 @@ export function getCampaignAgentRuns(
   fallback: CampaignAgentRun[],
 ): Promise<CampaignAgentRun[]> {
   return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/agent-runs`, fallback);
+}
+
+export function getCampaignApprovals(
+  campaignId: string,
+  fallback: CampaignApproval[],
+): Promise<CampaignApproval[]> {
+  return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/approvals`, fallback);
 }
 
 export function getFindings(fallback: Finding[]): Promise<Finding[]> {
