@@ -35,6 +35,8 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
     );
   }
 
+  const workspaceDataMode = run.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
+
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
       <PageBack />
@@ -43,6 +45,9 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ClipboardCheck size={17} aria-hidden="true" />
           {safeDisplay(run.id)}
+          <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
+            {workspaceDataMode}
+          </span>
         </p>
         <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -61,6 +66,11 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           </div>
         </div>
       </header>
+      {workspaceDataMode === "Demo data" ? (
+        <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
+          Demo data is shown because this validation workspace comes from a fallback run record.
+        </p>
+      ) : null}
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <GateMetric label="Allowed to execute" value={workspace.allowed_to_execute === true} dangerOnTrue />

@@ -296,3 +296,23 @@ test("run detail labels fallback run records as demo data", async () => {
   assert.match(page, /fallback-only/);
   assert.match(page, /Demo data/);
 });
+
+test("report preview labels fallback claim ledgers as demo data", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /reportDataMode/);
+  assert.match(page, /fallback-only/);
+  assert.match(page, /Demo data/);
+});
+
+test("validation workspace labels fallback workspaces as demo data", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /workspaceDataMode/);
+  assert.match(page, /fallback-only/);
+  assert.match(page, /Demo data/);
+});
