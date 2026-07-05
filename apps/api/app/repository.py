@@ -679,6 +679,17 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def list_campaign_pipeline_stages(self, campaign_id: str) -> list[PipelineStageRecord]:
+        return self.session.scalars(
+            select(PipelineStageRecord)
+            .where(PipelineStageRecord.campaign_id == campaign_id)
+            .order_by(
+                PipelineStageRecord.stage_order,
+                PipelineStageRecord.created_at.desc(),
+                PipelineStageRecord.id.desc(),
+            )
+        ).all()
+
     def save_learning_signal(
         self,
         *,

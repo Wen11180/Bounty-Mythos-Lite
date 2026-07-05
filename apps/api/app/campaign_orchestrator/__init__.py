@@ -24,6 +24,19 @@ def tick_campaign(
 
     stop_reason = _campaign_stop_reason(campaign, repository)
     if stop_reason is not None:
+        repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=campaign.id,
+            task_id=None,
+            stage_key="campaign_tick",
+            stage_order=0,
+            status="paused" if stop_reason == "campaign_paused" else "blocked",
+            input_refs=[f"campaign:{campaign.id}"],
+            output_refs=[],
+            safety_gate_state="blocked",
+            stop_reason=stop_reason,
+            payload={"dispatch": "not_started"},
+        )
         return {
             "status": "paused" if stop_reason == "campaign_paused" else "blocked",
             "dispatched_task_ids": [],
@@ -66,6 +79,8 @@ def _campaign_stop_reason(
     campaign: CampaignRecord,
     repository: DatabaseRepository,
 ) -> str | None:
+    if campaign.scope_status != "in_scope":
+        return "scope_not_in_scope"
     if campaign.status == "paused":
         return "campaign_paused"
     if campaign.status in {"blocked", "canceled", "completed", "failed"}:

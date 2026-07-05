@@ -82,6 +82,40 @@ def test_tick_does_not_dispatch_when_budget_exhausted():
         session.close()
 
 
+def test_tick_does_not_dispatch_out_of_scope_campaign():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Out of scope campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="out_of_scope",
+            policy_text="Testing not allowed for this asset",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+
+        result = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert result["status"] == "blocked"
+        assert result["stop_reasons"] == ["scope_not_in_scope"]
+        assert dispatched == []
+        assert repository.list_campaign_tasks(campaign.id) == []
+        stages = repository.list_campaign_pipeline_stages(campaign.id)
+        assert len(stages) == 1
+        assert stages[0].stage_key == "campaign_tick"
+        assert stages[0].status == "blocked"
+        assert stages[0].stop_reason == "scope_not_in_scope"
+    finally:
+        session.close()
+
+
 def test_tick_dispatches_only_campaign_task_id_for_safe_read_only_task():
     repository, session = build_repository()
     dispatched: list[dict] = []
