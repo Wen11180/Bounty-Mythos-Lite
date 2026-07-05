@@ -58,6 +58,10 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/tasks`} label="Tasks" />
               <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/agent-runs`} label="Agent Runs" />
               <AuditLink
+                href={`/campaigns/${encodeURIComponent(campaignId)}/attack-surface-map`}
+                label="Attack Surface Map"
+              />
+              <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/codebase-map`}
                 label="Codebase Map"
               />

@@ -3,6 +3,7 @@ import test from "node:test";
 import type { PipelineRunDetail, ProgramIntelligenceProfile, ReportPreview } from "./api.ts";
 import {
   toCampaignAgentRunSummaries,
+  toCampaignAttackSurfaceMapView,
   toCampaignBrainSummary,
   toCampaignCodebaseMapView,
   toCampaignControlSummary,
@@ -285,6 +286,38 @@ const pipelineRunDetail = {
   report_title: null,
   scope_status: "in_scope",
   payload: {
+    target_model: {
+      endpoints: [
+        {
+          method: "GET",
+          path: "/files/{file_id}?token=secret-token",
+          summary: "Read private file metadata",
+        },
+      ],
+      objects: [
+        {
+          name: "file",
+          identifiers: ["file_id", "session=secret"],
+        },
+      ],
+      relationships: [
+        {
+          child_object: "file",
+          parent_object: "workspace",
+          paths: ["/workspaces/{workspace_id}/files?cookie=session"],
+          relationship: "contains",
+        },
+      ],
+      roles: ["member", "admin"],
+      sensitive_actions: [
+        {
+          action: "export_file",
+          method: "POST",
+          path: "/files/{file_id}/export?Authorization=Bearer secret-token",
+          roles: ["admin"],
+        },
+      ],
+    },
     hypothesis_assessments: [
       {
         candidate_id: "candidate_low",
@@ -635,6 +668,23 @@ test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates",
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|token=secret/i);
 });
 
+test("toCampaignAttackSurfaceMapView summarizes target model facts without secret leakage", () => {
+  const view = toCampaignAttackSurfaceMapView([pipelineRunDetail]);
+
+  assert.equal(view.runCount, 1);
+  assert.equal(view.endpointCount, 1);
+  assert.equal(view.objectCount, 1);
+  assert.equal(view.roleCount, 2);
+  assert.equal(view.sensitiveActionCount, 1);
+  assert.equal(view.relationshipCount, 1);
+  assert.equal(view.endpoints[0].route, "GET /files/{file_id}");
+  assert.equal(view.objects[0].name, "file");
+  assert.equal(view.objects[0].identifierCount, 2);
+  assert.equal(view.sensitiveActions[0].route, "POST /files/{file_id}/export");
+  assert.equal(view.relationships[0].summary, "workspace -> file");
+  assert.doesNotMatch(JSON.stringify(view), /secret-token|session=secret|authorization=Bearer/i);
+});
+
 test("campaign control page stays read-only with no execution entrypoints", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/campaigns/page.tsx", import.meta.url), "utf8"),
@@ -656,6 +706,7 @@ test("campaign detail page reads the audited control center and stays read-only"
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/tasks/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/agent-runs/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/attack-surface-map/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/codebase-map/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-queue/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-runs/);
@@ -690,6 +741,19 @@ test("campaign hypothesis board page reads run candidates and stays read-only", 
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /getPipelineRun\(runId, null\)/);
   assert.match(page, /toCampaignHypothesisBoardSummaries/);
+  assert.doesNotMatch(page, /executeValidation|approveValidation|createFindingCandidate|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign attack surface map page reads target models and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/attack-surface-map/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
+  assert.match(page, /getPipelineRun\(runId, null\)/);
+  assert.match(page, /toCampaignAttackSurfaceMapView/);
   assert.doesNotMatch(page, /executeValidation|approveValidation|createFindingCandidate|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

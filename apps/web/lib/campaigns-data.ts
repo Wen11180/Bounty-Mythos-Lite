@@ -375,6 +375,46 @@ export type CampaignHypothesisBoardSummary = {
   validationMode: string | null;
 };
 
+export type CampaignAttackSurfaceEndpointSummary = {
+  route: string;
+  runId: string;
+  summary: string | null;
+};
+
+export type CampaignAttackSurfaceObjectSummary = {
+  identifierCount: number;
+  name: string;
+  runId: string;
+};
+
+export type CampaignAttackSurfaceSensitiveActionSummary = {
+  action: string;
+  roleCount: number;
+  route: string;
+  runId: string;
+};
+
+export type CampaignAttackSurfaceRelationshipSummary = {
+  pathCount: number;
+  relationship: string;
+  runId: string;
+  summary: string;
+};
+
+export type CampaignAttackSurfaceMapView = {
+  endpointCount: number;
+  endpoints: CampaignAttackSurfaceEndpointSummary[];
+  objectCount: number;
+  objects: CampaignAttackSurfaceObjectSummary[];
+  relationshipCount: number;
+  relationships: CampaignAttackSurfaceRelationshipSummary[];
+  roleCount: number;
+  roles: string[];
+  runCount: number;
+  sensitiveActionCount: number;
+  sensitiveActions: CampaignAttackSurfaceSensitiveActionSummary[];
+};
+
 function humanize(value: string): string {
   return value
     .replace(/[_-]+/g, " ")
@@ -429,6 +469,29 @@ function safeReasonText(value: string): string {
   }
 
   return safeText(humanize(value), "Reason");
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function stringList(value: unknown): string[] {
+  return asArray(value).filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function routeLabel(method: unknown, path: unknown): string {
+  return safeText(
+    [stringValue(method), stringValue(path)].filter((part): part is string => Boolean(part)).join(" "),
+    "Route",
+  );
 }
 
 function budgetPart(value: number | null | undefined, suffix: string): string | null {
@@ -749,4 +812,77 @@ export function toCampaignHypothesisBoardSummaries(
       }),
     )
     .sort((left, right) => right.hunterPriorityScore - left.hunterPriorityScore);
+}
+
+export function toCampaignAttackSurfaceMapView(
+  runs: PipelineRunDetail[],
+): CampaignAttackSurfaceMapView {
+  const endpoints: CampaignAttackSurfaceEndpointSummary[] = [];
+  const objects: CampaignAttackSurfaceObjectSummary[] = [];
+  const sensitiveActions: CampaignAttackSurfaceSensitiveActionSummary[] = [];
+  const relationships: CampaignAttackSurfaceRelationshipSummary[] = [];
+  const roles = new Set<string>();
+
+  for (const run of runs) {
+    const runId = safeText(run.id, "run");
+    const targetModel = asRecord(run.payload?.target_model);
+
+    for (const endpointValue of asArray(targetModel.endpoints)) {
+      const endpoint = asRecord(endpointValue);
+      endpoints.push({
+        route: routeLabel(endpoint.method, endpoint.path),
+        runId,
+        summary: stringValue(endpoint.summary) ? safeText(stringValue(endpoint.summary), "Summary") : null,
+      });
+    }
+
+    for (const objectValue of asArray(targetModel.objects)) {
+      const object = asRecord(objectValue);
+      objects.push({
+        identifierCount: stringList(object.identifiers).length,
+        name: safeText(stringValue(object.name), "Object"),
+        runId,
+      });
+    }
+
+    for (const role of stringList(targetModel.roles)) {
+      roles.add(safeText(role, "Role"));
+    }
+
+    for (const actionValue of asArray(targetModel.sensitive_actions)) {
+      const action = asRecord(actionValue);
+      sensitiveActions.push({
+        action: safeText(stringValue(action.action), "Action"),
+        roleCount: stringList(action.roles).length,
+        route: routeLabel(action.method, action.path),
+        runId,
+      });
+    }
+
+    for (const relationshipValue of asArray(targetModel.relationships)) {
+      const relationship = asRecord(relationshipValue);
+      const parent = safeText(stringValue(relationship.parent_object), "Parent");
+      const child = safeText(stringValue(relationship.child_object), "Child");
+      relationships.push({
+        pathCount: stringList(relationship.paths).length,
+        relationship: safeText(stringValue(relationship.relationship), "Relationship"),
+        runId,
+        summary: `${parent} -> ${child}`,
+      });
+    }
+  }
+
+  return {
+    endpointCount: endpoints.length,
+    endpoints: endpoints.slice(0, 20),
+    objectCount: objects.length,
+    objects: objects.slice(0, 20),
+    relationshipCount: relationships.length,
+    relationships: relationships.slice(0, 20),
+    roleCount: roles.size,
+    roles: Array.from(roles).sort(),
+    runCount: runs.length,
+    sensitiveActionCount: sensitiveActions.length,
+    sensitiveActions: sensitiveActions.slice(0, 20),
+  };
 }
