@@ -14,6 +14,7 @@ from app.db_models import (
     CampaignRecord,
     CampaignTaskRecord,
     LearningSignalRecord,
+    PipelineStageRecord,
     PipelineRunRecord,
 )
 from app.hunter_intelligence import (
@@ -167,6 +168,20 @@ class CampaignResponse(BaseModel):
     budget: CampaignBudgetResponse | None = None
 
 
+class CampaignControlCampaignResponse(BaseModel):
+    id: str
+    program_id: str | None = None
+    name: str
+    status: str
+    autonomy_level: str
+    scope_status: str
+    default_asset: str
+    target_classes: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] = Field(default_factory=list)
+    created_by: str
+    created_at: str
+
+
 class CampaignTaskResponse(BaseModel):
     id: str
     campaign_id: str
@@ -191,6 +206,21 @@ class AgentRunResponse(BaseModel):
     stop_reason: str | None
     created_at: str
     finished_at: str | None
+
+
+class PipelineStageResponse(BaseModel):
+    id: str
+    pipeline_run_id: str | None = None
+    campaign_id: str | None = None
+    task_id: str | None = None
+    stage_key: str
+    stage_order: int
+    status: str
+    input_refs: list[str] = Field(default_factory=list)
+    output_refs: list[str] = Field(default_factory=list)
+    safety_gate_state: str
+    stop_reason: str | None = None
+    created_at: str
 
 
 class ClaimReviewDecisionRequest(BaseModel):
@@ -271,6 +301,18 @@ class ApprovalRecordResponse(BaseModel):
     decided_by: str | None
     decided_at: str | None
     created_at: str
+
+
+class CampaignControlCenterResponse(BaseModel):
+    campaign: CampaignControlCampaignResponse
+    budget: CampaignBudgetResponse | None = None
+    tasks: list[CampaignTaskResponse] = Field(default_factory=list)
+    agent_runs: list[AgentRunResponse] = Field(default_factory=list)
+    approvals: list[ApprovalRecordResponse] = Field(default_factory=list)
+    pipeline_stages: list[PipelineStageResponse] = Field(default_factory=list)
+    safe_next_action: str
+    blocked_reasons: list[str] = Field(default_factory=list)
+    execution_allowed: bool = False
 
 
 class LearningSignalRequest(BaseModel):
@@ -423,6 +465,50 @@ def list_mythos_campaign_approvals(
         _approval_record_response(record)
         for record in repository.list_campaign_approval_records(campaign_id)
     ]
+
+
+@app.get(
+    "/mythos/campaigns/{campaign_id}/control-center",
+    response_model=CampaignControlCenterResponse,
+)
+def get_mythos_campaign_control_center(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> CampaignControlCenterResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    budget = repository.get_campaign_budget(campaign_id)
+    tasks = repository.list_campaign_tasks(campaign_id)
+    agent_runs = repository.list_campaign_agent_runs(campaign_id)
+    approvals = repository.list_campaign_approval_records(campaign_id)
+    stages = repository.list_campaign_pipeline_stages(campaign_id)
+    blocked_reasons = _campaign_control_center_blocked_reasons(
+        campaign=campaign,
+        budget=budget,
+        stages=stages,
+    )
+
+    return CampaignControlCenterResponse(
+        campaign=_campaign_control_campaign_response(campaign),
+        budget=_campaign_budget_response(budget),
+        tasks=[_campaign_task_response(record) for record in tasks],
+        agent_runs=[_agent_run_response(record) for record in agent_runs],
+        approvals=[_approval_record_response(record) for record in approvals],
+        pipeline_stages=[_pipeline_stage_response(record) for record in stages],
+        safe_next_action=_campaign_control_center_safe_next_action(
+            campaign=campaign,
+            budget=budget,
+            tasks=tasks,
+            agent_runs=agent_runs,
+            approvals=approvals,
+            blocked_reasons=blocked_reasons,
+        ),
+        blocked_reasons=blocked_reasons,
+        execution_allowed=False,
+    )
 
 
 @app.get("/programs", response_model=list[Program])
@@ -1065,6 +1151,24 @@ def _campaign_response(
     )
 
 
+def _campaign_control_campaign_response(
+    record: CampaignRecord,
+) -> CampaignControlCampaignResponse:
+    return CampaignControlCampaignResponse(
+        id=record.id,
+        program_id=record.program_id,
+        name=record.name,
+        status=record.status,
+        autonomy_level=record.autonomy_level,
+        scope_status=record.scope_status,
+        default_asset=record.default_asset,
+        target_classes=record.target_classes,
+        allowed_tools=record.allowed_tools,
+        created_by=record.created_by,
+        created_at=record.created_at.isoformat(),
+    )
+
+
 def _campaign_budget_response(
     record: CampaignBudgetRecord | None,
 ) -> CampaignBudgetResponse | None:
@@ -1110,6 +1214,74 @@ def _agent_run_response(record: AgentRunRecord) -> AgentRunResponse:
         created_at=record.created_at.isoformat(),
         finished_at=record.finished_at.isoformat() if record.finished_at else None,
     )
+
+
+def _pipeline_stage_response(record: PipelineStageRecord) -> PipelineStageResponse:
+    return PipelineStageResponse(
+        id=record.id,
+        pipeline_run_id=record.pipeline_run_id,
+        campaign_id=record.campaign_id,
+        task_id=record.task_id,
+        stage_key=record.stage_key,
+        stage_order=record.stage_order,
+        status=record.status,
+        input_refs=record.input_refs,
+        output_refs=record.output_refs,
+        safety_gate_state=record.safety_gate_state,
+        stop_reason=record.stop_reason,
+        created_at=record.created_at.isoformat(),
+    )
+
+
+def _campaign_control_center_blocked_reasons(
+    *,
+    campaign: CampaignRecord,
+    budget: CampaignBudgetRecord | None,
+    stages: list[PipelineStageRecord],
+) -> list[str]:
+    reasons: list[str] = []
+    if campaign.scope_status != "in_scope":
+        reasons.append("scope_not_in_scope")
+    if campaign.status in {"blocked", "canceled", "failed"}:
+        reasons.append(f"campaign_{campaign.status}")
+    if budget is not None and any(
+        value is not None and value <= 0
+        for value in (
+            budget.time_budget_minutes,
+            budget.token_budget,
+            budget.tool_call_budget,
+            budget.validation_budget,
+        )
+    ):
+        reasons.append("budget_exhausted")
+    for stage in stages:
+        if stage.status in {"blocked", "paused"} and stage.stop_reason:
+            reasons.append(stage.stop_reason)
+    return list(dict.fromkeys(reasons))
+
+
+def _campaign_control_center_safe_next_action(
+    *,
+    campaign: CampaignRecord,
+    budget: CampaignBudgetRecord | None,
+    tasks: list[CampaignTaskRecord],
+    agent_runs: list[AgentRunRecord],
+    approvals: list[ApprovalRecord],
+    blocked_reasons: list[str],
+) -> str:
+    if any(record.status == "pending" for record in approvals):
+        return "review_approval_queue"
+    if blocked_reasons:
+        return "resolve_blockers"
+    if campaign.status != "running":
+        return "start_campaign"
+    if budget is None:
+        return "set_campaign_budget"
+    if any(record.status in {"dispatched", "running"} for record in agent_runs):
+        return "monitor_agent_runs"
+    if any(record.status in {"queued", "ready"} for record in tasks):
+        return "dispatch_ready_tasks"
+    return "plan_next_tick"
 
 
 def _update_campaign_status(

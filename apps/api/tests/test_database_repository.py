@@ -175,3 +175,66 @@ def test_repository_persists_campaign_core_records_with_safety_redaction():
         assert repository.list_campaign_approval_records(campaign.id)[0].id == approval.id
     finally:
         session.close()
+
+
+def test_repository_updates_campaign_task_and_finishes_agent_run_safely():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Agent lifecycle campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="campaign_observation",
+            agent_type="orchestrator_agent",
+            title="Observe authorized state",
+            input_refs=["campaign"],
+        )
+        agent_run = repository.save_agent_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            agent_type="orchestrator_agent",
+            status="dispatched",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=[],
+            tool_calls=[],
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload={},
+        )
+
+        updated_task = repository.update_campaign_task_status(
+            task.id,
+            "completed",
+            output_refs=[f"agent_run:{agent_run.id}"],
+        )
+        finished_run = repository.finish_agent_run(
+            agent_run.id,
+            status="completed",
+            output_refs=["campaign_observation:summary"],
+            safety_gate_state="allowed",
+            stop_reason="observation_recorded",
+            payload={"authorization": "Bearer secret-token"},
+        )
+
+        assert updated_task is not None
+        assert updated_task.status == "completed"
+        assert updated_task.output_refs == [f"agent_run:{agent_run.id}"]
+
+        assert finished_run is not None
+        assert finished_run.status == "completed"
+        assert finished_run.output_refs == ["campaign_observation:summary"]
+        assert finished_run.safety_gate_state == "allowed"
+        assert finished_run.stop_reason == "observation_recorded"
+        assert finished_run.finished_at is not None
+        assert finished_run.payload["authorization"] == "[REDACTED]"
+    finally:
+        session.close()

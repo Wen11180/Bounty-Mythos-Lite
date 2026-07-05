@@ -47,6 +47,39 @@ def test_tick_does_not_dispatch_paused_campaign():
         session.close()
 
 
+def test_tick_does_not_dispatch_draft_campaign():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Draft campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+
+        result = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert result["status"] == "blocked"
+        assert result["stop_reasons"] == ["campaign_not_running"]
+        assert dispatched == []
+        assert repository.list_campaign_tasks(campaign.id) == []
+        stages = repository.list_campaign_pipeline_stages(campaign.id)
+        assert len(stages) == 1
+        assert stages[0].stage_key == "campaign_tick"
+        assert stages[0].status == "blocked"
+        assert stages[0].stop_reason == "campaign_not_running"
+    finally:
+        session.close()
+
+
 def test_tick_does_not_dispatch_when_budget_exhausted():
     repository, session = build_repository()
     dispatched: list[dict] = []

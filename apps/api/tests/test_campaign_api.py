@@ -181,3 +181,99 @@ def test_campaign_api_lists_tasks_agent_runs_and_approvals_without_payload_leaks
         assert "session=secret" not in str(approvals_response.json())
     finally:
         app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_returns_audited_read_only_summary():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Control center campaign",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "Testing allowed. Authorization: Bearer secret-token",
+                "default_asset": "api.example.com",
+                "budget": {
+                    "time_budget_minutes": 30,
+                    "token_budget": 5000,
+                    "tool_call_budget": 10,
+                    "validation_budget": 1,
+                },
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            task = repository.create_campaign_task(
+                campaign_id=campaign_id,
+                task_type="campaign_observation",
+                agent_type="orchestrator_agent",
+                title="Observe campaign",
+                input_refs=[f"campaign:{campaign_id}"],
+                payload={"authorization": "Bearer secret-token"},
+            )
+            task_id = task.id
+            repository.save_agent_run(
+                campaign_id=campaign_id,
+                task_id=task_id,
+                agent_type="orchestrator_agent",
+                status="dispatched",
+                input_refs=[f"campaign_task:{task_id}"],
+                output_refs=[],
+                tool_calls=[],
+                safety_gate_state="allowed",
+                stop_reason=None,
+                payload={"mode": "read_only"},
+            )
+            repository.create_approval_record(
+                campaign_id=campaign_id,
+                task_id=task_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Needs approval; cookie: session=secret",
+                requested_action="two_account_authorization_check",
+                safety_gate_state="awaiting_approval",
+                payload={"authorization": "Bearer secret-token"},
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign_id,
+                task_id=task_id,
+                stage_key="campaign_tick",
+                stage_order=0,
+                status="blocked",
+                input_refs=[f"campaign:{campaign_id}"],
+                output_refs=[],
+                safety_gate_state="blocked",
+                stop_reason="approval_required",
+                payload={"authorization": "Bearer secret-token"},
+            )
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        control_center = response.json()
+        assert control_center["campaign"]["id"] == campaign_id
+        assert control_center["budget"]["status"] == "active"
+        assert control_center["tasks"][0]["id"] == task_id
+        assert control_center["agent_runs"][0]["safety_gate_state"] == "allowed"
+        assert control_center["approvals"][0]["status"] == "pending"
+        assert control_center["pipeline_stages"][0]["stop_reason"] == "approval_required"
+        assert control_center["safe_next_action"] == "review_approval_queue"
+        assert control_center["blocked_reasons"] == ["approval_required"]
+        assert control_center["execution_allowed"] is False
+        assert "policy_text" not in str(control_center)
+        assert "secret-token" not in str(control_center)
+        assert "session=secret" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()

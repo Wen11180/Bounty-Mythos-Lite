@@ -516,6 +516,24 @@ class DatabaseRepository:
             )
         ).all()
 
+    def update_campaign_task_status(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        output_refs: list[str] | None = None,
+    ) -> CampaignTaskRecord | None:
+        record = self.session.get(CampaignTaskRecord, task_id)
+        if record is None:
+            return None
+        record.status = _safe_display_value(status)
+        if output_refs is not None:
+            record.output_refs = _safe_display_value(output_refs)
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
     def save_agent_run(
         self,
         *,
@@ -544,6 +562,33 @@ class DatabaseRepository:
             payload=_safe_display_value(payload or {}),
             finished_at=datetime.now(UTC) if status in {"completed", "failed", "blocked"} else None,
         )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def finish_agent_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        output_refs: list[str] | None = None,
+        safety_gate_state: str | None = None,
+        stop_reason: str | None = None,
+        payload: dict | None = None,
+    ) -> AgentRunRecord | None:
+        record = self.session.get(AgentRunRecord, run_id)
+        if record is None:
+            return None
+        record.status = _safe_display_value(status)
+        if output_refs is not None:
+            record.output_refs = _safe_display_value(output_refs)
+        if safety_gate_state is not None:
+            record.safety_gate_state = _safe_display_value(safety_gate_state)
+        record.stop_reason = _safe_display_value(stop_reason)
+        if payload is not None:
+            record.payload = _safe_display_value(payload)
+        record.finished_at = datetime.now(UTC)
         self.session.add(record)
         self.session.commit()
         self.session.refresh(record)

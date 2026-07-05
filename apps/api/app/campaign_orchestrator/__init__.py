@@ -85,6 +85,8 @@ def _campaign_stop_reason(
         return "campaign_paused"
     if campaign.status in {"blocked", "canceled", "completed", "failed"}:
         return f"campaign_{campaign.status}"
+    if campaign.status != "running":
+        return "campaign_not_running"
 
     budget = repository.get_campaign_budget(campaign.id)
     if budget is None:
