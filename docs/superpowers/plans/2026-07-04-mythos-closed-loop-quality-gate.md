@@ -6,6 +6,15 @@
 
 **Architecture:** Reuse existing FastAPI endpoints and persisted run payloads. Add a derived `closed_loop_summary` to pipeline run detail payload, then render it on the existing run detail page. Do not add a new workflow engine, background task, or live validation capability.
 
+**Current implementation note:** The implementation now exposes a lifecycle
+narrative, not only counters. `closed_loop_summary.steps` describes Manual
+Observation, Claim Review, Finding Candidate, Learning Signal, and Brain Memory
+with `status`, `reason`, `safety_gate`, and `next_allowed_action`. Run detail and
+run list also expose `evidence_support_summary`, derived from report preview
+claim ledger state, so the dashboard can surface evidence gaps and unsafe or
+redacted evidence without turning that signal into validation or submission
+permission.
+
 **Tech Stack:** FastAPI, SQLAlchemy, Pydantic, pytest, Next.js 16, React 19, TypeScript.
 
 ---
@@ -14,9 +23,12 @@
 
 - Modify `apps/api/tests/test_mythos_pipeline_api.py`: add API regression coverage for the complete closed loop.
 - Modify `apps/api/app/main.py`: derive `closed_loop_summary` from run payload, finding records, learning signals, and safety blockers.
+- Modify `apps/api/app/main.py`: derive `evidence_support_summary` from report preview claim ledger state for run detail and run list.
 - Modify `apps/web/lib/api.ts`: add TypeScript types for the summary and expose it through `PipelineRunPayload`.
 - Modify `apps/web/lib/workbench-detail-data.ts`: add fallback closed-loop summary for mock run details.
 - Modify `apps/web/app/runs/[runId]/page.tsx`: render a compact closed-loop status block.
+- Modify `apps/web/lib/pipeline-runs-data.ts`: map evidence support into dashboard radar summaries.
+- Modify `apps/web/lib/pipeline-runs-data.test.ts`: test dashboard radar derivation from evidence support.
 - Optional docs update only if implementation changes the spec language. Avoid docs churn otherwise.
 
 ---
@@ -315,6 +327,19 @@ def _safe_record_list(value: object) -> list[dict]:
     return [item for item in value if isinstance(item, dict)]
 ```
 
+Current implementation extension:
+
+- `_closed_loop_summary` should include `steps`, with one lifecycle entry for
+  each closed-loop stage. The helpers must not copy manual observation text or
+  reviewer rationale into the summary.
+- `_evidence_support_summary` should derive advisory claim support counts from
+  `build_report_preview_response(record)`.
+- `_claim_evidence_support_status` should classify claim ledger entries as
+  `unsafe_or_redacted_evidence`, `human_gated_supported`,
+  `missing_required_evidence`, or `partially_supported`.
+- `_pipeline_run_summary` should expose `evidence_support_summary` so
+  `/mythos/pipeline/runs` and `/mythos/pipeline/runs/{run_id}` agree.
+
 - [ ] **Step 3: Run the single test and confirm GREEN**
 
 Run:
@@ -358,6 +383,16 @@ export type ClosedLoopSummary = {
   learning_signal_count: number;
   blocked_reasons: string[];
   safety_notes: string[];
+  steps?: ClosedLoopStep[];
+};
+
+export type ClosedLoopStep = {
+  key: string;
+  label: string;
+  status: string;
+  reason: string;
+  safety_gate: string;
+  next_allowed_action: string;
 };
 ```
 
@@ -441,6 +476,7 @@ Add this card at the top of the `<aside>` before the Validation Gate section:
                 <Field label="Candidates" value={closedLoop?.finding_candidate_count ?? 0} />
                 <Field label="Learning" value={closedLoop?.learning_signal_count ?? 0} />
               </dl>
+              {/* Render closedLoop.steps here as the lifecycle narrative. */}
               {closedLoopSafetyNotes.length > 0 ? (
                 <ul className="flex flex-wrap gap-1.5">
                   {closedLoopSafetyNotes.map((note) => (
@@ -473,6 +509,7 @@ Run:
 
 ```powershell
 cd apps/web
+npm test
 npm run lint
 npm run build
 ```

@@ -429,6 +429,14 @@ class DatabaseRepository:
             )
         ).all()
 
+    def list_all_learning_signals(self) -> list[LearningSignalRecord]:
+        return self.session.scalars(
+            select(LearningSignalRecord).order_by(
+                LearningSignalRecord.created_at.desc(),
+                LearningSignalRecord.id.desc(),
+            )
+        ).all()
+
 
 def seed_sample_data(session: Session) -> None:
     for program in PROGRAMS:

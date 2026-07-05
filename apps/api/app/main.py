@@ -18,8 +18,12 @@ from app.mythos_brain import (
     LearningOutcome,
     LearningSignal,
     LearningSeverityDelta,
+    LessonRecommendation,
+    LessonScopeType,
+    MythosLesson,
     ProgramIntelligenceProfile,
     build_learning_signal_from_outcome,
+    build_mythos_lessons,
     build_program_intelligence,
 )
 from app.mythos_finding import promote_pipeline_run_to_finding_candidate
@@ -294,6 +298,32 @@ def create_mythos_brain_learning_signal(
         target_relationships=request.target_relationships,
     )
     return _learning_signal_response(record)
+
+
+@app.get("/mythos/brain/lessons", response_model=list[MythosLesson])
+def list_mythos_brain_lessons(
+    program_id: str | None = None,
+    scope_type: LessonScopeType | None = None,
+    playbook_id: str | None = None,
+    surface_pattern: str | None = None,
+    recommendation: LessonRecommendation | None = None,
+    session: Session = Depends(get_session),
+) -> list[MythosLesson]:
+    repository = DatabaseRepository(session)
+    records = (
+        repository.list_learning_signals(program_id)
+        if program_id is not None
+        else repository.list_all_learning_signals()
+    )
+    lessons = build_mythos_lessons([_learning_signal_response(record) for record in records])
+    return [
+        lesson
+        for lesson in lessons
+        if (scope_type is None or lesson.scope_type == scope_type)
+        and (playbook_id is None or lesson.playbook_id == playbook_id)
+        and (surface_pattern is None or lesson.surface_pattern == surface_pattern)
+        and (recommendation is None or lesson.recommendation == recommendation)
+    ]
 
 
 @app.post("/mythos/brain/outcomes", response_model=ProgramIntelligenceProfile)

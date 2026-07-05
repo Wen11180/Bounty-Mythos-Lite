@@ -209,6 +209,9 @@ export default async function Dashboard() {
     intelligenceRadar.runSignals.map((signal) => [signal.run.runId, signal]),
   );
   const topBrainSurfaces = brainProfile.high_value_surfaces.slice(0, 3);
+  const appliedLessons = (brainProfile.applied_lessons ?? []).slice(0, 2);
+  const skippedLessons = (brainProfile.skipped_lessons ?? []).slice(0, 2);
+  const lessonAdjustedSurfaces = brainProfile.lesson_adjusted_surfaces ?? [];
   const recentLearningSignals = brainProfile.recent_learning_signals.slice(0, 3);
 
   return (
@@ -701,10 +704,74 @@ export default async function Dashboard() {
                       <p className="mt-2 break-words text-sm text-[var(--muted)]">
                         {surface.paths[0] ?? titleCase(surface.action)}
                       </p>
+                      {lessonAdjustedSurfaces.some(
+                        (adjustment) => adjustment.surface_key === surface.surface_key,
+                      ) ? (
+                        <p className="mt-2 text-xs font-semibold uppercase text-[var(--accent-strong)]">
+                          Lesson adjusted
+                        </p>
+                      ) : null}
                     </div>
                   ))}
                   {topBrainSurfaces.length === 0 ? (
                     <p className="text-sm text-[var(--muted)]">No surfaces learned yet.</p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                  Lessons
+                </p>
+                <div className="mt-3 grid gap-3 text-sm">
+                  {appliedLessons.map((lesson) => (
+                    <div
+                      key={lesson.id}
+                      className="min-w-0 rounded-md border border-[var(--line)] bg-[#f7f7f4] p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="break-words font-semibold">
+                          {titleCase(lesson.recommendation)} - {lesson.surface_pattern}
+                        </p>
+                        <p className="shrink-0 font-semibold tabular-nums">
+                          {lesson.score_delta > 0 ? "+" : ""}
+                          {lesson.score_delta}
+                        </p>
+                      </div>
+                      <p className="mt-2 text-xs font-semibold uppercase text-[var(--muted)]">
+                        Confidence {lesson.confidence}
+                      </p>
+                      <ul className="mt-2 flex flex-wrap gap-1.5">
+                        {lesson.reasons.slice(0, 2).map((reason) => (
+                          <li
+                            key={`${lesson.id}-${reason}`}
+                            className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold text-[var(--muted)]"
+                          >
+                            {titleCase(reason)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                  {appliedLessons.length === 0 ? (
+                    <p className="text-[var(--muted)]">No applied lessons yet.</p>
+                  ) : null}
+                  {skippedLessons.length > 0 ? (
+                    <div className="border-t border-[var(--line)] pt-3">
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                        Skipped
+                      </p>
+                      <div className="mt-2 grid gap-2">
+                        {skippedLessons.map((lesson) => (
+                          <p
+                            key={lesson.lesson_id}
+                            className="break-words text-xs text-[var(--muted)]"
+                          >
+                            {titleCase(lesson.reason)} · {titleCase(lesson.scope_type)}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               </div>

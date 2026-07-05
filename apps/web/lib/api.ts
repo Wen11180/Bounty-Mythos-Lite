@@ -507,6 +507,7 @@ export type LearningSignal = {
   severity_delta?: LearningSeverityDelta | null;
   evidence_quality?: LearningEvidenceQuality | null;
   triager_feedback?: string | null;
+  target_relationships?: string[];
   created_at?: string | null;
 };
 
@@ -556,6 +557,42 @@ export type HighValueSurface = {
   reasons: string[];
 };
 
+export type MythosLesson = {
+  id: string;
+  scope_type: "program" | "platform" | "global";
+  scope_key: string;
+  playbook_id: string;
+  surface_pattern: string;
+  outcome_counts: Record<string, number>;
+  evidence_quality_counts: Record<string, number>;
+  bounty_total: number;
+  severity_delta_counts: Record<string, number>;
+  confidence: number;
+  recommendation: "boost" | "penalize" | "evidence_needed" | "duplicate_watch";
+  score_delta: number;
+  reasons: string[];
+  source_signal_ids: string[];
+  safety_notes: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type SkippedMythosLesson = {
+  lesson_id: string;
+  reason: string;
+  scope_type: string;
+  scope_key: string;
+};
+
+export type LessonAdjustedSurface = {
+  surface_key: string;
+  lesson_id: string;
+  recommendation: string;
+  score_delta: number;
+  score_before: number;
+  score_after: number;
+};
+
 export type LearningSummary = {
   accepted_count: number;
   duplicate_count: number;
@@ -583,6 +620,9 @@ export type ProgramIntelligenceProfile = {
   high_value_surfaces: HighValueSurface[];
   learning_summary: LearningSummary;
   recent_learning_signals: LearningSignal[];
+  applied_lessons: MythosLesson[];
+  skipped_lessons: SkippedMythosLesson[];
+  lesson_adjusted_surfaces: LessonAdjustedSurface[];
   safety_notes: string[];
 };
 

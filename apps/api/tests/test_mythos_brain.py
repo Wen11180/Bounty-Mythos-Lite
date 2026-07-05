@@ -1,6 +1,7 @@
 from app.models import Program, ScopeStatus
 from app.mythos_brain import (
     LearningSignal,
+    build_mythos_lessons,
     build_learning_signal_from_outcome,
     build_program_intelligence,
 )
@@ -489,3 +490,173 @@ def test_build_learning_signal_from_outcome_prefers_relationship_leaf_surface():
     )
 
     assert signal.surface_key == "file_id:export"
+
+
+def test_mythos_lessons_build_boost_duplicate_and_evidence_needed_rules():
+    lessons = build_mythos_lessons(
+        learning_signals=[
+            LearningSignal(
+                id="signal_accepted_1",
+                program_id="program_example",
+                playbook_id="bola_idor",
+                outcome="accepted",
+                surface_key="file_id:export",
+                evidence_quality="strong",
+                bounty_amount=3000,
+                severity_delta="up",
+                notes="raw observation text must not appear",
+                triager_feedback="Authorization: Bearer live-token",
+                target_relationships=["org_id>team_id>file_id"],
+            ),
+            LearningSignal(
+                id="signal_accepted_2",
+                program_id="program_example",
+                playbook_id="bola_idor",
+                outcome="accepted",
+                surface_key="file_id:export",
+                evidence_quality="strong",
+                bounty_amount=500,
+                target_relationships=["org_id>team_id>file_id"],
+            ),
+            LearningSignal(
+                id="signal_weak_1",
+                program_id="program_example",
+                playbook_id="role_boundary",
+                outcome="accepted",
+                surface_key="team_id:write",
+                evidence_quality="weak",
+            ),
+            LearningSignal(
+                id="signal_duplicate_1",
+                program_id="program_example",
+                playbook_id="role_boundary",
+                outcome="duplicate",
+                surface_key="team_id:write",
+            ),
+            LearningSignal(
+                id="signal_duplicate_2",
+                program_id="program_example",
+                playbook_id="role_boundary",
+                outcome="duplicate",
+                surface_key="team_id:write",
+            ),
+        ]
+    )
+
+    lessons_by_key = {
+        (lesson.recommendation, lesson.playbook_id, lesson.surface_pattern): lesson
+        for lesson in lessons
+    }
+    boost = lessons_by_key[("boost", "bola_idor", "file_id:export")]
+    duplicate_watch = lessons_by_key[("duplicate_watch", "role_boundary", "team_id:write")]
+    evidence_needed = lessons_by_key[("evidence_needed", "role_boundary", "team_id:write")]
+
+    assert boost.scope_type == "program"
+    assert boost.scope_key == "program_example"
+    assert boost.score_delta > 0
+    assert boost.confidence >= 60
+    assert boost.outcome_counts == {"accepted": 2}
+    assert boost.evidence_quality_counts == {"strong": 2}
+    assert boost.bounty_total == 3500
+    assert "lesson:boost:accepted_strong_evidence" in boost.reasons
+    assert "target_relationship:org_id>team_id>file_id" in boost.reasons
+    assert boost.source_signal_ids == ["signal_accepted_1", "signal_accepted_2"]
+    assert "Authorization" not in str(boost.model_dump())
+    assert "raw observation" not in str(boost.model_dump())
+
+    assert duplicate_watch.score_delta < 0
+    assert "lesson:duplicate_watch:repeated_duplicate" in duplicate_watch.reasons
+    assert evidence_needed.score_delta <= 0
+    assert "lesson:evidence_needed:weak_accepted_evidence" in evidence_needed.reasons
+
+
+def test_program_intelligence_exposes_applied_and_skipped_lessons():
+    program = Program(
+        id="program_example",
+        name="Example Program",
+        platform="HackerOne",
+        bounty_range="High $3000 / Critical $10000",
+        scope_status=ScopeStatus.IN_SCOPE,
+        automation="limited",
+        testing_accounts="configured",
+        api_docs="imported",
+        public_code="available",
+        duplicate_risk="medium",
+        priority="A",
+    )
+    pipeline_runs = [
+        {
+            "asset": "api.example.com",
+            "payload": {
+                "target_model": {
+                    "objects": [{"name": "file_id"}],
+                    "sensitive_actions": [
+                        {
+                            "action": "export",
+                            "method": "GET",
+                            "path": "/files/{file_id}/export",
+                            "roles": ["member"],
+                        }
+                    ],
+                    "roles": ["member"],
+                },
+                "hunter_intelligence": {
+                    "assessments": [
+                        {
+                            "playbook_id": "bola_idor",
+                            "hunter_priority_score": 68,
+                            "recommendation": "needs_human_review",
+                        }
+                    ]
+                },
+            },
+        }
+    ]
+    learning_signals = [
+        LearningSignal(
+            id="signal_accepted_1",
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+        ),
+        LearningSignal(
+            id="signal_accepted_2",
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+        ),
+        LearningSignal(
+            id="signal_other_program",
+            program_id="other_program",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+        ),
+        LearningSignal(
+            id="signal_other_program_2",
+            program_id="other_program",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+        ),
+    ]
+
+    profile = build_program_intelligence(
+        program=program,
+        pipeline_runs=pipeline_runs,
+        learning_signals=learning_signals,
+    )
+
+    assert profile.applied_lessons[0].recommendation == "boost"
+    assert profile.applied_lessons[0].surface_pattern == "file_id:export"
+    assert "lesson:boost:accepted_strong_evidence" in profile.applied_lessons[0].reasons
+    assert "lesson:applied:surface_match" in profile.high_value_surfaces[0].reasons
+    assert profile.lesson_adjusted_surfaces[0]["surface_key"] == "file_id:export"
+    assert profile.skipped_lessons[0]["lesson_id"].startswith("lesson_")
+    assert profile.skipped_lessons[0]["reason"] == "lesson:skipped:scope_mismatch"

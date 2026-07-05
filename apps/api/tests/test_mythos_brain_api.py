@@ -626,3 +626,69 @@ def test_mythos_brain_api_returns_404_for_unknown_program():
         assert response.json()["detail"] == "Program not found"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_mythos_brain_api_exposes_lessons_without_sensitive_text():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        dry_run_response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "In scope: api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile", "tags": ["member"]},
+                        }
+                    }
+                },
+            },
+        )
+        assert dry_run_response.status_code == 200
+
+        for index in range(2):
+            signal_response = client.post(
+                "/mythos/brain/learning-signals",
+                json={
+                    "program_id": "program_example",
+                    "playbook_id": "bola_idor",
+                    "outcome": "accepted",
+                    "surface_key": "file_id:export",
+                    "notes": f"raw observation {index} Authorization: Bearer live-token",
+                    "bounty_amount": 1000,
+                    "severity_delta": "up",
+                    "evidence_quality": "strong",
+                    "triager_feedback": "Authorization: Bearer live-token",
+                    "target_relationships": ["org_id>team_id>file_id"],
+                },
+            )
+            assert signal_response.status_code == 200
+
+        profile_response = client.get("/mythos/brain/programs/program_example")
+        assert profile_response.status_code == 200
+        profile = profile_response.json()
+
+        assert profile["applied_lessons"][0]["recommendation"] == "boost"
+        assert profile["applied_lessons"][0]["surface_pattern"] == "file_id:export"
+        assert profile["lesson_adjusted_surfaces"][0]["surface_key"] == "file_id:export"
+        assert "Authorization" not in str(profile["applied_lessons"])
+        assert "raw observation" not in str(profile["applied_lessons"])
+
+        lessons_response = client.get(
+            "/mythos/brain/lessons",
+            params={"program_id": "program_example", "recommendation": "boost"},
+        )
+        assert lessons_response.status_code == 200
+        lessons = lessons_response.json()
+
+        assert len(lessons) == 1
+        assert lessons[0]["scope_type"] == "program"
+        assert lessons[0]["scope_key"] == "program_example"
+        assert lessons[0]["source_signal_ids"]
+        assert "advisory_memory_only" in lessons[0]["safety_notes"]
+        assert "Authorization" not in str(lessons)
+        assert "raw observation" not in str(lessons)
+    finally:
+        app.dependency_overrides.clear()

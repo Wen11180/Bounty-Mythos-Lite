@@ -1,3 +1,4 @@
+from hashlib import sha256
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -8,6 +9,8 @@ from app.models import Program
 LearningOutcome = Literal["accepted", "duplicate", "informative", "na", "rejected"]
 LearningSeverityDelta = Literal["up", "down", "same"]
 LearningEvidenceQuality = Literal["strong", "adequate", "weak"]
+LessonScopeType = Literal["program", "platform", "global"]
+LessonRecommendation = Literal["boost", "penalize", "evidence_needed", "duplicate_watch"]
 
 
 class LearningSignal(BaseModel):
@@ -58,6 +61,26 @@ class HighValueSurface(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class MythosLesson(BaseModel):
+    id: str
+    scope_type: LessonScopeType
+    scope_key: str
+    playbook_id: str
+    surface_pattern: str
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    evidence_quality_counts: dict[str, int] = Field(default_factory=dict)
+    bounty_total: int = 0
+    severity_delta_counts: dict[str, int] = Field(default_factory=dict)
+    confidence: int = Field(ge=0, le=100)
+    recommendation: LessonRecommendation
+    score_delta: int
+    reasons: list[str] = Field(default_factory=list)
+    source_signal_ids: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class LearningSummary(BaseModel):
     accepted_count: int = 0
     duplicate_count: int = 0
@@ -85,6 +108,9 @@ class ProgramIntelligenceProfile(BaseModel):
     high_value_surfaces: list[HighValueSurface] = Field(default_factory=list)
     learning_summary: LearningSummary
     recent_learning_signals: list[LearningSignal] = Field(default_factory=list)
+    applied_lessons: list[MythosLesson] = Field(default_factory=list)
+    skipped_lessons: list[dict[str, str]] = Field(default_factory=list)
+    lesson_adjusted_surfaces: list[dict[str, Any]] = Field(default_factory=list)
     safety_notes: list[str]
 
 
@@ -102,6 +128,17 @@ def build_program_intelligence(
         learning_signals=learning_signals,
         program=program,
     )
+    lessons = build_mythos_lessons(learning_signals)
+    _add_lesson_surfaces(
+        high_value_surfaces=high_value_surfaces,
+        lessons=lessons,
+        program=program,
+    )
+    applied_lessons, skipped_lessons, lesson_adjusted_surfaces = _apply_lessons_to_surfaces(
+        lessons=lessons,
+        high_value_surfaces=high_value_surfaces,
+        program=program,
+    )
     return ProgramIntelligenceProfile(
         program_id=program.id,
         program_name=program.name,
@@ -110,6 +147,9 @@ def build_program_intelligence(
         high_value_surfaces=high_value_surfaces,
         learning_summary=learning_summary,
         recent_learning_signals=learning_signals[:5],
+        applied_lessons=applied_lessons,
+        skipped_lessons=skipped_lessons,
+        lesson_adjusted_surfaces=lesson_adjusted_surfaces,
         safety_notes=[
             "no_live_requests",
             "test_accounts_only",
@@ -117,6 +157,36 @@ def build_program_intelligence(
             "no_real_user_data",
             "advisory_memory_only",
         ],
+    )
+
+
+def build_mythos_lessons(learning_signals: list[LearningSignal]) -> list[MythosLesson]:
+    groups: dict[tuple[str, str, str], list[LearningSignal]] = {}
+    for signal in learning_signals:
+        if not signal.surface_key:
+            continue
+        key = (signal.program_id, signal.playbook_id, signal.surface_key)
+        groups.setdefault(key, []).append(signal)
+
+    lessons: list[MythosLesson] = []
+    for (program_id, playbook_id, surface_key), signals in groups.items():
+        lessons.extend(
+            _lessons_for_signal_group(
+                program_id=program_id,
+                playbook_id=playbook_id,
+                surface_key=surface_key,
+                signals=signals,
+            )
+        )
+    return sorted(
+        lessons,
+        key=lambda lesson: (
+            lesson.scope_type,
+            lesson.scope_key,
+            lesson.playbook_id,
+            lesson.surface_pattern,
+            lesson.recommendation,
+        ),
     )
 
 
@@ -152,6 +222,283 @@ def build_learning_signal_from_outcome(
             else _surface_target_relationships(run, signal_surface_key)
         ),
     )
+
+
+def _lessons_for_signal_group(
+    *,
+    program_id: str,
+    playbook_id: str,
+    surface_key: str,
+    signals: list[LearningSignal],
+) -> list[MythosLesson]:
+    outcome_counts = _counts(signal.outcome for signal in signals)
+    evidence_quality_counts = _counts(
+        signal.evidence_quality for signal in signals if signal.evidence_quality
+    )
+    severity_delta_counts = _counts(
+        signal.severity_delta for signal in signals if signal.severity_delta
+    )
+    accepted = outcome_counts.get("accepted", 0)
+    duplicate = outcome_counts.get("duplicate", 0)
+    rejected = outcome_counts.get("rejected", 0)
+    na = outcome_counts.get("na", 0)
+    informative = outcome_counts.get("informative", 0)
+    strong = evidence_quality_counts.get("strong", 0)
+    adequate = evidence_quality_counts.get("adequate", 0)
+    weak = evidence_quality_counts.get("weak", 0)
+
+    lessons: list[MythosLesson] = []
+    if accepted >= 1 and (strong >= 1 or adequate >= 2) and duplicate + rejected + na <= accepted:
+        lessons.append(
+            _lesson(
+                program_id=program_id,
+                playbook_id=playbook_id,
+                surface_key=surface_key,
+                recommendation="boost",
+                score_delta=8,
+                base_reason="lesson:boost:accepted_strong_evidence",
+                signals=signals,
+                outcome_counts=outcome_counts,
+                evidence_quality_counts=evidence_quality_counts,
+                severity_delta_counts=severity_delta_counts,
+            )
+        )
+
+    if duplicate >= 2 or duplicate > accepted:
+        lessons.append(
+            _lesson(
+                program_id=program_id,
+                playbook_id=playbook_id,
+                surface_key=surface_key,
+                recommendation="duplicate_watch",
+                score_delta=-8,
+                base_reason="lesson:duplicate_watch:repeated_duplicate",
+                signals=signals,
+                outcome_counts=outcome_counts,
+                evidence_quality_counts=evidence_quality_counts,
+                severity_delta_counts=severity_delta_counts,
+            )
+        )
+
+    if rejected + na > accepted or (informative >= 2 and weak > 0):
+        lessons.append(
+            _lesson(
+                program_id=program_id,
+                playbook_id=playbook_id,
+                surface_key=surface_key,
+                recommendation="penalize",
+                score_delta=-7,
+                base_reason="lesson:penalize:rejection_or_na_dominates",
+                signals=signals,
+                outcome_counts=outcome_counts,
+                evidence_quality_counts=evidence_quality_counts,
+                severity_delta_counts=severity_delta_counts,
+            )
+        )
+
+    if (accepted > 0 and weak > 0) or severity_delta_counts.get("down", 0) > 0:
+        lessons.append(
+            _lesson(
+                program_id=program_id,
+                playbook_id=playbook_id,
+                surface_key=surface_key,
+                recommendation="evidence_needed",
+                score_delta=-4,
+                base_reason="lesson:evidence_needed:weak_accepted_evidence",
+                signals=signals,
+                outcome_counts=outcome_counts,
+                evidence_quality_counts=evidence_quality_counts,
+                severity_delta_counts=severity_delta_counts,
+            )
+        )
+
+    return lessons
+
+
+def _lesson(
+    *,
+    program_id: str,
+    playbook_id: str,
+    surface_key: str,
+    recommendation: LessonRecommendation,
+    score_delta: int,
+    base_reason: str,
+    signals: list[LearningSignal],
+    outcome_counts: dict[str, int],
+    evidence_quality_counts: dict[str, int],
+    severity_delta_counts: dict[str, int],
+) -> MythosLesson:
+    source_signal_ids = sorted(
+        signal.id for signal in signals if isinstance(signal.id, str) and signal.id
+    )
+    reasons = {base_reason}
+    for relationship in sorted(
+        {
+            relationship
+            for signal in signals
+            for relationship in signal.target_relationships
+            if relationship and relationship != "[REDACTED]"
+        }
+    ):
+        reasons.add(f"target_relationship:{relationship}")
+
+    lesson_key = "|".join([program_id, playbook_id, surface_key, recommendation])
+    return MythosLesson(
+        id=f"lesson_{sha256(lesson_key.encode()).hexdigest()[:16]}",
+        scope_type="program",
+        scope_key=program_id,
+        playbook_id=playbook_id,
+        surface_pattern=surface_key,
+        outcome_counts=outcome_counts,
+        evidence_quality_counts=evidence_quality_counts,
+        bounty_total=sum(signal.bounty_amount or 0 for signal in signals),
+        severity_delta_counts=severity_delta_counts,
+        confidence=_lesson_confidence(
+            signals=signals,
+            recommendation=recommendation,
+            evidence_quality_counts=evidence_quality_counts,
+            severity_delta_counts=severity_delta_counts,
+        ),
+        recommendation=recommendation,
+        score_delta=score_delta,
+        reasons=sorted(reasons),
+        source_signal_ids=source_signal_ids,
+        safety_notes=[
+            "no_live_requests",
+            "test_accounts_only",
+            "human_review_required",
+            "no_real_user_data",
+            "advisory_memory_only",
+            "scope_guard_wins",
+        ],
+    )
+
+
+def _counts(values: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        if isinstance(value, str) and value:
+            counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _lesson_confidence(
+    *,
+    signals: list[LearningSignal],
+    recommendation: LessonRecommendation,
+    evidence_quality_counts: dict[str, int],
+    severity_delta_counts: dict[str, int],
+) -> int:
+    confidence = 35 + min(len(signals) * 10, 25)
+    confidence += evidence_quality_counts.get("strong", 0) * 8
+    confidence += evidence_quality_counts.get("adequate", 0) * 5
+    confidence -= evidence_quality_counts.get("weak", 0) * 8
+    confidence += severity_delta_counts.get("up", 0) * 4
+    confidence -= severity_delta_counts.get("down", 0) * 5
+    if recommendation == "boost":
+        confidence += 5
+    return _bounded_score(confidence)
+
+
+def _add_lesson_surfaces(
+    *,
+    high_value_surfaces: list[HighValueSurface],
+    lessons: list[MythosLesson],
+    program: Program,
+) -> None:
+    existing = {surface.surface_key for surface in high_value_surfaces}
+    for lesson in lessons:
+        if lesson.scope_type == "program" and lesson.scope_key != program.id:
+            continue
+        if lesson.surface_pattern in existing:
+            continue
+        object_name, action = _surface_parts(lesson.surface_pattern)
+        high_value_surfaces.append(
+            HighValueSurface(
+                surface_key=lesson.surface_pattern,
+                object_name=object_name,
+                action=action,
+                score=50,
+                paths=[],
+                playbooks=[lesson.playbook_id],
+                reasons=["lesson:surface_memory"],
+            )
+        )
+        existing.add(lesson.surface_pattern)
+
+
+def _surface_parts(surface_key: str) -> tuple[str, str]:
+    if ":" not in surface_key:
+        return surface_key, "unknown"
+    object_name, action = surface_key.split(":", 1)
+    return object_name or "unknown_object", action or "unknown"
+
+
+def _apply_lessons_to_surfaces(
+    *,
+    lessons: list[MythosLesson],
+    high_value_surfaces: list[HighValueSurface],
+    program: Program,
+) -> tuple[list[MythosLesson], list[dict[str, str]], list[dict[str, Any]]]:
+    surfaces_by_key = {surface.surface_key: surface for surface in high_value_surfaces}
+    applied: list[MythosLesson] = []
+    skipped: list[dict[str, str]] = []
+    adjusted: list[dict[str, Any]] = []
+
+    for lesson in lessons:
+        surface = surfaces_by_key.get(lesson.surface_pattern)
+        if lesson.scope_type == "program" and lesson.scope_key != program.id:
+            skipped.append(
+                {
+                    "lesson_id": lesson.id,
+                    "reason": "lesson:skipped:scope_mismatch",
+                    "scope_type": lesson.scope_type,
+                    "scope_key": lesson.scope_key,
+                }
+            )
+            continue
+        if program.scope_status != "in_scope":
+            skipped.append(
+                {
+                    "lesson_id": lesson.id,
+                    "reason": "lesson:skipped:scope_guard_blocked",
+                    "scope_type": lesson.scope_type,
+                    "scope_key": lesson.scope_key,
+                }
+            )
+            continue
+        if surface is None:
+            skipped.append(
+                {
+                    "lesson_id": lesson.id,
+                    "reason": "lesson:skipped:surface_mismatch",
+                    "scope_type": lesson.scope_type,
+                    "scope_key": lesson.scope_key,
+                }
+            )
+            continue
+
+        before = surface.score
+        surface.score = _bounded_score(surface.score + lesson.score_delta)
+        surface.reasons = sorted(
+            set(surface.reasons)
+            | set(lesson.reasons)
+            | {"lesson:applied:surface_match"}
+        )
+        applied.append(lesson)
+        adjusted.append(
+            {
+                "surface_key": surface.surface_key,
+                "lesson_id": lesson.id,
+                "recommendation": lesson.recommendation,
+                "score_delta": lesson.score_delta,
+                "score_before": before,
+                "score_after": surface.score,
+            }
+        )
+
+    high_value_surfaces.sort(key=lambda item: (-item.score, item.surface_key))
+    return applied, skipped, adjusted
 
 
 def _build_attack_surface_memory(pipeline_runs: list[dict[str, Any]]) -> AttackSurfaceMemory:
@@ -664,7 +1011,9 @@ __all__ = [
     "LearningSeverityDelta",
     "LearningEvidenceQuality",
     "LearningSummary",
+    "MythosLesson",
     "ProgramIntelligenceProfile",
     "build_learning_signal_from_outcome",
+    "build_mythos_lessons",
     "build_program_intelligence",
 ]
