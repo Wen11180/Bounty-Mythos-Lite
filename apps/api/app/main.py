@@ -621,7 +621,9 @@ def preflight_mythos_validation_run(
                     asset=asset,
                     scope_status=campaign.scope_status,
                     automation="human_controlled_validation",
-                    allowed_validation=[validation_run.validation_mode],
+                    allowed_validation=safe_string_list(campaign.allowed_tools) or [
+                        validation_run.validation_mode
+                    ],
                     forbidden=["DoS"],
                     human_approval_required=validation_run.approval_required,
                 ),

@@ -638,6 +638,7 @@ def test_validation_run_preflight_requires_scope_guard_after_approval():
                 scope_status="in_scope",
                 policy_text="Testing allowed",
                 default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
             )
             task = repository.create_campaign_task(
