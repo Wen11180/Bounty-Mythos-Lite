@@ -244,6 +244,61 @@ def test_repository_updates_campaign_task_and_finishes_agent_run_safely():
         session.close()
 
 
+def test_repository_finds_active_agent_run_for_task():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Agent reconciliation campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="campaign_observation",
+            agent_type="orchestrator_agent",
+            title="Observe authorized state",
+            input_refs=["campaign"],
+        )
+        completed_run = repository.save_agent_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            agent_type="orchestrator_agent",
+            status="completed",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=[],
+            tool_calls=[],
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload={},
+        )
+        active_run = repository.save_agent_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            agent_type="orchestrator_agent",
+            status="dispatched",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=[],
+            tool_calls=[],
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload={},
+        )
+
+        found = repository.find_active_agent_run_for_task(task.id)
+
+        assert completed_run.status == "completed"
+        assert found is not None
+        assert found.id == active_run.id
+    finally:
+        session.close()
+
+
 def test_repository_persists_codebase_and_scanner_fact_layer_safely():
     session, _ = build_session()
     try:

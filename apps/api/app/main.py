@@ -954,7 +954,31 @@ async def generate_with_llm(
 
 
 @app.post("/scope-guard/evaluate", response_model=ScopeGuardDecision)
-def evaluate_scope_guard(request: ScopeGuardEvaluationRequest) -> ScopeGuardDecision:
+def evaluate_scope_guard(
+    request: ScopeGuardEvaluationRequest,
+    session: Session = Depends(get_session),
+) -> ScopeGuardDecision:
+    if request.rule.human_approval_required:
+        preflight_request = request.request.model_copy(update={"human_approved": True})
+        preflight_decision = evaluate_validation_request(request.rule, preflight_request)
+        if not preflight_decision.allowed:
+            return preflight_decision
+
+        approval = DatabaseRepository(session).find_approved_validation_record(
+            asset=request.request.asset,
+            validation_mode=request.request.validation_type,
+            plan_digest=request.request.plan_digest,
+        )
+        if approval is None:
+            return ScopeGuardDecision(
+                allowed=False,
+                reason="approval_record_required",
+            )
+        return ScopeGuardDecision(
+            allowed=True,
+            reason="approved_validation_record",
+        )
+
     return evaluate_validation_request(request.rule, request.request)
 
 

@@ -149,7 +149,7 @@ def test_tick_does_not_dispatch_out_of_scope_campaign():
         session.close()
 
 
-def test_tick_dispatches_only_campaign_task_id_for_safe_read_only_task():
+def test_tick_dispatches_only_campaign_task_ids_for_safe_read_only_research_queue():
     repository, session = build_repository()
     dispatched: list[dict] = []
     try:
@@ -179,10 +179,76 @@ def test_tick_dispatches_only_campaign_task_id_for_safe_read_only_task():
         )
 
         assert result["status"] == "dispatched"
-        assert len(dispatched) == 1
-        assert list(dispatched[0]) == ["campaign_task_id"]
-        assert dispatched[0]["campaign_task_id"].startswith("campaign_task_")
-        assert repository.list_campaign_tasks(campaign.id)[0].task_type == "campaign_observation"
-        assert repository.list_campaign_agent_runs(campaign.id)[0].safety_gate_state == "allowed"
+        assert len(dispatched) == 4
+        assert all(list(payload) == ["campaign_task_id"] for payload in dispatched)
+        assert all(payload["campaign_task_id"].startswith("campaign_task_") for payload in dispatched)
+        tasks = repository.list_campaign_tasks(campaign.id)
+        agent_runs = repository.list_campaign_agent_runs(campaign.id)
+        stages = repository.list_campaign_pipeline_stages(campaign.id)
+
+        assert {task.task_type for task in tasks} == {
+            "campaign_observation",
+            "attack_surface_mapping",
+            "hypothesis_generation",
+            "report_chain_review",
+        }
+        assert {run.agent_type for run in agent_runs} == {
+            "orchestrator_agent",
+            "target_model_agent",
+            "hypothesis_agent",
+            "report_agent",
+        }
+        assert all(run.safety_gate_state == "allowed" for run in agent_runs)
+        assert {stage.stage_key for stage in stages} == {
+            "campaign_observation",
+            "attack_surface_mapping",
+            "hypothesis_generation",
+            "report_chain_review",
+        }
+        assert "secret-token" not in str(tasks + agent_runs + stages + dispatched)
+    finally:
+        session.close()
+
+
+def test_tick_does_not_duplicate_active_research_queue():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Idempotent campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=1,
+        )
+
+        first = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        second = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert first["status"] == "dispatched"
+        assert second["status"] == "active_tasks_exist"
+        assert second["dispatched_task_ids"] == []
+        assert second["stop_reasons"] == ["active_tasks_exist"]
+        assert len(repository.list_campaign_tasks(campaign.id)) == 4
+        assert len(repository.list_campaign_agent_runs(campaign.id)) == 4
+        assert len(dispatched) == 4
     finally:
         session.close()

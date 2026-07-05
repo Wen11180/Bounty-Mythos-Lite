@@ -125,11 +125,26 @@ def test_campaign_api_start_runs_first_safe_orchestrator_tick():
         tasks = tasks_response.json()
         agent_runs = agent_runs_response.json()
         stages = stages_response.json()
-        assert tasks[0]["task_type"] == "campaign_observation"
-        assert agent_runs[0]["agent_type"] == "orchestrator_agent"
-        assert agent_runs[0]["safety_gate_state"] == "allowed"
-        assert stages[0]["stage_key"] == "campaign_tick"
-        assert stages[0]["status"] == "dispatched"
+        assert {task["task_type"] for task in tasks} == {
+            "campaign_observation",
+            "attack_surface_mapping",
+            "hypothesis_generation",
+            "report_chain_review",
+        }
+        assert {run["agent_type"] for run in agent_runs} == {
+            "orchestrator_agent",
+            "target_model_agent",
+            "hypothesis_agent",
+            "report_agent",
+        }
+        assert all(run["safety_gate_state"] == "allowed" for run in agent_runs)
+        assert {stage["stage_key"] for stage in stages} == {
+            "campaign_observation",
+            "attack_surface_mapping",
+            "hypothesis_generation",
+            "report_chain_review",
+        }
+        assert all(stage["status"] == "dispatched" for stage in stages)
         assert "secret-token" not in str(tasks + agent_runs + stages)
         assert "Authorization" not in str(tasks + agent_runs + stages)
     finally:

@@ -598,6 +598,17 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def find_active_agent_run_for_task(self, task_id: str) -> AgentRunRecord | None:
+        return self.session.scalars(
+            select(AgentRunRecord)
+            .where(AgentRunRecord.task_id == task_id)
+            .where(AgentRunRecord.status.in_(("dispatched", "running", "awaiting_approval")))
+            .order_by(
+                AgentRunRecord.created_at.desc(),
+                AgentRunRecord.id.desc(),
+            )
+        ).first()
+
     def list_campaign_agent_runs(self, campaign_id: str) -> list[AgentRunRecord]:
         return self.session.scalars(
             select(AgentRunRecord)
@@ -693,6 +704,26 @@ class DatabaseRepository:
                 ApprovalRecord.id.desc(),
             )
         ).all()
+
+    def find_approved_validation_record(
+        self,
+        *,
+        asset: str,
+        validation_mode: str,
+        plan_digest: str | None,
+    ) -> ApprovalRecord | None:
+        return self.session.scalars(
+            select(ApprovalRecord)
+            .where(ApprovalRecord.status == "approved")
+            .where(ApprovalRecord.asset == _safe_display_value(asset))
+            .where(ApprovalRecord.validation_mode == _safe_display_value(validation_mode))
+            .where(ApprovalRecord.plan_digest == _safe_display_value(plan_digest))
+            .order_by(
+                ApprovalRecord.decided_at.desc(),
+                ApprovalRecord.created_at.desc(),
+                ApprovalRecord.id.desc(),
+            )
+        ).first()
 
     def save_pipeline_stage(
         self,

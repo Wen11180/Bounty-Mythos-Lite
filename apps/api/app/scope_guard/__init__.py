@@ -14,6 +14,7 @@ class ValidationRequest(BaseModel):
     asset: str
     validation_type: str
     human_approved: bool = False
+    plan_digest: str | None = None
 
 
 class ScopeGuardDecision(BaseModel):
