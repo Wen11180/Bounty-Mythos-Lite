@@ -335,7 +335,7 @@ export default async function Dashboard() {
                     </p>
                   )}
                 </div>
-                <div className="grid min-w-0 gap-3 p-5 sm:grid-cols-2">
+                <div className="grid min-w-0 gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
                   <RadarMetric
                     label="Evidence gaps"
                     value={intelligenceRadar.evidenceGapCount}
@@ -350,6 +350,11 @@ export default async function Dashboard() {
                     label="Report momentum"
                     value={intelligenceRadar.reportableMomentum}
                     detail="Human-gated candidates with support"
+                  />
+                  <RadarMetric
+                    label="Memory lessons"
+                    value={intelligenceRadar.reusableLessonCount}
+                    detail={`${intelligenceRadar.memoryReadyRuns} runs ready`}
                   />
                   <RadarMetric
                     label="Unsafe requirements"

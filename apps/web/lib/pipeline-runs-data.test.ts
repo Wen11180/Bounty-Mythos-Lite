@@ -210,6 +210,26 @@ test("deriveIntelligenceRadar exposes top research value and safe next action", 
         label: "Human gated",
         status: "waiting_human",
       },
+      memory: {
+        lessonCount: 2,
+        status: "brain_memory_ready",
+        topLesson: "Boost memory on file_id:export",
+      },
+    }),
+    run({
+      runId: "learning",
+      evidenceCount: 1,
+      memory: {
+        lessonCount: 1,
+        status: "learning_recorded",
+        topLesson: null,
+      },
+      validationGate: {
+        approval: "Already approved.",
+        evidenceCount: 1,
+        label: "Approved",
+        status: "approved",
+      },
     }),
   ]);
 
@@ -217,6 +237,19 @@ test("deriveIntelligenceRadar exposes top research value and safe next action", 
   assert.equal(radar.topSignal?.nextSafeAction, "Collect boundary matrix with test accounts only.");
   assert.equal(radar.humanGatePressure, 2);
   assert.equal(radar.evidenceGapCount, 1);
+  assert.equal(radar.memoryReadyRuns, 1);
+  assert.equal(radar.reusableLessonCount, 3);
   assert.equal(radar.reportableMomentum, 1);
   assert.equal(radar.topSignal?.reportDistance, "1 gate to report review");
+});
+
+test("dashboard radar keeps unsafe requirements visible beside memory lessons", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /label="Memory lessons"/);
+  assert.match(page, /value=\{intelligenceRadar\.reusableLessonCount\}/);
+  assert.match(page, /label="Unsafe requirements"/);
+  assert.match(page, /value=\{intelligenceRadar\.unsafeOrRedactedRequirementCount\}/);
 });

@@ -87,7 +87,9 @@ export type RadarRunSignal = {
 export type IntelligenceRadarSummary = {
   evidenceGapCount: number;
   humanGatePressure: number;
+  memoryReadyRuns: number;
   reportableMomentum: number;
+  reusableLessonCount: number;
   runSignals: RadarRunSignal[];
   topSignal: RadarRunSignal | null;
   unsafeOrRedactedRequirementCount: number;
@@ -528,7 +530,9 @@ export function deriveIntelligenceRadar(
   return {
     evidenceGapCount: runs.reduce((total, run) => total + runEvidenceGapCount(run), 0),
     humanGatePressure: runs.filter(needsHumanGate).length,
+    memoryReadyRuns: runs.filter(hasReadyMemory).length,
     reportableMomentum: runs.filter(hasReportableMomentum).length,
+    reusableLessonCount: runs.reduce((total, run) => total + (run.memory?.lessonCount ?? 0), 0),
     runSignals,
     topSignal: runSignals[0] ?? null,
     unsafeOrRedactedRequirementCount: runs.reduce(
@@ -576,6 +580,10 @@ function hasReportableMomentum(run: PipelineRunSummary): boolean {
   }
 
   return Boolean(run.reportTitle && run.evidenceCount > 0);
+}
+
+function hasReadyMemory(run: PipelineRunSummary): boolean {
+  return run.memory?.status === "brain_memory_ready";
 }
 
 function runReportDistance(run: PipelineRunSummary): string {
