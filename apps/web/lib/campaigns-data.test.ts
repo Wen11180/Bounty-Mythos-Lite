@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { toCampaignControlSummary, type CampaignControlCenter } from "./campaigns-data.ts";
+import {
+  toCampaignAgentRunSummaries,
+  toCampaignControlSummary,
+  toCampaignValidationQueueSummaries,
+  type CampaignControlCenter,
+} from "./campaigns-data.ts";
 
 const controlCenter = {
   campaign: {
@@ -115,6 +120,63 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|token=secret/i);
 });
 
+test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {
+  const summaries = toCampaignAgentRunSummaries([
+    {
+      ...controlCenter.agent_runs[0],
+      input_refs: ["campaign:campaign_1", "artifact:token=secret-token"],
+      output_refs: ["evidence:session=secret"],
+      stop_reason: "approval_required",
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      agentType: "Orchestrator agent",
+      finishedAt: null,
+      id: "run_1",
+      inputRefCount: 2,
+      outputRefCount: 1,
+      safetyGateState: "Allowed",
+      startedAt: "2026-07-05T00:00:00Z",
+      status: "Dispatched",
+      stopReason: "Approval required",
+      taskId: "task_1",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|token=secret/i);
+});
+
+test("toCampaignValidationQueueSummaries redacts approval details for display", () => {
+  const summaries = toCampaignValidationQueueSummaries([
+    {
+      ...controlCenter.approvals[0],
+      asset: "https://api.example.com/path?cookie=session=secret",
+      plan_digest: "plan_digest_1",
+      reason: "Needs approval; Authorization: Bearer secret-token",
+      validation_mode: "two_account_authorization_check",
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      approvalType: "Validation batch",
+      asset: "api.example.com/path",
+      createdAt: "2026-07-05T00:00:00Z",
+      id: "approval_1",
+      planDigest: "plan_digest_1",
+      reason: "Needs approval; Authorization=[redacted]",
+      requestedAction: "Two account authorization check",
+      runId: null,
+      safetyGateState: "Awaiting approval",
+      status: "Pending",
+      taskId: "task_1",
+      validationMode: "Two account authorization check",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|cookie=session/i);
+});
+
 test("campaign control page stays read-only with no execution entrypoints", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/campaigns/page.tsx", import.meta.url), "utf8"),
@@ -134,8 +196,34 @@ test("campaign detail page reads the audited control center and stays read-only"
 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/agent-runs/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-queue/);
   assert.match(page, /executionAllowed/);
   assert.match(page, /safeNextAction/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign agent runs page reads audit records and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/agent-runs/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignAgentRuns\(campaignId, \[\]\)/);
+  assert.match(page, /toCampaignAgentRunSummaries/);
+  assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign validation queue page reads approval records and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/validation-queue/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignApprovals\(campaignId, \[\]\)/);
+  assert.match(page, /toCampaignValidationQueueSummaries/);
+  assert.doesNotMatch(page, /decideApproval|approveValidation|denyValidation|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

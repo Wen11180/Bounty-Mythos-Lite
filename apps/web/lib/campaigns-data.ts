@@ -103,6 +103,37 @@ export type CampaignControlSummary = {
   taskCount: number;
 };
 
+export type CampaignAgentRun = CampaignControlCenter["agent_runs"][number];
+export type CampaignApproval = CampaignControlCenter["approvals"][number];
+
+export type CampaignAgentRunSummary = {
+  agentType: string;
+  finishedAt: string | null;
+  id: string;
+  inputRefCount: number;
+  outputRefCount: number;
+  safetyGateState: string;
+  startedAt: string;
+  status: string;
+  stopReason: string | null;
+  taskId: string | null;
+};
+
+export type CampaignValidationQueueSummary = {
+  approvalType: string;
+  asset: string | null;
+  createdAt: string;
+  id: string;
+  planDigest: string | null;
+  reason: string;
+  requestedAction: string | null;
+  runId: string | null;
+  safetyGateState: string;
+  status: string;
+  taskId: string | null;
+  validationMode: string | null;
+};
+
 function humanize(value: string): string {
   return value
     .replace(/[_-]+/g, " ")
@@ -192,4 +223,44 @@ export function resolveCampaignControlSummaries(
   controls: CampaignControlCenter[],
 ): CampaignControlSummary[] {
   return controls.map((control) => toCampaignControlSummary(control));
+}
+
+export function toCampaignAgentRunSummaries(
+  runs: CampaignAgentRun[],
+): CampaignAgentRunSummary[] {
+  return runs.map((run) => ({
+    agentType: safeText(humanize(run.agent_type), "Agent"),
+    finishedAt: run.finished_at,
+    id: safeText(run.id, "agent_run"),
+    inputRefCount: run.input_refs.length,
+    outputRefCount: run.output_refs.length,
+    safetyGateState: safeText(humanize(run.safety_gate_state), "Unknown gate"),
+    startedAt: run.created_at,
+    status: safeText(humanize(run.status), "Unknown status"),
+    stopReason: run.stop_reason ? safeText(humanize(run.stop_reason), "Stopped") : null,
+    taskId: run.task_id ? safeText(run.task_id, "task") : null,
+  }));
+}
+
+export function toCampaignValidationQueueSummaries(
+  approvals: CampaignApproval[],
+): CampaignValidationQueueSummary[] {
+  return approvals.map((approval) => ({
+    approvalType: safeText(humanize(approval.approval_type), "Approval"),
+    asset: approval.asset ? safeText(approval.asset, "asset") : null,
+    createdAt: approval.created_at,
+    id: safeText(approval.id, "approval"),
+    planDigest: approval.plan_digest ? safeText(approval.plan_digest, "plan") : null,
+    reason: safeText(approval.reason, "Reason redacted"),
+    requestedAction: approval.requested_action
+      ? safeText(humanize(approval.requested_action), "Requested action")
+      : null,
+    runId: approval.run_id ? safeText(approval.run_id, "run") : null,
+    safetyGateState: safeText(humanize(approval.safety_gate_state), "Unknown gate"),
+    status: safeText(humanize(approval.status), "Unknown status"),
+    taskId: approval.task_id ? safeText(approval.task_id, "task") : null,
+    validationMode: approval.validation_mode
+      ? safeText(humanize(approval.validation_mode), "Validation mode")
+      : null,
+  }));
 }
