@@ -316,3 +316,23 @@ test("validation workspace labels fallback workspaces as demo data", async () =>
   assert.match(page, /fallback-only/);
   assert.match(page, /Demo data/);
 });
+
+test("artifact repository labels fallback artifacts as demo data", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/artifacts/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /artifactDataMode/);
+  assert.match(page, /fallback-only/);
+  assert.match(page, /Demo data/);
+});
+
+test("artifact detail labels fallback artifacts as demo data", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/artifacts/[artifactId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /artifactDataMode/);
+  assert.match(page, /fallback-only/);
+  assert.match(page, /Demo data/);
+});

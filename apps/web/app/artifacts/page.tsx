@@ -28,6 +28,10 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
     reportChainAllowed: firstParam(params.report_chain_allowed),
   };
   const artifacts = await getArtifacts(fallbackArtifacts(), filters);
+  const artifactDataMode =
+    artifacts.length > 0 && artifacts.every((artifact) => artifact.source_hash === "fallback-only")
+      ? "Demo data"
+      : "Live data";
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -43,6 +47,9 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <Database size={17} aria-hidden="true" />
           Artifact Repository
+          <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
+            {artifactDataMode}
+          </span>
         </p>
         <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -59,6 +66,11 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
           </div>
         </div>
       </header>
+      {artifactDataMode === "Demo data" ? (
+        <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
+          Demo data is shown because artifact records came from fallback summaries.
+        </p>
+      ) : null}
 
       <form
         action="/artifacts"
