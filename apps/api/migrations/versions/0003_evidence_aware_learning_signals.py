@@ -23,10 +23,14 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("severity_delta", sa.String(length=50), nullable=True))
         batch_op.add_column(sa.Column("evidence_quality", sa.String(length=50), nullable=True))
         batch_op.add_column(sa.Column("triager_feedback", sa.Text(), nullable=True))
+        batch_op.add_column(
+            sa.Column("target_relationships", sa.JSON(), nullable=False, server_default="[]")
+        )
 
 
 def downgrade() -> None:
     with op.batch_alter_table("learning_signals") as batch_op:
+        batch_op.drop_column("target_relationships")
         batch_op.drop_column("triager_feedback")
         batch_op.drop_column("evidence_quality")
         batch_op.drop_column("severity_delta")

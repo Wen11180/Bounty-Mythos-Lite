@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from hashlib import sha256
 import re
 from typing import Any
@@ -7,10 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db_models import (
+    AgentRunRecord,
+    ApprovalRecord,
     ArtifactRecord,
+    CampaignBudgetRecord,
+    CampaignRecord,
+    CampaignTaskRecord,
     FindingRecord,
     LearningSignalRecord,
     LLMRunRecord,
+    PipelineStageRecord,
     PipelineRunRecord,
     ProgramRecord,
     ReportRecord,
@@ -386,6 +393,291 @@ class DatabaseRepository:
                 PipelineRunRecord.id.desc(),
             )
         ).all()
+
+    def create_campaign(
+        self,
+        *,
+        program_id: str | None,
+        name: str,
+        autonomy_level: str,
+        scope_status: str,
+        policy_text: str,
+        default_asset: str,
+        target_classes: list[str] | None = None,
+        allowed_tools: list[str] | None = None,
+        created_by: str,
+        payload: dict | None = None,
+    ) -> CampaignRecord:
+        record = CampaignRecord(
+            id=f"campaign_{uuid4().hex}",
+            program_id=program_id,
+            name=_safe_display_value(name),
+            autonomy_level=_safe_display_value(autonomy_level),
+            scope_status=_safe_display_value(scope_status),
+            policy_text_hash=sha256(policy_text.encode("utf-8")).hexdigest(),
+            default_asset=_safe_display_value(default_asset),
+            target_classes=_safe_display_value(target_classes or []),
+            allowed_tools=_safe_display_value(allowed_tools or []),
+            created_by=_safe_display_value(created_by),
+            status="draft",
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_campaigns(self) -> list[CampaignRecord]:
+        return self.session.scalars(
+            select(CampaignRecord).order_by(
+                CampaignRecord.created_at.desc(),
+                CampaignRecord.id.desc(),
+            )
+        ).all()
+
+    def get_campaign(self, campaign_id: str) -> CampaignRecord | None:
+        return self.session.get(CampaignRecord, campaign_id)
+
+    def update_campaign_status(self, campaign_id: str, status: str) -> CampaignRecord | None:
+        record = self.get_campaign(campaign_id)
+        if record is None:
+            return None
+        record.status = _safe_display_value(status)
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def get_campaign_budget(self, campaign_id: str) -> CampaignBudgetRecord | None:
+        return self.session.scalars(
+            select(CampaignBudgetRecord).where(CampaignBudgetRecord.campaign_id == campaign_id)
+        ).first()
+
+    def upsert_campaign_budget(
+        self,
+        *,
+        campaign_id: str,
+        time_budget_minutes: int | None,
+        token_budget: int | None,
+        tool_call_budget: int | None,
+        validation_budget: int | None,
+    ) -> CampaignBudgetRecord:
+        existing = self.session.scalars(
+            select(CampaignBudgetRecord).where(CampaignBudgetRecord.campaign_id == campaign_id)
+        ).first()
+        if existing is None:
+            existing = CampaignBudgetRecord(
+                id=f"campaign_budget_{uuid4().hex}",
+                campaign_id=campaign_id,
+            )
+        existing.time_budget_minutes = time_budget_minutes
+        existing.token_budget = token_budget
+        existing.tool_call_budget = tool_call_budget
+        existing.validation_budget = validation_budget
+        existing.status = "active"
+        self.session.add(existing)
+        self.session.commit()
+        self.session.refresh(existing)
+        return existing
+
+    def create_campaign_task(
+        self,
+        *,
+        campaign_id: str,
+        task_type: str,
+        agent_type: str,
+        title: str,
+        input_refs: list[str] | None = None,
+        payload: dict | None = None,
+    ) -> CampaignTaskRecord:
+        record = CampaignTaskRecord(
+            id=f"campaign_task_{uuid4().hex}",
+            campaign_id=campaign_id,
+            task_type=_safe_display_value(task_type),
+            agent_type=_safe_display_value(agent_type),
+            title=_safe_display_value(title),
+            status="queued",
+            input_refs=_safe_display_value(input_refs or []),
+            output_refs=[],
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_campaign_tasks(self, campaign_id: str) -> list[CampaignTaskRecord]:
+        return self.session.scalars(
+            select(CampaignTaskRecord)
+            .where(CampaignTaskRecord.campaign_id == campaign_id)
+            .order_by(
+                CampaignTaskRecord.created_at.desc(),
+                CampaignTaskRecord.id.desc(),
+            )
+        ).all()
+
+    def save_agent_run(
+        self,
+        *,
+        campaign_id: str | None,
+        task_id: str | None,
+        agent_type: str,
+        status: str,
+        input_refs: list[str] | None = None,
+        output_refs: list[str] | None = None,
+        tool_calls: list[dict] | None = None,
+        safety_gate_state: str,
+        stop_reason: str | None,
+        payload: dict | None = None,
+    ) -> AgentRunRecord:
+        record = AgentRunRecord(
+            id=f"agent_run_{uuid4().hex}",
+            campaign_id=campaign_id,
+            task_id=task_id,
+            agent_type=_safe_display_value(agent_type),
+            status=_safe_display_value(status),
+            input_refs=_safe_display_value(input_refs or []),
+            output_refs=_safe_display_value(output_refs or []),
+            tool_calls=_safe_display_value(tool_calls or []),
+            safety_gate_state=_safe_display_value(safety_gate_state),
+            stop_reason=_safe_display_value(stop_reason),
+            payload=_safe_display_value(payload or {}),
+            finished_at=datetime.now(UTC) if status in {"completed", "failed", "blocked"} else None,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_campaign_agent_runs(self, campaign_id: str) -> list[AgentRunRecord]:
+        return self.session.scalars(
+            select(AgentRunRecord)
+            .where(AgentRunRecord.campaign_id == campaign_id)
+            .order_by(
+                AgentRunRecord.created_at.desc(),
+                AgentRunRecord.id.desc(),
+            )
+        ).all()
+
+    def create_approval_record(
+        self,
+        *,
+        campaign_id: str | None = None,
+        task_id: str | None = None,
+        run_id: str | None = None,
+        program_id: str | None = None,
+        approval_type: str = "validation_batch",
+        actor: str | None = None,
+        requester: str | None = None,
+        reason: str,
+        scope_reference: str | None = None,
+        requested_action: str | None = None,
+        asset: str | None = None,
+        validation_mode: str | None = None,
+        plan_digest: str | None = None,
+        autonomy_level: str | None = None,
+        safety_gate_state: str = "awaiting_approval",
+        status: str | None = None,
+        payload: dict | None = None,
+    ) -> ApprovalRecord:
+        record = ApprovalRecord(
+            id=f"approval_{uuid4().hex}",
+            campaign_id=campaign_id,
+            task_id=task_id,
+            run_id=run_id,
+            program_id=program_id,
+            approval_type=_safe_display_value(approval_type),
+            actor=_safe_display_value(actor or requester or "unknown"),
+            reason=_safe_display_value(reason),
+            scope_reference=_safe_display_value(scope_reference),
+            requested_action=_safe_display_value(requested_action),
+            asset=_safe_display_value(asset),
+            validation_mode=_safe_display_value(validation_mode),
+            plan_digest=_safe_display_value(plan_digest),
+            autonomy_level=_safe_display_value(autonomy_level),
+            safety_gate_state=_safe_display_value(safety_gate_state),
+            status=status or ("pending" if campaign_id is not None else "requested"),
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def decide_approval_record(
+        self,
+        *,
+        approval_id: str,
+        decision: str,
+        actor: str,
+        reason: str,
+    ) -> ApprovalRecord | None:
+        record = self.session.get(ApprovalRecord, approval_id)
+        if record is None:
+            return None
+        record.status = _safe_display_value(decision)
+        record.decided_by = _safe_display_value(actor)
+        record.decision_reason = _safe_display_value(reason)
+        record.decided_at = datetime.now(UTC)
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_approval_records(self, *, run_id: str | None = None) -> list[ApprovalRecord]:
+        query = select(ApprovalRecord)
+        if run_id is not None:
+            query = query.where(ApprovalRecord.run_id == run_id)
+        return self.session.scalars(
+            query.order_by(
+                ApprovalRecord.created_at.desc(),
+                ApprovalRecord.id.desc(),
+            )
+        ).all()
+
+    def list_campaign_approval_records(self, campaign_id: str) -> list[ApprovalRecord]:
+        return self.session.scalars(
+            select(ApprovalRecord)
+            .where(ApprovalRecord.campaign_id == campaign_id)
+            .order_by(
+                ApprovalRecord.created_at.desc(),
+                ApprovalRecord.id.desc(),
+            )
+        ).all()
+
+    def save_pipeline_stage(
+        self,
+        *,
+        pipeline_run_id: str | None,
+        campaign_id: str | None,
+        task_id: str | None,
+        stage_key: str,
+        stage_order: int,
+        status: str,
+        input_refs: list[str] | None = None,
+        output_refs: list[str] | None = None,
+        safety_gate_state: str,
+        stop_reason: str | None,
+        payload: dict | None = None,
+    ) -> PipelineStageRecord:
+        record = PipelineStageRecord(
+            id=f"pipeline_stage_{uuid4().hex}",
+            pipeline_run_id=pipeline_run_id,
+            campaign_id=campaign_id,
+            task_id=task_id,
+            stage_key=_safe_display_value(stage_key),
+            stage_order=stage_order,
+            status=_safe_display_value(status),
+            input_refs=_safe_display_value(input_refs or []),
+            output_refs=_safe_display_value(output_refs or []),
+            safety_gate_state=_safe_display_value(safety_gate_state),
+            stop_reason=_safe_display_value(stop_reason),
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
 
     def save_learning_signal(
         self,

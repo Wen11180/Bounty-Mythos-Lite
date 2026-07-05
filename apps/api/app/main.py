@@ -6,7 +6,14 @@ from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.db_models import ArtifactRecord, LearningSignalRecord, PipelineRunRecord
+from app.db_models import (
+    ApprovalRecord,
+    ArtifactRecord,
+    CampaignBudgetRecord,
+    CampaignRecord,
+    LearningSignalRecord,
+    PipelineRunRecord,
+)
 from app.hunter_intelligence import (
     HunterIntelligence,
 )
@@ -111,6 +118,53 @@ class ArtifactResponse(BaseModel):
     created_at: str
 
 
+class CampaignBudgetRequest(BaseModel):
+    time_budget_minutes: int | None = Field(default=None, ge=0)
+    token_budget: int | None = Field(default=None, ge=0)
+    tool_call_budget: int | None = Field(default=None, ge=0)
+    validation_budget: int | None = Field(default=None, ge=0)
+
+
+class CampaignCreateRequest(BaseModel):
+    program_id: str | None = None
+    name: str = Field(min_length=1, max_length=255)
+    autonomy_level: str = Field(min_length=1, max_length=100)
+    scope_status: str = Field(min_length=1, max_length=50)
+    policy_text: str = Field(min_length=1)
+    default_asset: str = Field(min_length=1, max_length=255)
+    target_classes: list[str] = Field(default_factory=list, max_length=50)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=50)
+    created_by: str = Field(default="operator", min_length=1, max_length=255)
+    budget: CampaignBudgetRequest | None = None
+
+
+class CampaignBudgetResponse(BaseModel):
+    id: str
+    campaign_id: str
+    time_budget_minutes: int | None = None
+    token_budget: int | None = None
+    tool_call_budget: int | None = None
+    validation_budget: int | None = None
+    status: str
+    created_at: str
+
+
+class CampaignResponse(BaseModel):
+    id: str
+    program_id: str | None = None
+    name: str
+    status: str
+    autonomy_level: str
+    scope_status: str
+    policy_text_hash: str
+    default_asset: str
+    target_classes: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] = Field(default_factory=list)
+    created_by: str
+    created_at: str
+    budget: CampaignBudgetResponse | None = None
+
+
 class ClaimReviewDecisionRequest(BaseModel):
     claim_id: str
     decision: ClaimReviewDecisionValue
@@ -149,6 +203,48 @@ class ManualObservationResponse(BaseModel):
     created_at: str
 
 
+class ApprovalRecordRequest(BaseModel):
+    run_id: str | None = None
+    program_id: str | None = None
+    asset: str | None = None
+    validation_mode: str | None = None
+    plan_digest: str | None = None
+    requester: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+ApprovalDecisionValue = Literal["approved", "denied", "revoked"]
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: ApprovalDecisionValue
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ApprovalRecordResponse(BaseModel):
+    id: str
+    campaign_id: str | None
+    task_id: str | None
+    run_id: str | None
+    program_id: str | None
+    approval_type: str
+    actor: str
+    reason: str
+    scope_reference: str | None
+    requested_action: str | None
+    asset: str | None
+    validation_mode: str | None
+    plan_digest: str | None
+    autonomy_level: str | None
+    safety_gate_state: str
+    status: str
+    decision_reason: str | None
+    decided_by: str | None
+    decided_at: str | None
+    created_at: str
+
+
 class LearningSignalRequest(BaseModel):
     program_id: str
     playbook_id: str
@@ -179,6 +275,84 @@ class LearningOutcomeRequest(BaseModel):
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "bounty-mythos-api"}
+
+
+@app.post("/mythos/campaigns", response_model=CampaignResponse)
+def create_mythos_campaign(
+    request: CampaignCreateRequest,
+    session: Session = Depends(get_session),
+) -> CampaignResponse:
+    repository = DatabaseRepository(session)
+    if request.program_id is None or repository.get_program(request.program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    campaign = repository.create_campaign(
+        program_id=request.program_id,
+        name=request.name,
+        autonomy_level=request.autonomy_level,
+        scope_status=request.scope_status,
+        policy_text=request.policy_text,
+        default_asset=request.default_asset,
+        target_classes=request.target_classes,
+        allowed_tools=request.allowed_tools,
+        created_by=request.created_by,
+        payload={"source": "campaign_api"},
+    )
+    if request.budget is not None:
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=request.budget.time_budget_minutes,
+            token_budget=request.budget.token_budget,
+            tool_call_budget=request.budget.tool_call_budget,
+            validation_budget=request.budget.validation_budget,
+        )
+    return _campaign_response(campaign, repository)
+
+
+@app.get("/mythos/campaigns", response_model=list[CampaignResponse])
+def list_mythos_campaigns(
+    session: Session = Depends(get_session),
+) -> list[CampaignResponse]:
+    repository = DatabaseRepository(session)
+    return [
+        _campaign_response(campaign, repository)
+        for campaign in repository.list_campaigns()
+    ]
+
+
+@app.get("/mythos/campaigns/{campaign_id}", response_model=CampaignResponse)
+def get_mythos_campaign(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> CampaignResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return _campaign_response(campaign, repository)
+
+
+@app.post("/mythos/campaigns/{campaign_id}/start", response_model=CampaignResponse)
+def start_mythos_campaign(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> CampaignResponse:
+    return _update_campaign_status(campaign_id, "running", session)
+
+
+@app.post("/mythos/campaigns/{campaign_id}/pause", response_model=CampaignResponse)
+def pause_mythos_campaign(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> CampaignResponse:
+    return _update_campaign_status(campaign_id, "paused", session)
+
+
+@app.post("/mythos/campaigns/{campaign_id}/resume", response_model=CampaignResponse)
+def resume_mythos_campaign(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> CampaignResponse:
+    return _update_campaign_status(campaign_id, "running", session)
 
 
 @app.get("/programs", response_model=list[Program])
@@ -218,6 +392,52 @@ def get_report(report_id: str, session: Session = Depends(get_session)) -> Repor
     if report is not None:
         return report
     raise HTTPException(status_code=404, detail="Report not found")
+
+
+@app.post("/mythos/approval-records", response_model=ApprovalRecordResponse)
+def create_approval_record(
+    request: ApprovalRecordRequest,
+    session: Session = Depends(get_session),
+) -> ApprovalRecordResponse:
+    record = DatabaseRepository(session).create_approval_record(
+        run_id=request.run_id,
+        program_id=request.program_id,
+        asset=request.asset,
+        validation_mode=request.validation_mode,
+        plan_digest=request.plan_digest,
+        requester=request.requester,
+        reason=request.reason,
+        status="requested",
+    )
+    return _approval_record_response(record)
+
+
+@app.get("/mythos/approval-records", response_model=list[ApprovalRecordResponse])
+def list_approval_records(
+    run_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> list[ApprovalRecordResponse]:
+    return [
+        _approval_record_response(record)
+        for record in DatabaseRepository(session).list_approval_records(run_id=run_id)
+    ]
+
+
+@app.post("/mythos/approval-records/{approval_id}/decisions", response_model=ApprovalRecordResponse)
+def decide_approval_record(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    session: Session = Depends(get_session),
+) -> ApprovalRecordResponse:
+    record = DatabaseRepository(session).decide_approval_record(
+        approval_id=approval_id,
+        decision=request.decision,
+        actor=request.actor,
+        reason=request.reason,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Approval record not found")
+    return _approval_record_response(record)
 
 
 @app.get("/mythos/artifacts", response_model=list[ArtifactResponse])
@@ -707,6 +927,31 @@ def _pipeline_artifact_summary(
     )
 
 
+def _approval_record_response(record: ApprovalRecord) -> ApprovalRecordResponse:
+    return ApprovalRecordResponse(
+        id=record.id,
+        campaign_id=record.campaign_id,
+        task_id=record.task_id,
+        run_id=record.run_id,
+        program_id=record.program_id,
+        approval_type=record.approval_type,
+        actor=record.actor,
+        reason=record.reason,
+        scope_reference=record.scope_reference,
+        requested_action=record.requested_action,
+        asset=record.asset,
+        validation_mode=record.validation_mode,
+        plan_digest=record.plan_digest,
+        autonomy_level=record.autonomy_level,
+        safety_gate_state=record.safety_gate_state,
+        status=record.status,
+        decision_reason=record.decision_reason,
+        decided_by=record.decided_by,
+        decided_at=record.decided_at.isoformat() if record.decided_at else None,
+        created_at=record.created_at.isoformat(),
+    )
+
+
 def _artifact_response(record: ArtifactRecord) -> ArtifactResponse:
     safety = _artifact_safety(record)
     return ArtifactResponse(
@@ -727,6 +972,56 @@ def _artifact_response(record: ArtifactRecord) -> ArtifactResponse:
         usage_records=_artifact_usage_records(record),
         created_at=record.created_at.isoformat(),
     )
+
+
+def _campaign_response(
+    record: CampaignRecord,
+    repository: DatabaseRepository,
+) -> CampaignResponse:
+    return CampaignResponse(
+        id=record.id,
+        program_id=record.program_id,
+        name=record.name,
+        status=record.status,
+        autonomy_level=record.autonomy_level,
+        scope_status=record.scope_status,
+        policy_text_hash=record.policy_text_hash,
+        default_asset=record.default_asset,
+        target_classes=record.target_classes,
+        allowed_tools=record.allowed_tools,
+        created_by=record.created_by,
+        created_at=record.created_at.isoformat(),
+        budget=_campaign_budget_response(repository.get_campaign_budget(record.id)),
+    )
+
+
+def _campaign_budget_response(
+    record: CampaignBudgetRecord | None,
+) -> CampaignBudgetResponse | None:
+    if record is None:
+        return None
+    return CampaignBudgetResponse(
+        id=record.id,
+        campaign_id=record.campaign_id,
+        time_budget_minutes=record.time_budget_minutes,
+        token_budget=record.token_budget,
+        tool_call_budget=record.tool_call_budget,
+        validation_budget=record.validation_budget,
+        status=record.status,
+        created_at=record.created_at.isoformat(),
+    )
+
+
+def _update_campaign_status(
+    campaign_id: str,
+    status: str,
+    session: Session,
+) -> CampaignResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.update_campaign_status(campaign_id, status)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return _campaign_response(campaign, repository)
 
 
 def _artifact_safety(record: ArtifactRecord) -> dict:
