@@ -570,6 +570,30 @@ def test_mythos_lessons_build_boost_duplicate_and_evidence_needed_rules():
     assert "lesson:evidence_needed:weak_accepted_evidence" in evidence_needed.reasons
 
 
+def test_mythos_lessons_do_not_boost_from_single_strong_signal():
+    lessons = build_mythos_lessons(
+        [
+            LearningSignal(
+                id="signal_accepted_1",
+                program_id="program_example",
+                playbook_id="bola_idor",
+                outcome="accepted",
+                surface_key="file_id:export",
+                evidence_quality="strong",
+                bounty_amount=3000,
+            )
+        ]
+    )
+
+    assert [
+        lesson
+        for lesson in lessons
+        if lesson.recommendation == "boost"
+        and lesson.playbook_id == "bola_idor"
+        and lesson.surface_pattern == "file_id:export"
+    ] == []
+
+
 def test_program_intelligence_exposes_applied_and_skipped_lessons():
     program = Program(
         id="program_example",
@@ -660,3 +684,148 @@ def test_program_intelligence_exposes_applied_and_skipped_lessons():
     assert profile.lesson_adjusted_surfaces[0]["surface_key"] == "file_id:export"
     assert profile.skipped_lessons[0]["lesson_id"].startswith("lesson_")
     assert profile.skipped_lessons[0]["reason"] == "lesson:skipped:scope_mismatch"
+
+
+def test_global_lessons_apply_to_similar_surface_without_polluting_program_summary():
+    program = Program(
+        id="program_new",
+        name="New Program",
+        platform="HackerOne",
+        bounty_range="High $3000 / Critical $10000",
+        scope_status=ScopeStatus.IN_SCOPE,
+        automation="limited",
+        testing_accounts="configured",
+        api_docs="imported",
+        public_code="available",
+        duplicate_risk="medium",
+        priority="A",
+    )
+    pipeline_runs = [
+        {
+            "asset": "api.new.example.com",
+            "payload": {
+                "target_model": {
+                    "objects": [{"name": "file_id"}],
+                    "sensitive_actions": [
+                        {
+                            "action": "export",
+                            "method": "GET",
+                            "path": "/files/{file_id}/export",
+                            "roles": ["member"],
+                        }
+                    ],
+                    "roles": ["member"],
+                },
+                "hunter_intelligence": {
+                    "assessments": [
+                        {
+                            "playbook_id": "bola_idor",
+                            "hunter_priority_score": 62,
+                            "recommendation": "needs_human_review",
+                        }
+                    ]
+                },
+            },
+        }
+    ]
+    lesson_signals = [
+        LearningSignal(
+            id="signal_program_a",
+            program_id="program_a",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+            bounty_amount=1000,
+        ),
+        LearningSignal(
+            id="signal_program_b",
+            program_id="program_b",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+            bounty_amount=2000,
+        ),
+    ]
+
+    profile = build_program_intelligence(
+        program=program,
+        pipeline_runs=pipeline_runs,
+        learning_signals=[],
+        lesson_signals=lesson_signals,
+    )
+
+    assert profile.learning_summary.accepted_count == 0
+    assert profile.recent_learning_signals == []
+    assert profile.applied_lessons[0].scope_type == "global"
+    assert profile.applied_lessons[0].scope_key == "global"
+    assert profile.applied_lessons[0].surface_pattern == "file_id:export"
+    assert "lesson:scope:global_cross_program" in profile.applied_lessons[0].reasons
+    assert profile.lesson_adjusted_surfaces[0]["surface_key"] == "file_id:export"
+    assert "lesson:applied:surface_match" in profile.high_value_surfaces[0].reasons
+
+
+def test_global_lessons_do_not_apply_when_scope_guard_blocks_program():
+    program = Program(
+        id="program_blocked",
+        name="Blocked Program",
+        platform="HackerOne",
+        bounty_range="High $3000 / Critical $10000",
+        scope_status=ScopeStatus.OUT_OF_SCOPE,
+        automation="limited",
+        testing_accounts="configured",
+        api_docs="imported",
+        public_code="available",
+        duplicate_risk="medium",
+        priority="A",
+    )
+    pipeline_runs = [
+        {
+            "asset": "api.blocked.example.com",
+            "payload": {
+                "target_model": {
+                    "objects": [{"name": "file_id"}],
+                    "sensitive_actions": [
+                        {
+                            "action": "export",
+                            "method": "GET",
+                            "path": "/files/{file_id}/export",
+                            "roles": ["member"],
+                        }
+                    ],
+                    "roles": ["member"],
+                }
+            },
+        }
+    ]
+    lesson_signals = [
+        LearningSignal(
+            id="signal_program_a",
+            program_id="program_a",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+        ),
+        LearningSignal(
+            id="signal_program_b",
+            program_id="program_b",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            evidence_quality="strong",
+        ),
+    ]
+
+    profile = build_program_intelligence(
+        program=program,
+        pipeline_runs=pipeline_runs,
+        learning_signals=[],
+        lesson_signals=lesson_signals,
+    )
+
+    assert profile.applied_lessons == []
+    assert profile.lesson_adjusted_surfaces == []
+    assert profile.skipped_lessons[0]["reason"] == "lesson:skipped:scope_guard_blocked"
+    assert "lesson:applied:surface_match" not in profile.high_value_surfaces[0].reasons

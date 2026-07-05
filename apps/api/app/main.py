@@ -1164,10 +1164,15 @@ def _program_intelligence_profile(
         _learning_signal_response(record)
         for record in repository.list_learning_signals(program_id)
     ]
+    lesson_signals = [
+        _learning_signal_response(record)
+        for record in repository.list_all_learning_signals()
+    ]
     return build_program_intelligence(
         program=program,
         pipeline_runs=pipeline_runs,
         learning_signals=learning_signals,
+        lesson_signals=lesson_signals,
     )
 
 

@@ -93,6 +93,11 @@ MythosLesson
 
 Scope escalation must be conservative. A lesson starts at program scope. It can become platform or global only when signals come from more than one program and the evidence is not weak.
 
+V1 currently implements program lessons and conservative global lessons. A global
+lesson is derived when matching playbook/surface signals come from at least two
+programs. Platform lessons remain a later extension because learning signals do
+not yet carry a stable platform key.
+
 ### Surface Pattern
 
 `surface_pattern` should stay simple and deterministic in V1:

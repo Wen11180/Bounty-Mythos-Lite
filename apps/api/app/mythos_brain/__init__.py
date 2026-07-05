@@ -119,6 +119,7 @@ def build_program_intelligence(
     program: Program,
     pipeline_runs: list[dict[str, Any]],
     learning_signals: list[LearningSignal],
+    lesson_signals: list[LearningSignal] | None = None,
 ) -> ProgramIntelligenceProfile:
     memory = _build_attack_surface_memory(pipeline_runs)
     learning_summary = _summarize_learning(learning_signals)
@@ -128,7 +129,7 @@ def build_program_intelligence(
         learning_signals=learning_signals,
         program=program,
     )
-    lessons = build_mythos_lessons(learning_signals)
+    lessons = build_mythos_lessons(lesson_signals if lesson_signals is not None else learning_signals)
     _add_lesson_surfaces(
         high_value_surfaces=high_value_surfaces,
         lessons=lessons,
@@ -162,11 +163,13 @@ def build_program_intelligence(
 
 def build_mythos_lessons(learning_signals: list[LearningSignal]) -> list[MythosLesson]:
     groups: dict[tuple[str, str, str], list[LearningSignal]] = {}
+    global_groups: dict[tuple[str, str], list[LearningSignal]] = {}
     for signal in learning_signals:
         if not signal.surface_key:
             continue
         key = (signal.program_id, signal.playbook_id, signal.surface_key)
         groups.setdefault(key, []).append(signal)
+        global_groups.setdefault((signal.playbook_id, signal.surface_key), []).append(signal)
 
     lessons: list[MythosLesson] = []
     for (program_id, playbook_id, surface_key), signals in groups.items():
@@ -176,6 +179,20 @@ def build_mythos_lessons(learning_signals: list[LearningSignal]) -> list[MythosL
                 playbook_id=playbook_id,
                 surface_key=surface_key,
                 signals=signals,
+            )
+        )
+    for (playbook_id, surface_key), signals in global_groups.items():
+        program_ids = {signal.program_id for signal in signals}
+        if len(program_ids) < 2:
+            continue
+        lessons.extend(
+            _lessons_for_signal_group(
+                program_id="global",
+                playbook_id=playbook_id,
+                surface_key=surface_key,
+                signals=signals,
+                scope_type="global",
+                base_reasons=["lesson:scope:global_cross_program"],
             )
         )
     return sorted(
@@ -230,6 +247,8 @@ def _lessons_for_signal_group(
     playbook_id: str,
     surface_key: str,
     signals: list[LearningSignal],
+    scope_type: LessonScopeType = "program",
+    base_reasons: list[str] | None = None,
 ) -> list[MythosLesson]:
     outcome_counts = _counts(signal.outcome for signal in signals)
     evidence_quality_counts = _counts(
@@ -248,7 +267,7 @@ def _lessons_for_signal_group(
     weak = evidence_quality_counts.get("weak", 0)
 
     lessons: list[MythosLesson] = []
-    if accepted >= 1 and (strong >= 1 or adequate >= 2) and duplicate + rejected + na <= accepted:
+    if accepted >= 2 and (strong >= 1 or adequate >= 2) and duplicate + rejected + na <= accepted:
         lessons.append(
             _lesson(
                 program_id=program_id,
@@ -257,10 +276,12 @@ def _lessons_for_signal_group(
                 recommendation="boost",
                 score_delta=8,
                 base_reason="lesson:boost:accepted_strong_evidence",
+                extra_reasons=base_reasons,
                 signals=signals,
                 outcome_counts=outcome_counts,
                 evidence_quality_counts=evidence_quality_counts,
                 severity_delta_counts=severity_delta_counts,
+                scope_type=scope_type,
             )
         )
 
@@ -273,10 +294,12 @@ def _lessons_for_signal_group(
                 recommendation="duplicate_watch",
                 score_delta=-8,
                 base_reason="lesson:duplicate_watch:repeated_duplicate",
+                extra_reasons=base_reasons,
                 signals=signals,
                 outcome_counts=outcome_counts,
                 evidence_quality_counts=evidence_quality_counts,
                 severity_delta_counts=severity_delta_counts,
+                scope_type=scope_type,
             )
         )
 
@@ -289,10 +312,12 @@ def _lessons_for_signal_group(
                 recommendation="penalize",
                 score_delta=-7,
                 base_reason="lesson:penalize:rejection_or_na_dominates",
+                extra_reasons=base_reasons,
                 signals=signals,
                 outcome_counts=outcome_counts,
                 evidence_quality_counts=evidence_quality_counts,
                 severity_delta_counts=severity_delta_counts,
+                scope_type=scope_type,
             )
         )
 
@@ -305,10 +330,12 @@ def _lessons_for_signal_group(
                 recommendation="evidence_needed",
                 score_delta=-4,
                 base_reason="lesson:evidence_needed:weak_accepted_evidence",
+                extra_reasons=base_reasons,
                 signals=signals,
                 outcome_counts=outcome_counts,
                 evidence_quality_counts=evidence_quality_counts,
                 severity_delta_counts=severity_delta_counts,
+                scope_type=scope_type,
             )
         )
 
@@ -323,15 +350,17 @@ def _lesson(
     recommendation: LessonRecommendation,
     score_delta: int,
     base_reason: str,
+    extra_reasons: list[str] | None = None,
     signals: list[LearningSignal],
     outcome_counts: dict[str, int],
     evidence_quality_counts: dict[str, int],
     severity_delta_counts: dict[str, int],
+    scope_type: LessonScopeType = "program",
 ) -> MythosLesson:
     source_signal_ids = sorted(
         signal.id for signal in signals if isinstance(signal.id, str) and signal.id
     )
-    reasons = {base_reason}
+    reasons = {base_reason, *(extra_reasons or [])}
     for relationship in sorted(
         {
             relationship
@@ -345,7 +374,7 @@ def _lesson(
     lesson_key = "|".join([program_id, playbook_id, surface_key, recommendation])
     return MythosLesson(
         id=f"lesson_{sha256(lesson_key.encode()).hexdigest()[:16]}",
-        scope_type="program",
+        scope_type=scope_type,
         scope_key=program_id,
         playbook_id=playbook_id,
         surface_pattern=surface_key,

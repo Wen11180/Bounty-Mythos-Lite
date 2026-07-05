@@ -134,6 +134,102 @@ def test_assess_hunter_intelligence_blocks_out_of_scope_candidates():
     assert assessment.next_action == "Do not validate; resolve scope or policy blocker first."
 
 
+def test_assess_hunter_intelligence_applies_boost_lesson_as_advisory_memory():
+    baseline = assess_hunter_intelligence(
+        target_model={
+            "objects": [{"name": "file_id"}],
+            "sensitive_actions": [
+                {"action": "export", "method": "GET", "path": "/files/{file_id}/export"}
+            ],
+        },
+        hypotheses=[
+            {
+                "hypothesis": "Changing file_id may export another user's private file.",
+                "vuln_type": "broken_access_control",
+                "risk_level": "high",
+                "policy_risk": "low",
+                "validation_mode": "two_account_authorization_check",
+            }
+        ],
+        refutation={"status": "passed", "reasons": []},
+    )
+    intelligence = assess_hunter_intelligence(
+        target_model={
+            "objects": [{"name": "file_id"}],
+            "sensitive_actions": [
+                {"action": "export", "method": "GET", "path": "/files/{file_id}/export"}
+            ],
+        },
+        hypotheses=[
+            {
+                "hypothesis": "Changing file_id may export another user's private file.",
+                "vuln_type": "broken_access_control",
+                "risk_level": "high",
+                "policy_risk": "low",
+                "validation_mode": "two_account_authorization_check",
+            }
+        ],
+        refutation={"status": "passed", "reasons": []},
+        lessons=[
+            {
+                "playbook_id": "bola_idor",
+                "surface_pattern": "file_id:export",
+                "recommendation": "boost",
+                "score_delta": 6,
+                "reasons": ["lesson:boost:accepted_strong_evidence"],
+                "safety_notes": ["advisory_memory_only", "scope_guard_wins"],
+            }
+        ],
+    )
+
+    assessment = intelligence.assessments[0]
+    assert assessment.hunter_priority_score == min(
+        100,
+        baseline.assessments[0].hunter_priority_score + 6,
+    )
+    assert "lesson:boost:accepted_strong_evidence" in assessment.reasons
+    assert "lesson:applied:boost" in assessment.reasons
+    assert "advisory_memory_only" in assessment.safety_notes
+    assert "scope_guard_wins" in assessment.safety_notes
+
+
+def test_assess_hunter_intelligence_skips_lessons_for_hard_safety_gates():
+    intelligence = assess_hunter_intelligence(
+        target_model={
+            "objects": [{"name": "file_id"}],
+            "sensitive_actions": [
+                {"action": "export", "method": "GET", "path": "/files/{file_id}/export"}
+            ],
+        },
+        hypotheses=[
+            {
+                "hypothesis": "Changing file_id may export another user's private file.",
+                "vuln_type": "broken_access_control",
+                "risk_level": "high",
+                "policy_risk": "low",
+                "validation_mode": "two_account_authorization_check",
+            }
+        ],
+        refutation={"status": "blocked", "reasons": ["out_of_scope"]},
+        lessons=[
+            {
+                "playbook_id": "bola_idor",
+                "surface_pattern": "file_id:export",
+                "recommendation": "boost",
+                "score_delta": 8,
+                "reasons": ["lesson:boost:accepted_strong_evidence"],
+                "safety_notes": ["advisory_memory_only", "scope_guard_wins"],
+            }
+        ],
+    )
+
+    assessment = intelligence.assessments[0]
+    assert assessment.recommendation == "blocked"
+    assert assessment.hunter_priority_score == 0
+    assert "lesson:skipped:safety_gate" in assessment.reasons
+    assert "lesson:applied:boost" not in assessment.reasons
+
+
 def test_recommend_hunter_operating_action_promotes_high_quality_reviewed_claim():
     intelligence = assess_hunter_intelligence(
         target_model={

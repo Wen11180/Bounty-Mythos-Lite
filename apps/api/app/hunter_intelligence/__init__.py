@@ -87,11 +87,17 @@ def assess_hunter_intelligence(
     target_model: dict[str, Any],
     hypotheses: list[dict[str, Any]],
     refutation: dict[str, Any] | None,
+    lessons: list[dict[str, Any]] | None = None,
 ) -> HunterIntelligence:
     assessments = [
         _assess_hypothesis(target_model, hypothesis, refutation or {})
         for hypothesis in hypotheses
     ]
+    _apply_lessons(
+        assessments=assessments,
+        target_model=target_model,
+        lessons=lessons or [],
+    )
     return HunterIntelligence(
         top_recommendation=_top_recommendation(assessments),
         assessments=assessments,
@@ -249,6 +255,94 @@ def _match_playbook(target_model: dict[str, Any], hypothesis: dict[str, Any]) ->
     if any(term in target_text for term in ("file", "document", "attachment", "idor", "bola", "object")):
         return _PLAYBOOKS["bola_idor"]
     return _PLAYBOOKS["generic_logic"]
+
+
+def _apply_lessons(
+    *,
+    assessments: list[HunterAssessment],
+    target_model: dict[str, Any],
+    lessons: list[dict[str, Any]],
+) -> None:
+    if not assessments or not lessons:
+        return
+
+    surface_keys = set(_surface_keys(target_model))
+    for assessment in assessments:
+        for lesson in lessons:
+            if lesson.get("playbook_id") != assessment.playbook_id:
+                continue
+            surface_pattern = lesson.get("surface_pattern")
+            if isinstance(surface_pattern, str) and surface_keys and surface_pattern not in surface_keys:
+                continue
+            _apply_lesson(assessment, lesson)
+
+
+def _apply_lesson(assessment: HunterAssessment, lesson: dict[str, Any]) -> None:
+    recommendation = str(lesson.get("recommendation", ""))
+    hard_gate = assessment.recommendation == "blocked" or assessment.rejection_risk_score >= 90
+    if hard_gate:
+        if "lesson:skipped:safety_gate" not in assessment.reasons:
+            assessment.reasons.append("lesson:skipped:safety_gate")
+        _merge_safety_notes(assessment, lesson)
+        return
+
+    score_delta = lesson.get("score_delta")
+    bounded_delta = score_delta if isinstance(score_delta, int) else 0
+    bounded_delta = max(-10, min(10, bounded_delta))
+    if recommendation == "boost":
+        assessment.hunter_priority_score = min(100, assessment.hunter_priority_score + bounded_delta)
+        _append_reason(assessment, "lesson:applied:boost")
+    elif recommendation == "duplicate_watch":
+        assessment.duplicate_risk_score = min(
+            100,
+            assessment.duplicate_risk_score + abs(bounded_delta),
+        )
+        assessment.hunter_priority_score = max(
+            0,
+            assessment.hunter_priority_score - round(abs(bounded_delta) * 0.5),
+        )
+        _append_reason(assessment, "lesson:applied:duplicate_watch")
+        if "duplicate_history_review" not in assessment.evidence_focus:
+            assessment.evidence_focus.append("duplicate_history_review")
+    elif recommendation in {"penalize", "evidence_needed"}:
+        assessment.hunter_priority_score = max(0, assessment.hunter_priority_score + bounded_delta)
+        _append_reason(assessment, f"lesson:applied:{recommendation}")
+
+    for reason in lesson.get("reasons", []):
+        if isinstance(reason, str):
+            _append_reason(assessment, reason)
+    _merge_safety_notes(assessment, lesson)
+
+
+def _surface_keys(target_model: dict[str, Any]) -> list[str]:
+    objects = [
+        str(item.get("name"))
+        for item in target_model.get("objects", [])
+        if isinstance(item, dict) and item.get("name")
+    ]
+    keys: list[str] = []
+    for item in target_model.get("sensitive_actions", []):
+        if not isinstance(item, dict):
+            continue
+        action = item.get("action")
+        path = str(item.get("path", ""))
+        if not isinstance(action, str) or not action:
+            continue
+        for object_name in objects:
+            if f"{{{object_name}}}" in path:
+                keys.append(f"{object_name}:{action}")
+    return keys
+
+
+def _append_reason(assessment: HunterAssessment, reason: str) -> None:
+    if reason not in assessment.reasons:
+        assessment.reasons.append(reason)
+
+
+def _merge_safety_notes(assessment: HunterAssessment, lesson: dict[str, Any]) -> None:
+    for note in lesson.get("safety_notes", []):
+        if isinstance(note, str) and note not in assessment.safety_notes:
+            assessment.safety_notes.append(note)
 
 
 def _relationship_signals(target_model: dict[str, Any]) -> list[str]:
