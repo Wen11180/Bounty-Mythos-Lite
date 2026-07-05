@@ -52,6 +52,15 @@ export default async function ReportPreviewPage({ params }: PageProps) {
 
   const reportDataMode = run?.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
   const currentRunId = preview.run_id;
+  const hasPromotionCandidate = preview.claim_ledger.some(
+    (claim) =>
+      claim.claim_type === "observed_fact" &&
+      claim.review_status === "confirmed_observed_fact" &&
+      claim.readiness_level === "human_reviewed_gated" &&
+      claim.evidence_refs.length > 0 &&
+      claim.review_evidence_refs.length > 0,
+  );
+  const canPromoteFindingCandidate = reportDataMode === "Live data" && hasPromotionCandidate;
 
   async function promoteFindingCandidateAction() {
     "use server";
@@ -258,17 +267,23 @@ export default async function ReportPreviewPage({ params }: PageProps) {
               <Field label="Submission blocked" value={preview.submission_blocked ? "Yes" : "No"} />
               <Field label="Run" value={preview.run_id} />
             </dl>
-            <form action={promoteFindingCandidateAction} className="border-t border-[var(--line)] p-5">
-              <p className="mb-3 text-sm text-[var(--muted)]">
-                Promote the eligible human-reviewed observed claim into Finding DB. Submission remains manual.
+            {canPromoteFindingCandidate ? (
+              <form action={promoteFindingCandidateAction} className="border-t border-[var(--line)] p-5">
+                <p className="mb-3 text-sm text-[var(--muted)]">
+                  Promote the eligible human-reviewed observed claim into Finding DB. Submission remains manual.
+                </p>
+                <button
+                  type="submit"
+                  className="min-h-10 rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
+                >
+                  Promote Finding Candidate
+                </button>
+              </form>
+            ) : (
+              <p className="border-t border-[var(--line)] p-5 text-sm font-semibold text-[var(--muted)]">
+                Promotion waits for a live, human-reviewed observed claim.
               </p>
-              <button
-                type="submit"
-                className="min-h-10 rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
-              >
-                Promote Finding Candidate
-              </button>
-            </form>
+            )}
           </section>
         </aside>
       </div>

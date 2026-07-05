@@ -386,10 +386,13 @@ test("report preview can promote reviewed claims to finding candidates", async (
     fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
   );
 
+  assert.match(page, /hasPromotionCandidate/);
+  assert.match(page, /reportDataMode === "Live data"/);
   assert.match(page, /createFindingCandidate/);
   assert.match(page, /promoteFindingCandidateAction/);
   assert.match(page, /Promote Finding Candidate/);
   assert.match(page, /human-reviewed observed claim/);
+  assert.match(page, /Promotion waits for a live, human-reviewed observed claim/);
   assert.match(page, /submission_blocked/);
 });
 
