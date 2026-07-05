@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session
 from app.db_models import (
+    AgentRunRecord,
     ApprovalRecord,
     ArtifactRecord,
     CampaignBudgetRecord,
     CampaignRecord,
+    CampaignTaskRecord,
     LearningSignalRecord,
     PipelineRunRecord,
 )
@@ -163,6 +165,32 @@ class CampaignResponse(BaseModel):
     created_by: str
     created_at: str
     budget: CampaignBudgetResponse | None = None
+
+
+class CampaignTaskResponse(BaseModel):
+    id: str
+    campaign_id: str
+    task_type: str
+    agent_type: str
+    title: str
+    status: str
+    input_refs: list[str] = Field(default_factory=list)
+    output_refs: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class AgentRunResponse(BaseModel):
+    id: str
+    campaign_id: str | None
+    task_id: str | None
+    agent_type: str
+    status: str
+    input_refs: list[str] = Field(default_factory=list)
+    output_refs: list[str] = Field(default_factory=list)
+    safety_gate_state: str
+    stop_reason: str | None
+    created_at: str
+    finished_at: str | None
 
 
 class ClaimReviewDecisionRequest(BaseModel):
@@ -353,6 +381,48 @@ def resume_mythos_campaign(
     session: Session = Depends(get_session),
 ) -> CampaignResponse:
     return _update_campaign_status(campaign_id, "running", session)
+
+
+@app.get("/mythos/campaigns/{campaign_id}/tasks", response_model=list[CampaignTaskResponse])
+def list_mythos_campaign_tasks(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[CampaignTaskResponse]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        _campaign_task_response(record)
+        for record in repository.list_campaign_tasks(campaign_id)
+    ]
+
+
+@app.get("/mythos/campaigns/{campaign_id}/agent-runs", response_model=list[AgentRunResponse])
+def list_mythos_campaign_agent_runs(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[AgentRunResponse]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        _agent_run_response(record)
+        for record in repository.list_campaign_agent_runs(campaign_id)
+    ]
+
+
+@app.get("/mythos/campaigns/{campaign_id}/approvals", response_model=list[ApprovalRecordResponse])
+def list_mythos_campaign_approvals(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[ApprovalRecordResponse]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        _approval_record_response(record)
+        for record in repository.list_campaign_approval_records(campaign_id)
+    ]
 
 
 @app.get("/programs", response_model=list[Program])
@@ -1009,6 +1079,36 @@ def _campaign_budget_response(
         validation_budget=record.validation_budget,
         status=record.status,
         created_at=record.created_at.isoformat(),
+    )
+
+
+def _campaign_task_response(record: CampaignTaskRecord) -> CampaignTaskResponse:
+    return CampaignTaskResponse(
+        id=record.id,
+        campaign_id=record.campaign_id,
+        task_type=record.task_type,
+        agent_type=record.agent_type,
+        title=record.title,
+        status=record.status,
+        input_refs=record.input_refs,
+        output_refs=record.output_refs,
+        created_at=record.created_at.isoformat(),
+    )
+
+
+def _agent_run_response(record: AgentRunRecord) -> AgentRunResponse:
+    return AgentRunResponse(
+        id=record.id,
+        campaign_id=record.campaign_id,
+        task_id=record.task_id,
+        agent_type=record.agent_type,
+        status=record.status,
+        input_refs=record.input_refs,
+        output_refs=record.output_refs,
+        safety_gate_state=record.safety_gate_state,
+        stop_reason=record.stop_reason,
+        created_at=record.created_at.isoformat(),
+        finished_at=record.finished_at.isoformat() if record.finished_at else None,
     )
 
 
