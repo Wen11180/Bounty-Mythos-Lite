@@ -224,9 +224,24 @@ export type ClosedLoopSummary = {
   learning_signal_count: number;
   lesson_count?: number;
   brain_memory_status?: string;
+  memory_lessons?: ClosedLoopMemoryLesson[];
   blocked_reasons: string[];
   safety_notes: string[];
   steps?: ClosedLoopStep[];
+};
+
+export type ClosedLoopMemoryLesson = {
+  lesson_id: string;
+  scope_type: string;
+  scope_key: string;
+  playbook_id: string;
+  surface_pattern: string;
+  recommendation: string;
+  confidence: number;
+  source_signal_count: number;
+  source_signal_ids: string[];
+  reasons: string[];
+  safety_notes: string[];
 };
 
 export type ClosedLoopStep = {

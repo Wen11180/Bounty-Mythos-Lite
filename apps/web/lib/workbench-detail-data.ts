@@ -124,6 +124,7 @@ export function fallbackRunDetail(runId: string): PipelineRunDetail | null {
         learning_signal_count: 0,
         lesson_count: 0,
         brain_memory_status: "waiting_for_learning",
+        memory_lessons: [],
         blocked_reasons: [],
         safety_notes: [
           "no_live_requests",

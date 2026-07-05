@@ -1345,7 +1345,8 @@ def _closed_loop_summary(
         record,
         repository,
     )
-    lesson_count = len(build_mythos_lessons(run_learning_signals))
+    memory_lessons = build_mythos_lessons(run_learning_signals)
+    lesson_count = len(memory_lessons)
     brain_memory_status = _closed_loop_brain_memory_status(
         learning_signal_count=learning_signal_count,
         lesson_count=lesson_count,
@@ -1366,6 +1367,9 @@ def _closed_loop_summary(
         "learning_signal_count": learning_signal_count,
         "lesson_count": lesson_count,
         "brain_memory_status": brain_memory_status,
+        "memory_lessons": [
+            _closed_loop_memory_lesson(lesson) for lesson in memory_lessons
+        ],
         "blocked_reasons": blocked_reasons,
         "safety_notes": [
             "no_live_requests",
@@ -1554,6 +1558,34 @@ def _closed_loop_brain_memory_next_action(status: str) -> str:
     if status == "learning_recorded":
         return "Record another corroborating outcome before advisory lesson use."
     return "Keep the candidate gated until outcome memory exists."
+
+
+def _closed_loop_memory_lesson(lesson: MythosLesson) -> dict:
+    return {
+        "lesson_id": _closed_loop_readable_lesson_id(lesson),
+        "scope_type": lesson.scope_type,
+        "scope_key": lesson.scope_key,
+        "playbook_id": lesson.playbook_id,
+        "surface_pattern": lesson.surface_pattern,
+        "recommendation": lesson.recommendation,
+        "confidence": lesson.confidence,
+        "source_signal_count": len(lesson.source_signal_ids),
+        "source_signal_ids": lesson.source_signal_ids,
+        "reasons": lesson.reasons,
+        "safety_notes": sorted(lesson.safety_notes),
+    }
+
+
+def _closed_loop_readable_lesson_id(lesson: MythosLesson) -> str:
+    return ":".join(
+        [
+            lesson.scope_type,
+            lesson.scope_key,
+            lesson.playbook_id,
+            lesson.surface_pattern,
+            lesson.recommendation,
+        ]
+    )
 
 
 def _closed_loop_artifact_usage_records(

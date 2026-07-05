@@ -2168,6 +2168,7 @@ def test_pipeline_run_detail_exposes_closed_loop_summary_after_candidate_learnin
             "learning_signal_count": 1,
             "lesson_count": 0,
             "brain_memory_status": "learning_recorded",
+            "memory_lessons": [],
             "blocked_reasons": [],
             "safety_notes": [
                 "no_live_requests",
@@ -2253,6 +2254,7 @@ def test_pipeline_run_detail_marks_brain_memory_complete_when_lesson_is_ready():
         assert response.status_code == 200
         run_id = response.json()["run_id"]
 
+        signal_ids = []
         for index in range(2):
             outcome_response = client.post(
                 "/mythos/brain/outcomes",
@@ -2264,6 +2266,7 @@ def test_pipeline_run_detail_marks_brain_memory_complete_when_lesson_is_ready():
                 },
             )
             assert outcome_response.status_code == 200
+            signal_ids.append(outcome_response.json()["recent_learning_signals"][0]["id"])
 
         detail_response = client.get(f"/mythos/pipeline/runs/{run_id}")
         assert detail_response.status_code == 200
@@ -2275,6 +2278,29 @@ def test_pipeline_run_detail_marks_brain_memory_complete_when_lesson_is_ready():
         assert summary["learning_signal_count"] == 2
         assert summary["lesson_count"] == 1
         assert summary["brain_memory_status"] == "lesson_ready"
+        assert summary["memory_lessons"] == [
+            {
+                "lesson_id": "program:program_example:bola_idor:file_id:export:boost",
+                "scope_type": "program",
+                "scope_key": "program_example",
+                "playbook_id": "bola_idor",
+                "surface_pattern": "file_id:export",
+                "recommendation": "boost",
+                "confidence": 76,
+                "source_signal_count": 2,
+                "source_signal_ids": sorted(signal_ids),
+                "reasons": ["lesson:boost:accepted_strong_evidence"],
+                "safety_notes": [
+                    "advisory_memory_only",
+                    "human_review_required",
+                    "no_live_requests",
+                    "no_real_user_data",
+                    "scope_guard_wins",
+                    "test_accounts_only",
+                ],
+            }
+        ]
+        assert "Accepted safe fixture outcome" not in str(summary["memory_lessons"])
         assert brain_step == {
             "key": "brain_memory",
             "label": "Brain Memory",

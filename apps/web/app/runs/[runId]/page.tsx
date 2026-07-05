@@ -50,6 +50,7 @@ export default async function RunDetailPage({ params }: PageProps) {
   const closedLoopBlockedReasons = safeStringList(closedLoop?.blocked_reasons);
   const closedLoopSafetyNotes = safeStringList(closedLoop?.safety_notes);
   const closedLoopSteps = closedLoop?.steps ?? [];
+  const memoryLessons = closedLoop?.memory_lessons ?? [];
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -264,6 +265,42 @@ export default async function RunDetailPage({ params }: PageProps) {
                     </li>
                   ))}
                 </ol>
+              ) : null}
+              {memoryLessons.length > 0 ? (
+                <ul className="grid gap-3 border-t border-[var(--line)] pt-4">
+                  {memoryLessons.map((lesson) => (
+                    <li
+                      key={lesson.lesson_id}
+                      className="grid gap-2 border-l-2 border-[var(--accent)] pl-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="break-words font-semibold">
+                          {formatLabel(lesson.recommendation)} memory
+                        </p>
+                        <span className="shrink-0 text-xs font-semibold text-[var(--muted)]">
+                          {lesson.confidence}
+                        </span>
+                      </div>
+                      <p className="break-words text-[var(--muted)]">
+                        {safeDisplay(lesson.playbook_id)} on{" "}
+                        {safeDisplay(lesson.surface_pattern)} from{" "}
+                        {lesson.source_signal_count} learning signal(s)
+                      </p>
+                      {lesson.reasons.length > 0 ? (
+                        <ul className="flex flex-wrap gap-1.5">
+                          {lesson.reasons.map((reason) => (
+                            <li
+                              key={`${lesson.lesson_id}-${reason}`}
+                              className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold text-[var(--muted)]"
+                            >
+                              {formatLabel(reason)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
               ) : null}
               {closedLoopSafetyNotes.length > 0 ? (
                 <ul className="flex flex-wrap gap-1.5">
