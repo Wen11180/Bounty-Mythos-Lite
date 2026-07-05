@@ -1157,14 +1157,14 @@ def _campaign_control_campaign_response(
     return CampaignControlCampaignResponse(
         id=record.id,
         program_id=record.program_id,
-        name=record.name,
-        status=record.status,
-        autonomy_level=record.autonomy_level,
-        scope_status=record.scope_status,
-        default_asset=record.default_asset,
-        target_classes=record.target_classes,
-        allowed_tools=record.allowed_tools,
-        created_by=record.created_by,
+        name=safe_preview_text(record.name),
+        status=safe_preview_text(record.status),
+        autonomy_level=safe_preview_text(record.autonomy_level),
+        scope_status=safe_preview_text(record.scope_status),
+        default_asset=safe_preview_text(record.default_asset),
+        target_classes=safe_string_list(record.target_classes),
+        allowed_tools=safe_string_list(record.allowed_tools),
+        created_by=safe_preview_text(record.created_by),
         created_at=record.created_at.isoformat(),
     )
 
@@ -1190,12 +1190,12 @@ def _campaign_task_response(record: CampaignTaskRecord) -> CampaignTaskResponse:
     return CampaignTaskResponse(
         id=record.id,
         campaign_id=record.campaign_id,
-        task_type=record.task_type,
-        agent_type=record.agent_type,
-        title=record.title,
-        status=record.status,
-        input_refs=record.input_refs,
-        output_refs=record.output_refs,
+        task_type=safe_preview_text(record.task_type),
+        agent_type=safe_preview_text(record.agent_type),
+        title=safe_preview_text(record.title),
+        status=safe_preview_text(record.status),
+        input_refs=safe_string_list(record.input_refs),
+        output_refs=safe_string_list(record.output_refs),
         created_at=record.created_at.isoformat(),
     )
 
@@ -1205,12 +1205,12 @@ def _agent_run_response(record: AgentRunRecord) -> AgentRunResponse:
         id=record.id,
         campaign_id=record.campaign_id,
         task_id=record.task_id,
-        agent_type=record.agent_type,
-        status=record.status,
-        input_refs=record.input_refs,
-        output_refs=record.output_refs,
-        safety_gate_state=record.safety_gate_state,
-        stop_reason=record.stop_reason,
+        agent_type=safe_preview_text(record.agent_type),
+        status=safe_preview_text(record.status),
+        input_refs=safe_string_list(record.input_refs),
+        output_refs=safe_string_list(record.output_refs),
+        safety_gate_state=safe_preview_text(record.safety_gate_state),
+        stop_reason=safe_preview_text(record.stop_reason) if record.stop_reason else None,
         created_at=record.created_at.isoformat(),
         finished_at=record.finished_at.isoformat() if record.finished_at else None,
     )
@@ -1222,13 +1222,13 @@ def _pipeline_stage_response(record: PipelineStageRecord) -> PipelineStageRespon
         pipeline_run_id=record.pipeline_run_id,
         campaign_id=record.campaign_id,
         task_id=record.task_id,
-        stage_key=record.stage_key,
+        stage_key=safe_preview_text(record.stage_key),
         stage_order=record.stage_order,
-        status=record.status,
-        input_refs=record.input_refs,
-        output_refs=record.output_refs,
-        safety_gate_state=record.safety_gate_state,
-        stop_reason=record.stop_reason,
+        status=safe_preview_text(record.status),
+        input_refs=safe_string_list(record.input_refs),
+        output_refs=safe_string_list(record.output_refs),
+        safety_gate_state=safe_preview_text(record.safety_gate_state),
+        stop_reason=safe_preview_text(record.stop_reason) if record.stop_reason else None,
         created_at=record.created_at.isoformat(),
     )
 
@@ -1256,7 +1256,7 @@ def _campaign_control_center_blocked_reasons(
         reasons.append("budget_exhausted")
     for stage in stages:
         if stage.status in {"blocked", "paused"} and stage.stop_reason:
-            reasons.append(stage.stop_reason)
+            reasons.append(safe_preview_text(stage.stop_reason))
     return list(dict.fromkeys(reasons))
 
 
