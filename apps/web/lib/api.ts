@@ -1,6 +1,7 @@
 import type {
   CampaignAgentRun,
   CampaignApproval,
+  CampaignCodebaseMap,
   CampaignControlCenter,
   CampaignPipelineStage,
   CampaignTask,
@@ -750,6 +751,13 @@ export function getCampaignPipelineStages(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/pipeline-stages`,
     fallback,
   );
+}
+
+export function getCampaignCodebaseMap(
+  campaignId: string,
+  fallback: CampaignCodebaseMap,
+): Promise<CampaignCodebaseMap> {
+  return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/codebase-map`, fallback);
 }
 
 export function getFindings(fallback: Finding[]): Promise<Finding[]> {

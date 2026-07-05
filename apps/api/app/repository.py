@@ -14,6 +14,8 @@ from app.db_models import (
     CampaignBudgetRecord,
     CampaignRecord,
     CampaignTaskRecord,
+    CodebaseFactRecord,
+    CodebaseMapRecord,
     FindingRecord,
     LearningSignalRecord,
     LLMRunRecord,
@@ -21,6 +23,7 @@ from app.db_models import (
     PipelineRunRecord,
     ProgramRecord,
     ReportRecord,
+    ScannerRunRecord,
 )
 from app.models import Finding, Program, ReportDraft
 from app.sample_data import FINDINGS, PROGRAMS, REPORTS
@@ -735,6 +738,152 @@ class DatabaseRepository:
             )
         ).all()
 
+    def save_codebase_map(
+        self,
+        *,
+        campaign_id: str,
+        source_ref: str,
+        repository: str,
+        commit_ref: str | None,
+        status: str,
+        route_count: int,
+        handler_count: int,
+        model_count: int,
+        authz_check_count: int,
+        sensitive_sink_count: int,
+        provenance_refs: list[str] | None = None,
+        safety_gate_state: str,
+        payload: dict | None = None,
+    ) -> CodebaseMapRecord:
+        record = CodebaseMapRecord(
+            id=f"codebase_map_{uuid4().hex}",
+            campaign_id=campaign_id,
+            source_ref=_safe_display_value(source_ref),
+            repository=_safe_display_value(repository),
+            commit_ref=_safe_display_value(commit_ref),
+            status=_safe_display_value(status),
+            route_count=max(0, route_count),
+            handler_count=max(0, handler_count),
+            model_count=max(0, model_count),
+            authz_check_count=max(0, authz_check_count),
+            sensitive_sink_count=max(0, sensitive_sink_count),
+            provenance_refs=_safe_display_value(provenance_refs or []),
+            safety_gate_state=_safe_display_value(safety_gate_state),
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_campaign_codebase_maps(self, campaign_id: str) -> list[CodebaseMapRecord]:
+        return self.session.scalars(
+            select(CodebaseMapRecord)
+            .where(CodebaseMapRecord.campaign_id == campaign_id)
+            .order_by(
+                CodebaseMapRecord.created_at.desc(),
+                CodebaseMapRecord.id.desc(),
+            )
+        ).all()
+
+    def save_codebase_fact(
+        self,
+        *,
+        codebase_map_id: str,
+        campaign_id: str,
+        fact_type: str,
+        source_path: str,
+        symbol_name: str | None = None,
+        route_method: str | None = None,
+        route_path: str | None = None,
+        authz_hint: str | None = None,
+        sensitivity_label: str,
+        provenance_refs: list[str] | None = None,
+        payload: dict | None = None,
+    ) -> CodebaseFactRecord:
+        record = CodebaseFactRecord(
+            id=f"codebase_fact_{uuid4().hex}",
+            codebase_map_id=codebase_map_id,
+            campaign_id=campaign_id,
+            fact_type=_safe_display_value(fact_type),
+            source_path=_safe_source_path(source_path),
+            symbol_name=_safe_display_value(symbol_name),
+            route_method=_safe_display_value(route_method),
+            route_path=_safe_display_value(route_path),
+            authz_hint=_safe_display_value(authz_hint),
+            sensitivity_label=_safe_display_value(sensitivity_label),
+            provenance_refs=_safe_display_value(provenance_refs or []),
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_codebase_facts(self, codebase_map_id: str) -> list[CodebaseFactRecord]:
+        return self.session.scalars(
+            select(CodebaseFactRecord)
+            .where(CodebaseFactRecord.codebase_map_id == codebase_map_id)
+            .order_by(
+                CodebaseFactRecord.fact_type,
+                CodebaseFactRecord.source_path,
+                CodebaseFactRecord.id,
+            )
+        ).all()
+
+    def list_campaign_codebase_facts(self, campaign_id: str) -> list[CodebaseFactRecord]:
+        return self.session.scalars(
+            select(CodebaseFactRecord)
+            .where(CodebaseFactRecord.campaign_id == campaign_id)
+            .order_by(
+                CodebaseFactRecord.fact_type,
+                CodebaseFactRecord.source_path,
+                CodebaseFactRecord.id,
+            )
+        ).all()
+
+    def save_scanner_run(
+        self,
+        *,
+        campaign_id: str,
+        codebase_map_id: str | None,
+        tool_name: str,
+        command_hash: str,
+        status: str,
+        finding_count: int,
+        candidate_count: int,
+        summary: str,
+        safety_gate_state: str,
+        payload: dict | None = None,
+    ) -> ScannerRunRecord:
+        record = ScannerRunRecord(
+            id=f"scanner_run_{uuid4().hex}",
+            campaign_id=campaign_id,
+            codebase_map_id=codebase_map_id,
+            tool_name=_safe_display_value(tool_name),
+            command_hash=_safe_display_value(command_hash),
+            status=_safe_display_value(status),
+            finding_count=max(0, finding_count),
+            candidate_count=max(0, candidate_count),
+            summary=_safe_display_value(summary),
+            safety_gate_state=_safe_display_value(safety_gate_state),
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_campaign_scanner_runs(self, campaign_id: str) -> list[ScannerRunRecord]:
+        return self.session.scalars(
+            select(ScannerRunRecord)
+            .where(ScannerRunRecord.campaign_id == campaign_id)
+            .order_by(
+                ScannerRunRecord.created_at.desc(),
+                ScannerRunRecord.id.desc(),
+            )
+        ).all()
+
     def save_learning_signal(
         self,
         *,
@@ -1042,6 +1191,11 @@ def _without_policy_text(value):
     return _safe_display_value(value)
 
 
+def _safe_source_path(value: str) -> str:
+    path = value.split("?", 1)[0].split("#", 1)[0]
+    return _safe_display_value(path)
+
+
 def _safe_display_value(value: Any) -> Any:
     if isinstance(value, str):
         return (
@@ -1084,11 +1238,14 @@ def _is_secret_like(value: str) -> bool:
     normalized = value.lower()
     secret_markers = (
         "authorization:",
+        "api_key=",
         "bearer ",
         "cookie:",
+        "secret=",
         "set-cookie:",
         "session=",
         "sk-",
+        "token=",
     )
     return (
         any(marker in normalized for marker in secret_markers)

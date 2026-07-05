@@ -31,4 +31,7 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         "agent_runs",
         "approval_records",
         "pipeline_stages",
+        "codebase_maps",
+        "codebase_facts",
+        "scanner_runs",
     } <= tables

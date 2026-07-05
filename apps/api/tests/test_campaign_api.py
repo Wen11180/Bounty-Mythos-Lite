@@ -243,6 +243,90 @@ def test_campaign_api_lists_pipeline_stages_without_payload_leaks():
         app.dependency_overrides.clear()
 
 
+def test_campaign_api_returns_codebase_map_without_raw_scanner_or_secret_payloads():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Codebase map campaign",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "Testing allowed",
+                "default_asset": "api.example.com",
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            codebase_map = repository.save_codebase_map(
+                campaign_id=campaign_id,
+                source_ref="artifact:repo_snapshot",
+                repository="authorized/service",
+                commit_ref="abc123",
+                status="mapped",
+                route_count=1,
+                handler_count=1,
+                model_count=1,
+                authz_check_count=1,
+                sensitive_sink_count=0,
+                provenance_refs=["artifact:repo_snapshot"],
+                safety_gate_state="allowed",
+                payload={"authorization": "Bearer secret-token"},
+            )
+            repository.save_codebase_fact(
+                codebase_map_id=codebase_map.id,
+                campaign_id=campaign_id,
+                fact_type="route_handler",
+                source_path="apps/api/users.py?token=secret-token",
+                symbol_name="get_user",
+                route_method="GET",
+                route_path="/users/{id}",
+                authz_hint="owner_or_admin",
+                sensitivity_label="low",
+                provenance_refs=["codebase_map:route:1"],
+                payload={"cookie": "session=secret"},
+            )
+            repository.save_scanner_run(
+                campaign_id=campaign_id,
+                codebase_map_id=codebase_map.id,
+                tool_name="semgrep",
+                command_hash="sha256:scanner-command",
+                status="candidate_findings",
+                finding_count=1,
+                candidate_count=1,
+                summary="Static candidates only; Authorization: Bearer secret-token",
+                safety_gate_state="allowed",
+                payload={"raw_stdout": "token=secret-token"},
+            )
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/codebase-map")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["maps"][0]["route_count"] == 1
+        assert body["facts"][0]["source_path"] == "apps/api/users.py"
+        assert body["facts"][0]["authz_hint"] == "owner_or_admin"
+        assert body["scanner_runs"][0]["tool_name"] == "semgrep"
+        assert body["scanner_runs"][0]["summary"] == "[REDACTED]"
+        response_text = str(body)
+        assert "raw_stdout" not in response_text
+        assert "secret-token" not in response_text
+        assert "session=secret" not in response_text
+        assert "authorization" not in response_text.lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_control_center_returns_audited_read_only_summary():
     testing_session = build_testing_session()
 

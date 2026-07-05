@@ -31,6 +31,9 @@ def test_database_schema_includes_core_tables():
         "agent_runs",
         "approval_records",
         "pipeline_stages",
+        "codebase_maps",
+        "codebase_facts",
+        "scanner_runs",
     } <= tables
 
 
@@ -236,5 +239,77 @@ def test_repository_updates_campaign_task_and_finishes_agent_run_safely():
         assert finished_run.stop_reason == "observation_recorded"
         assert finished_run.finished_at is not None
         assert finished_run.payload["authorization"] == "[REDACTED]"
+    finally:
+        session.close()
+
+
+def test_repository_persists_codebase_and_scanner_fact_layer_safely():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code map campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+
+        codebase_map = repository.save_codebase_map(
+            campaign_id=campaign.id,
+            source_ref="artifact:repo_snapshot",
+            repository="authorized/service",
+            commit_ref="abc123",
+            status="mapped",
+            route_count=2,
+            handler_count=2,
+            model_count=1,
+            authz_check_count=1,
+            sensitive_sink_count=1,
+            provenance_refs=["artifact:repo_snapshot"],
+            safety_gate_state="allowed",
+            payload={"authorization": "Bearer secret-token", "summary": "routes only"},
+        )
+        fact = repository.save_codebase_fact(
+            codebase_map_id=codebase_map.id,
+            campaign_id=campaign.id,
+            fact_type="route_handler",
+            source_path="apps/api/users.py?token=secret-token",
+            symbol_name="get_user",
+            route_method="GET",
+            route_path="/users/{id}",
+            authz_hint="owner_or_admin",
+            sensitivity_label="low",
+            provenance_refs=["codebase_map:route:1"],
+            payload={"cookie": "session=secret", "line": 42},
+        )
+        scanner_run = repository.save_scanner_run(
+            campaign_id=campaign.id,
+            codebase_map_id=codebase_map.id,
+            tool_name="semgrep",
+            command_hash="sha256:scanner-command",
+            status="candidate_findings",
+            finding_count=2,
+            candidate_count=2,
+            summary="Static candidates only; Authorization: Bearer secret-token",
+            safety_gate_state="allowed",
+            payload={"raw_stdout": "token=secret-token"},
+        )
+
+        maps = repository.list_campaign_codebase_maps(campaign.id)
+        facts = repository.list_codebase_facts(codebase_map.id)
+        scanner_runs = repository.list_campaign_scanner_runs(campaign.id)
+
+        assert maps[0].id == codebase_map.id
+        assert maps[0].payload["authorization"] == "[REDACTED]"
+        assert facts[0].id == fact.id
+        assert facts[0].source_path == "apps/api/users.py"
+        assert facts[0].payload["cookie"] == "[REDACTED]"
+        assert scanner_runs[0].id == scanner_run.id
+        assert scanner_runs[0].summary == "[REDACTED]"
+        assert scanner_runs[0].payload["raw_stdout"] == "[REDACTED]"
     finally:
         session.close()

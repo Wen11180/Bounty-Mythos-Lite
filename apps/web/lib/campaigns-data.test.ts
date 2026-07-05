@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ProgramIntelligenceProfile } from "./api.ts";
 import {
   toCampaignAgentRunSummaries,
+  toCampaignBrainSummary,
+  toCampaignCodebaseMapView,
   toCampaignControlSummary,
   toCampaignTaskSummaries,
   toCampaignTimelineSummaries,
@@ -105,6 +108,106 @@ const controlCenter = {
   execution_allowed: false,
   safe_next_action: "review_approval_queue",
 } satisfies CampaignControlCenter;
+
+const brainProfile = {
+  program_id: "program_example",
+  program_name: "Example Program",
+  program_score: 84,
+  attack_surface_memory: {
+    objects: ["workspace", "invoice"],
+    roles: ["member", "admin"],
+    run_count: 7,
+    sensitive_actions: [
+      {
+        action: "transfer_ownership",
+        method: "POST",
+        path: "/workspaces/{id}/owners?session=secret",
+        roles: ["admin"],
+      },
+    ],
+  },
+  high_value_surfaces: [
+    {
+      action: "transfer_ownership",
+      object_name: "workspace",
+      paths: ["/workspaces/{id}/owners?token=secret-token"],
+      playbooks: ["idor_role_boundary"],
+      reasons: ["accepted_history"],
+      score: 92,
+      surface_key: "workspace:transfer_ownership",
+    },
+  ],
+  learning_summary: {
+    accepted_count: 2,
+    adequate_evidence_count: 1,
+    bounty_total: 1500,
+    duplicate_count: 1,
+    evidence_score_delta: 3,
+    informative_count: 0,
+    na_count: 0,
+    penalized_playbooks: [],
+    rejected_count: 0,
+    rejection_risk_delta: -1,
+    severity_down_count: 0,
+    severity_up_count: 1,
+    strong_evidence_count: 2,
+    triager_feedback_count: 1,
+    weak_evidence_count: 0,
+    boosted_playbooks: ["idor_role_boundary"],
+  },
+  recent_learning_signals: [
+    {
+      created_at: "2026-07-05T00:00:00Z",
+      evidence_quality: "strong",
+      id: "signal_1",
+      notes: "Triager accepted; cookie=session=secret",
+      outcome: "accepted",
+      playbook_id: "idor_role_boundary",
+      program_id: "program_example",
+      surface_key: "workspace:transfer_ownership",
+    },
+  ],
+  applied_lessons: [
+    {
+      bounty_total: 1500,
+      confidence: 0.82,
+      created_at: "2026-07-05T00:00:00Z",
+      evidence_quality_counts: { strong: 2 },
+      id: "lesson_1",
+      outcome_counts: { accepted: 2 },
+      playbook_id: "idor_role_boundary",
+      reasons: ["accepted_history", "token=secret-token"],
+      recommendation: "boost",
+      scope_key: "program_example",
+      scope_type: "program",
+      score_delta: 8,
+      severity_delta_counts: { up: 1 },
+      source_signal_ids: ["signal_1"],
+      surface_pattern: "workspace ownership",
+      safety_notes: ["advisory_only"],
+      updated_at: "2026-07-05T00:00:00Z",
+    },
+  ],
+  skipped_lessons: [
+    {
+      lesson_id: "lesson_skipped",
+      reason: "scope_guard_blocked",
+      scope_key: "program_example",
+      scope_type: "program",
+    },
+  ],
+  lesson_adjusted_surfaces: [
+    {
+      lesson_id: "lesson_1",
+      recommendation: "boost",
+      score_after: 92,
+      score_before: 84,
+      score_delta: 8,
+      surface_key: "workspace:transfer_ownership",
+    },
+  ],
+  safety_notes: ["advisory_only", "cannot_authorize_execution"],
+} satisfies ProgramIntelligenceProfile;
 
 test("toCampaignControlSummary keeps campaign control center read-only and redacted", () => {
   const summary = toCampaignControlSummary(controlCenter);
@@ -229,6 +332,87 @@ test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", (
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|token=secret/i);
 });
 
+test("toCampaignBrainSummary keeps Mythos Brain advisory and redacted", () => {
+  const summary = toCampaignBrainSummary(brainProfile);
+
+  assert.equal(summary.programId, "program_example");
+  assert.equal(summary.programName, "Example Program");
+  assert.equal(summary.programScore, 84);
+  assert.equal(summary.objectCount, 2);
+  assert.equal(summary.roleCount, 2);
+  assert.equal(summary.sensitiveActionCount, 1);
+  assert.equal(summary.signalCount, 1);
+  assert.equal(summary.appliedLessonCount, 1);
+  assert.equal(summary.skippedLessonCount, 1);
+  assert.equal(summary.advisoryOnly, true);
+  assert.equal(summary.executionAllowed, false);
+  assert.equal(summary.topSurfaces[0].path, "/workspaces/{id}/owners");
+  assert.equal(summary.recentSignals[0].notes, "Triager accepted; cookie=[redacted]");
+  assert.equal(summary.appliedLessons[0].reasons[1], "[redacted]");
+  assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|token=secret/i);
+});
+
+test("toCampaignCodebaseMapView summarizes code facts without raw scanner leakage", () => {
+  const view = toCampaignCodebaseMapView({
+    maps: [
+      {
+        authz_check_count: 1,
+        campaign_id: "campaign_1",
+        commit_ref: "abc123",
+        created_at: "2026-07-05T00:00:00Z",
+        handler_count: 2,
+        id: "codebase_map_1",
+        model_count: 1,
+        provenance_refs: ["artifact:repo_snapshot"],
+        repository: "authorized/service",
+        route_count: 2,
+        safety_gate_state: "allowed",
+        sensitive_sink_count: 1,
+        source_ref: "artifact:repo_snapshot",
+        status: "mapped",
+      },
+    ],
+    facts: [
+      {
+        authz_hint: "owner_or_admin",
+        campaign_id: "campaign_1",
+        codebase_map_id: "codebase_map_1",
+        created_at: "2026-07-05T00:00:00Z",
+        fact_type: "route_handler",
+        id: "codebase_fact_1",
+        provenance_refs: ["codebase_map:route:1"],
+        route_method: "GET",
+        route_path: "/users/{id}",
+        sensitivity_label: "low",
+        source_path: "apps/api/users.py?token=secret-token",
+        symbol_name: "get_user",
+      },
+    ],
+    scanner_runs: [
+      {
+        campaign_id: "campaign_1",
+        candidate_count: 2,
+        codebase_map_id: "codebase_map_1",
+        command_hash: "sha256:scanner-command",
+        created_at: "2026-07-05T00:00:00Z",
+        finding_count: 2,
+        id: "scanner_run_1",
+        safety_gate_state: "allowed",
+        status: "candidate_findings",
+        summary: "Static candidates only; Authorization: Bearer secret-token",
+        tool_name: "semgrep",
+      },
+    ],
+  });
+
+  assert.equal(view.routeCount, 2);
+  assert.equal(view.authzCheckCount, 1);
+  assert.equal(view.candidateCount, 2);
+  assert.equal(view.facts[0].sourcePath, "apps/api/users.py");
+  assert.equal(view.scannerRuns[0].summary, "Static candidates only; Authorization=[redacted]");
+  assert.doesNotMatch(JSON.stringify(view), /secret-token|token=secret|authorization: bearer/i);
+});
+
 test("campaign control page stays read-only with no execution entrypoints", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/campaigns/page.tsx", import.meta.url), "utf8"),
@@ -250,11 +434,39 @@ test("campaign detail page reads the audited control center and stays read-only"
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/tasks/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/agent-runs/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/codebase-map/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-queue/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/timeline/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/brain/);
   assert.match(page, /executionAllowed/);
   assert.match(page, /safeNextAction/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign brain page reads program brain and stays advisory-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/brain/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
+  assert.match(page, /getMythosBrainProgram/);
+  assert.match(page, /toCampaignBrainSummary/);
+  assert.match(page, /advisoryOnly/);
+  assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport|approveValidation/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign codebase map page reads fact-layer records and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/codebase-map/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignCodebaseMap\(campaignId, emptyCampaignCodebaseMap\)/);
+  assert.match(page, /toCampaignCodebaseMapView/);
+  assert.doesNotMatch(page, /runScanner|startScan|executeScan|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 

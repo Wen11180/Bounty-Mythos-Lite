@@ -13,9 +13,12 @@ from app.db_models import (
     CampaignBudgetRecord,
     CampaignRecord,
     CampaignTaskRecord,
+    CodebaseFactRecord,
+    CodebaseMapRecord,
     LearningSignalRecord,
     PipelineStageRecord,
     PipelineRunRecord,
+    ScannerRunRecord,
 )
 from app.hunter_intelligence import (
     HunterIntelligence,
@@ -221,6 +224,58 @@ class PipelineStageResponse(BaseModel):
     safety_gate_state: str
     stop_reason: str | None = None
     created_at: str
+
+
+class CodebaseMapResponse(BaseModel):
+    id: str
+    campaign_id: str
+    source_ref: str
+    repository: str
+    commit_ref: str | None = None
+    status: str
+    route_count: int
+    handler_count: int
+    model_count: int
+    authz_check_count: int
+    sensitive_sink_count: int
+    provenance_refs: list[str] = Field(default_factory=list)
+    safety_gate_state: str
+    created_at: str
+
+
+class CodebaseFactResponse(BaseModel):
+    id: str
+    codebase_map_id: str
+    campaign_id: str
+    fact_type: str
+    source_path: str
+    symbol_name: str | None = None
+    route_method: str | None = None
+    route_path: str | None = None
+    authz_hint: str | None = None
+    sensitivity_label: str
+    provenance_refs: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class ScannerRunResponse(BaseModel):
+    id: str
+    campaign_id: str
+    codebase_map_id: str | None = None
+    tool_name: str
+    command_hash: str
+    status: str
+    finding_count: int
+    candidate_count: int
+    summary: str
+    safety_gate_state: str
+    created_at: str
+
+
+class CampaignCodebaseMapResponse(BaseModel):
+    maps: list[CodebaseMapResponse] = Field(default_factory=list)
+    facts: list[CodebaseFactResponse] = Field(default_factory=list)
+    scanner_runs: list[ScannerRunResponse] = Field(default_factory=list)
 
 
 class ClaimReviewDecisionRequest(BaseModel):
@@ -482,6 +537,33 @@ def list_mythos_campaign_pipeline_stages(
         _pipeline_stage_response(record)
         for record in repository.list_campaign_pipeline_stages(campaign_id)
     ]
+
+
+@app.get(
+    "/mythos/campaigns/{campaign_id}/codebase-map",
+    response_model=CampaignCodebaseMapResponse,
+)
+def get_mythos_campaign_codebase_map(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> CampaignCodebaseMapResponse:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return CampaignCodebaseMapResponse(
+        maps=[
+            _codebase_map_response(record)
+            for record in repository.list_campaign_codebase_maps(campaign_id)
+        ],
+        facts=[
+            _codebase_fact_response(record)
+            for record in repository.list_campaign_codebase_facts(campaign_id)
+        ],
+        scanner_runs=[
+            _scanner_run_response(record)
+            for record in repository.list_campaign_scanner_runs(campaign_id)
+        ],
+    )
 
 
 @app.get(
@@ -1263,6 +1345,58 @@ def _pipeline_stage_response(record: PipelineStageRecord) -> PipelineStageRespon
         output_refs=safe_string_list(record.output_refs),
         safety_gate_state=safe_preview_text(record.safety_gate_state),
         stop_reason=safe_preview_text(record.stop_reason) if record.stop_reason else None,
+        created_at=record.created_at.isoformat(),
+    )
+
+
+def _codebase_map_response(record: CodebaseMapRecord) -> CodebaseMapResponse:
+    return CodebaseMapResponse(
+        id=record.id,
+        campaign_id=record.campaign_id,
+        source_ref=safe_preview_text(record.source_ref),
+        repository=safe_preview_text(record.repository),
+        commit_ref=safe_preview_text(record.commit_ref) if record.commit_ref else None,
+        status=safe_preview_text(record.status),
+        route_count=record.route_count,
+        handler_count=record.handler_count,
+        model_count=record.model_count,
+        authz_check_count=record.authz_check_count,
+        sensitive_sink_count=record.sensitive_sink_count,
+        provenance_refs=safe_string_list(record.provenance_refs),
+        safety_gate_state=safe_preview_text(record.safety_gate_state),
+        created_at=record.created_at.isoformat(),
+    )
+
+
+def _codebase_fact_response(record: CodebaseFactRecord) -> CodebaseFactResponse:
+    return CodebaseFactResponse(
+        id=record.id,
+        codebase_map_id=record.codebase_map_id,
+        campaign_id=record.campaign_id,
+        fact_type=safe_preview_text(record.fact_type),
+        source_path=safe_preview_text(record.source_path),
+        symbol_name=safe_preview_text(record.symbol_name) if record.symbol_name else None,
+        route_method=safe_preview_text(record.route_method) if record.route_method else None,
+        route_path=safe_preview_text(record.route_path) if record.route_path else None,
+        authz_hint=safe_preview_text(record.authz_hint) if record.authz_hint else None,
+        sensitivity_label=safe_preview_text(record.sensitivity_label),
+        provenance_refs=safe_string_list(record.provenance_refs),
+        created_at=record.created_at.isoformat(),
+    )
+
+
+def _scanner_run_response(record: ScannerRunRecord) -> ScannerRunResponse:
+    return ScannerRunResponse(
+        id=record.id,
+        campaign_id=record.campaign_id,
+        codebase_map_id=record.codebase_map_id,
+        tool_name=safe_preview_text(record.tool_name),
+        command_hash=safe_preview_text(record.command_hash),
+        status=safe_preview_text(record.status),
+        finding_count=record.finding_count,
+        candidate_count=record.candidate_count,
+        summary=safe_preview_text(record.summary),
+        safety_gate_state=safe_preview_text(record.safety_gate_state),
         created_at=record.created_at.isoformat(),
     )
 

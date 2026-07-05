@@ -1,3 +1,5 @@
+import type { ProgramIntelligenceProfile } from "./api";
+
 export type CampaignControlCenter = {
   campaign: {
     allowed_tools: string[];
@@ -159,6 +161,144 @@ export type CampaignTimelineSummary = {
   taskId: string | null;
 };
 
+export type CampaignBrainSurfaceSummary = {
+  action: string;
+  objectName: string;
+  path: string;
+  score: number;
+  surfaceKey: string;
+};
+
+export type CampaignBrainSignalSummary = {
+  evidenceQuality: string | null;
+  id: string;
+  notes: string;
+  outcome: string;
+  playbookId: string;
+  surfaceKey: string | null;
+};
+
+export type CampaignBrainLessonSummary = {
+  confidence: number;
+  id: string;
+  recommendation: string;
+  reasons: string[];
+  scoreDelta: number;
+  surfacePattern: string;
+};
+
+export type CampaignBrainSummary = {
+  advisoryOnly: boolean;
+  appliedLessonCount: number;
+  appliedLessons: CampaignBrainLessonSummary[];
+  executionAllowed: boolean;
+  objectCount: number;
+  programId: string;
+  programName: string;
+  programScore: number;
+  recentSignals: CampaignBrainSignalSummary[];
+  roleCount: number;
+  sensitiveActionCount: number;
+  signalCount: number;
+  skippedLessonCount: number;
+  topSurfaces: CampaignBrainSurfaceSummary[];
+};
+
+export type CampaignCodebaseMap = {
+  maps: {
+    authz_check_count: number;
+    campaign_id: string;
+    commit_ref: string | null;
+    created_at: string;
+    handler_count: number;
+    id: string;
+    model_count: number;
+    provenance_refs: string[];
+    repository: string;
+    route_count: number;
+    safety_gate_state: string;
+    sensitive_sink_count: number;
+    source_ref: string;
+    status: string;
+  }[];
+  facts: {
+    authz_hint: string | null;
+    campaign_id: string;
+    codebase_map_id: string;
+    created_at: string;
+    fact_type: string;
+    id: string;
+    provenance_refs: string[];
+    route_method: string | null;
+    route_path: string | null;
+    sensitivity_label: string;
+    source_path: string;
+    symbol_name: string | null;
+  }[];
+  scanner_runs: {
+    campaign_id: string;
+    candidate_count: number;
+    codebase_map_id: string | null;
+    command_hash: string;
+    created_at: string;
+    finding_count: number;
+    id: string;
+    safety_gate_state: string;
+    status: string;
+    summary: string;
+    tool_name: string;
+  }[];
+};
+
+export type CampaignCodebaseMapItemSummary = {
+  authzCheckCount: number;
+  commitRef: string | null;
+  createdAt: string;
+  handlerCount: number;
+  id: string;
+  modelCount: number;
+  repository: string;
+  routeCount: number;
+  safetyGateState: string;
+  sensitiveSinkCount: number;
+  sourceRef: string;
+  status: string;
+};
+
+export type CampaignCodebaseFactSummary = {
+  authzHint: string | null;
+  factType: string;
+  id: string;
+  route: string | null;
+  sensitivityLabel: string;
+  sourcePath: string;
+  symbolName: string | null;
+};
+
+export type CampaignScannerRunSummary = {
+  candidateCount: number;
+  commandHash: string;
+  findingCount: number;
+  id: string;
+  safetyGateState: string;
+  status: string;
+  summary: string;
+  toolName: string;
+};
+
+export type CampaignCodebaseMapView = {
+  authzCheckCount: number;
+  candidateCount: number;
+  factCount: number;
+  mapCount: number;
+  maps: CampaignCodebaseMapItemSummary[];
+  routeCount: number;
+  scannerRunCount: number;
+  scannerRuns: CampaignScannerRunSummary[];
+  sensitiveSinkCount: number;
+  facts: CampaignCodebaseFactSummary[];
+};
+
 function humanize(value: string): string {
   return value
     .replace(/[_-]+/g, " ")
@@ -187,17 +327,32 @@ function safeText(value: string | null | undefined, fallback: string): string {
     return fallback;
   }
 
+  const protectedValues: string[] = [];
+  const protect = (value: string) => {
+    protectedValues.push(value);
+    return `__SAFE_REDACTION_${protectedValues.length - 1}__`;
+  };
+
   return stripUrlQuery(text)
     .replace(
       /\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^,;\s]+/gi,
-      "Authorization=[redacted]",
+      () => protect("Authorization=[redacted]"),
     )
     .replace(
       /\b(session|token|cookie)\b\s*[:=]\s*[^,;\s]+/gi,
-      "$1=[redacted]",
+      (match, key: string) => protect(`${key}=[redacted]`),
     )
-    .replace(/\bbearer\s+[^,;\s]+/gi, "Bearer [redacted]")
-    .replace(/\b[^\s,;]*(?:secret|token|cookie|session)[^\s,;]*\b/gi, "[redacted]");
+    .replace(/\bbearer\s+[^,;\s]+/gi, () => protect("Bearer [redacted]"))
+    .replace(/\b[^\s,;]*(?:secret|token|cookie|session)[^\s,;]*\b/gi, "[redacted]")
+    .replace(/__SAFE_REDACTION_(\d+)__/g, (_, index: string) => protectedValues[Number(index)] ?? "[redacted]");
+}
+
+function safeReasonText(value: string): string {
+  if (/(authorization|bearer|cookie|session|secret|token)/i.test(value)) {
+    return "[redacted]";
+  }
+
+  return safeText(humanize(value), "Reason");
 }
 
 function budgetPart(value: number | null | undefined, suffix: string): string | null {
@@ -324,4 +479,101 @@ export function toCampaignTimelineSummaries(
     stopReason: stage.stop_reason ? safeText(humanize(stage.stop_reason), "Stopped") : null,
     taskId: stage.task_id ? safeText(stage.task_id, "task") : null,
   }));
+}
+
+export function toCampaignBrainSummary(
+  profile: ProgramIntelligenceProfile,
+): CampaignBrainSummary {
+  return {
+    advisoryOnly: true,
+    appliedLessonCount: profile.applied_lessons.length,
+    appliedLessons: profile.applied_lessons.slice(0, 5).map((lesson) => ({
+      confidence: lesson.confidence,
+      id: safeText(lesson.id, "lesson"),
+      recommendation: safeText(humanize(lesson.recommendation), "Recommendation"),
+      reasons: lesson.reasons.slice(0, 4).map((reason) => safeReasonText(reason)),
+      scoreDelta: lesson.score_delta,
+      surfacePattern: safeText(lesson.surface_pattern, "Surface"),
+    })),
+    executionAllowed: false,
+    objectCount: profile.attack_surface_memory.objects.length,
+    programId: safeText(profile.program_id, "program"),
+    programName: safeText(profile.program_name, "Program"),
+    programScore: profile.program_score,
+    recentSignals: profile.recent_learning_signals.slice(0, 5).map((signal) => ({
+      evidenceQuality: signal.evidence_quality
+        ? safeText(humanize(signal.evidence_quality), "Evidence quality")
+        : null,
+      id: safeText(signal.id ?? "signal", "signal"),
+      notes: safeText(signal.notes, "Notes redacted"),
+      outcome: safeText(humanize(signal.outcome), "Outcome"),
+      playbookId: safeText(signal.playbook_id, "playbook"),
+      surfaceKey: signal.surface_key ? safeText(signal.surface_key, "surface") : null,
+    })),
+    roleCount: profile.attack_surface_memory.roles.length,
+    sensitiveActionCount: profile.attack_surface_memory.sensitive_actions.length,
+    signalCount: profile.recent_learning_signals.length,
+    skippedLessonCount: profile.skipped_lessons.length,
+    topSurfaces: profile.high_value_surfaces.slice(0, 5).map((surface) => ({
+      action: safeText(humanize(surface.action), "Action"),
+      objectName: safeText(surface.object_name, "Object"),
+      path: safeText(surface.paths[0] ?? "", "No path"),
+      score: surface.score,
+      surfaceKey: safeText(surface.surface_key, "surface"),
+    })),
+  };
+}
+
+export function toCampaignCodebaseMapView(
+  codebaseMap: CampaignCodebaseMap,
+): CampaignCodebaseMapView {
+  const maps = codebaseMap.maps.map((map) => ({
+    authzCheckCount: map.authz_check_count,
+    commitRef: map.commit_ref ? safeText(map.commit_ref, "commit") : null,
+    createdAt: map.created_at,
+    handlerCount: map.handler_count,
+    id: safeText(map.id, "codebase_map"),
+    modelCount: map.model_count,
+    repository: safeText(map.repository, "repository"),
+    routeCount: map.route_count,
+    safetyGateState: safeText(humanize(map.safety_gate_state), "Unknown gate"),
+    sensitiveSinkCount: map.sensitive_sink_count,
+    sourceRef: safeText(map.source_ref, "source"),
+    status: safeText(humanize(map.status), "Unknown status"),
+  }));
+  const facts = codebaseMap.facts.map((fact) => ({
+    authzHint: fact.authz_hint ? safeText(humanize(fact.authz_hint), "Authz hint") : null,
+    factType: safeText(humanize(fact.fact_type), "Fact"),
+    id: safeText(fact.id, "fact"),
+    route:
+      fact.route_method || fact.route_path
+        ? safeText(`${fact.route_method ?? ""} ${fact.route_path ?? ""}`.trim(), "Route")
+        : null,
+    sensitivityLabel: safeText(humanize(fact.sensitivity_label), "Sensitivity"),
+    sourcePath: safeText(fact.source_path, "source"),
+    symbolName: fact.symbol_name ? safeText(fact.symbol_name, "symbol") : null,
+  }));
+  const scannerRuns = codebaseMap.scanner_runs.map((run) => ({
+    candidateCount: run.candidate_count,
+    commandHash: safeText(run.command_hash, "command"),
+    findingCount: run.finding_count,
+    id: safeText(run.id, "scanner_run"),
+    safetyGateState: safeText(humanize(run.safety_gate_state), "Unknown gate"),
+    status: safeText(humanize(run.status), "Unknown status"),
+    summary: safeText(run.summary, "Summary redacted"),
+    toolName: safeText(run.tool_name, "tool"),
+  }));
+
+  return {
+    authzCheckCount: maps.reduce((total, map) => total + map.authzCheckCount, 0),
+    candidateCount: scannerRuns.reduce((total, run) => total + run.candidateCount, 0),
+    factCount: facts.length,
+    facts,
+    mapCount: maps.length,
+    maps,
+    routeCount: maps.reduce((total, map) => total + map.routeCount, 0),
+    scannerRunCount: scannerRuns.length,
+    scannerRuns,
+    sensitiveSinkCount: maps.reduce((total, map) => total + map.sensitiveSinkCount, 0),
+  };
 }

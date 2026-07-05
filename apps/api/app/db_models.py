@@ -268,6 +268,81 @@ class PipelineStageRecord(Base):
     task: Mapped[CampaignTaskRecord | None] = relationship()
 
 
+class CodebaseMapRecord(Base):
+    __tablename__ = "codebase_maps"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    repository: Mapped[str] = mapped_column(String(255), nullable=False)
+    commit_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    route_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    handler_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    authz_check_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sensitive_sink_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provenance_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    safety_gate_state: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class CodebaseFactRecord(Base):
+    __tablename__ = "codebase_facts"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    codebase_map_id: Mapped[str] = mapped_column(ForeignKey("codebase_maps.id"), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    fact_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    symbol_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    route_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    route_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    authz_hint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sensitivity_label: Mapped[str] = mapped_column(String(50), nullable=False)
+    provenance_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    codebase_map: Mapped[CodebaseMapRecord] = relationship()
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class ScannerRunRecord(Base):
+    __tablename__ = "scanner_runs"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    codebase_map_id: Mapped[str | None] = mapped_column(ForeignKey("codebase_maps.id"), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    command_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    safety_gate_state: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    campaign: Mapped[CampaignRecord] = relationship()
+    codebase_map: Mapped[CodebaseMapRecord | None] = relationship()
+
+
 class LearningSignalRecord(Base):
     __tablename__ = "learning_signals"
 
