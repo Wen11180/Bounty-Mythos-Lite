@@ -2277,6 +2277,7 @@ def test_pipeline_run_detail_marks_brain_memory_complete_when_lesson_is_ready():
 
         assert summary["learning_signal_count"] == 2
         assert summary["lesson_count"] == 1
+        assert summary["status"] == "brain_memory_ready"
         assert summary["brain_memory_status"] == "lesson_ready"
         assert summary["memory_lessons"] == [
             {

@@ -1359,6 +1359,7 @@ def _closed_loop_summary(
             reviewed_claim_count=len(claim_review_decisions),
             finding_candidate_count=finding_candidate_count,
             learning_signal_count=learning_signal_count,
+            brain_memory_status=brain_memory_status,
             blocked_reasons=blocked_reasons,
         ),
         "manual_observation_count": len(manual_observations),
@@ -1395,10 +1396,13 @@ def _closed_loop_status(
     reviewed_claim_count: int,
     finding_candidate_count: int,
     learning_signal_count: int,
+    brain_memory_status: str,
     blocked_reasons: list[str],
 ) -> str:
     if blocked_reasons:
         return "blocked"
+    if brain_memory_status == "lesson_ready":
+        return "brain_memory_ready"
     if learning_signal_count:
         return "candidate_learning_recorded"
     if finding_candidate_count:
