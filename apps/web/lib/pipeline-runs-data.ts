@@ -55,6 +55,12 @@ export type HunterPrioritySummary = {
   nextAction: string;
 };
 
+export type MemoryReadinessSummary = {
+  lessonCount: number;
+  status: string;
+  topLesson: string | null;
+};
+
 export type PipelineRunSummary = {
   runId: string;
   asset: string;
@@ -67,6 +73,7 @@ export type PipelineRunSummary = {
   validationGate: ValidationGateSummary;
   hunter: HunterPrioritySummary;
   evidenceSupportSummary: EvidenceSupportSummary | null;
+  memory: MemoryReadinessSummary | null;
 };
 
 export type RadarRunSignal = {
@@ -459,6 +466,27 @@ function resolveEvidenceSupportSummary(run: PipelineRun): EvidenceSupportSummary
   return run.evidence_support_summary ?? run.evidenceSupportSummary ?? null;
 }
 
+function resolveMemory(run: PipelineRun): MemoryReadinessSummary | null {
+  const closedLoop = run.closed_loop_summary ?? run.closedLoopSummary;
+
+  if (!closedLoop) {
+    return null;
+  }
+
+  const lessons = closedLoop.memory_lessons ?? [];
+  const topLesson = lessons[0];
+  const recommendation = topLesson
+    ? readableStageLabel(safeText(topLesson.recommendation, "memory"))
+    : null;
+  const surface = topLesson ? safeText(topLesson.surface_pattern, "unknown surface") : null;
+
+  return {
+    lessonCount: numberOrFallback(closedLoop.lesson_count, lessons.length),
+    status: safeText(closedLoop.status ?? closedLoop.brain_memory_status, "waiting_for_learning"),
+    topLesson: recommendation && surface ? `${recommendation} memory on ${surface}` : null,
+  };
+}
+
 export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
   const seed: RunSeed = {
     asset: safeText(run.asset, "unknown asset"),
@@ -480,6 +508,7 @@ export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
     validationGate: resolveValidationGate(run, seed),
     hunter: resolveHunter(run, seed),
     evidenceSupportSummary: resolveEvidenceSupportSummary(run),
+    memory: resolveMemory(run),
   };
 }
 
@@ -625,6 +654,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       nextAction: "Prepare human-approved, test-account-only validation.",
     },
     evidenceSupportSummary: null,
+    memory: null,
   },
   {
     runId: "dry_run_2026_07_02_002",
@@ -687,6 +717,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       nextAction: "Collect role-matrix evidence before any state-changing validation.",
     },
     evidenceSupportSummary: null,
+    memory: null,
   },
   {
     runId: "dry_run_2026_07_01_004",
@@ -749,5 +780,6 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       nextAction: "Park until stronger provenance or impact evidence appears.",
     },
     evidenceSupportSummary: null,
+    memory: null,
   },
 ];

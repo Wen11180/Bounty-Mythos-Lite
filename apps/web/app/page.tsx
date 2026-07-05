@@ -319,6 +319,11 @@ export default async function Dashboard() {
                         <span className="rounded-sm border border-[var(--line)] px-2 py-1 font-semibold text-[var(--muted)]">
                           {intelligenceRadar.topSignal.reportDistance}
                         </span>
+                        {intelligenceRadar.topSignal.run.memory ? (
+                          <span className="rounded-sm border border-[var(--line)] px-2 py-1 font-semibold text-[var(--accent-strong)]">
+                            {titleCase(intelligenceRadar.topSignal.run.memory.status)}
+                          </span>
+                        ) : null}
                       </div>
                       <p className="max-w-3xl text-pretty text-sm text-[var(--muted)]">
                         {intelligenceRadar.topSignal.nextSafeAction}
@@ -558,6 +563,12 @@ export default async function Dashboard() {
                           <p className="text-pretty text-[var(--muted)]">
                             {radarSignal?.nextSafeAction ?? run.hunter.nextAction}
                           </p>
+                          {run.memory ? (
+                            <p className="text-pretty text-xs font-semibold uppercase text-[var(--accent-strong)]">
+                              {titleCase(run.memory.status)} · {run.memory.lessonCount} lessons
+                              {run.memory.topLesson ? ` · ${run.memory.topLesson}` : ""}
+                            </p>
+                          ) : null}
                         </div>
                       </div>
 

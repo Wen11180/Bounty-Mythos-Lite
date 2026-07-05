@@ -409,6 +409,8 @@ export type PipelineRun = {
   validationGate?: PipelineValidationGate;
   hunter_intelligence?: HunterIntelligence;
   hunterIntelligence?: HunterIntelligence;
+  closed_loop_summary?: ClosedLoopSummary | null;
+  closedLoopSummary?: ClosedLoopSummary | null;
   evidence_support_summary?: EvidenceSupportSummary | null;
   evidenceSupportSummary?: EvidenceSupportSummary | null;
 };

@@ -84,6 +84,7 @@ class MythosPipelineRunSummary(BaseModel):
     validation_gate: PipelineValidationGate | None = None
     hunter_intelligence: HunterIntelligence | None = None
     evidence_support_summary: dict | None = None
+    closed_loop_summary: dict | None = None
 
 
 class MythosPipelineRunDetail(MythosPipelineRunSummary):
@@ -513,7 +514,11 @@ def run_mythos_pipeline_dry_run(
 def list_mythos_pipeline_runs(
     session: Session = Depends(get_session),
 ) -> list[MythosPipelineRunSummary]:
-    return [_pipeline_run_summary(record) for record in DatabaseRepository(session).list_pipeline_runs()]
+    repository = DatabaseRepository(session)
+    return [
+        _pipeline_run_summary(record, repository)
+        for record in repository.list_pipeline_runs()
+    ]
 
 
 @app.get("/mythos/pipeline/runs/{run_id}", response_model=MythosPipelineRunDetail)
@@ -1826,7 +1831,10 @@ def _relationship_context_paths(
     return paths
 
 
-def _pipeline_run_summary(record: PipelineRunRecord) -> MythosPipelineRunSummary:
+def _pipeline_run_summary(
+    record: PipelineRunRecord,
+    repository: DatabaseRepository | None = None,
+) -> MythosPipelineRunSummary:
     payload = record.payload
     return MythosPipelineRunSummary(
         id=record.id,
@@ -1844,6 +1852,11 @@ def _pipeline_run_summary(record: PipelineRunRecord) -> MythosPipelineRunSummary
         validation_gate=payload.get("validation_gate"),
         hunter_intelligence=payload.get("hunter_intelligence"),
         evidence_support_summary=_evidence_support_summary(record),
+        closed_loop_summary=(
+            _closed_loop_summary(record, repository)
+            if repository is not None
+            else None
+        ),
     )
 
 
@@ -1851,7 +1864,7 @@ def _pipeline_run_detail(
     record: PipelineRunRecord,
     repository: DatabaseRepository,
 ) -> MythosPipelineRunDetail:
-    summary = _pipeline_run_summary(record)
+    summary = _pipeline_run_summary(record, repository)
     payload = _pipeline_run_detail_payload(record, repository)
     return MythosPipelineRunDetail(
         id=summary.id,
@@ -1869,6 +1882,7 @@ def _pipeline_run_detail(
         validation_gate=summary.validation_gate,
         hunter_intelligence=summary.hunter_intelligence,
         evidence_support_summary=summary.evidence_support_summary,
+        closed_loop_summary=summary.closed_loop_summary,
         payload=payload,
     )
 

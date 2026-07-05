@@ -31,6 +31,7 @@ function run(overrides: Partial<PipelineRunSummary>): PipelineRunSummary {
       recommendation: "pursue",
       rejectionRiskScore: 20,
     },
+    memory: null,
     validationGate: {
       approval: "Human approval required.",
       evidenceCount: 0,
@@ -119,6 +120,55 @@ test("toPipelineRunSummary preserves program learning lesson traces", () => {
       surface: "file_id:export",
     },
   ]);
+});
+
+test("toPipelineRunSummary maps closed-loop memory readiness", () => {
+  const apiRun = {
+    asset: "api.example.com",
+    blocked_count: 0,
+    closed_loop_summary: {
+      status: "brain_memory_ready",
+      manual_observation_count: 1,
+      reviewed_claim_count: 1,
+      finding_candidate_count: 1,
+      learning_signal_count: 2,
+      lesson_count: 1,
+      brain_memory_status: "lesson_ready",
+      memory_lessons: [
+        {
+          lesson_id: "program:program_example:bola_idor:file_id:export:boost",
+          scope_type: "program",
+          scope_key: "program_example",
+          playbook_id: "bola_idor",
+          surface_pattern: "file_id:export",
+          recommendation: "boost",
+          confidence: 76,
+          source_signal_count: 2,
+          source_signal_ids: ["learning_signal_1", "learning_signal_2"],
+          reasons: ["lesson:boost:accepted_strong_evidence"],
+          safety_notes: ["advisory_memory_only"],
+        },
+      ],
+      blocked_reasons: [],
+      safety_notes: ["advisory_memory_only"],
+      steps: [],
+    },
+    created_at: "2026-07-05T00:00:00Z",
+    evidence_count: 0,
+    hypothesis_count: 1,
+    id: "run_memory",
+    policy_text_hash: "hash",
+    report_title: null,
+    scope_status: "in_scope",
+  } satisfies PipelineRun;
+
+  const summary = toPipelineRunSummary(apiRun);
+
+  assert.deepEqual(summary.memory, {
+    lessonCount: 1,
+    status: "brain_memory_ready",
+    topLesson: "Boost memory on file_id:export",
+  });
 });
 
 test("deriveIntelligenceRadar exposes top research value and safe next action", () => {

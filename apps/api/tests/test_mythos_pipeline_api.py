@@ -2310,6 +2310,14 @@ def test_pipeline_run_detail_marks_brain_memory_complete_when_lesson_is_ready():
             "safety_gate": "no_execution_permission",
             "next_allowed_action": "Use lesson memory as advisory context only.",
         }
+
+        list_response = client.get("/mythos/pipeline/runs")
+        assert list_response.status_code == 200
+        list_summary = next(
+            run for run in list_response.json() if run["id"] == run_id
+        )
+        assert list_summary["closed_loop_summary"]["status"] == "brain_memory_ready"
+        assert list_summary["closed_loop_summary"]["lesson_count"] == 1
     finally:
         app.dependency_overrides.clear()
 
