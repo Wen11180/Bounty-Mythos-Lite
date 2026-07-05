@@ -1679,9 +1679,18 @@ def _claim_validation_task(
     relationship_contexts: list[str] | None = None,
 ) -> dict:
     relationship_contexts = relationship_contexts or []
+    readiness_blockers = claim.readiness_blockers.copy()
+    if (
+        "manual_observation_missing_safe_evidence" in claim.quality_reasons
+        and "manual_observation_missing_safe_evidence" not in readiness_blockers
+    ):
+        readiness_blockers.append("manual_observation_missing_safe_evidence")
     required_observation_types = (
         SECURITY_IMPACT_REQUIRED_OBSERVATION_TYPES.copy()
-        if "missing_security_impact_observation" in claim.readiness_blockers
+        if (
+            "missing_security_impact_observation" in readiness_blockers
+            or "manual_observation_missing_safe_evidence" in readiness_blockers
+        )
         else []
     )
     return {
@@ -1703,7 +1712,7 @@ def _claim_validation_task(
         ),
         "evidence_refs": claim.evidence_refs,
         "review_evidence_refs": claim.review_evidence_refs,
-        "readiness_blockers": claim.readiness_blockers,
+        "readiness_blockers": readiness_blockers,
         "quality_reasons": claim.quality_reasons,
         "quality_score": claim.quality_score,
         "readiness_level": claim.readiness_level,
@@ -1726,8 +1735,12 @@ def _claim_validation_task_status(
     relationship_contexts: list[str] | None = None,
 ) -> str:
     blockers = set(claim.readiness_blockers)
+    if "manual_observation_missing_safe_evidence" in claim.quality_reasons:
+        blockers.add("manual_observation_missing_safe_evidence")
     if claim.claim_id == eligible_claim_id:
         return "promotion_eligible"
+    if "manual_observation_missing_safe_evidence" in blockers:
+        return "needs_report_safe_evidence"
     if "artifact_report_chain_blocked" in blockers:
         return "blocked_report_chain"
     if claim.claim_type != "observed_fact":

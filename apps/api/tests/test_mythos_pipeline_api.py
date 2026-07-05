@@ -2855,6 +2855,18 @@ def test_manual_observation_with_only_redacted_evidence_does_not_count_as_safe_e
         assert "Bearer" not in str(updated_preview)
         assert "live-token" not in str(updated_preview)
 
+        workspace_response = client.get(f"/mythos/pipeline/runs/{run_id}")
+        assert workspace_response.status_code == 200
+        workspace = workspace_response.json()["payload"]["validation_workspace"]
+        observed_task = next(
+            task
+            for task in workspace["claim_validation_tasks"]
+            if task["claim_id"] == claim_id
+        )
+        assert observed_task["status"] == "needs_report_safe_evidence"
+        assert "manual_observation_missing_safe_evidence" in observed_task["readiness_blockers"]
+        assert "request_response_diff" in observed_task["required_observation_types"]
+
         artifact_id = response.json()["artifact"]["artifact_id"]
         artifact_response = client.get(f"/mythos/artifacts/{artifact_id}")
         assert artifact_response.status_code == 200

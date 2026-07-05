@@ -1,6 +1,7 @@
 import Link from "next/link";
+import { revalidatePath } from "next/cache";
 import { ArrowLeft, ClipboardCheck, FileText, Lock, ShieldCheck, Target } from "lucide-react";
-import { getPipelineRun } from "@/lib/api";
+import { getPipelineRun, recordManualObservation } from "@/lib/api";
 import {
   fallbackRunDetail,
   formatLabel,
@@ -36,6 +37,47 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
   }
 
   const workspaceDataMode = run.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
+  const currentRunId = run.id;
+
+  async function recordManualObservationAction(formData: FormData) {
+    "use server";
+
+    const claimId = formText(formData, "claim_id");
+    const observation = formText(formData, "observation");
+    const observer = formText(formData, "observer") || "lead_reviewer";
+    const evidenceRefs = formList(formData, "evidence_refs");
+    const safetyNotes = formData.getAll("safety_notes").map((value) => String(value));
+
+    if (!claimId || !observation) {
+      return;
+    }
+
+    await recordManualObservation(
+      currentRunId,
+      {
+        claim_id: claimId,
+        evidence_refs: evidenceRefs,
+        observation,
+        observation_type: "manual_observation",
+        observer,
+        safety_notes: safetyNotes,
+      },
+      {
+        claim_id: claimId,
+        created_at: new Date().toISOString(),
+        evidence_refs: evidenceRefs,
+        execution_allowed: false,
+        observation,
+        observation_id: `manual_observation_${claimId}`,
+        observation_type: "manual_observation",
+        observer,
+        redaction_status: "redacted",
+        report_chain_blocked: true,
+        safety_notes: safetyNotes,
+      },
+    );
+    revalidatePath(`/validation-workspace/${encodeURIComponent(currentRunId)}`);
+  }
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -184,6 +226,43 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                             ))}
                           </ul>
                         ) : null}
+                        <form
+                          action={recordManualObservationAction}
+                          className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4"
+                        >
+                          <input name="claim_id" type="hidden" value={safeDisplay(task.claim_id)} />
+                          <input name="safety_notes" type="hidden" value="test_accounts_only" />
+                          <input name="safety_notes" type="hidden" value="no_real_user_data" />
+                          <input name="safety_notes" type="hidden" value="human_review_required" />
+                          <label className="grid gap-1">
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Observer</span>
+                            <input
+                              className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
+                              name="observer"
+                              defaultValue="lead_reviewer"
+                            />
+                          </label>
+                          <label className="grid gap-1">
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Observation</span>
+                            <textarea
+                              className="min-h-24 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
+                              name="observation"
+                            />
+                          </label>
+                          <label className="grid gap-1">
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence refs</span>
+                            <input
+                              className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
+                              name="evidence_refs"
+                            />
+                          </label>
+                          <button
+                            type="submit"
+                            className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
+                          >
+                            Record Observation
+                          </button>
+                        </form>
                       </div>
                     </li>
                   );
@@ -365,4 +444,15 @@ function Field({ label, value }: { label: string; value: unknown }) {
       <dd className="break-words font-semibold">{formatLabel(value)}</dd>
     </div>
   );
+}
+
+function formText(formData: FormData, key: string): string {
+  return String(formData.get(key) ?? "").trim();
+}
+
+function formList(formData: FormData, key: string): string[] {
+  return formText(formData, key)
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

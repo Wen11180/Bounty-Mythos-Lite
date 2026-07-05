@@ -391,6 +391,20 @@ test("validation workspace labels fallback workspaces as demo data", async () =>
   assert.match(page, /Demo data/);
 });
 
+test("validation workspace can record safe manual observations", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /recordManualObservation/);
+  assert.match(page, /recordManualObservationAction/);
+  assert.match(page, /name="claim_id"/);
+  assert.match(page, /name="observation"/);
+  assert.match(page, /name="evidence_refs"/);
+  assert.match(page, /test_accounts_only/);
+  assert.match(page, /no_real_user_data/);
+});
+
 test("artifact repository labels fallback artifacts as demo data", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/artifacts/page.tsx", import.meta.url), "utf8"),
