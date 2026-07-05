@@ -95,6 +95,11 @@ export type IntelligenceRadarSummary = {
   unsafeOrRedactedRequirementCount: number;
 };
 
+export type PipelineRunRowsResult = {
+  dataMode: "Demo data" | "Live data";
+  runs: PipelineRunSummary[];
+};
+
 type RunSeed = Pick<
   PipelineRunSummary,
   "asset" | "blockedCount" | "evidenceCount" | "hypothesisCount"
@@ -511,6 +516,20 @@ export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
     hunter: resolveHunter(run, seed),
     evidenceSupportSummary: resolveEvidenceSupportSummary(run),
     memory: resolveMemory(run),
+  };
+}
+
+export function resolvePipelineRunRows(runs: PipelineRun[]): PipelineRunRowsResult {
+  if (runs.length === 0) {
+    return {
+      dataMode: "Demo data",
+      runs: fallbackPipelineRuns,
+    };
+  }
+
+  return {
+    dataMode: "Live data",
+    runs: runs.map((run) => toPipelineRunSummary(run)),
   };
 }
 

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   deriveIntelligenceRadar,
+  fallbackPipelineRuns,
+  resolvePipelineRunRows,
   toPipelineRunSummary,
   type PipelineRunSummary,
 } from "./pipeline-runs-data.ts";
@@ -252,4 +254,45 @@ test("dashboard radar keeps unsafe requirements visible beside memory lessons", 
   assert.match(page, /value=\{intelligenceRadar\.reusableLessonCount\}/);
   assert.match(page, /label="Unsafe requirements"/);
   assert.match(page, /value=\{intelligenceRadar\.unsafeOrRedactedRequirementCount\}/);
+});
+
+test("dashboard labels fallback pipeline runs as demo data", async () => {
+  const liveRun = {
+    asset: "api.example.com",
+    blocked_count: 0,
+    created_at: "2026-07-05T00:00:00Z",
+    evidence_count: 1,
+    hypothesis_count: 1,
+    id: "run_live",
+    policy_text_hash: "hash",
+    report_title: null,
+    scope_status: "in_scope",
+  } satisfies PipelineRun;
+
+  const demoRows = resolvePipelineRunRows([]);
+
+  assert.equal(demoRows.dataMode, "Demo data");
+  assert.equal(demoRows.runs, fallbackPipelineRuns);
+  assert.equal(demoRows.runs.length > 0, true);
+  assert.deepEqual(resolvePipelineRunRows([liveRun]), {
+    dataMode: "Live data",
+    runs: [toPipelineRunSummary(liveRun)],
+  });
+
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /pipelineRunDataMode/);
+  assert.match(page, /Demo data/);
+});
+
+test("run detail labels fallback run records as demo data", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /runDataMode/);
+  assert.match(page, /fallback-only/);
+  assert.match(page, /Demo data/);
 });

@@ -40,8 +40,7 @@ import {
 import { mythosPipelineStages } from "@/lib/mythos-pipeline-data";
 import {
   deriveIntelligenceRadar,
-  fallbackPipelineRuns,
-  toPipelineRunSummary,
+  resolvePipelineRunRows,
   type PipelineRunSummary,
 } from "@/lib/pipeline-runs-data";
 import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
@@ -200,10 +199,7 @@ export default async function Dashboard() {
     { label: "需要人工确认", value: String(countNeedsReview(findings)) },
     { label: "Policy 风险拦截", value: String(countPolicyBlocked(findings)) },
   ];
-  const runRows: PipelineRunSummary[] =
-    pipelineRuns.length > 0
-      ? pipelineRuns.map((run) => toPipelineRunSummary(run))
-      : fallbackPipelineRuns;
+  const { dataMode: pipelineRunDataMode, runs: runRows } = resolvePipelineRunRows(pipelineRuns);
   const intelligenceRadar = deriveIntelligenceRadar(runRows);
   const radarSignalsByRunId = new Map(
     intelligenceRadar.runSignals.map((signal) => [signal.run.runId, signal]),
@@ -389,10 +385,26 @@ export default async function Dashboard() {
               <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
                 <div>
                   <h3 className="text-lg font-semibold">Pipeline Runs / Evidence Snapshot</h3>
-                  <p className="mt-1 text-sm text-[var(--muted)]">Dry-run history with evidence chain counts</p>
+                  <p className="mt-1 text-sm text-[var(--muted)]">
+                    Dry-run history with evidence chain counts
+                  </p>
                 </div>
+                <span
+                  className={`rounded-sm border border-[var(--line)] px-2 py-1 text-xs font-semibold uppercase ${
+                    pipelineRunDataMode === "Demo data"
+                      ? "text-[var(--warning)]"
+                      : "text-[var(--accent-strong)]"
+                  }`}
+                >
+                  {pipelineRunDataMode}
+                </span>
                 <Database size={19} className="text-[var(--accent)]" aria-hidden="true" />
               </div>
+              {pipelineRunDataMode === "Demo data" ? (
+                <p className="border-b border-[var(--line)] px-5 py-3 text-sm font-semibold text-[var(--warning)]">
+                  Demo data is shown because no pipeline run records were returned.
+                </p>
+              ) : null}
               <div className="divide-y divide-[var(--line)]">
                 {runRows.map((run) => {
                   const radarSignal = radarSignalsByRunId.get(run.runId);
