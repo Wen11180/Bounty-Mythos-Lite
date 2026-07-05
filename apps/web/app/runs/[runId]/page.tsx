@@ -184,6 +184,36 @@ export default async function RunDetailPage({ params }: PageProps) {
                         ))}
                       </ul>
                     ) : null}
+                    {stage.lessonTraces && stage.lessonTraces.length > 0 ? (
+                      <ul className="grid gap-2 border-t border-[var(--line)] pt-2">
+                        {stage.lessonTraces.map((trace) => (
+                          <li
+                            key={`${summary.runId}-${stage.label}-${trace.lessonId}`}
+                            className="grid gap-1 text-xs text-[var(--muted)]"
+                          >
+                            <p className="break-words font-semibold text-[var(--foreground)]">
+                              {formatLabel(trace.action)} lesson: {formatLabel(trace.recommendation)}
+                            </p>
+                            <p className="break-words">
+                              {safeDisplay(trace.playbook)} on {safeDisplay(trace.surface)} from{" "}
+                              {trace.sourceSignalCount} learning signal(s)
+                            </p>
+                            {trace.reasons.length > 0 ? (
+                              <ul className="flex flex-wrap gap-1.5">
+                                {trace.reasons.map((reason) => (
+                                  <li
+                                    key={`${trace.lessonId}-${reason}`}
+                                    className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold"
+                                  >
+                                    {formatLabel(reason)}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </div>
                   <p className="tabular-nums text-[var(--muted)]">{stage.evidenceCount} ev</p>
                 </li>

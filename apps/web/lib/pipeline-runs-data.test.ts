@@ -69,6 +69,58 @@ test("toPipelineRunSummary maps run-list evidence support summary for radar use"
   assert.deepEqual(summary.evidenceSupportSummary, apiRun.evidence_support_summary);
 });
 
+test("toPipelineRunSummary preserves program learning lesson traces", () => {
+  const apiRun = {
+    asset: "api.example.com",
+    blocked_count: 0,
+    created_at: "2026-07-05T00:00:00Z",
+    evidence_count: 0,
+    hypothesis_count: 1,
+    id: "run_1",
+    policy_text_hash: "hash",
+    report_title: null,
+    scope_status: "in_scope",
+    timeline: [
+      {
+        name: "program_learning",
+        status: "completed",
+        input_summary: "2 program learning signal(s) reviewed.",
+        output_summary: "Program memory adjusted hunter intelligence priorities.",
+        safety_notes: ["advisory_memory_only"],
+        details: {
+          lesson_traces: [
+            {
+              lesson_id: "program:program_example:bola_idor:file_id:export:boost",
+              playbook_id: "bola_idor",
+              surface_pattern: "file_id:export",
+              recommendation: "boost",
+              action: "applied",
+              source_signal_count: 2,
+              source_signal_ids: ["learning_signal_1", "learning_signal_2"],
+              reasons: ["lesson:boost:accepted_strong_evidence"],
+            },
+          ],
+        },
+      },
+    ],
+  } satisfies PipelineRun;
+
+  const summary = toPipelineRunSummary(apiRun);
+
+  assert.deepEqual(summary.stages[0].lessonTraces, [
+    {
+      action: "applied",
+      lessonId: "program:program_example:bola_idor:file_id:export:boost",
+      playbook: "bola_idor",
+      recommendation: "boost",
+      reasons: ["lesson:boost:accepted_strong_evidence"],
+      sourceSignalCount: 2,
+      sourceSignalIds: ["learning_signal_1", "learning_signal_2"],
+      surface: "file_id:export",
+    },
+  ]);
+});
+
 test("deriveIntelligenceRadar exposes top research value and safe next action", () => {
   const radar = deriveIntelligenceRadar([
     run({

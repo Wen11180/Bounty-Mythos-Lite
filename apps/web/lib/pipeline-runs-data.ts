@@ -17,6 +17,18 @@ export type PipelineRunStageSummary = {
   detail: string;
   evidenceCount: number;
   safetyNotes?: string[];
+  lessonTraces?: PipelineLessonTraceSummary[];
+};
+
+export type PipelineLessonTraceSummary = {
+  action: string;
+  lessonId: string;
+  playbook: string;
+  recommendation: string;
+  reasons: string[];
+  sourceSignalCount: number;
+  sourceSignalIds: string[];
+  surface: string;
 };
 
 export type ArtifactProvenanceSummary = {
@@ -195,6 +207,49 @@ function normalizeGateStatus(
   }
 }
 
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => safeText(item, "unknown"));
+}
+
+function resolveLessonTraces(stage: PipelineStage): PipelineLessonTraceSummary[] {
+  const traces = stage.details?.lesson_traces;
+
+  if (!Array.isArray(traces)) {
+    return [];
+  }
+
+  return traces.flatMap((trace) => {
+    if (!trace || typeof trace !== "object" || Array.isArray(trace)) {
+      return [];
+    }
+
+    const record = trace as Record<string, unknown>;
+    const sourceSignalIds = stringList(record.source_signal_ids);
+
+    return [
+      {
+        action: safeText(record.action as string | undefined, "unknown"),
+        lessonId: safeText(record.lesson_id as string | undefined, "unknown"),
+        playbook: safeText(record.playbook_id as string | undefined, "unknown"),
+        recommendation: safeText(record.recommendation as string | undefined, "unknown"),
+        reasons: stringList(record.reasons),
+        sourceSignalCount: numberOrFallback(
+          record.source_signal_count as number | undefined,
+          sourceSignalIds.length,
+        ),
+        sourceSignalIds,
+        surface: safeText(record.surface_pattern as string | undefined, "unknown"),
+      },
+    ];
+  });
+}
+
 function buildDefaultStages(seed: RunSeed): PipelineRunStageSummary[] {
   const scopeBlocked = seed.scopeStatus === "out_of_scope";
   const scopeComplete = seed.scopeStatus === "in_scope" && seed.blockedCount === 0;
@@ -300,6 +355,7 @@ function resolveStages(run: PipelineRun, seed: RunSeed): PipelineRunStageSummary
       evidenceCount: 0,
       safetyNotes: [],
     };
+    const lessonTraces = resolveLessonTraces(stage);
 
     return {
       label: readableStageLabel(
@@ -311,6 +367,7 @@ function resolveStages(run: PipelineRun, seed: RunSeed): PipelineRunStageSummary
       safetyNotes: Array.isArray(stage.safety_notes)
         ? stage.safety_notes.map((note) => safeText(note, "safety_note"))
         : fallbackStage.safetyNotes ?? [],
+      lessonTraces: lessonTraces.length > 0 ? lessonTraces : undefined,
     };
   });
 }
