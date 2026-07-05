@@ -1,4 +1,10 @@
-import type { CampaignAgentRun, CampaignApproval, CampaignControlCenter } from "./campaigns-data";
+import type {
+  CampaignAgentRun,
+  CampaignApproval,
+  CampaignControlCenter,
+  CampaignPipelineStage,
+  CampaignTask,
+} from "./campaigns-data";
 
 const API_BASE_URL =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -722,11 +728,28 @@ export function getCampaignAgentRuns(
   return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/agent-runs`, fallback);
 }
 
+export function getCampaignTasks(
+  campaignId: string,
+  fallback: CampaignTask[],
+): Promise<CampaignTask[]> {
+  return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/tasks`, fallback);
+}
+
 export function getCampaignApprovals(
   campaignId: string,
   fallback: CampaignApproval[],
 ): Promise<CampaignApproval[]> {
   return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/approvals`, fallback);
+}
+
+export function getCampaignPipelineStages(
+  campaignId: string,
+  fallback: CampaignPipelineStage[],
+): Promise<CampaignPipelineStage[]> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/pipeline-stages`,
+    fallback,
+  );
 }
 
 export function getFindings(fallback: Finding[]): Promise<Finding[]> {

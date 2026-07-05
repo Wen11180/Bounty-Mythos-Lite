@@ -105,6 +105,8 @@ export type CampaignControlSummary = {
 
 export type CampaignAgentRun = CampaignControlCenter["agent_runs"][number];
 export type CampaignApproval = CampaignControlCenter["approvals"][number];
+export type CampaignPipelineStage = CampaignControlCenter["pipeline_stages"][number];
+export type CampaignTask = CampaignControlCenter["tasks"][number];
 
 export type CampaignAgentRunSummary = {
   agentType: string;
@@ -117,6 +119,17 @@ export type CampaignAgentRunSummary = {
   status: string;
   stopReason: string | null;
   taskId: string | null;
+};
+
+export type CampaignTaskSummary = {
+  agentType: string;
+  createdAt: string;
+  id: string;
+  inputRefCount: number;
+  outputRefCount: number;
+  status: string;
+  taskType: string;
+  title: string;
 };
 
 export type CampaignValidationQueueSummary = {
@@ -132,6 +145,18 @@ export type CampaignValidationQueueSummary = {
   status: string;
   taskId: string | null;
   validationMode: string | null;
+};
+
+export type CampaignTimelineSummary = {
+  id: string;
+  inputRefCount: number;
+  outputRefCount: number;
+  safetyGateState: string;
+  stageKey: string;
+  stageOrder: number;
+  status: string;
+  stopReason: string | null;
+  taskId: string | null;
 };
 
 function humanize(value: string): string {
@@ -247,6 +272,21 @@ export function toCampaignAgentRunSummaries(
   }));
 }
 
+export function toCampaignTaskSummaries(
+  tasks: CampaignTask[],
+): CampaignTaskSummary[] {
+  return tasks.map((task) => ({
+    agentType: safeText(humanize(task.agent_type), "Agent"),
+    createdAt: task.created_at,
+    id: safeText(task.id, "task"),
+    inputRefCount: task.input_refs.length,
+    outputRefCount: task.output_refs.length,
+    status: safeText(humanize(task.status), "Unknown status"),
+    taskType: safeText(humanize(task.task_type), "Task"),
+    title: safeText(task.title, "Untitled task"),
+  }));
+}
+
 export function toCampaignValidationQueueSummaries(
   approvals: CampaignApproval[],
 ): CampaignValidationQueueSummary[] {
@@ -267,5 +307,21 @@ export function toCampaignValidationQueueSummaries(
     validationMode: approval.validation_mode
       ? safeText(humanize(approval.validation_mode), "Validation mode")
       : null,
+  }));
+}
+
+export function toCampaignTimelineSummaries(
+  stages: CampaignPipelineStage[],
+): CampaignTimelineSummary[] {
+  return stages.map((stage) => ({
+    id: safeText(stage.id, "stage"),
+    inputRefCount: stage.input_refs.length,
+    outputRefCount: stage.output_refs.length,
+    safetyGateState: safeText(humanize(stage.safety_gate_state), "Unknown gate"),
+    stageKey: safeText(humanize(stage.stage_key), "Stage"),
+    stageOrder: stage.stage_order,
+    status: safeText(humanize(stage.status), "Unknown status"),
+    stopReason: stage.stop_reason ? safeText(humanize(stage.stop_reason), "Stopped") : null,
+    taskId: stage.task_id ? safeText(stage.task_id, "task") : null,
   }));
 }

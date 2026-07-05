@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   toCampaignAgentRunSummaries,
   toCampaignControlSummary,
+  toCampaignTaskSummaries,
+  toCampaignTimelineSummaries,
   toCampaignValidationQueueSummaries,
   type CampaignControlCenter,
 } from "./campaigns-data.ts";
@@ -147,6 +149,31 @@ test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|token=secret/i);
 });
 
+test("toCampaignTaskSummaries keeps task queue display redacted", () => {
+  const summaries = toCampaignTaskSummaries([
+    {
+      ...controlCenter.tasks[0],
+      input_refs: ["campaign:campaign_1", "artifact:token=secret-token"],
+      output_refs: ["stage:cookie=session-secret"],
+      title: "Observe campaign with Authorization: Bearer secret-token",
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      agentType: "Orchestrator agent",
+      createdAt: "2026-07-05T00:00:00Z",
+      id: "task_1",
+      inputRefCount: 2,
+      outputRefCount: 1,
+      status: "Queued",
+      taskType: "Campaign observation",
+      title: "Observe campaign with Authorization=[redacted]",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session-secret|cookie=session/i);
+});
+
 test("toCampaignValidationQueueSummaries redacts approval details for display", () => {
   const summaries = toCampaignValidationQueueSummaries([
     {
@@ -177,6 +204,31 @@ test("toCampaignValidationQueueSummaries redacts approval details for display", 
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|cookie=session/i);
 });
 
+test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", () => {
+  const summaries = toCampaignTimelineSummaries([
+    {
+      ...controlCenter.pipeline_stages[0],
+      input_refs: ["campaign:campaign_1", "artifact:token=secret-token"],
+      output_refs: ["evidence:session=secret"],
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      id: "stage_1",
+      inputRefCount: 2,
+      outputRefCount: 1,
+      safetyGateState: "Blocked",
+      stageKey: "Campaign tick",
+      stageOrder: 0,
+      status: "Blocked",
+      stopReason: "Approval required",
+      taskId: "task_1",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|token=secret/i);
+});
+
 test("campaign control page stays read-only with no execution entrypoints", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/campaigns/page.tsx", import.meta.url), "utf8"),
@@ -196,11 +248,25 @@ test("campaign detail page reads the audited control center and stays read-only"
 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/tasks/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/agent-runs/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-queue/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/timeline/);
   assert.match(page, /executionAllowed/);
   assert.match(page, /safeNextAction/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign tasks page reads task records and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/tasks/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignTasks\(campaignId, \[\]\)/);
+  assert.match(page, /toCampaignTaskSummaries/);
+  assert.doesNotMatch(page, /dispatchTask|runTask|startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 
@@ -225,5 +291,17 @@ test("campaign validation queue page reads approval records and stays read-only"
   assert.match(page, /getCampaignApprovals\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignValidationQueueSummaries/);
   assert.doesNotMatch(page, /decideApproval|approveValidation|denyValidation|executeValidation|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign timeline page reads pipeline stage records and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/timeline/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignPipelineStages\(campaignId, \[\]\)/);
+  assert.match(page, /toCampaignTimelineSummaries/);
+  assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

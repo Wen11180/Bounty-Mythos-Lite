@@ -183,6 +183,66 @@ def test_campaign_api_lists_tasks_agent_runs_and_approvals_without_payload_leaks
         app.dependency_overrides.clear()
 
 
+def test_campaign_api_lists_pipeline_stages_without_payload_leaks():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Stage audit campaign",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "Testing allowed",
+                "default_asset": "api.example.com",
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            task = repository.create_campaign_task(
+                campaign_id=campaign_id,
+                task_type="campaign_observation",
+                agent_type="orchestrator_agent",
+                title="Observe campaign",
+                input_refs=[f"campaign:{campaign_id}"],
+                payload={},
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign_id,
+                task_id=task.id,
+                stage_key="campaign_tick",
+                stage_order=0,
+                status="blocked",
+                input_refs=[f"campaign:{campaign_id}", "artifact:token=secret-token"],
+                output_refs=["evidence:session=secret"],
+                safety_gate_state="blocked",
+                stop_reason="approval_required",
+                payload={"authorization": "Bearer secret-token"},
+            )
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+
+        assert response.status_code == 200
+        stages = response.json()
+        assert stages[0]["stage_key"] == "campaign_tick"
+        assert stages[0]["stop_reason"] == "approval_required"
+        assert "secret-token" not in str(stages)
+        assert "session=secret" not in str(stages)
+        assert "authorization" not in str(stages).lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_control_center_returns_audited_read_only_summary():
     testing_session = build_testing_session()
 

@@ -54,20 +54,15 @@ export default async function CampaignDetailPage({ params }: PageProps) {
             <p className="mt-2 break-words text-pretty text-[var(--muted)]">
               {summary.defaultAsset}
             </p>
-            <Link
-              href={`/campaigns/${encodeURIComponent(campaignId)}/agent-runs`}
-              className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
-            >
-              <ClipboardCheck size={17} aria-hidden="true" />
-              Agent Runs
-            </Link>
-            <Link
-              href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
-              className="ml-2 mt-4 inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
-            >
-              <ClipboardCheck size={17} aria-hidden="true" />
-              Validation Queue
-            </Link>
+            <nav className="mt-4 flex flex-wrap gap-2">
+              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/tasks`} label="Tasks" />
+              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/agent-runs`} label="Agent Runs" />
+              <AuditLink
+                href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
+                label="Validation Queue"
+              />
+              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/timeline`} label="Timeline" />
+            </nav>
           </div>
           <div className="border border-[var(--line)] bg-white p-4">
             <p className="text-xs font-semibold uppercase text-[var(--muted)]">Safe next action</p>
@@ -123,6 +118,18 @@ function PageBack() {
     >
       <ArrowLeft size={17} aria-hidden="true" />
       Campaigns
+    </Link>
+  );
+}
+
+function AuditLink({ href, label }: { href: string; label: string }) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
+    >
+      <ClipboardCheck size={17} aria-hidden="true" />
+      {label}
     </Link>
   );
 }

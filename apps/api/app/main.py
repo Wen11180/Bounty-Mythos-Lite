@@ -468,6 +468,23 @@ def list_mythos_campaign_approvals(
 
 
 @app.get(
+    "/mythos/campaigns/{campaign_id}/pipeline-stages",
+    response_model=list[PipelineStageResponse],
+)
+def list_mythos_campaign_pipeline_stages(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[PipelineStageResponse]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        _pipeline_stage_response(record)
+        for record in repository.list_campaign_pipeline_stages(campaign_id)
+    ]
+
+
+@app.get(
     "/mythos/campaigns/{campaign_id}/control-center",
     response_model=CampaignControlCenterResponse,
 )
