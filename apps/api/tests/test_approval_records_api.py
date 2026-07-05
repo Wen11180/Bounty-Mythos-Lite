@@ -77,3 +77,41 @@ def test_approval_records_api_creates_decides_and_lists_audit_records():
         assert [item["id"] for item in list_response.json()] == [created["id"]]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_canonical_approval_decision_api_reuses_durable_approval_records():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        create_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "run_id": "pipeline_run_1",
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "validation_mode": "two_account_authorization_check",
+                "plan_digest": "plan_sha256_1",
+                "requester": "lead_reviewer",
+                "reason": "Need approval; Authorization: Bearer live-token.",
+            },
+        )
+        assert create_response.status_code == 200
+        approval_id = create_response.json()["id"]
+
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "denied",
+                "actor": "lead_reviewer",
+                "reason": "Deny until cookie: live-cookie is removed.",
+            },
+        )
+
+        assert decision_response.status_code == 200
+        decided = decision_response.json()
+        assert decided["id"] == approval_id
+        assert decided["status"] == "denied"
+        assert decided["decided_by"] == "lead_reviewer"
+        assert decided["decision_reason"] == "[REDACTED]"
+        assert "live-cookie" not in str(decided)
+    finally:
+        app.dependency_overrides.clear()

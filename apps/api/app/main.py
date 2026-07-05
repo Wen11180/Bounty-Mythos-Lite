@@ -585,6 +585,23 @@ def decide_approval_record(
     request: ApprovalDecisionRequest,
     session: Session = Depends(get_session),
 ) -> ApprovalRecordResponse:
+    return _decide_approval_record_response(approval_id, request, session)
+
+
+@app.post("/mythos/approvals/{approval_id}/decisions", response_model=ApprovalRecordResponse)
+def decide_mythos_approval(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    session: Session = Depends(get_session),
+) -> ApprovalRecordResponse:
+    return _decide_approval_record_response(approval_id, request, session)
+
+
+def _decide_approval_record_response(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    session: Session,
+) -> ApprovalRecordResponse:
     record = DatabaseRepository(session).decide_approval_record(
         approval_id=approval_id,
         decision=request.decision,
