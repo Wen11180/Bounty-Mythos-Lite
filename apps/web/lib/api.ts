@@ -89,7 +89,18 @@ export type PipelineStage = {
   output_summary?: string;
   safety_notes?: string[];
   evidence_count?: number;
-  details?: Record<string, unknown>;
+  details?: {
+    agent_boundary?: PipelineStageAgentBoundary;
+    lesson_traces?: unknown;
+    [key: string]: unknown;
+  };
+};
+
+export type PipelineStageAgentBoundary = {
+  role?: string;
+  allowed_actions?: string[];
+  blocked_actions?: string[];
+  requires_human_review?: boolean;
 };
 
 export type PipelineTargetModel = {

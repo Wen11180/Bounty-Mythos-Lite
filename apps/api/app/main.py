@@ -35,6 +35,7 @@ from app.mythos_pipeline import (
     PipelineValidationGate,
     artifact_payload_summary,
     artifact_source_hash,
+    bounded_stage,
     build_mythos_pipeline_dry_run,
     count_blocked,
 )
@@ -1144,7 +1145,7 @@ def _program_learning_stage(
     lesson_traces: list[dict[str, Any]] | None = None,
 ) -> PipelineStage:
     action = "adjusted hunter intelligence priorities" if status == "completed" else "left hunter intelligence unchanged"
-    return PipelineStage(
+    return bounded_stage(
         name="program_learning",
         status=status,
         input_summary=f"{signal_count} program learning signal(s) reviewed.",
@@ -1157,6 +1158,9 @@ def _program_learning_stage(
             "human_review_required",
             "no_execution_permission",
         ],
+        role="Learning Agent",
+        allowed_actions=["review_program_memory", "adjust_hunter_priority"],
+        requires_human_review=True,
         details={"lesson_traces": lesson_traces or []},
     )
 

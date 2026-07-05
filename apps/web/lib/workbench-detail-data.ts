@@ -382,6 +382,39 @@ function toApiStage(stage: PipelineRunStageSummary) {
     output_summary: stage.detail,
     safety_notes: ["no_live_requests"],
     evidence_count: stage.evidenceCount,
+    details: {
+      agent_boundary: fallbackStageBoundary(stage),
+    },
+  };
+}
+
+function fallbackStageBoundary(stage: PipelineRunStageSummary) {
+  const label = stage.label.toLowerCase();
+
+  return {
+    role: label.includes("artifact")
+      ? "Artifact Agent"
+      : label.includes("scope")
+        ? "Scope Guard Agent"
+        : label.includes("hypothesis")
+          ? "Hypothesis Agent"
+          : label.includes("validation")
+            ? "Validation Planner Agent"
+            : label.includes("evidence")
+              ? "Evidence Agent"
+              : "Bounded Agent",
+    allowed_actions: [
+      label.includes("validation")
+        ? "draft_non_destructive_manual_steps"
+        : "summarize_authorized_records",
+    ],
+    blocked_actions: [
+      "execute_live_validation",
+      "touch_real_user_data",
+      "submit_report",
+      "bypass_scope_guard",
+    ],
+    requires_human_review: ["blocked", "needs_review", "waiting_human"].includes(stage.status),
   };
 }
 

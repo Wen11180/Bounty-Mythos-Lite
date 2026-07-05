@@ -194,6 +194,44 @@ export default async function RunDetailPage({ params }: PageProps) {
                         ))}
                       </ul>
                     ) : null}
+                    {stage.agentBoundary ? (
+                      <div className="grid gap-2 border-t border-[var(--line)] pt-2 text-xs">
+                        <p className="font-semibold uppercase text-[var(--muted)]">
+                          Agent Boundary
+                        </p>
+                        <dl className="grid gap-2 sm:grid-cols-2">
+                          <Field label="Role" value={stage.agentBoundary.role} />
+                          <Field
+                            label="Human review"
+                            value={stage.agentBoundary.requiresHumanReview ? "Required" : "Not required"}
+                          />
+                        </dl>
+                        {stage.agentBoundary.allowedActions.length > 0 ? (
+                          <ul className="flex flex-wrap gap-1.5">
+                            {stage.agentBoundary.allowedActions.map((action) => (
+                              <li
+                                key={`${summary.runId}-${stage.label}-allow-${action}`}
+                                className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold text-[var(--accent-strong)]"
+                              >
+                                {formatLabel(action)}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {stage.agentBoundary.blockedActions.length > 0 ? (
+                          <ul className="flex flex-wrap gap-1.5">
+                            {stage.agentBoundary.blockedActions.map((action) => (
+                              <li
+                                key={`${summary.runId}-${stage.label}-block-${action}`}
+                                className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold text-[var(--warning)]"
+                              >
+                                {formatLabel(action)}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {stage.lessonTraces && stage.lessonTraces.length > 0 ? (
                       <ul className="grid gap-2 border-t border-[var(--line)] pt-2">
                         {stage.lessonTraces.map((trace) => (

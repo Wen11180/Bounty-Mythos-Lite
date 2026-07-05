@@ -53,6 +53,40 @@ class PipelineStage(BaseModel):
     details: dict = Field(default_factory=dict)
 
 
+def bounded_stage(
+    *,
+    name: str,
+    status: str,
+    input_summary: str,
+    output_summary: str,
+    safety_notes: list[str],
+    role: str,
+    allowed_actions: list[str],
+    requires_human_review: bool = False,
+    details: dict | None = None,
+) -> PipelineStage:
+    stage_details = dict(details or {})
+    stage_details["agent_boundary"] = {
+        "role": role,
+        "allowed_actions": allowed_actions,
+        "blocked_actions": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "bypass_scope_guard",
+        ],
+        "requires_human_review": requires_human_review,
+    }
+    return PipelineStage(
+        name=name,
+        status=status,
+        input_summary=input_summary,
+        output_summary=output_summary,
+        safety_notes=safety_notes,
+        details=stage_details,
+    )
+
+
 class PipelineArtifactSummary(BaseModel):
     artifact_id: str
     kind: str
@@ -450,12 +484,14 @@ def build_pipeline_timeline(
     path_count = len(openapi_like.get("paths", {}))
 
     if refutation is None:
-        refutation_stage = PipelineStage(
+        refutation_stage = bounded_stage(
             name="refutation",
             status="skipped",
             input_summary="No hypotheses available.",
             output_summary="No refutation performed.",
             safety_notes=["no_live_requests"],
+            role="Refutation Agent",
+            allowed_actions=["review_candidate_against_scope", "record_block_reasons"],
         )
     else:
         scope_notes = []
@@ -463,7 +499,7 @@ def build_pipeline_timeline(
             scope_notes.append(f"scope_guard:{scope_decision.reason}")
         if refutation.human_review_required:
             scope_notes.append("human_review_required")
-        refutation_stage = PipelineStage(
+        refutation_stage = bounded_stage(
             name="refutation",
             status=refutation.status,
             input_summary=(
@@ -474,18 +510,23 @@ def build_pipeline_timeline(
                 f"{', '.join(refutation.reasons) if refutation.reasons else 'none'}."
             ),
             safety_notes=safety_notes(scope_notes, ["no_live_requests"]),
+            role="Refutation Agent",
+            allowed_actions=["review_candidate_against_scope", "record_block_reasons"],
+            requires_human_review=refutation.human_review_required,
         )
 
     if validation_plan is None:
-        validation_plan_stage = PipelineStage(
+        validation_plan_stage = bounded_stage(
             name="validation_plan",
             status="skipped",
             input_summary=f"{len(hypotheses)} hypothesis/hypotheses.",
             output_summary="No validation plan generated.",
             safety_notes=["no_live_requests"],
+            role="Validation Planner Agent",
+            allowed_actions=["draft_non_destructive_manual_steps", "record_evidence_needs"],
         )
     else:
-        validation_plan_stage = PipelineStage(
+        validation_plan_stage = bounded_stage(
             name="validation_plan",
             status=validation_plan.status,
             input_summary=f"{len(hypotheses)} hypothesis/hypotheses.",
@@ -498,18 +539,24 @@ def build_pipeline_timeline(
                 if validation_plan.human_approval_required
                 else [],
             ),
+            role="Validation Planner Agent",
+            allowed_actions=["draft_non_destructive_manual_steps", "record_evidence_needs"],
+            requires_human_review=validation_plan.human_approval_required,
         )
 
     if report_draft is None:
-        report_draft_stage = PipelineStage(
+        report_draft_stage = bounded_stage(
             name="report_draft",
             status="skipped",
             input_summary="No validation plan available.",
             output_summary="No report draft generated.",
             safety_notes=["human_review_required"],
+            role="Report Agent",
+            allowed_actions=["draft_report_preview", "separate_claim_types"],
+            requires_human_review=True,
         )
     else:
-        report_draft_stage = PipelineStage(
+        report_draft_stage = bounded_stage(
             name="report_draft",
             status=(
                 "human_review_required"
@@ -524,27 +571,34 @@ def build_pipeline_timeline(
                 report_draft.safety_notes,
                 ["human_review_required"] if report_draft.human_review_required else [],
             ),
+            role="Report Agent",
+            allowed_actions=["draft_report_preview", "separate_claim_types"],
+            requires_human_review=report_draft.human_review_required,
         )
 
     if evidence_bundle is None:
-        evidence_stage = PipelineStage(
+        evidence_stage = bounded_stage(
             name="evidence",
             status="skipped",
             input_summary="No report draft available.",
             output_summary="No evidence bundle generated.",
             safety_notes=["no_live_requests"],
+            role="Evidence Agent",
+            allowed_actions=["bundle_redacted_evidence_refs", "preserve_provenance_refs"],
         )
     else:
-        evidence_stage = PipelineStage(
+        evidence_stage = bounded_stage(
             name="evidence",
             status="completed",
             input_summary=evidence_bundle.finding_id,
             output_summary=f"Bundled {len(evidence_bundle.items)} evidence item(s).",
             safety_notes=safety_notes(evidence_bundle.safety_notes, ["no_live_requests"]),
+            role="Evidence Agent",
+            allowed_actions=["bundle_redacted_evidence_refs", "preserve_provenance_refs"],
         )
 
     return [
-        PipelineStage(
+        bounded_stage(
             name="policy_ingestion",
             status="completed",
             input_summary=f"Policy text for {request.asset}.",
@@ -555,15 +609,20 @@ def build_pipeline_timeline(
                 ["human_review_required"] if scope_rule.human_approval_required else [],
                 [f"forbidden:{item}" for item in scope_rule.forbidden],
             ),
+            role="Policy Agent",
+            allowed_actions=["parse_program_policy", "record_scope_constraints"],
+            requires_human_review=scope_rule.human_approval_required,
         ),
-        PipelineStage(
+        bounded_stage(
             name="artifact_normalization",
             status="completed",
             input_summary=f"Dry-run {artifact_kind} artifact.",
             output_summary=f"Normalized {path_count} path(s).",
             safety_notes=["local_artifact_only", "no_live_requests"],
+            role="Artifact Agent",
+            allowed_actions=["normalize_authorized_artifact", "record_source_digest"],
         ),
-        PipelineStage(
+        bounded_stage(
             name="target_model",
             status="completed",
             input_summary=f"Normalized {artifact_kind} paths.",
@@ -573,15 +632,19 @@ def build_pipeline_timeline(
                 f"{len(target_model.sensitive_actions)} sensitive action(s)."
             ),
             safety_notes=["static_analysis_only"],
+            role="Target Modeling Agent",
+            allowed_actions=["extract_static_target_facts", "link_provenance_edges"],
         ),
-        PipelineStage(
+        bounded_stage(
             name="invariants",
             status="completed",
             input_summary="Target model facts.",
             output_summary=f"Generated {len(invariants)} security invariant(s).",
             safety_notes=["policy_risk_preserved"],
+            role="Invariant Agent",
+            allowed_actions=["derive_security_invariants", "preserve_policy_risk"],
         ),
-        PipelineStage(
+        bounded_stage(
             name="hypotheses",
             status="completed",
             input_summary=f"{len(invariants)} security invariant(s).",
@@ -590,6 +653,8 @@ def build_pipeline_timeline(
                 f"assessed {len(hypothesis_assessments)} candidate lifecycle(s)."
             ),
             safety_notes=["non_destructive_candidates_only"],
+            role="Hypothesis Agent",
+            allowed_actions=["generate_candidates", "attach_evidence_requirements"],
         ),
         refutation_stage,
         validation_plan_stage,

@@ -124,6 +124,46 @@ test("toPipelineRunSummary preserves program learning lesson traces", () => {
   ]);
 });
 
+test("toPipelineRunSummary maps stage agent task boundaries", () => {
+  const apiRun = {
+    asset: "api.example.com",
+    blocked_count: 0,
+    created_at: "2026-07-05T00:00:00Z",
+    evidence_count: 0,
+    hypothesis_count: 1,
+    id: "run_boundary",
+    policy_text_hash: "hash",
+    report_title: null,
+    scope_status: "in_scope",
+    timeline: [
+      {
+        name: "validation_plan",
+        status: "needs_review",
+        input_summary: "One candidate.",
+        output_summary: "Manual plan drafted.",
+        safety_notes: ["human_review_required"],
+        details: {
+          agent_boundary: {
+            role: "Validation Planner Agent",
+            allowed_actions: ["draft_non_destructive_manual_steps"],
+            blocked_actions: ["execute_live_validation", "submit_report"],
+            requires_human_review: true,
+          },
+        },
+      },
+    ],
+  } satisfies PipelineRun;
+
+  const summary = toPipelineRunSummary(apiRun);
+
+  assert.deepEqual(summary.stages[0].agentBoundary, {
+    allowedActions: ["draft_non_destructive_manual_steps"],
+    blockedActions: ["execute_live_validation", "submit_report"],
+    requiresHumanReview: true,
+    role: "Validation Planner Agent",
+  });
+});
+
 test("toPipelineRunSummary maps closed-loop memory readiness", () => {
   const apiRun = {
     asset: "api.example.com",
@@ -309,6 +349,26 @@ test("run detail labels fallback run records as demo data", async () => {
   assert.match(page, /runDataMode/);
   assert.match(page, /fallback-only/);
   assert.match(page, /Demo data/);
+});
+
+test("run detail shows stage agent boundaries", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /agentBoundary/);
+  assert.match(page, /Agent Boundary/);
+  assert.match(page, /blockedActions/);
+});
+
+test("fallback run detail includes stage agent boundaries", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("./workbench-detail-data.ts", import.meta.url), "utf8"),
+  );
+
+  assert.match(source, /agent_boundary/);
+  assert.match(source, /execute_live_validation/);
+  assert.match(source, /bypass_scope_guard/);
 });
 
 test("report preview labels fallback claim ledgers as demo data", async () => {

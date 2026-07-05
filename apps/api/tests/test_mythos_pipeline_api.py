@@ -424,6 +424,19 @@ def test_mythos_pipeline_records_program_learning_stage_when_memory_adjusts_hunt
             }
         ]
         assert "advisory_memory_only" in learning_stage["safety_notes"]
+        assert learning_stage["details"]["agent_boundary"]["role"] == "Learning Agent"
+        assert learning_stage["details"]["agent_boundary"]["allowed_actions"] == [
+            "review_program_memory",
+            "adjust_hunter_priority",
+        ]
+        assert (
+            "bypass_scope_guard"
+            in learning_stage["details"]["agent_boundary"]["blocked_actions"]
+        )
+        assert (
+            learning_stage["details"]["agent_boundary"]["requires_human_review"]
+            is True
+        )
 
         detail_response = client.get(f"/mythos/pipeline/runs/{body['run_id']}")
         assert detail_response.status_code == 200

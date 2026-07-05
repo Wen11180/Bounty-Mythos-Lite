@@ -70,12 +70,15 @@ def test_dry_run_response_and_detail_include_stage_timeline():
             assert stage["input_summary"]
             assert stage["output_summary"]
             assert isinstance(stage["safety_notes"], list)
-            assert stage["details"] == {}
+            assert stage["details"]["agent_boundary"]["role"]
+            assert stage["details"]["agent_boundary"]["allowed_actions"]
+            assert "execute_live_validation" in stage["details"]["agent_boundary"]["blocked_actions"]
 
         by_name = {stage["name"]: stage for stage in timeline}
         assert by_name["refutation"]["status"] == "blocked"
         assert "scope_guard:human_approval_required" in by_name["refutation"]["safety_notes"]
         assert "human_review_required" in by_name["report_draft"]["safety_notes"]
+        assert by_name["validation_plan"]["details"]["agent_boundary"]["requires_human_review"] is True
 
         detail_response = client.get(f"/mythos/pipeline/runs/{body['run_id']}")
         assert detail_response.status_code == 200

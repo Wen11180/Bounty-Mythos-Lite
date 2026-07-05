@@ -16,8 +16,16 @@ export type PipelineRunStageSummary = {
   status: PipelineStageStatus;
   detail: string;
   evidenceCount: number;
+  agentBoundary?: StageAgentBoundarySummary;
   safetyNotes?: string[];
   lessonTraces?: PipelineLessonTraceSummary[];
+};
+
+export type StageAgentBoundarySummary = {
+  allowedActions: string[];
+  blockedActions: string[];
+  requiresHumanReview: boolean;
+  role: string;
 };
 
 export type PipelineLessonTraceSummary = {
@@ -264,6 +272,21 @@ function resolveLessonTraces(stage: PipelineStage): PipelineLessonTraceSummary[]
   });
 }
 
+function resolveAgentBoundary(stage: PipelineStage): StageAgentBoundarySummary | undefined {
+  const boundary = stage.details?.agent_boundary;
+
+  if (!boundary || typeof boundary !== "object" || Array.isArray(boundary)) {
+    return undefined;
+  }
+
+  return {
+    allowedActions: stringList(boundary.allowed_actions),
+    blockedActions: stringList(boundary.blocked_actions),
+    requiresHumanReview: boundary.requires_human_review === true,
+    role: safeText(boundary.role, "Bounded Agent"),
+  };
+}
+
 function buildDefaultStages(seed: RunSeed): PipelineRunStageSummary[] {
   const scopeBlocked = seed.scopeStatus === "out_of_scope";
   const scopeComplete = seed.scopeStatus === "in_scope" && seed.blockedCount === 0;
@@ -370,6 +393,7 @@ function resolveStages(run: PipelineRun, seed: RunSeed): PipelineRunStageSummary
       safetyNotes: [],
     };
     const lessonTraces = resolveLessonTraces(stage);
+    const agentBoundary = resolveAgentBoundary(stage);
 
     return {
       label: readableStageLabel(
@@ -378,6 +402,7 @@ function resolveStages(run: PipelineRun, seed: RunSeed): PipelineRunStageSummary
       status: normalizeStageStatus(stage.status, fallbackStage.status),
       detail: safeText(stage.summary ?? stage.output_summary ?? stage.input_summary, fallbackStage.detail),
       evidenceCount: numberOrFallback(stage.evidence_count, fallbackStage.evidenceCount),
+      agentBoundary,
       safetyNotes: Array.isArray(stage.safety_notes)
         ? stage.safety_notes.map((note) => safeText(note, "safety_note"))
         : fallbackStage.safetyNotes ?? [],
