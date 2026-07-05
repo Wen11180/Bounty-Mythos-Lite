@@ -381,6 +381,18 @@ test("report preview labels fallback claim ledgers as demo data", async () => {
   assert.match(page, /Demo data/);
 });
 
+test("report preview can promote reviewed claims to finding candidates", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /createFindingCandidate/);
+  assert.match(page, /promoteFindingCandidateAction/);
+  assert.match(page, /Promote Finding Candidate/);
+  assert.match(page, /human-reviewed observed claim/);
+  assert.match(page, /submission_blocked/);
+});
+
 test("validation workspace labels fallback workspaces as demo data", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
@@ -403,6 +415,16 @@ test("validation workspace can record safe manual observations", async () => {
   assert.match(page, /name="evidence_refs"/);
   assert.match(page, /test_accounts_only/);
   assert.match(page, /no_real_user_data/);
+});
+
+test("validation workspace explains redacted-only evidence gaps", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /manual_observation_missing_safe_evidence/);
+  assert.match(page, /Report-safe evidence required/);
+  assert.match(page, /request_response_diff/);
 });
 
 test("artifact repository labels fallback artifacts as demo data", async () => {

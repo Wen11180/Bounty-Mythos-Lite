@@ -1,6 +1,7 @@
 import Link from "next/link";
+import { revalidatePath } from "next/cache";
 import { ArrowLeft, ClipboardCheck, FileText, ListChecks, ShieldCheck, Target } from "lucide-react";
-import { getPipelineRun, getReportPreview } from "@/lib/api";
+import { createFindingCandidate, getPipelineRun, getReportPreview } from "@/lib/api";
 import {
   fallbackReportPreview,
   fallbackRunDetail,
@@ -50,6 +51,15 @@ export default async function ReportPreviewPage({ params }: PageProps) {
   }
 
   const reportDataMode = run?.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
+  const currentRunId = preview.run_id;
+
+  async function promoteFindingCandidateAction() {
+    "use server";
+
+    await createFindingCandidate(currentRunId, null);
+    revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);
+    revalidatePath(`/runs/${encodeURIComponent(currentRunId)}`);
+  }
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -248,6 +258,17 @@ export default async function ReportPreviewPage({ params }: PageProps) {
               <Field label="Submission blocked" value={preview.submission_blocked ? "Yes" : "No"} />
               <Field label="Run" value={preview.run_id} />
             </dl>
+            <form action={promoteFindingCandidateAction} className="border-t border-[var(--line)] p-5">
+              <p className="mb-3 text-sm text-[var(--muted)]">
+                Promote the eligible human-reviewed observed claim into Finding DB. Submission remains manual.
+              </p>
+              <button
+                type="submit"
+                className="min-h-10 rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
+              >
+                Promote Finding Candidate
+              </button>
+            </form>
           </section>
         </aside>
       </div>

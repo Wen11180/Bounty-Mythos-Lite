@@ -161,6 +161,9 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                   const evidenceRefs = safeStringList(task.evidence_refs);
                   const blockers = safeStringList(task.readiness_blockers);
                   const safetyNotes = safeStringList(task.safety_notes);
+                  const needsReportSafeEvidence = blockers.includes(
+                    "manual_observation_missing_safe_evidence",
+                  );
 
                   return (
                     <li
@@ -216,6 +219,18 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                               </li>
                             ))}
                           </ul>
+                        ) : null}
+                        {needsReportSafeEvidence ? (
+                          <div className="mt-4 border border-[var(--line)] bg-[#f7f7f4] p-3">
+                            <p className="text-sm font-semibold text-[var(--warning)]">
+                              Report-safe evidence required
+                            </p>
+                            <p className="mt-2 text-sm text-[var(--muted)]">
+                              The last manual observation only supplied redacted evidence refs. Add
+                              a sanitized request_response_diff or role_matrix_observation before
+                              this claim can move toward report review.
+                            </p>
+                          </div>
                         ) : null}
                         {safetyNotes.length > 0 ? (
                           <ul className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs font-semibold uppercase text-[var(--muted)]">
