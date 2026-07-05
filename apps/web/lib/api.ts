@@ -223,6 +223,16 @@ export type ClosedLoopSummary = {
   learning_signal_count: number;
   blocked_reasons: string[];
   safety_notes: string[];
+  steps?: ClosedLoopStep[];
+};
+
+export type ClosedLoopStep = {
+  key: string;
+  label: string;
+  status: string;
+  reason: string;
+  safety_gate: string;
+  next_allowed_action: string;
 };
 
 export type EvidenceSupportSummary = {

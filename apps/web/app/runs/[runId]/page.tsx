@@ -49,6 +49,7 @@ export default async function RunDetailPage({ params }: PageProps) {
   const closedLoop = payload?.closed_loop_summary;
   const closedLoopBlockedReasons = safeStringList(closedLoop?.blocked_reasons);
   const closedLoopSafetyNotes = safeStringList(closedLoop?.safety_notes);
+  const closedLoopSteps = closedLoop?.steps ?? [];
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -204,6 +205,34 @@ export default async function RunDetailPage({ params }: PageProps) {
                 <Field label="Candidates" value={closedLoop?.finding_candidate_count ?? 0} />
                 <Field label="Learning" value={closedLoop?.learning_signal_count ?? 0} />
               </dl>
+              {closedLoopSteps.length > 0 ? (
+                <ol className="grid gap-3 border-t border-[var(--line)] pt-4">
+                  {closedLoopSteps.map((step) => (
+                    <li
+                      key={step.key}
+                      className="grid gap-2 border-l-2 border-[var(--line)] pl-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="font-semibold">{safeDisplay(step.label)}</p>
+                        <span
+                          className={`shrink-0 text-xs font-semibold uppercase ${closedLoopStepClass(
+                            step.status,
+                          )}`}
+                        >
+                          {formatLabel(step.status)}
+                        </span>
+                      </div>
+                      <p className="text-pretty text-[var(--muted)]">
+                        {safeDisplay(step.reason)}
+                      </p>
+                      <dl className="grid gap-2 border-t border-[var(--line)] pt-2">
+                        <Field label="Gate" value={step.safety_gate} />
+                        <Field label="Next" value={step.next_allowed_action} />
+                      </dl>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
               {closedLoopSafetyNotes.length > 0 ? (
                 <ul className="flex flex-wrap gap-1.5">
                   {closedLoopSafetyNotes.map((note) => (
@@ -298,6 +327,17 @@ export default async function RunDetailPage({ params }: PageProps) {
       </div>
     </main>
   );
+}
+
+function closedLoopStepClass(status: string): string {
+  switch (status) {
+    case "complete":
+      return "text-[var(--accent-strong)]";
+    case "blocked":
+      return "text-[var(--danger)]";
+    default:
+      return "text-[var(--warning)]";
+  }
 }
 
 function PageBack() {

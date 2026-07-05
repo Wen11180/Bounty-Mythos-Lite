@@ -79,6 +79,7 @@ class MythosPipelineRunSummary(BaseModel):
     artifact: PipelineArtifactSummary | None = None
     validation_gate: PipelineValidationGate | None = None
     hunter_intelligence: HunterIntelligence | None = None
+    evidence_support_summary: dict | None = None
 
 
 class MythosPipelineRunDetail(MythosPipelineRunSummary):
@@ -1178,6 +1179,7 @@ def _pipeline_run_detail_payload(
         enriched_workspace = dict(workspace)
         enriched_workspace["claim_validation_tasks"] = _claim_validation_tasks(record)
         payload["validation_workspace"] = enriched_workspace
+    payload["evidence_support_summary"] = _evidence_support_summary(record)
     payload["closed_loop_summary"] = _closed_loop_summary(record, repository)
     return payload
 
@@ -1198,6 +1200,64 @@ def _claim_validation_tasks(record: PipelineRunRecord) -> list[dict]:
         )
         for claim in preview.claim_ledger
     ]
+
+
+def _evidence_support_summary(record: PipelineRunRecord) -> dict:
+    try:
+        preview = build_report_preview_response(record)
+    except ValueError:
+        claims = []
+    else:
+        claims = preview.claim_ledger
+
+    statuses = [_claim_evidence_support_status(claim) for claim in claims]
+    status_counts = {status: statuses.count(status) for status in sorted(set(statuses))}
+
+    return {
+        "total_count": len(claims),
+        "status_counts": status_counts,
+        "missing_required_count": status_counts.get("missing_required_evidence", 0),
+        "partially_supported_count": status_counts.get("partially_supported", 0),
+        "satisfied_human_gated_count": status_counts.get("human_gated_supported", 0),
+        "unsafe_or_redacted_requirement_count": status_counts.get(
+            "unsafe_or_redacted_evidence",
+            0,
+        ),
+        "top_support_status": _top_evidence_support_status(status_counts),
+        "safety_notes": [
+            "claim_ledger_derived",
+            "advisory_only",
+            "human_review_required",
+            "no_submission_unblock",
+        ],
+    }
+
+
+def _claim_evidence_support_status(claim: ClaimLedgerEntry) -> str:
+    evidence_refs = list(claim.evidence_refs) + list(claim.review_evidence_refs)
+    if any(ref == "[REDACTED]" for ref in evidence_refs):
+        return "unsafe_or_redacted_evidence"
+    if (
+        claim.review_status == "confirmed_observed_fact"
+        and claim.evidence_refs
+        and claim.review_evidence_refs
+    ):
+        return "human_gated_supported"
+    if "missing_evidence_refs" in claim.readiness_blockers or not claim.evidence_refs:
+        return "missing_required_evidence"
+    return "partially_supported"
+
+
+def _top_evidence_support_status(status_counts: dict[str, int]) -> str | None:
+    for status in [
+        "unsafe_or_redacted_evidence",
+        "human_gated_supported",
+        "missing_required_evidence",
+        "partially_supported",
+    ]:
+        if status_counts.get(status, 0) > 0:
+            return status
+    return None
 
 
 def _closed_loop_summary(
@@ -1239,6 +1299,13 @@ def _closed_loop_summary(
             "human_review_required",
             "candidate_not_validated",
         ],
+        "steps": _closed_loop_steps(
+            manual_observation_count=len(manual_observations),
+            reviewed_claim_count=len(claim_review_decisions),
+            finding_candidate_count=finding_candidate_count,
+            learning_signal_count=learning_signal_count,
+            blocked_reasons=blocked_reasons,
+        ),
     }
 
 
@@ -1261,6 +1328,123 @@ def _closed_loop_status(
     if manual_observation_count:
         return "manual_observation_recorded"
     return "not_started"
+
+
+def _closed_loop_steps(
+    *,
+    manual_observation_count: int,
+    reviewed_claim_count: int,
+    finding_candidate_count: int,
+    learning_signal_count: int,
+    blocked_reasons: list[str],
+) -> list[dict]:
+    claim_blocked = "no_promotion_eligible_claim" in blocked_reasons
+    promotion_blocked = bool(blocked_reasons)
+
+    return [
+        {
+            "key": "manual_observation",
+            "label": "Manual Observation",
+            "status": "complete" if manual_observation_count else "waiting",
+            "reason": (
+                f"{manual_observation_count} sanitized manual observation recorded."
+                if manual_observation_count
+                else "No sanitized manual observation recorded yet."
+            ),
+            "safety_gate": "test_accounts_only",
+            "next_allowed_action": (
+                "Review the observed claim against redacted evidence."
+                if manual_observation_count
+                else "Record a sanitized manual observation."
+            ),
+        },
+        {
+            "key": "claim_review",
+            "label": "Claim Review",
+            "status": (
+                "blocked"
+                if claim_blocked
+                else "complete"
+                if reviewed_claim_count
+                else "waiting"
+            ),
+            "reason": (
+                "Reviewed claim is not promotion eligible."
+                if claim_blocked
+                else f"{reviewed_claim_count} claim review decision recorded."
+                if reviewed_claim_count
+                else "No human claim review decision recorded yet."
+            ),
+            "safety_gate": (
+                "no_promotion_eligible_claim" if claim_blocked else "human_review_required"
+            ),
+            "next_allowed_action": (
+                "Resolve blockers before promotion."
+                if claim_blocked
+                else "Promote eligible observed claims to finding candidates."
+                if reviewed_claim_count
+                else "Review the observed claim with redacted evidence."
+            ),
+        },
+        {
+            "key": "finding_candidate",
+            "label": "Finding Candidate",
+            "status": (
+                "blocked"
+                if promotion_blocked and finding_candidate_count == 0
+                else "complete"
+                if finding_candidate_count
+                else "waiting"
+            ),
+            "reason": (
+                "Promotion is blocked by the current safety gate."
+                if promotion_blocked and finding_candidate_count == 0
+                else f"{finding_candidate_count} finding candidate created."
+                if finding_candidate_count
+                else "No finding candidate created yet."
+            ),
+            "safety_gate": "candidate_not_validated",
+            "next_allowed_action": (
+                "Resolve blockers before promotion."
+                if promotion_blocked and finding_candidate_count == 0
+                else "Record an advisory learning outcome without changing validation state."
+                if finding_candidate_count
+                else "Create a candidate from an eligible reviewed observed claim."
+            ),
+        },
+        {
+            "key": "learning_signal",
+            "label": "Learning Signal",
+            "status": "complete" if learning_signal_count else "waiting",
+            "reason": (
+                f"{learning_signal_count} learning signal linked to this run."
+                if learning_signal_count
+                else "No advisory learning signal linked yet."
+            ),
+            "safety_gate": "advisory_memory_only",
+            "next_allowed_action": (
+                "Refresh the Mythos Brain profile for future prioritization."
+                if learning_signal_count
+                else "Record an accepted, duplicate, informative, N/A, or rejected outcome."
+            ),
+        },
+        {
+            "key": "brain_memory",
+            "label": "Brain Memory",
+            "status": "complete" if learning_signal_count else "waiting",
+            "reason": (
+                "Learning memory is available for the program brain."
+                if learning_signal_count
+                else "Program brain is waiting for a learning signal."
+            ),
+            "safety_gate": "no_execution_permission",
+            "next_allowed_action": (
+                "Use memory as advisory context only."
+                if learning_signal_count
+                else "Keep the candidate gated until outcome memory exists."
+            ),
+        },
+    ]
 
 
 def _closed_loop_artifact_usage_records(
@@ -1489,6 +1673,7 @@ def _pipeline_run_summary(record: PipelineRunRecord) -> MythosPipelineRunSummary
         artifact=payload.get("artifact"),
         validation_gate=payload.get("validation_gate"),
         hunter_intelligence=payload.get("hunter_intelligence"),
+        evidence_support_summary=_evidence_support_summary(record),
     )
 
 
@@ -1513,6 +1698,7 @@ def _pipeline_run_detail(
         artifact=summary.artifact,
         validation_gate=summary.validation_gate,
         hunter_intelligence=summary.hunter_intelligence,
+        evidence_support_summary=summary.evidence_support_summary,
         payload=payload,
     )
 

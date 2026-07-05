@@ -1,4 +1,4 @@
-import type { PipelineRun, PipelineStage } from "./api";
+import type { EvidenceSupportSummary, PipelineRun, PipelineStage } from "./api";
 
 export type PipelineStageStatus =
   | "queued"
@@ -54,6 +54,24 @@ export type PipelineRunSummary = {
   artifact: ArtifactProvenanceSummary;
   validationGate: ValidationGateSummary;
   hunter: HunterPrioritySummary;
+  evidenceSupportSummary: EvidenceSupportSummary | null;
+};
+
+export type RadarRunSignal = {
+  evidenceGapCount: number;
+  nextSafeAction: string;
+  radarScore: number;
+  reportDistance: string;
+  run: PipelineRunSummary;
+};
+
+export type IntelligenceRadarSummary = {
+  evidenceGapCount: number;
+  humanGatePressure: number;
+  reportableMomentum: number;
+  runSignals: RadarRunSignal[];
+  topSignal: RadarRunSignal | null;
+  unsafeOrRedactedRequirementCount: number;
 };
 
 type RunSeed = Pick<
@@ -380,6 +398,10 @@ function resolveHunter(run: PipelineRun, seed: RunSeed): HunterPrioritySummary {
   };
 }
 
+function resolveEvidenceSupportSummary(run: PipelineRun): EvidenceSupportSummary | null {
+  return run.evidence_support_summary ?? run.evidenceSupportSummary ?? null;
+}
+
 export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
   const seed: RunSeed = {
     asset: safeText(run.asset, "unknown asset"),
@@ -400,7 +422,88 @@ export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
     artifact: resolveArtifact(run, seed),
     validationGate: resolveValidationGate(run, seed),
     hunter: resolveHunter(run, seed),
+    evidenceSupportSummary: resolveEvidenceSupportSummary(run),
   };
+}
+
+export function deriveIntelligenceRadar(
+  runs: PipelineRunSummary[],
+): IntelligenceRadarSummary {
+  const runSignals = runs
+    .map((run) => ({
+      evidenceGapCount: runEvidenceGapCount(run),
+      nextSafeAction: run.hunter.nextAction,
+      radarScore: runRadarScore(run),
+      reportDistance: runReportDistance(run),
+      run,
+    }))
+    .sort((left, right) => right.radarScore - left.radarScore);
+
+  return {
+    evidenceGapCount: runs.reduce((total, run) => total + runEvidenceGapCount(run), 0),
+    humanGatePressure: runs.filter(needsHumanGate).length,
+    reportableMomentum: runs.filter(hasReportableMomentum).length,
+    runSignals,
+    topSignal: runSignals[0] ?? null,
+    unsafeOrRedactedRequirementCount: runs.reduce(
+      (total, run) =>
+        total + (run.evidenceSupportSummary?.unsafe_or_redacted_requirement_count ?? 0),
+      0,
+    ),
+  };
+}
+
+function runRadarScore(run: PipelineRunSummary): number {
+  const gatePenalty = needsHumanGate(run) ? 8 : 0;
+  const evidencePenalty = runEvidenceGapCount(run) > 0 ? 6 : 0;
+  const rawScore =
+    run.hunter.priorityScore +
+    Math.round(run.hunter.impactScore / 5) -
+    Math.round(run.hunter.rejectionRiskScore / 5) -
+    gatePenalty -
+    evidencePenalty;
+
+  return Math.max(0, Math.min(100, rawScore));
+}
+
+function runEvidenceGapCount(run: PipelineRunSummary): number {
+  const summary = run.evidenceSupportSummary;
+  if (summary) {
+    return summary.missing_required_count + summary.unsafe_or_redacted_requirement_count;
+  }
+
+  return run.evidenceCount === 0 ? 1 : 0;
+}
+
+function needsHumanGate(run: PipelineRunSummary): boolean {
+  return (
+    run.blockedCount > 0 ||
+    run.validationGate.status === "blocked" ||
+    run.validationGate.status === "waiting_human"
+  );
+}
+
+function hasReportableMomentum(run: PipelineRunSummary): boolean {
+  const support = run.evidenceSupportSummary;
+  if (support) {
+    return support.satisfied_human_gated_count > 0;
+  }
+
+  return Boolean(run.reportTitle && run.evidenceCount > 0);
+}
+
+function runReportDistance(run: PipelineRunSummary): string {
+  const gates = [
+    runEvidenceGapCount(run) > 0,
+    needsHumanGate(run),
+    !run.reportTitle,
+  ].filter(Boolean).length;
+
+  if (gates === 0) {
+    return "Report review queue";
+  }
+
+  return gates === 1 ? "1 gate to report review" : `${gates} gates to report review`;
 }
 
 export const fallbackPipelineRuns: PipelineRunSummary[] = [
@@ -464,6 +567,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       rejectionRiskScore: 30,
       nextAction: "Prepare human-approved, test-account-only validation.",
     },
+    evidenceSupportSummary: null,
   },
   {
     runId: "dry_run_2026_07_02_002",
@@ -525,6 +629,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       rejectionRiskScore: 35,
       nextAction: "Collect role-matrix evidence before any state-changing validation.",
     },
+    evidenceSupportSummary: null,
   },
   {
     runId: "dry_run_2026_07_01_004",
@@ -586,5 +691,6 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       rejectionRiskScore: 55,
       nextAction: "Park until stronger provenance or impact evidence appears.",
     },
+    evidenceSupportSummary: null,
   },
 ];

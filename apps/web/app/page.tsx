@@ -39,6 +39,7 @@ import {
 } from "@/lib/fallback-data";
 import { mythosPipelineStages } from "@/lib/mythos-pipeline-data";
 import {
+  deriveIntelligenceRadar,
   fallbackPipelineRuns,
   toPipelineRunSummary,
   type PipelineRunSummary,
@@ -203,6 +204,10 @@ export default async function Dashboard() {
     pipelineRuns.length > 0
       ? pipelineRuns.map((run) => toPipelineRunSummary(run))
       : fallbackPipelineRuns;
+  const intelligenceRadar = deriveIntelligenceRadar(runRows);
+  const radarSignalsByRunId = new Map(
+    intelligenceRadar.runSignals.map((signal) => [signal.run.runId, signal]),
+  );
   const topBrainSurfaces = brainProfile.high_value_surfaces.slice(0, 3);
   const recentLearningSignals = brainProfile.recent_learning_signals.slice(0, 3);
 
@@ -236,7 +241,7 @@ export default async function Dashboard() {
         </nav>
       </aside>
 
-      <section className="px-5 py-6 sm:px-8 lg:px-10">
+      <section className="min-w-0 px-5 py-6 sm:px-8 lg:px-10">
         <header className="mb-8 flex flex-col gap-4 border-b border-[var(--line)] pb-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
@@ -253,8 +258,8 @@ export default async function Dashboard() {
           </div>
         </header>
 
-        <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
-          <section className="grid gap-5">
+        <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <section className="grid min-w-0 gap-5">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               {todayMetrics.map((metric) => (
                 <div
@@ -267,7 +272,7 @@ export default async function Dashboard() {
               ))}
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
               {kpis.map((kpi) => (
                 <div
                   key={kpi.label}
@@ -284,11 +289,76 @@ export default async function Dashboard() {
             </div>
 
             <section className="rounded-md border border-[var(--line)] bg-white">
+              <div className="grid min-w-0 gap-0 divide-y divide-[var(--line)] 2xl:grid-cols-[minmax(0,1fr)_420px] 2xl:divide-x 2xl:divide-y-0">
+                <div className="min-w-0 p-5">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                        Intelligence Radar
+                      </p>
+                      <h3 className="mt-1 text-xl font-semibold text-balance">
+                        {intelligenceRadar.topSignal
+                          ? intelligenceRadar.topSignal.run.asset
+                          : "No active research signal"}
+                      </h3>
+                    </div>
+                    <Gauge size={20} className="text-[var(--accent)]" aria-hidden="true" />
+                  </div>
+                  {intelligenceRadar.topSignal ? (
+                    <div className="grid gap-3">
+                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                        <span className="rounded-sm border border-[var(--line)] px-2 py-1 font-semibold">
+                          Score {intelligenceRadar.topSignal.radarScore}
+                        </span>
+                        <span className="rounded-sm border border-[var(--line)] px-2 py-1 font-semibold">
+                          {intelligenceRadar.topSignal.run.hunter.playbook}
+                        </span>
+                        <span className="rounded-sm border border-[var(--line)] px-2 py-1 font-semibold text-[var(--muted)]">
+                          {intelligenceRadar.topSignal.reportDistance}
+                        </span>
+                      </div>
+                      <p className="max-w-3xl text-pretty text-sm text-[var(--muted)]">
+                        {intelligenceRadar.topSignal.nextSafeAction}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-[var(--muted)]">
+                      Add a scoped dry run to populate hunter priority and validation gates.
+                    </p>
+                  )}
+                </div>
+                <div className="grid min-w-0 gap-3 p-5 sm:grid-cols-2">
+                  <RadarMetric
+                    label="Evidence gaps"
+                    value={intelligenceRadar.evidenceGapCount}
+                    detail="Missing or unsafe requirement support"
+                  />
+                  <RadarMetric
+                    label="Human gates"
+                    value={intelligenceRadar.humanGatePressure}
+                    detail="Approval or review still required"
+                  />
+                  <RadarMetric
+                    label="Report momentum"
+                    value={intelligenceRadar.reportableMomentum}
+                    detail="Human-gated candidates with support"
+                  />
+                  <RadarMetric
+                    label="Unsafe requirements"
+                    value={intelligenceRadar.unsafeOrRedactedRequirementCount}
+                    detail="Kept out of report chain"
+                    warn={intelligenceRadar.unsafeOrRedactedRequirementCount > 0}
+                  />
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-md border border-[var(--line)] bg-white">
               <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
                 <h3 className="text-lg font-semibold">Mythos Pipeline</h3>
                 <ShieldCheck size={19} className="text-[var(--accent)]" aria-hidden="true" />
               </div>
-              <div className="grid gap-0 divide-y divide-[var(--line)] md:grid-cols-2 md:divide-x md:divide-y-0 xl:grid-cols-7">
+              <div className="grid gap-0 divide-y divide-[var(--line)] md:grid-cols-2 md:divide-x md:divide-y-0 2xl:grid-cols-7">
                 {mythosPipelineStages.map((stage) => (
                   <div key={stage.label} className="min-h-36 p-4">
                     <p className="text-sm font-semibold">{stage.label}</p>
@@ -311,11 +381,14 @@ export default async function Dashboard() {
                 <Database size={19} className="text-[var(--accent)]" aria-hidden="true" />
               </div>
               <div className="divide-y divide-[var(--line)]">
-                {runRows.map((run) => (
-                  <article
-                    key={run.runId}
-                    className="grid min-w-0 gap-5 p-5 text-sm xl:grid-cols-[210px_minmax(0,1fr)_300px]"
-                  >
+                {runRows.map((run) => {
+                  const radarSignal = radarSignalsByRunId.get(run.runId);
+
+                  return (
+                    <article
+                      key={run.runId}
+                      className="grid min-w-0 gap-5 p-5 text-sm xl:grid-cols-[210px_minmax(0,1fr)_300px]"
+                    >
                     <div className="grid content-start gap-3">
                       <div>
                         <p className="text-xs font-semibold uppercase text-[var(--muted)]">Run ID</p>
@@ -449,6 +522,44 @@ export default async function Dashboard() {
 
                       <div>
                         <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                          Intelligence radar
+                        </p>
+                        <div className="mt-3 grid gap-2">
+                          <div className="grid grid-cols-3 gap-2 text-xs tabular-nums">
+                            <p className="text-[var(--muted)]">
+                              Score{" "}
+                              <span className="font-semibold text-[var(--foreground)]">
+                                {radarSignal?.radarScore ?? 0}
+                              </span>
+                            </p>
+                            <p className="text-[var(--muted)]">
+                              Gaps{" "}
+                              <span className="font-semibold text-[var(--foreground)]">
+                                {radarSignal?.evidenceGapCount ?? 0}
+                              </span>
+                            </p>
+                            <p className="text-[var(--muted)]">
+                              Evidence{" "}
+                              <span className="font-semibold text-[var(--foreground)]">
+                                {run.evidenceSupportSummary?.top_support_status
+                                  ? titleCase(run.evidenceSupportSummary.top_support_status)
+                                  : run.evidenceCount > 0
+                                    ? "Attached"
+                                    : "Missing"}
+                              </span>
+                            </p>
+                          </div>
+                          <p className="font-semibold text-[var(--accent-strong)]">
+                            {radarSignal?.reportDistance ?? "Awaiting research signal"}
+                          </p>
+                          <p className="text-pretty text-[var(--muted)]">
+                            {radarSignal?.nextSafeAction ?? run.hunter.nextAction}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">
                           Hunter priority
                         </p>
                         <div className="mt-3 grid gap-2">
@@ -473,8 +584,9 @@ export default async function Dashboard() {
                         </div>
                       </div>
                     </div>
-                  </article>
-                ))}
+                    </article>
+                  );
+                })}
               </div>
             </section>
 
@@ -674,5 +786,27 @@ function WorkbenchLink({ children, href }: { children: React.ReactNode; href: st
     >
       {children}
     </Link>
+  );
+}
+
+function RadarMetric({
+  detail,
+  label,
+  value,
+  warn = false,
+}: {
+  detail: string;
+  label: string;
+  value: number;
+  warn?: boolean;
+}) {
+  return (
+    <div className="rounded-md border border-[var(--line)] bg-[#f7f7f4] p-3">
+      <p className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</p>
+      <p className={`mt-2 text-2xl font-semibold tabular-nums ${warn ? "text-[var(--danger)]" : ""}`}>
+        {value}
+      </p>
+      <p className="mt-1 text-pretty text-xs text-[var(--muted)]">{detail}</p>
+    </div>
   );
 }
