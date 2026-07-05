@@ -9,6 +9,7 @@ import {
   toCampaignControlSummary,
   toCampaignEvidenceReviewSummaries,
   toCampaignHypothesisBoardSummaries,
+  toCampaignReportDraftSummaries,
   toCampaignTaskSummaries,
   toCampaignTimelineSummaries,
   toCampaignValidationRunSummaries,
@@ -650,6 +651,37 @@ test("toCampaignEvidenceReviewSummaries keeps claim evidence review redacted and
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
 });
 
+test("toCampaignReportDraftSummaries keeps report draft status redacted and gated", () => {
+  const summaries = toCampaignReportDraftSummaries([
+    {
+      ...reportPreview,
+      safety_notes: ["human_review_required", "cookie=session=secret"],
+      title: "Private object access with Authorization: Bearer secret-token",
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      blockedClaimCount: 1,
+      claimCount: 2,
+      evidenceRefCount: 2,
+      humanReviewRequired: true,
+      readyClaimCount: 1,
+      runId: "run_1",
+      safetyNotes: ["Human review required", "cookie=[redacted]"],
+      scopeStatus: "In scope",
+      severity: "High",
+      submissionBlocked: true,
+      title: "Private object access with Authorization=[redacted]",
+      topClaims: [
+        "Observed access-control drift; token=[redacted]",
+        "Model-only claim; session=[redacted]",
+      ],
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
+});
+
 test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates", () => {
   const summaries = toCampaignHypothesisBoardSummaries([pipelineRunDetail]);
 
@@ -712,6 +744,7 @@ test("campaign detail page reads the audited control center and stays read-only"
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-runs/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/hypothesis-board/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/evidence-review/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/report-drafts/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/timeline/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/brain/);
   assert.match(page, /executionAllowed/);
@@ -794,6 +827,19 @@ test("campaign evidence review page reads report previews and stays read-only", 
   assert.match(page, /getReportPreview\(runId, null\)/);
   assert.match(page, /toCampaignEvidenceReviewSummaries/);
   assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|executeValidation|submitReport/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
+test("campaign report drafts page reads report previews and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/report-drafts/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
+  assert.match(page, /getReportPreview\(runId, null\)/);
+  assert.match(page, /toCampaignReportDraftSummaries/);
+  assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|recordMythosBrainOutcome|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 

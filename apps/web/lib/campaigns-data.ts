@@ -353,6 +353,21 @@ export type CampaignEvidenceReviewSummary = {
   status: string;
 };
 
+export type CampaignReportDraftSummary = {
+  blockedClaimCount: number;
+  claimCount: number;
+  evidenceRefCount: number;
+  humanReviewRequired: boolean;
+  readyClaimCount: number;
+  runId: string;
+  safetyNotes: string[];
+  scopeStatus: string;
+  severity: string;
+  submissionBlocked: boolean;
+  title: string;
+  topClaims: string[];
+};
+
 export type CampaignHypothesisBoardSummary = {
   brokenInvariant: string | null;
   candidateId: string;
@@ -769,6 +784,34 @@ export function toCampaignEvidenceReviewSummaries(
       status: safeText(humanize(claim.status), "Status"),
     })),
   );
+}
+
+export function toCampaignReportDraftSummaries(
+  previews: ReportPreview[],
+): CampaignReportDraftSummary[] {
+  return previews.map((preview) => {
+    const readyClaimCount = preview.claim_ledger.filter((claim) => claim.status === "report_ready")
+      .length;
+
+    return {
+      blockedClaimCount: preview.claim_ledger.length - readyClaimCount,
+      claimCount: preview.claim_ledger.length,
+      evidenceRefCount: preview.evidence_refs.length,
+      humanReviewRequired: preview.human_review_required === true,
+      readyClaimCount,
+      runId: safeText(preview.run_id, "run"),
+      safetyNotes: preview.safety_notes
+        .slice(0, 4)
+        .map((note) => safeText(/[_-]/.test(note) ? humanize(note) : note, "Safety note")),
+      scopeStatus: safeText(humanize(preview.scope_status), "Unknown scope"),
+      severity: safeText(humanize(preview.severity), "Unknown severity"),
+      submissionBlocked: preview.submission_blocked === true,
+      title: safeText(preview.title, "Untitled report draft"),
+      topClaims: preview.claim_ledger.slice(0, 3).map((claim) =>
+        safeText(claim.text, "Claim text redacted"),
+      ),
+    };
+  });
 }
 
 export function toCampaignHypothesisBoardSummaries(
