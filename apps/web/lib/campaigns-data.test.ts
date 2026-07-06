@@ -844,7 +844,7 @@ test("campaign codebase map page reads fact-layer records and stays read-only", 
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 
-test("campaign evidence review page reads report previews and stays read-only", async () => {
+test("campaign evidence review page reads report previews and validation runs while staying read-only", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/campaigns/[campaignId]/evidence-review/page.tsx", import.meta.url), "utf8"),
   );
@@ -852,7 +852,10 @@ test("campaign evidence review page reads report previews and stays read-only", 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /getReportPreview\(runId, null\)/);
+  assert.match(page, /getCampaignValidationRuns\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignEvidenceReviewSummaries/);
+  assert.match(page, /toCampaignValidationRunSummaries/);
+  assert.match(page, /Validation Evidence/);
   assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

@@ -1084,10 +1084,17 @@ class DatabaseRepository:
 
         safe_outcome = _safe_display_value(outcome)
         safe_evidence_refs = _safe_display_value(evidence_refs)
-        record.status = _validation_result_status(safe_outcome)
-        record.safety_gate_state = _validation_result_safety_gate(safe_outcome)
+        safe_evidence_ref_count = _safe_evidence_ref_count(safe_evidence_refs)
+        record.status = _validation_result_status(
+            safe_outcome,
+            safe_evidence_ref_count=safe_evidence_ref_count,
+        )
+        record.safety_gate_state = _validation_result_safety_gate(
+            safe_outcome,
+            safe_evidence_ref_count=safe_evidence_ref_count,
+        )
         record.allowed_to_execute = False
-        record.evidence_ref_count = len(safe_evidence_refs)
+        record.evidence_ref_count = safe_evidence_ref_count
         record.summary = _safe_display_value(f"Manual validation result recorded: {safe_outcome}")
         record.finished_at = datetime.now(UTC)
 
@@ -1097,6 +1104,7 @@ class DatabaseRepository:
             "reviewer": reviewer,
             "summary": summary,
             "evidence_refs": safe_evidence_refs,
+            "safe_evidence_ref_count": safe_evidence_ref_count,
             "recorded_at": record.finished_at.isoformat(),
             "execution_started": False,
         })
@@ -1476,18 +1484,24 @@ def _is_secret_like(value: str) -> bool:
     )
 
 
-def _validation_result_status(outcome: str) -> str:
+def _safe_evidence_ref_count(evidence_refs: Any) -> int:
+    if not isinstance(evidence_refs, list):
+        return 0
+    return sum(1 for evidence_ref in evidence_refs if evidence_ref != REDACTED)
+
+
+def _validation_result_status(outcome: str, *, safe_evidence_ref_count: int) -> str:
     if outcome == "refuted":
         return "refuted"
-    if outcome == "needs_more_evidence":
+    if outcome == "needs_more_evidence" or safe_evidence_ref_count == 0:
         return "needs_evidence"
     return "evidence_recorded"
 
 
-def _validation_result_safety_gate(outcome: str) -> str:
+def _validation_result_safety_gate(outcome: str, *, safe_evidence_ref_count: int) -> str:
     if outcome == "refuted":
         return "manual_refutation_recorded"
-    if outcome == "needs_more_evidence":
+    if outcome == "needs_more_evidence" or safe_evidence_ref_count == 0:
         return "manual_evidence_gap_recorded"
     return "manual_evidence_recorded"
 

@@ -7,6 +7,7 @@ from app.db import Base, get_session
 import app.main as main_module
 from app.main import app
 from app.repository import DatabaseRepository, seed_sample_data
+from app.worker.tasks import run_agent_task
 
 
 client = TestClient(app)
@@ -357,6 +358,61 @@ def test_campaign_api_lists_pipeline_stages_without_payload_leaks():
         stages = response.json()
         assert stages[0]["stage_key"] == "campaign_tick"
         assert stages[0]["stop_reason"] == "approval_required"
+        assert "secret-token" not in str(stages)
+        assert "session=secret" not in str(stages)
+        assert "authorization" not in str(stages).lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_pipeline_stages_expose_report_preview_run_links_without_payload_leaks():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Report preview link campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="hypothesis_generation",
+                agent_type="hypothesis_agent",
+                title="Generate hypotheses",
+                payload={"cookie": "session=secret"},
+            )
+            run_agent_task(task.id, repository=repository)
+            campaign_id = campaign.id
+            pipeline_run_id = next(
+                ref.removeprefix("pipeline_run:")
+                for ref in repository.list_campaign_tasks(campaign.id)[0].output_refs
+                if ref.startswith("pipeline_run:")
+            )
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+
+        assert response.status_code == 200
+        stages = response.json()
+        linked_stages = [
+            stage for stage in stages
+            if stage["pipeline_run_id"] == pipeline_run_id
+        ]
+        assert len(linked_stages) == 1
+        assert linked_stages[0]["stage_key"] == "campaign_report_preview"
+        assert linked_stages[0]["status"] == "awaiting_review"
+        assert linked_stages[0]["safety_gate_state"] == "awaiting_review"
         assert "secret-token" not in str(stages)
         assert "session=secret" not in str(stages)
         assert "authorization" not in str(stages).lower()
@@ -1085,7 +1141,7 @@ def test_validation_run_manual_result_records_redacted_evidence_after_preflight(
         assert result["status"] == "evidence_recorded"
         assert result["safety_gate_state"] == "manual_evidence_recorded"
         assert result["allowed_to_execute"] is False
-        assert result["evidence_ref_count"] == 2
+        assert result["evidence_ref_count"] == 1
         assert result["summary"] == "Manual validation result recorded: observed"
         assert "secret-token" not in str(result)
         assert "session=secret" not in str(result)
@@ -1095,9 +1151,122 @@ def test_validation_run_manual_result_records_redacted_evidence_after_preflight(
         runs = runs_response.json()
         assert runs[0]["id"] == validation_id
         assert runs[0]["status"] == "evidence_recorded"
-        assert runs[0]["evidence_ref_count"] == 2
+        assert runs[0]["evidence_ref_count"] == 1
         assert "secret-token" not in str(runs)
         assert "session=secret" not in str(runs)
+
+        stages_response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+        assert stages_response.status_code == 200
+        stages = stages_response.json()
+        manual_result_stages = [
+            stage for stage in stages if stage["stage_key"] == "validation_manual_result"
+        ]
+        assert len(manual_result_stages) == 1
+        assert manual_result_stages[0]["status"] == "evidence_recorded"
+        assert manual_result_stages[0]["safety_gate_state"] == "manual_evidence_recorded"
+        assert manual_result_stages[0]["output_refs"] == [f"validation_run:{validation_id}"]
+        assert "secret-token" not in str(stages)
+        assert "session=secret" not in str(stages)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_validation_run_manual_result_keeps_redacted_only_evidence_in_gap_state():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Manual result evidence gap campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Review validation gate",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            approval = repository.create_approval_record(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                program_id=campaign.program_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approve test-account validation.",
+                requested_action="two_account_authorization_check",
+                asset=campaign.default_asset,
+                validation_mode="two_account_authorization_check",
+                plan_digest="manual_result_gap_plan",
+                autonomy_level=campaign.autonomy_level,
+                safety_gate_state="awaiting_approval",
+            )
+            validation = repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=None,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="planned",
+                safety_gate_state="awaiting_approval",
+                plan_digest="manual_result_gap_plan",
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=0,
+                summary="Awaiting approval",
+                payload={},
+            )
+            approval_id = approval.id
+            validation_id = validation.id
+
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for test accounts only.",
+            },
+        )
+        assert decision_response.status_code == 200
+        preflight_response = client.post(
+            f"/mythos/validation-runs/{validation_id}/preflight"
+        )
+        assert preflight_response.status_code == 200
+
+        result_response = client.post(
+            f"/mythos/validation-runs/{validation_id}/manual-results",
+            json={
+                "outcome": "observed",
+                "reviewer": "lead_reviewer",
+                "summary": "Observed only sensitive evidence refs.",
+                "evidence_refs": [
+                    "Authorization: Bearer secret-token",
+                    "Cookie: session=secret",
+                ],
+            },
+        )
+
+        assert result_response.status_code == 200
+        result = result_response.json()
+        assert result["status"] == "needs_evidence"
+        assert result["safety_gate_state"] == "manual_evidence_gap_recorded"
+        assert result["allowed_to_execute"] is False
+        assert result["evidence_ref_count"] == 0
+        assert "secret-token" not in str(result)
+        assert "session=secret" not in str(result)
     finally:
         app.dependency_overrides.clear()
 

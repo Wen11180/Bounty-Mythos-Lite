@@ -1,7 +1,10 @@
 import { AlertTriangle, ArrowLeft, FileCheck2, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { getCampaignControlCenter, getReportPreview } from "@/lib/api";
-import { toCampaignEvidenceReviewSummaries } from "@/lib/campaigns-data";
+import { getCampaignControlCenter, getCampaignValidationRuns, getReportPreview } from "@/lib/api";
+import {
+  toCampaignEvidenceReviewSummaries,
+  toCampaignValidationRunSummaries,
+} from "@/lib/campaigns-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string }>;
@@ -20,7 +23,11 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
   const previews = (
     await Promise.all(runIds.map((runId) => getReportPreview(runId, null)))
   ).filter((preview): preview is NonNullable<typeof preview> => preview !== null);
+  const validationRuns = await getCampaignValidationRuns(campaignId, []);
   const claims = toCampaignEvidenceReviewSummaries(previews);
+  const validationEvidence = toCampaignValidationRunSummaries(validationRuns).filter(
+    (run) => run.evidenceRefCount > 0 || run.safetyGateState.startsWith("Manual "),
+  );
   const eligibleCount = claims.filter((claim) => claim.reportChainEligible).length;
 
   return (
@@ -47,8 +54,8 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Runs" value={runIds.length} />
         <Metric label="Claims" value={claims.length} />
+        <Metric label="Validation evidence" value={validationEvidence.length} />
         <Metric label="Report-chain eligible" value={eligibleCount} />
-        <Metric label="Blocked" value={claims.length - eligibleCount} />
       </section>
 
       <section className="border border-[var(--line)] bg-white">
@@ -108,6 +115,55 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                     </ul>
                   ) : null}
                 </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="mt-5 border border-[var(--line)] bg-white">
+        <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
+          <span>Validation Evidence</span>
+          <span>Status</span>
+          <span>Safety gate</span>
+          <span>Evidence</span>
+        </div>
+        {validationEvidence.length === 0 ? (
+          <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
+            <AlertTriangle size={16} aria-hidden="true" />
+            No manual validation evidence recorded.
+          </p>
+        ) : (
+          <div className="divide-y divide-[var(--line)]">
+            {validationEvidence.map((run) => (
+              <article
+                key={run.id}
+                className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]"
+              >
+                <div className="min-w-0">
+                  <p className="break-words font-semibold">{run.validationMode}</p>
+                  <p className="mt-2 break-words text-[var(--muted)]">{run.summary}</p>
+                  <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
+                    <Field label="Run" value={run.id} />
+                    <Field label="Target" value={run.targetRef} />
+                    <Field label="Task" value={run.taskId ?? "No task"} />
+                    <Field label="Approval" value={run.approvalId ?? "No approval"} />
+                  </dl>
+                </div>
+                <div className="grid content-start gap-2">
+                  <StatusText value={run.status} />
+                  <p className="text-xs text-[var(--muted)]">
+                    {run.approvalRequired ? "Approval required" : "No approval required"}
+                  </p>
+                  <p className="text-xs text-[var(--muted)]">
+                    {run.allowedToExecute ? "Execution allowed" : "Execution blocked"}
+                  </p>
+                </div>
+                <GateText value={run.safetyGateState} />
+                <dl className="grid content-start gap-2 text-xs text-[var(--muted)]">
+                  <Field label="Evidence refs" value={String(run.evidenceRefCount)} />
+                  <Field label="Plan" value={run.planDigest ?? "No plan digest"} />
+                </dl>
               </article>
             ))}
           </div>

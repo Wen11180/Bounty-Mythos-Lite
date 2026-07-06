@@ -705,6 +705,24 @@ def record_mythos_validation_run_manual_result(
     )
     if updated_run is None:
         raise HTTPException(status_code=404, detail="Validation run not found")
+    repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=updated_run.campaign_id,
+        task_id=updated_run.task_id,
+        stage_key="validation_manual_result",
+        stage_order=len(repository.list_campaign_pipeline_stages(updated_run.campaign_id)),
+        status=updated_run.status,
+        input_refs=[f"validation_run:{updated_run.id}"],
+        output_refs=[f"validation_run:{updated_run.id}"],
+        safety_gate_state=updated_run.safety_gate_state,
+        stop_reason=None,
+        payload={
+            "outcome": request.outcome,
+            "reviewer": safe_preview_text(request.reviewer),
+            "evidence_ref_count": updated_run.evidence_ref_count,
+            "execution_started": False,
+        },
+    )
     return _validation_run_response(updated_run)
 
 

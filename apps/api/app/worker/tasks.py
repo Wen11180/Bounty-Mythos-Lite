@@ -258,6 +258,23 @@ def _materialize_read_only_artifacts(
                 ],
             },
         )
+        repository.save_pipeline_stage(
+            pipeline_run_id=pipeline_run.id,
+            campaign_id=campaign.id,
+            task_id=task.id,
+            stage_key="campaign_report_preview",
+            stage_order=20,
+            status="awaiting_review",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=[f"pipeline_run:{pipeline_run.id}"],
+            safety_gate_state="awaiting_review",
+            stop_reason=None,
+            payload={
+                "review_gate": "human_review_required",
+                "submission_allowed": False,
+                "raw_payload_processed": False,
+            },
+        )
         return (
             [f"pipeline_run:{pipeline_run.id}"],
             {

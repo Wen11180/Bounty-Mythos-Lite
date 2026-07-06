@@ -283,6 +283,15 @@ def test_run_agent_task_materializes_read_only_research_artifacts_by_task_type()
         assert pipeline_runs[0].blocked_count == 1
         assert pipeline_runs[0].payload["campaign_id"] == campaign.id
         assert pipeline_runs[0].payload["source_task_id"] == tasks[1].id
+        linked_preview_stages = [
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign.id)
+            if stage.pipeline_run_id == pipeline_runs[0].id
+        ]
+        assert len(linked_preview_stages) == 1
+        assert linked_preview_stages[0].stage_key == "campaign_report_preview"
+        assert linked_preview_stages[0].status == "awaiting_review"
+        assert linked_preview_stages[0].safety_gate_state == "awaiting_review"
 
         assert len(validation_runs) == 1
         assert validation_runs[0].approval_required is True
