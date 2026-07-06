@@ -8,6 +8,7 @@ import {
   toCampaignCodebaseMapView,
   toCampaignControlSummary,
   toCampaignEvidenceReviewSummaries,
+  toCampaignFindingCandidateGateSummary,
   toCampaignHypothesisBoardSummaries,
   toCampaignReportDraftEvidenceSummary,
   toCampaignReportDraftSummaries,
@@ -633,8 +634,10 @@ test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", (
 
   assert.deepEqual(summaries, [
     {
+      auditLabel: "Campaign tick",
       id: "stage_1",
       inputRefCount: 2,
+      isManualValidationResult: false,
       outputRefCount: 1,
       safetyGateState: "Blocked",
       stageKey: "Campaign tick",
@@ -645,6 +648,42 @@ test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", (
     },
   ]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|token=secret/i);
+});
+
+test("toCampaignTimelineSummaries highlights manual validation result stages without refs", () => {
+  const summaries = toCampaignTimelineSummaries([
+    {
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:10:00Z",
+      id: "stage_manual_result",
+      input_refs: ["validation_run:run_1?cookie=session=secret"],
+      output_refs: ["validation_run:run_1", "evidence:Authorization: Bearer secret-token"],
+      pipeline_run_id: null,
+      safety_gate_state: "manual_evidence_recorded",
+      stage_key: "validation_manual_result",
+      stage_order: 3,
+      status: "evidence_recorded",
+      stop_reason: null,
+      task_id: "task_1",
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      auditLabel: "Manual validation result",
+      id: "stage_manual_result",
+      inputRefCount: 1,
+      isManualValidationResult: true,
+      outputRefCount: 2,
+      safetyGateState: "Manual evidence recorded",
+      stageKey: "Validation manual result",
+      stageOrder: 3,
+      status: "Evidence recorded",
+      stopReason: null,
+      taskId: "task_1",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
 });
 
 test("toCampaignBrainSummary keeps Mythos Brain advisory and redacted", () => {
@@ -825,6 +864,34 @@ test("toCampaignReportDraftEvidenceSummary exposes manual validation state witho
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|authorization: bearer/i);
 });
 
+test("toCampaignFindingCandidateGateSummary exposes manual promotion readiness without raw evidence", () => {
+  const summary = toCampaignFindingCandidateGateSummary([
+    {
+      ...reportPreview,
+      claim_ledger: [
+        ...reportPreview.claim_ledger,
+        {
+          ...reportPreview.claim_ledger[1],
+          claim_id: "claim_3",
+          readiness_blockers: ["Authorization: Bearer secret-token"],
+          review_rationale: "Blocked because cookie=session=secret needs redaction.",
+          text: "Blocked candidate; token=secret-token",
+        },
+      ],
+      evidence_refs: ["Authorization: Bearer secret-token"],
+    },
+  ]);
+
+  assert.deepEqual(summary, {
+    blockedClaimCount: 2,
+    eligibleClaimCount: 1,
+    manualPromotionOnly: true,
+    runCount: 1,
+    status: "ready_for_manual_promotion",
+  });
+  assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|authorization: bearer/i);
+});
+
 test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates", () => {
   const summaries = toCampaignHypothesisBoardSummaries([pipelineRunDetail]);
 
@@ -987,6 +1054,8 @@ test("campaign report drafts page reads report previews and manual validation st
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /getReportPreview\(runId, null\)/);
   assert.match(page, /getCampaignValidationRuns\(campaignId, \[\]\)/);
+  assert.match(page, /toCampaignFindingCandidateGateSummary/);
+  assert.match(page, /Finding candidate gate/);
   assert.match(page, /toCampaignReportDraftEvidenceSummary/);
   assert.match(page, /toCampaignReportDraftSummaries/);
   assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|recordMythosBrainOutcome|executeValidation|submitReport/);
@@ -1037,6 +1106,7 @@ test("campaign timeline page reads pipeline stage records and stays read-only", 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignPipelineStages\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignTimelineSummaries/);
+  assert.match(page, /manualValidationResultCount/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

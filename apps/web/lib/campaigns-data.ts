@@ -190,8 +190,10 @@ export type CampaignValidationRunSummary = {
 };
 
 export type CampaignTimelineSummary = {
+  auditLabel: string;
   id: string;
   inputRefCount: number;
+  isManualValidationResult: boolean;
   outputRefCount: number;
   safetyGateState: string;
   stageKey: string;
@@ -378,6 +380,14 @@ export type CampaignReportDraftEvidenceSummary = {
   evidenceRefCount: number;
   manualEvidenceCount: number;
   validationRunCount: number;
+};
+
+export type CampaignFindingCandidateGateSummary = {
+  blockedClaimCount: number;
+  eligibleClaimCount: number;
+  manualPromotionOnly: boolean;
+  runCount: number;
+  status: string;
 };
 
 export type CampaignHypothesisBoardSummary = {
@@ -680,17 +690,24 @@ export function toCampaignValidationRunSummaries(
 export function toCampaignTimelineSummaries(
   stages: CampaignPipelineStage[],
 ): CampaignTimelineSummary[] {
-  return stages.map((stage) => ({
-    id: safeText(stage.id, "stage"),
-    inputRefCount: stage.input_refs.length,
-    outputRefCount: stage.output_refs.length,
-    safetyGateState: safeText(humanize(stage.safety_gate_state), "Unknown gate"),
-    stageKey: safeText(humanize(stage.stage_key), "Stage"),
-    stageOrder: stage.stage_order,
-    status: safeText(humanize(stage.status), "Unknown status"),
-    stopReason: stage.stop_reason ? safeText(humanize(stage.stop_reason), "Stopped") : null,
-    taskId: stage.task_id ? safeText(stage.task_id, "task") : null,
-  }));
+  return stages.map((stage) => {
+    const stageKey = safeText(humanize(stage.stage_key), "Stage");
+    const isManualValidationResult = stage.stage_key === "validation_manual_result";
+
+    return {
+      auditLabel: isManualValidationResult ? "Manual validation result" : stageKey,
+      id: safeText(stage.id, "stage"),
+      inputRefCount: stage.input_refs.length,
+      isManualValidationResult,
+      outputRefCount: stage.output_refs.length,
+      safetyGateState: safeText(humanize(stage.safety_gate_state), "Unknown gate"),
+      stageKey,
+      stageOrder: stage.stage_order,
+      status: safeText(humanize(stage.status), "Unknown status"),
+      stopReason: stage.stop_reason ? safeText(humanize(stage.stop_reason), "Stopped") : null,
+      taskId: stage.task_id ? safeText(stage.task_id, "task") : null,
+    };
+  });
 }
 
 export function toCampaignBrainSummary(
@@ -871,6 +888,32 @@ export function toCampaignReportDraftEvidenceSummary(
       (run) => run.status === "evidence_recorded" || run.safety_gate_state === "manual_evidence_recorded",
     ).length,
     validationRunCount: relevantRuns.length,
+  };
+}
+
+export function toCampaignFindingCandidateGateSummary(
+  previews: ReportPreview[],
+): CampaignFindingCandidateGateSummary {
+  const claims = previews.flatMap((preview) => preview.claim_ledger);
+  const eligibleClaimCount = claims.filter(
+    (claim) =>
+      claim.review_status === "confirmed_observed_fact" &&
+      claim.readiness_level === "human_reviewed_gated" &&
+      claim.readiness_blockers.length === 0 &&
+      claim.review_evidence_refs.length > 0,
+  ).length;
+
+  return {
+    blockedClaimCount: claims.length - eligibleClaimCount,
+    eligibleClaimCount,
+    manualPromotionOnly: true,
+    runCount: previews.length,
+    status:
+      previews.length === 0
+        ? "no_report_preview"
+        : eligibleClaimCount > 0
+          ? "ready_for_manual_promotion"
+          : "blocked",
   };
 }
 

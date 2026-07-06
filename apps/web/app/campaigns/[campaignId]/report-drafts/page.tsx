@@ -2,6 +2,7 @@ import { AlertTriangle, ArrowLeft, FileText, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { getCampaignControlCenter, getCampaignValidationRuns, getReportPreview } from "@/lib/api";
 import {
+  toCampaignFindingCandidateGateSummary,
   toCampaignReportDraftEvidenceSummary,
   toCampaignReportDraftSummaries,
 } from "@/lib/campaigns-data";
@@ -25,6 +26,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
   ).filter((preview): preview is NonNullable<typeof preview> => preview !== null);
   const validationRuns = await getCampaignValidationRuns(campaignId, []);
   const drafts = toCampaignReportDraftSummaries(previews);
+  const findingCandidateGate = toCampaignFindingCandidateGateSummary(previews);
   const validationEvidence = toCampaignReportDraftEvidenceSummary(validationRuns);
 
   return (
@@ -72,6 +74,24 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
           <Field label="Runs" value={String(validationEvidence.validationRunCount)} />
           <Field label="Evidence refs" value={String(validationEvidence.evidenceRefCount)} />
           <Field label="Evidence gaps" value={String(validationEvidence.evidenceGapCount)} />
+        </div>
+      </section>
+
+      <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
+        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
+          <div className="min-w-0">
+            <p className="font-semibold">Finding candidate gate</p>
+            <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
+              Candidate promotion remains manual-only. This view counts reviewed claims that meet
+              the report-chain gate without showing raw evidence refs.
+            </p>
+          </div>
+          <Field label="Eligible" value={String(findingCandidateGate.eligibleClaimCount)} />
+          <Field label="Blocked" value={String(findingCandidateGate.blockedClaimCount)} />
+          <Field
+            label="Mode"
+            value={findingCandidateGate.manualPromotionOnly ? "Manual only" : "Blocked"}
+          />
         </div>
       </section>
 

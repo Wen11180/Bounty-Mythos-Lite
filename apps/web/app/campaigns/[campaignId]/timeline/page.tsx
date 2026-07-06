@@ -11,6 +11,9 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
   const { campaignId } = await params;
   const stages = await getCampaignPipelineStages(campaignId, []);
   const timeline = toCampaignTimelineSummaries(stages);
+  const manualValidationResultCount = timeline.filter(
+    (stage) => stage.isManualValidationResult,
+  ).length;
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -33,12 +36,13 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
         </p>
       </header>
 
-      <section className="grid gap-3 py-5 sm:grid-cols-3">
+      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Stages" value={timeline.length} />
         <Metric
           label="Blocked"
           value={timeline.filter((stage) => stage.status === "Blocked").length}
         />
+        <Metric label="Manual results" value={manualValidationResultCount} />
         <Metric
           label="With stop reason"
           value={timeline.filter((stage) => stage.stopReason !== null).length}
@@ -65,7 +69,10 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
               >
                 <p className="font-semibold tabular-nums">{stage.stageOrder}</p>
                 <div className="min-w-0">
-                  <p className="break-words font-semibold">{stage.stageKey}</p>
+                  <p className="break-words font-semibold">{stage.auditLabel}</p>
+                  {stage.auditLabel !== stage.stageKey ? (
+                    <p className="mt-1 break-words text-xs text-[var(--muted)]">{stage.stageKey}</p>
+                  ) : null}
                   <p className="mt-1 break-words text-[var(--muted)]">{stage.id}</p>
                   {stage.stopReason ? (
                     <p className="mt-2 flex items-center gap-2 break-words text-[var(--warning)]">
