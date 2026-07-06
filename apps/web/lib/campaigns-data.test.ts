@@ -10,6 +10,7 @@ import {
   toCampaignEvidenceReviewSummaries,
   toCampaignFindingCandidateGateSummary,
   toCampaignHypothesisBoardSummaries,
+  toCampaignLearningReviewSummary,
   toCampaignReportDraftEvidenceSummary,
   toCampaignReportDraftSummaries,
   toCampaignTaskSummaries,
@@ -637,6 +638,7 @@ test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", (
       auditLabel: "Campaign tick",
       id: "stage_1",
       inputRefCount: 2,
+      isLearningOutcome: false,
       isManualValidationResult: false,
       outputRefCount: 1,
       safetyGateState: "Blocked",
@@ -673,12 +675,50 @@ test("toCampaignTimelineSummaries highlights manual validation result stages wit
       auditLabel: "Manual validation result",
       id: "stage_manual_result",
       inputRefCount: 1,
+      isLearningOutcome: false,
       isManualValidationResult: true,
       outputRefCount: 2,
       safetyGateState: "Manual evidence recorded",
       stageKey: "Validation manual result",
       stageOrder: 3,
       status: "Evidence recorded",
+      stopReason: null,
+      taskId: "task_1",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
+});
+
+test("toCampaignTimelineSummaries highlights advisory learning outcome stages without refs", () => {
+  const summaries = toCampaignTimelineSummaries([
+    {
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:12:00Z",
+      id: "stage_learning_result",
+      input_refs: ["pipeline_run:run_1?cookie=session=secret"],
+      output_refs: ["learning_signal:signal_1", "notes:Authorization: Bearer secret-token"],
+      pipeline_run_id: "run_1",
+      safety_gate_state: "advisory_memory_only",
+      stage_key: "learning_outcome_recorded",
+      stage_order: 4,
+      status: "recorded",
+      stop_reason: null,
+      task_id: "task_1",
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      auditLabel: "Advisory Brain learning",
+      id: "stage_learning_result",
+      inputRefCount: 1,
+      isLearningOutcome: true,
+      isManualValidationResult: false,
+      outputRefCount: 2,
+      safetyGateState: "Advisory memory only",
+      stageKey: "Learning outcome recorded",
+      stageOrder: 4,
+      status: "Recorded",
       stopReason: null,
       taskId: "task_1",
     },
@@ -704,6 +744,61 @@ test("toCampaignBrainSummary keeps Mythos Brain advisory and redacted", () => {
   assert.equal(summary.recentSignals[0].notes, "Triager accepted; cookie=[redacted]");
   assert.equal(summary.appliedLessons[0].reasons[1], "[redacted]");
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|token=secret/i);
+});
+
+test("toCampaignLearningReviewSummary explains campaign learning review without raw feedback", () => {
+  const summary = toCampaignLearningReviewSummary(
+    {
+      ...controlCenter,
+      blocked_reasons: [],
+      pipeline_stages: [
+        ...controlCenter.pipeline_stages,
+        {
+          campaign_id: "campaign_1",
+          created_at: "2026-07-05T00:02:00Z",
+          id: "stage_report_preview_1",
+          input_refs: ["campaign:campaign_1?session=secret"],
+          output_refs: ["pipeline_run:run_1"],
+          pipeline_run_id: "run_1",
+          safety_gate_state: "awaiting_review",
+          stage_key: "campaign_report_preview",
+          stage_order: 20,
+          status: "awaiting_review",
+          stop_reason: null,
+          task_id: "task_1",
+        },
+        {
+          campaign_id: "campaign_1",
+          created_at: "2026-07-05T00:03:00Z",
+          id: "stage_report_preview_2",
+          input_refs: ["campaign:campaign_1"],
+          output_refs: ["pipeline_run:run_1"],
+          pipeline_run_id: "run_1",
+          safety_gate_state: "awaiting_review",
+          stage_key: "campaign_report_preview",
+          stage_order: 21,
+          status: "awaiting_review",
+          stop_reason: null,
+          task_id: "task_1",
+        },
+      ],
+      safe_next_action: "review_learning_outcome",
+    },
+    brainProfile,
+  );
+
+  assert.deepEqual(summary, {
+    advisoryOnly: true,
+    appliedLessonCount: 1,
+    executionAllowed: false,
+    linkedRunCount: 1,
+    recentSignalCount: 1,
+    reviewReady: true,
+    safeNextAction: "Review learning outcome",
+    skippedLessonCount: 1,
+    strongEvidenceSignalCount: 1,
+  });
+  assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|authorization: bearer/i);
 });
 
 test("toCampaignCodebaseMapView summarizes code facts without raw scanner leakage", () => {
@@ -1012,6 +1107,8 @@ test("campaign brain page reads program brain and stays advisory-only", async ()
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /getMythosBrainProgram/);
   assert.match(page, /toCampaignBrainSummary/);
+  assert.match(page, /toCampaignLearningReviewSummary/);
+  assert.match(page, /Learning Review/);
   assert.match(page, /advisoryOnly/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport|approveValidation/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
@@ -1107,6 +1204,7 @@ test("campaign timeline page reads pipeline stage records and stays read-only", 
   assert.match(page, /getCampaignPipelineStages\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignTimelineSummaries/);
   assert.match(page, /manualValidationResultCount/);
+  assert.match(page, /learningOutcomeCount/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

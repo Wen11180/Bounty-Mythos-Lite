@@ -193,6 +193,7 @@ export type CampaignTimelineSummary = {
   auditLabel: string;
   id: string;
   inputRefCount: number;
+  isLearningOutcome: boolean;
   isManualValidationResult: boolean;
   outputRefCount: number;
   safetyGateState: string;
@@ -244,6 +245,18 @@ export type CampaignBrainSummary = {
   signalCount: number;
   skippedLessonCount: number;
   topSurfaces: CampaignBrainSurfaceSummary[];
+};
+
+export type CampaignLearningReviewSummary = {
+  advisoryOnly: boolean;
+  appliedLessonCount: number;
+  executionAllowed: boolean;
+  linkedRunCount: number;
+  recentSignalCount: number;
+  reviewReady: boolean;
+  safeNextAction: string;
+  skippedLessonCount: number;
+  strongEvidenceSignalCount: number;
 };
 
 export type CampaignCodebaseMap = {
@@ -692,12 +705,18 @@ export function toCampaignTimelineSummaries(
 ): CampaignTimelineSummary[] {
   return stages.map((stage) => {
     const stageKey = safeText(humanize(stage.stage_key), "Stage");
+    const isLearningOutcome = stage.stage_key === "learning_outcome_recorded";
     const isManualValidationResult = stage.stage_key === "validation_manual_result";
 
     return {
-      auditLabel: isManualValidationResult ? "Manual validation result" : stageKey,
+      auditLabel: isLearningOutcome
+        ? "Advisory Brain learning"
+        : isManualValidationResult
+          ? "Manual validation result"
+          : stageKey,
       id: safeText(stage.id, "stage"),
       inputRefCount: stage.input_refs.length,
+      isLearningOutcome,
       isManualValidationResult,
       outputRefCount: stage.output_refs.length,
       safetyGateState: safeText(humanize(stage.safety_gate_state), "Unknown gate"),
@@ -750,6 +769,31 @@ export function toCampaignBrainSummary(
       score: surface.score,
       surfaceKey: safeText(surface.surface_key, "surface"),
     })),
+  };
+}
+
+export function toCampaignLearningReviewSummary(
+  controlCenter: CampaignControlCenter,
+  profile: ProgramIntelligenceProfile,
+): CampaignLearningReviewSummary {
+  const linkedRunIds = new Set(
+    controlCenter.pipeline_stages
+      .filter((stage) => stage.stage_key === "campaign_report_preview" && stage.pipeline_run_id)
+      .map((stage) => stage.pipeline_run_id),
+  );
+
+  return {
+    advisoryOnly: true,
+    appliedLessonCount: profile.applied_lessons.length,
+    executionAllowed: false,
+    linkedRunCount: linkedRunIds.size,
+    recentSignalCount: profile.recent_learning_signals.length,
+    reviewReady: controlCenter.safe_next_action === "review_learning_outcome",
+    safeNextAction: safeText(humanize(controlCenter.safe_next_action), "Review campaign state"),
+    skippedLessonCount: profile.skipped_lessons.length,
+    strongEvidenceSignalCount: profile.recent_learning_signals.filter(
+      (signal) => signal.evidence_quality === "strong",
+    ).length,
   };
 }
 

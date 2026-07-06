@@ -412,3 +412,103 @@ def test_tick_points_to_evidence_review_after_manual_validation_evidence():
         assert "session=secret" not in str(review_stages)
     finally:
         session.close()
+
+
+def test_tick_dispatches_next_read_only_cycle_after_cycle_review_is_completed():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Reviewed next cycle campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed. Authorization: Bearer secret-token",
+            default_asset="api.example.com",
+            target_classes=["idor"],
+            allowed_tools=["two_account_authorization_check"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=1,
+        )
+
+        first = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        for task_id in first["dispatched_task_ids"]:
+            run_agent_task(task_id, repository=repository)
+
+        approval = repository.list_campaign_approval_records(campaign.id)[0]
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for test accounts only.",
+        )
+        validation_run = repository.list_campaign_validation_runs(campaign.id)[0]
+        repository.record_validation_run_preflight(
+            validation_run.id,
+            allowed=True,
+            reason="approved_validation_record",
+        )
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="lead_reviewer",
+            summary="Observed safe diff; Authorization: Bearer secret-token",
+            evidence_refs=["sanitized_request_response", "Cookie: session=secret"],
+        )
+
+        review = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        review_stage = next(
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign.id)
+            if stage.stage_key == "campaign_cycle_review"
+            and stage.status == "awaiting_review"
+        )
+        repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=campaign.id,
+            task_id=None,
+            stage_key="campaign_cycle_review",
+            stage_order=review_stage.stage_order,
+            status="completed",
+            input_refs=review_stage.input_refs,
+            output_refs=review_stage.output_refs,
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload={
+                "review_gate": "human_review_completed",
+                "raw_payload_processed": False,
+            },
+        )
+
+        next_cycle = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert review["status"] == "awaiting_review"
+        assert next_cycle["status"] == "dispatched"
+        assert next_cycle["stop_reasons"] == []
+        assert len(next_cycle["dispatched_task_ids"]) == 4
+        assert len(dispatched) == 8
+        assert len(repository.list_campaign_tasks(campaign.id)) == 8
+        assert all(list(payload) == ["campaign_task_id"] for payload in dispatched)
+        assert "secret-token" not in str(next_cycle)
+        assert "session=secret" not in str(next_cycle)
+    finally:
+        session.close()

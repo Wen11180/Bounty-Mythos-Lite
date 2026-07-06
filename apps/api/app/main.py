@@ -435,6 +435,11 @@ class LearningOutcomeRequest(BaseModel):
     target_relationships: list[str] | None = Field(default=None, max_length=20)
 
 
+class CampaignCycleReviewCompletionRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "bounty-mythos-api"}
@@ -586,6 +591,53 @@ def list_mythos_campaign_pipeline_stages(
         _pipeline_stage_response(record)
         for record in repository.list_campaign_pipeline_stages(campaign_id)
     ]
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/cycle-reviews/{stage_id}/complete",
+    response_model=PipelineStageResponse,
+)
+def complete_mythos_campaign_cycle_review(
+    campaign_id: str,
+    stage_id: str,
+    request: CampaignCycleReviewCompletionRequest,
+    session: Session = Depends(get_session),
+) -> PipelineStageResponse:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    stage = repository.get_pipeline_stage(stage_id)
+    if (
+        stage is None
+        or stage.campaign_id != campaign_id
+        or stage.stage_key != "campaign_cycle_review"
+    ):
+        raise HTTPException(status_code=404, detail="Cycle review stage not found")
+    if stage.status != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Cycle review is not awaiting review")
+
+    completed = repository.save_pipeline_stage(
+        pipeline_run_id=stage.pipeline_run_id,
+        campaign_id=campaign_id,
+        task_id=stage.task_id,
+        stage_key="campaign_cycle_review",
+        stage_order=stage.stage_order,
+        status="completed",
+        input_refs=stage.input_refs,
+        output_refs=stage.output_refs,
+        safety_gate_state="allowed",
+        stop_reason=None,
+        payload={
+            "review_gate": "human_review_completed",
+            "actor": request.actor,
+            "reason_recorded": bool(request.reason),
+            "raw_payload_processed": False,
+            "execution_allowed": False,
+            "submission_allowed": False,
+        },
+    )
+    return _pipeline_stage_response(completed)
 
 
 @app.get("/mythos/campaigns/{campaign_id}/validation-runs", response_model=list[ValidationRunResponse])
@@ -1073,6 +1125,11 @@ def create_mythos_brain_outcome(
                 artifact_id=artifact_id,
                 usage_records=[usage],
             )
+        _save_campaign_learning_outcome_stage(
+            repository=repository,
+            run_record=run_record,
+            signal=_learning_signal_response(signal_record),
+        )
     return _program_intelligence_profile(repository, program_id)
 
 
@@ -2043,6 +2100,42 @@ def _artifact_usage_record_for_learning_signal(
     if signal.target_relationships:
         usage["target_relationships"] = signal.target_relationships
     return str(artifact_id), usage
+
+
+def _save_campaign_learning_outcome_stage(
+    *,
+    repository: DatabaseRepository,
+    run_record: PipelineRunRecord,
+    signal: LearningSignal,
+) -> None:
+    if signal.id is None:
+        return
+
+    report_preview_stages = [
+        stage
+        for stage in repository.list_pipeline_stages_for_run(run_record.id)
+        if stage.stage_key == "campaign_report_preview" and stage.campaign_id
+    ]
+    for stage in report_preview_stages:
+        repository.save_pipeline_stage(
+            pipeline_run_id=run_record.id,
+            campaign_id=stage.campaign_id,
+            task_id=stage.task_id,
+            stage_key="learning_outcome_recorded",
+            stage_order=len(repository.list_campaign_pipeline_stages(stage.campaign_id)),
+            status="recorded",
+            input_refs=[f"pipeline_run:{run_record.id}"],
+            output_refs=[f"learning_signal:{signal.id}"],
+            safety_gate_state="advisory_memory_only",
+            stop_reason=None,
+            payload={
+                "outcome": signal.outcome,
+                "evidence_quality": signal.evidence_quality,
+                "raw_payload_processed": False,
+                "submission_allowed": False,
+                "execution_allowed": False,
+            },
+        )
 
 
 def _learning_signal_response(record: LearningSignalRecord) -> LearningSignal:

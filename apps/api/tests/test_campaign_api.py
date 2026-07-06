@@ -365,6 +365,86 @@ def test_campaign_api_lists_pipeline_stages_without_payload_leaks():
         app.dependency_overrides.clear()
 
 
+def test_campaign_api_completes_cycle_review_without_dispatch_or_payload_leaks():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Complete cycle review campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="hypothesis_generation",
+                agent_type="hypothesis_agent",
+                title="Generate hypotheses",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            review_stage = repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=None,
+                stage_key="campaign_cycle_review",
+                stage_order=4,
+                status="awaiting_review",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[
+                    f"campaign_task:{task.id}",
+                    "pipeline_run:run_with_token=secret",
+                ],
+                safety_gate_state="allowed",
+                stop_reason="campaign_cycle_review_required",
+                payload={
+                    "review_gate": "human_review_required",
+                    "notes": "Authorization: Bearer secret-token",
+                },
+            )
+            campaign_id = campaign.id
+            task_id = task.id
+            review_stage_id = review_stage.id
+
+        response = client.post(
+            f"/mythos/campaigns/{campaign_id}/cycle-reviews/{review_stage_id}/complete",
+            json={
+                "actor": "lead_reviewer",
+                "reason": "Reviewed sanitized state; Authorization: Bearer secret-token",
+            },
+        )
+
+        assert response.status_code == 200
+        completed = response.json()
+        assert completed["stage_key"] == "campaign_cycle_review"
+        assert completed["status"] == "completed"
+        assert completed["safety_gate_state"] == "allowed"
+        assert completed["input_refs"] == [f"campaign:{campaign_id}"]
+        assert completed["output_refs"] == [
+            f"campaign_task:{task_id}",
+            "[REDACTED]",
+        ]
+        assert "secret-token" not in str(completed)
+        assert "Authorization" not in str(completed)
+
+        tasks_response = client.get(f"/mythos/campaigns/{campaign_id}/tasks")
+        assert tasks_response.status_code == 200
+        assert len(tasks_response.json()) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_pipeline_stages_expose_report_preview_run_links_without_payload_leaks():
     testing_session = build_testing_session()
 
@@ -546,6 +626,21 @@ def test_campaign_control_center_moves_to_learning_after_finding_candidate():
             },
         )
         assert outcome_response.status_code == 200
+        signal_id = outcome_response.json()["recent_learning_signals"][0]["id"]
+
+        stages_response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+        assert stages_response.status_code == 200
+        learning_stages = [
+            stage for stage in stages_response.json()
+            if stage["stage_key"] == "learning_outcome_recorded"
+        ]
+        assert len(learning_stages) == 1
+        assert learning_stages[0]["status"] == "recorded"
+        assert learning_stages[0]["safety_gate_state"] == "advisory_memory_only"
+        assert learning_stages[0]["input_refs"] == [f"pipeline_run:{run_id}"]
+        assert learning_stages[0]["output_refs"] == [f"learning_signal:{signal_id}"]
+        assert "Accepted safe fixture" not in str(learning_stages)
+        assert "secret-token" not in str(learning_stages)
 
         review_response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
 

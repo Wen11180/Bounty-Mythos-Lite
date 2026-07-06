@@ -828,10 +828,24 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def get_pipeline_stage(self, stage_id: str) -> PipelineStageRecord | None:
+        return self.session.get(PipelineStageRecord, stage_id)
+
     def list_campaign_pipeline_stages(self, campaign_id: str) -> list[PipelineStageRecord]:
         return self.session.scalars(
             select(PipelineStageRecord)
             .where(PipelineStageRecord.campaign_id == campaign_id)
+            .order_by(
+                PipelineStageRecord.stage_order,
+                PipelineStageRecord.created_at.desc(),
+                PipelineStageRecord.id.desc(),
+            )
+        ).all()
+
+    def list_pipeline_stages_for_run(self, pipeline_run_id: str) -> list[PipelineStageRecord]:
+        return self.session.scalars(
+            select(PipelineStageRecord)
+            .where(PipelineStageRecord.pipeline_run_id == pipeline_run_id)
             .order_by(
                 PipelineStageRecord.stage_order,
                 PipelineStageRecord.created_at.desc(),

@@ -181,18 +181,25 @@ def _completed_research_cycle_review(
 
     approvals = repository.list_campaign_approval_records(campaign.id)
     validation_runs = repository.list_campaign_validation_runs(campaign.id)
+    reviewed_output_refs = _completed_cycle_review_output_refs(campaign, repository)
     hypothesis_output_refs = [
         ref
         for task in tasks
         if task.task_type == "hypothesis_generation"
         for ref in task.output_refs
         if ref.startswith("pipeline_run:")
+        and ref not in reviewed_output_refs
     ]
-    codebase_facts = repository.list_campaign_codebase_facts(campaign.id)
+    codebase_facts = [
+        fact
+        for fact in repository.list_campaign_codebase_facts(campaign.id)
+        if f"codebase_fact:{fact.id}" not in reviewed_output_refs
+    ]
 
     pending_approvals = [
         approval for approval in approvals
         if approval.status in {"pending", "requested"}
+        and f"approval:{approval.id}" not in reviewed_output_refs
     ]
     awaiting_validation_runs = [
         run for run in validation_runs
@@ -202,10 +209,12 @@ def _completed_research_cycle_review(
             run.status == "awaiting_approval"
             or run.safety_gate_state == "awaiting_approval"
         )
+        and f"validation_run:{run.id}" not in reviewed_output_refs
     ]
     manual_evidence_runs = [
         run for run in validation_runs
         if _validation_run_has_manual_evidence(run)
+        and f"validation_run:{run.id}" not in reviewed_output_refs
     ]
 
     next_actions: list[str] = []
@@ -283,3 +292,17 @@ def _validation_run_has_manual_evidence(run: Any) -> bool:
         or run.evidence_ref_count > 0
         or str(run.safety_gate_state).startswith("manual_")
     )
+
+
+def _completed_cycle_review_output_refs(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> set[str]:
+    return {
+        ref
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "campaign_cycle_review"
+        and stage.status == "completed"
+        and stage.safety_gate_state == "allowed"
+        for ref in stage.output_refs
+    }

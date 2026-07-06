@@ -2,7 +2,7 @@ import { AlertTriangle, ArrowLeft, Bot } from "lucide-react";
 import Link from "next/link";
 import { getCampaignControlCenter, getMythosBrainProgram } from "@/lib/api";
 import { fallbackMythosBrainProfile } from "@/lib/fallback-data";
-import { toCampaignBrainSummary } from "@/lib/campaigns-data";
+import { toCampaignBrainSummary, toCampaignLearningReviewSummary } from "@/lib/campaigns-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string }>;
@@ -37,6 +37,7 @@ export default async function CampaignBrainPage({ params }: PageProps) {
   };
   const profile = await getMythosBrainProgram(programId, fallbackProfile);
   const summary = toCampaignBrainSummary(profile);
+  const learningReview = toCampaignLearningReviewSummary(controlCenter, profile);
   const advisoryOnly = summary.advisoryOnly;
 
   return (
@@ -135,6 +136,19 @@ export default async function CampaignBrainPage({ params }: PageProps) {
         </div>
 
         <aside className="grid content-start gap-5">
+          <section className="border border-[var(--line)] bg-white">
+            <SectionHeader title="Learning Review" />
+            <dl className="grid gap-3 p-5 text-sm">
+              <Field label="Ready" value={learningReview.reviewReady ? "Yes" : "No"} />
+              <Field label="Safe next action" value={learningReview.safeNextAction} />
+              <Field label="Linked runs" value={String(learningReview.linkedRunCount)} />
+              <Field label="Recent signals" value={String(learningReview.recentSignalCount)} />
+              <Field label="Strong evidence" value={String(learningReview.strongEvidenceSignalCount)} />
+              <Field label="Applied lessons" value={String(learningReview.appliedLessonCount)} />
+              <Field label="Skipped lessons" value={String(learningReview.skippedLessonCount)} />
+            </dl>
+          </section>
+
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Safety Boundary" />
             <dl className="grid gap-3 p-5 text-sm">
