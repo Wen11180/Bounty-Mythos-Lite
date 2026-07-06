@@ -28,7 +28,7 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Harness audit records with approval gates, execution state, target refs, and evidence
+          Harness audit records with approval gates, preflight state, target refs, and evidence
           counts. Raw validation payloads are not displayed here.
         </p>
       </header>
@@ -36,7 +36,7 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Validation runs" value={summaries.length} />
         <Metric label="Awaiting approval" value={summaries.filter((run) => run.approvalRequired).length} />
-        <Metric label="Executable" value={summaries.filter((run) => run.allowedToExecute).length} />
+        <Metric label="Preflight passed" value={summaries.filter((run) => run.preflightPassed).length} />
         <Metric label="Evidence refs" value={summaries.reduce((total, run) => total + run.evidenceRefCount, 0)} />
       </section>
 
@@ -76,8 +76,9 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
                   <p className="text-xs text-[var(--muted)]">
                     {run.approvalRequired ? "Approval required" : "No approval required"}
                   </p>
+                  <p className="text-xs text-[var(--muted)]">{run.executionState}</p>
                   <p className="text-xs text-[var(--muted)]">
-                    {run.allowedToExecute ? "Execution allowed" : "Execution blocked"}
+                    Execution started: {run.executionStarted ? "Yes" : "No"}
                   </p>
                 </div>
                 <GateText value={run.safetyGateState} />

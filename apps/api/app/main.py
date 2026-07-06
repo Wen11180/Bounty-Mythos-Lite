@@ -83,6 +83,9 @@ app = FastAPI(title="Bounty Mythos-Lite API")
 class ScopeGuardEvaluationRequest(BaseModel):
     rule: ScopeGuardRule
     request: ValidationRequest
+    campaign_id: str | None = None
+    task_id: str | None = None
+    run_id: str | None = None
 
 
 class MythosPipelineRunSummary(BaseModel):
@@ -287,6 +290,8 @@ class ValidationRunResponse(BaseModel):
     plan_digest: str | None = None
     approval_required: bool
     allowed_to_execute: bool
+    preflight_passed: bool
+    execution_started: bool = False
     evidence_ref_count: int
     summary: str
     created_at: str
@@ -531,6 +536,23 @@ def resume_mythos_campaign(
     campaign_id: str,
     session: Session = Depends(get_session),
 ) -> CampaignResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    budget = repository.get_campaign_budget(campaign_id)
+    if budget is not None and any(
+        value is not None and value <= 0
+        for value in (
+            budget.time_budget_minutes,
+            budget.token_budget,
+            budget.tool_call_budget,
+            budget.validation_budget,
+        )
+    ):
+        raise HTTPException(status_code=409, detail="budget_exhausted")
     return _update_campaign_status(campaign_id, "running", session)
 
 
@@ -1182,6 +1204,9 @@ def evaluate_scope_guard(
             asset=request.request.asset,
             validation_mode=request.request.validation_type,
             plan_digest=request.request.plan_digest,
+            campaign_id=request.campaign_id,
+            task_id=request.task_id,
+            run_id=request.run_id,
         )
         if approval is None:
             return ScopeGuardDecision(
@@ -1697,6 +1722,11 @@ def _validation_run_response(record: ValidationRunRecord) -> ValidationRunRespon
         plan_digest=safe_preview_text(record.plan_digest) if record.plan_digest else None,
         approval_required=bool(record.approval_required),
         allowed_to_execute=bool(record.allowed_to_execute),
+        preflight_passed=(
+            record.status == "preflight_passed"
+            or record.safety_gate_state == "scope_guard_preflight_passed"
+        ),
+        execution_started=False,
         evidence_ref_count=record.evidence_ref_count,
         summary=safe_preview_text(record.summary),
         created_at=record.created_at.isoformat(),

@@ -1,4 +1,4 @@
-import type { PipelineRunDetail, ProgramIntelligenceProfile, ReportPreview } from "./api";
+import type { ArtifactRecord, PipelineRunDetail, ProgramIntelligenceProfile, ReportPreview } from "./api";
 
 export type CampaignControlCenter = {
   campaign: {
@@ -141,6 +141,19 @@ export type CampaignTaskSummary = {
   title: string;
 };
 
+export type CampaignArtifactSummary = {
+  asset: string;
+  createdAt: string;
+  id: string;
+  ingestionStatus: string;
+  kind: string;
+  reportChainAllowed: boolean;
+  safetyBlockerCount: number;
+  sensitivityLabel: string;
+  sourceType: string;
+  usageCount: number;
+};
+
 export type CampaignValidationQueueSummary = {
   approvalType: string;
   asset: string | null;
@@ -163,9 +176,11 @@ export type CampaignValidationRun = {
   campaign_id: string;
   created_at: string;
   evidence_ref_count: number;
+  execution_started?: boolean;
   finished_at?: string | null;
   id: string;
   plan_digest: string | null;
+  preflight_passed?: boolean;
   safety_gate_state: string;
   status: string;
   summary: string;
@@ -180,9 +195,12 @@ export type CampaignValidationRunSummary = {
   approvalRequired: boolean;
   createdAt: string;
   evidenceRefCount: number;
+  executionStarted: boolean;
+  executionState: string;
   finishedAt: string | null;
   id: string;
   planDigest: string | null;
+  preflightPassed: boolean;
   safetyGateState: string;
   status: string;
   summary: string;
@@ -692,6 +710,23 @@ export function toCampaignTaskSummaries(
   }));
 }
 
+export function toCampaignArtifactSummaries(
+  artifacts: ArtifactRecord[],
+): CampaignArtifactSummary[] {
+  return artifacts.map((artifact) => ({
+    asset: safeText(artifact.asset, "asset"),
+    createdAt: artifact.created_at,
+    id: safeText(artifact.id, "artifact"),
+    ingestionStatus: safeText(humanize(artifact.ingestion_status), "Unknown status"),
+    kind: safeText(humanize(artifact.kind), "Artifact"),
+    reportChainAllowed: artifact.report_chain_allowed === true,
+    safetyBlockerCount: artifact.safety_blockers.length,
+    sensitivityLabel: safeText(humanize(artifact.sensitivity_label), "Unknown sensitivity"),
+    sourceType: safeText(humanize(artifact.source_type), "Source"),
+    usageCount: artifact.usage_records?.length ?? 0,
+  }));
+}
+
 export function toCampaignValidationQueueSummaries(
   approvals: CampaignApproval[],
 ): CampaignValidationQueueSummary[] {
@@ -724,9 +759,12 @@ export function toCampaignValidationRunSummaries(
     approvalRequired: run.approval_required === true,
     createdAt: run.created_at,
     evidenceRefCount: run.evidence_ref_count,
+    executionStarted: run.execution_started === true,
+    executionState: validationRunExecutionState(run),
     finishedAt: run.finished_at ?? null,
     id: safeText(run.id, "validation_run"),
     planDigest: run.plan_digest ? safeText(run.plan_digest, "plan") : null,
+    preflightPassed: validationRunPreflightPassed(run),
     safetyGateState: safeText(humanize(run.safety_gate_state), "Unknown gate"),
     status: safeText(humanize(run.status), "Unknown status"),
     summary: safeText(run.summary, "Summary redacted"),
@@ -734,6 +772,36 @@ export function toCampaignValidationRunSummaries(
     taskId: run.task_id ? safeText(run.task_id, "task") : null,
     validationMode: safeText(humanize(run.validation_mode), "Validation mode"),
   }));
+}
+
+function validationRunExecutionState(run: CampaignValidationRun): string {
+  if (run.execution_started === true) {
+    return "Execution started";
+  }
+  if (validationRunPreflightPassed(run)) {
+    return "Preflight passed";
+  }
+  if (
+    run.approval_required === true
+    && run.approval_id
+    && run.status === "ready"
+    && run.safety_gate_state === "approved_validation_record"
+  ) {
+    return "Preflight required";
+  }
+  if (run.approval_required === true && !run.approval_id) {
+    return "Awaiting approval";
+  }
+  return "Execution blocked";
+}
+
+function validationRunPreflightPassed(run: CampaignValidationRun): boolean {
+  return (
+    run.preflight_passed === true
+    || run.status === "preflight_passed"
+    || run.safety_gate_state === "scope_guard_preflight_passed"
+    || run.allowed_to_execute === true
+  );
 }
 
 export function toCampaignTimelineSummaries(

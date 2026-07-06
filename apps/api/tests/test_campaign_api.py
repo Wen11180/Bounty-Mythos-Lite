@@ -202,6 +202,83 @@ def test_campaign_api_start_blocks_out_of_scope_without_dispatch():
         app.dependency_overrides.clear()
 
 
+def test_campaign_api_resume_blocks_out_of_scope_without_running_window():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Out of scope resume",
+                autonomy_level="level_0_read_only",
+                scope_status="out_of_scope",
+                policy_text="Testing is not allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "paused")
+            campaign_id = campaign.id
+
+        response = client.post(f"/mythos/campaigns/{campaign_id}/resume")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "scope_not_in_scope"
+        campaign_response = client.get(f"/mythos/campaigns/{campaign_id}")
+        assert campaign_response.status_code == 200
+        assert campaign_response.json()["status"] == "paused"
+        assert client.get(f"/mythos/campaigns/{campaign_id}/tasks").json() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_api_resume_blocks_budget_exhausted_without_running_window():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Budget exhausted resume",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "paused")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=0,
+            )
+            campaign_id = campaign.id
+
+        response = client.post(f"/mythos/campaigns/{campaign_id}/resume")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "budget_exhausted"
+        campaign_response = client.get(f"/mythos/campaigns/{campaign_id}")
+        assert campaign_response.status_code == 200
+        assert campaign_response.json()["status"] == "paused"
+        assert client.get(f"/mythos/campaigns/{campaign_id}/tasks").json() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_api_rejects_missing_program():
     testing_session = build_testing_session()
 
@@ -1298,7 +1375,9 @@ def test_validation_run_preflight_requires_scope_guard_after_approval():
         assert body["validation_run"]["id"] == validation_id
         assert body["validation_run"]["status"] == "preflight_passed"
         assert body["validation_run"]["safety_gate_state"] == "scope_guard_preflight_passed"
+        assert body["validation_run"]["preflight_passed"] is True
         assert body["validation_run"]["allowed_to_execute"] is True
+        assert body["validation_run"]["execution_started"] is False
         assert body["execution_started"] is False
         assert "secret-token" not in str(body)
         assert "session=secret" not in str(body)

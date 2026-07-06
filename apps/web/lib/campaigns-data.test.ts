@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { PipelineRunDetail, ProgramIntelligenceProfile, ReportPreview } from "./api.ts";
+import type { ArtifactRecord, PipelineRunDetail, ProgramIntelligenceProfile, ReportPreview } from "./api.ts";
 import {
   toCampaignAgentRunSummaries,
   toCampaignAttackSurfaceMapView,
+  toCampaignArtifactSummaries,
   toCampaignBrainSummary,
   toCampaignCodebaseMapView,
   toCampaignControlSummary,
@@ -428,6 +429,72 @@ const pipelineRunDetail = {
   },
 } satisfies PipelineRunDetail;
 
+const campaignArtifacts = [
+  {
+    id: "artifact_safe",
+    program_id: "program_example",
+    asset: "https://api.example.com/path?session=secret",
+    kind: "openapi",
+    source_type: "dry_run_inline",
+    source_hash: "sha256:safe",
+    ingestion_status: "normalized",
+    provenance: {
+      source_name: "openapi.json",
+      usage_records: [
+        {
+          usage_type: "pipeline_run",
+          ref: "run:run_1?token=secret-token",
+          run_id: "run_1",
+          stage: "target_model",
+        },
+      ],
+    },
+    payload_summary: {
+      sample_request: "Authorization: Bearer secret-token",
+    },
+    derived_facts: {
+      paths: ["/files/{file_id}?session=secret"],
+    },
+    sensitivity_label: "low",
+    redaction_status: "clean",
+    report_chain_allowed: true,
+    safety_blockers: [],
+    usage_records: [
+      {
+        usage_type: "pipeline_run",
+        ref: "run:run_1?token=secret-token",
+        run_id: "run_1",
+        stage: "target_model",
+      },
+    ],
+    created_at: "2026-07-05T00:00:00Z",
+  },
+  {
+    id: "artifact_blocked",
+    program_id: "program_example",
+    asset: "api.example.com",
+    kind: "har",
+    source_type: "manual_upload",
+    source_hash: "sha256:blocked",
+    ingestion_status: "normalized",
+    provenance: {
+      source_name: "capture.har",
+    },
+    payload_summary: {
+      raw_payload: "GET /private Authorization: Bearer secret-token",
+    },
+    derived_facts: {
+      notes: ["raw evidence: response body"],
+    },
+    sensitivity_label: "sensitive",
+    redaction_status: "redacted",
+    report_chain_allowed: false,
+    safety_blockers: ["contains_secret_like_value", "contains_real_user_data_risk"],
+    usage_records: [],
+    created_at: "2026-07-05T00:01:00Z",
+  },
+] satisfies ArtifactRecord[];
+
 test("toCampaignControlSummary keeps campaign control center read-only and redacted", () => {
   const summary = toCampaignControlSummary(controlCenter);
 
@@ -677,6 +744,7 @@ test("toCampaignValidationRunSummaries keeps validation run audit state redacted
       approvalRequired: true,
       createdAt: "2026-07-05T00:00:00Z",
       evidenceRefCount: 0,
+      executionState: "Awaiting approval",
       finishedAt: null,
       id: "validation_run_1",
       planDigest: "plan_digest_1",
@@ -689,6 +757,92 @@ test("toCampaignValidationRunSummaries keeps validation run audit state redacted
     },
   ]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|token=secret|authorization: bearer/i);
+});
+
+test("toCampaignValidationRunSummaries marks approved validation as preflight-required", () => {
+  const summaries = toCampaignValidationRunSummaries([
+    {
+      allowed_to_execute: false,
+      approval_id: "approval_1",
+      approval_required: true,
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:00:00Z",
+      evidence_ref_count: 0,
+      finished_at: null,
+      id: "validation_run_approved",
+      plan_digest: "plan_digest_1",
+      safety_gate_state: "approved_validation_record",
+      status: "ready",
+      summary: "Approved for preflight only.",
+      target_ref: "campaign:campaign_1",
+      task_id: "task_1",
+      validation_mode: "two_account_authorization_check",
+    },
+  ]);
+
+  assert.equal(summaries[0].allowedToExecute, false);
+  assert.equal(summaries[0].executionState, "Preflight required");
+});
+
+test("toCampaignValidationRunSummaries treats passed preflight as review state, not execution permission", () => {
+  const summaries = toCampaignValidationRunSummaries([
+    {
+      allowed_to_execute: true,
+      approval_id: "approval_1",
+      approval_required: true,
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:00:00Z",
+      evidence_ref_count: 0,
+      execution_started: false,
+      finished_at: null,
+      id: "validation_run_preflight",
+      plan_digest: "plan_digest_1",
+      preflight_passed: true,
+      safety_gate_state: "scope_guard_preflight_passed",
+      status: "preflight_passed",
+      summary: "Scope Guard preflight passed.",
+      target_ref: "campaign:campaign_1",
+      task_id: "task_1",
+      validation_mode: "two_account_authorization_check",
+    },
+  ]);
+
+  assert.equal(summaries[0].allowedToExecute, true);
+  assert.equal(summaries[0].preflightPassed, true);
+  assert.equal(summaries[0].executionStarted, false);
+  assert.equal(summaries[0].executionState, "Preflight passed");
+});
+
+test("toCampaignArtifactSummaries exposes campaign artifact safety without raw material", () => {
+  const summaries = toCampaignArtifactSummaries(campaignArtifacts);
+
+  assert.deepEqual(summaries, [
+    {
+      asset: "api.example.com/path",
+      createdAt: "2026-07-05T00:00:00Z",
+      id: "artifact_safe",
+      ingestionStatus: "Normalized",
+      kind: "Openapi",
+      reportChainAllowed: true,
+      safetyBlockerCount: 0,
+      sensitivityLabel: "Low",
+      sourceType: "Dry run inline",
+      usageCount: 1,
+    },
+    {
+      asset: "api.example.com",
+      createdAt: "2026-07-05T00:01:00Z",
+      id: "artifact_blocked",
+      ingestionStatus: "Normalized",
+      kind: "Har",
+      reportChainAllowed: false,
+      safetyBlockerCount: 2,
+      sensitivityLabel: "Sensitive",
+      sourceType: "Manual upload",
+      usageCount: 0,
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|raw payload|raw evidence/i);
 });
 
 test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", () => {
@@ -1195,6 +1349,7 @@ test("campaign detail page reads the audited control center and stays read-only"
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/report-drafts/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/timeline/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/brain/);
+  assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/artifacts/);
   assert.match(page, /executionAllowed/);
   assert.match(page, /safeNextAction/);
   assert.match(page, /validationEvidenceCount/);
@@ -1207,6 +1362,24 @@ test("campaign detail page reads the audited control center and stays read-only"
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 
+test("campaign artifacts page filters authorized materials and stays read-only", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/campaigns/[campaignId]/artifacts/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /params: Promise<\{ campaignId: string \}>/);
+  assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
+  assert.match(page, /getArtifacts\(\[\], \{/);
+  assert.match(page, /programId: controlCenter\.campaign\.program_id/);
+  assert.match(page, /asset: controlCenter\.campaign\.default_asset/);
+  assert.match(page, /toCampaignArtifactSummaries/);
+  assert.match(page, /reportChainAllowedCount/);
+  assert.match(page, /reportChainBlockedCount/);
+  assert.doesNotMatch(page, /raw payload|raw evidence|payload_summary|derived_facts/);
+  assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport|uploadArtifact/);
+  assert.doesNotMatch(page, /<form|method="post"|action=\{/);
+});
+
 test("campaign validation runs page reads harness records and stays read-only", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/campaigns/[campaignId]/validation-runs/page.tsx", import.meta.url), "utf8"),
@@ -1215,6 +1388,7 @@ test("campaign validation runs page reads harness records and stays read-only", 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignValidationRuns\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignValidationRunSummaries/);
+  assert.match(page, /executionState/);
   assert.doesNotMatch(page, /runValidation|executeValidation|approveValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

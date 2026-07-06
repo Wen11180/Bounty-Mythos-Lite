@@ -780,14 +780,25 @@ class DatabaseRepository:
         asset: str,
         validation_mode: str,
         plan_digest: str | None,
+        campaign_id: str | None = None,
+        task_id: str | None = None,
+        run_id: str | None = None,
     ) -> ApprovalRecord | None:
-        return self.session.scalars(
+        query = (
             select(ApprovalRecord)
             .where(ApprovalRecord.status == "approved")
             .where(ApprovalRecord.asset == _safe_display_value(asset))
             .where(ApprovalRecord.validation_mode == _safe_display_value(validation_mode))
             .where(ApprovalRecord.plan_digest == _safe_display_value(plan_digest))
-            .order_by(
+        )
+        if campaign_id is not None:
+            query = query.where(ApprovalRecord.campaign_id == _safe_display_value(campaign_id))
+        if task_id is not None:
+            query = query.where(ApprovalRecord.task_id == _safe_display_value(task_id))
+        if run_id is not None:
+            query = query.where(ApprovalRecord.run_id == _safe_display_value(run_id))
+        return self.session.scalars(
+            query.order_by(
                 ApprovalRecord.decided_at.desc(),
                 ApprovalRecord.created_at.desc(),
                 ApprovalRecord.id.desc(),
