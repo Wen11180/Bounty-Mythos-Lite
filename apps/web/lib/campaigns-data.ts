@@ -96,6 +96,8 @@ export type CampaignControlSummary = {
   blockedStageCount: number;
   budgetLabel: string;
   campaignId: string;
+  cycleReviewAwaitingCount: number;
+  cycleReviewCompletedCount: number;
   defaultAsset: string;
   executionAllowed: boolean;
   name: string;
@@ -494,6 +496,10 @@ function safeText(value: string | null | undefined, fallback: string): string {
     return fallback;
   }
 
+  if (/\b(scanner stdout|policy text|raw payload|raw evidence)\b/i.test(text)) {
+    return fallback;
+  }
+
   const protectedValues: string[] = [];
   const protect = (value: string) => {
     protectedValues.push(value);
@@ -592,11 +598,34 @@ function safeNextHref(campaignId: string, action: string): string | null {
   return route ? `/campaigns/${encodedCampaignId}/${route}` : null;
 }
 
+function safeNextActionLabel(action: string): string {
+  const labelByAction: Record<string, string> = {
+    complete_cycle_review: "Review campaign cycle",
+    dispatch_ready_tasks: "Review task queue",
+    execute_validation: "Review validation queue",
+    monitor_agent_runs: "Review agent runs",
+    review_approval_queue: "Review approval queue",
+    review_attack_surface_map: "Review attack surface map",
+    review_campaign_cycle: "Review campaign cycle",
+    review_evidence_or_report_drafts: "Review evidence or report drafts",
+    review_hypothesis_board: "Review hypothesis board",
+    review_learning_outcome: "Review learning outcome",
+    review_validation_queue: "Review validation queue",
+    record_learning_outcome: "Review learning outcome",
+    submit_report: "Review report drafts",
+  };
+
+  return labelByAction[action] ?? "Review campaign state";
+}
+
 export function toCampaignControlSummary(
   controlCenter: CampaignControlCenter,
 ): CampaignControlSummary {
   const campaignId = safeText(controlCenter.campaign.id, "campaign");
   const validationEvidence = toCampaignReportDraftEvidenceSummary(controlCenter.validation_runs ?? []);
+  const cycleReviewStages = controlCenter.pipeline_stages.filter(
+    (stage) => stage.stage_key === "campaign_cycle_review",
+  );
 
   return {
     agentRunCount: controlCenter.agent_runs.length,
@@ -605,12 +634,16 @@ export function toCampaignControlSummary(
       .length,
     budgetLabel: budgetLabel(controlCenter),
     campaignId,
+    cycleReviewAwaitingCount: cycleReviewStages.filter((stage) => stage.status === "awaiting_review")
+      .length,
+    cycleReviewCompletedCount: cycleReviewStages.filter((stage) => stage.status === "completed")
+      .length,
     defaultAsset: safeText(controlCenter.campaign.default_asset, "unknown asset"),
     executionAllowed: controlCenter.execution_allowed === true,
     name: safeText(controlCenter.campaign.name, "Untitled campaign"),
     pendingApprovalCount: controlCenter.approvals.filter((approval) => approval.status === "pending")
       .length,
-    safeNextAction: safeText(humanize(controlCenter.safe_next_action), "Review campaign state"),
+    safeNextAction: safeNextActionLabel(controlCenter.safe_next_action),
     safeNextHref: safeNextHref(campaignId, controlCenter.safe_next_action),
     scopeStatus: safeText(humanize(controlCenter.campaign.scope_status), "Unknown scope"),
     status: safeText(humanize(controlCenter.campaign.status), "Unknown status"),
@@ -796,7 +829,7 @@ export function toCampaignLearningReviewSummary(
     linkedRunCount: linkedRunIds.size,
     recentSignalCount: profile.recent_learning_signals.length,
     reviewReady: controlCenter.safe_next_action === "review_learning_outcome",
-    safeNextAction: safeText(humanize(controlCenter.safe_next_action), "Review campaign state"),
+    safeNextAction: safeNextActionLabel(controlCenter.safe_next_action),
     skippedLessonCount: profile.skipped_lessons.length,
     strongEvidenceSignalCount: profile.recent_learning_signals.filter(
       (signal) => signal.evidence_quality === "strong",

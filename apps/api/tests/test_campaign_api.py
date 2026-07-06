@@ -441,6 +441,33 @@ def test_campaign_api_completes_cycle_review_without_dispatch_or_payload_leaks()
         tasks_response = client.get(f"/mythos/campaigns/{campaign_id}/tasks")
         assert tasks_response.status_code == 200
         assert len(tasks_response.json()) == 1
+
+        control_response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+        assert control_response.status_code == 200
+        control_center = control_response.json()
+        assert control_center["safe_next_action"] != "complete_cycle_review"
+        assert "secret-token" not in str(control_center)
+        assert "Authorization" not in str(control_center)
+
+        replay_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/cycle-reviews/{review_stage_id}/complete",
+            json={
+                "actor": "lead_reviewer",
+                "reason": "Second click; Authorization: Bearer secret-token",
+            },
+        )
+        assert replay_response.status_code == 409
+        assert "secret-token" not in replay_response.text
+        assert "Authorization" not in replay_response.text
+
+        stages_response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+        assert stages_response.status_code == 200
+        completed_reviews = [
+            stage for stage in stages_response.json()
+            if stage["stage_key"] == "campaign_cycle_review"
+            and stage["status"] == "completed"
+        ]
+        assert len(completed_reviews) == 1
     finally:
         app.dependency_overrides.clear()
 
@@ -1161,7 +1188,7 @@ def test_campaign_approval_decision_unlocks_matching_validation_run_without_exec
         assert runs[0]["approval_id"] == approval_id
         assert runs[0]["status"] == "ready"
         assert runs[0]["safety_gate_state"] == "approved_validation_record"
-        assert runs[0]["allowed_to_execute"] is True
+        assert runs[0]["allowed_to_execute"] is False
         assert runs[0]["approval_required"] is True
         assert "secret-token" not in str(runs)
         assert "session=secret" not in str(runs)
@@ -2162,6 +2189,106 @@ def test_campaign_denied_approval_blocks_matching_validation_run():
         assert run["status"] == "blocked"
         assert run["safety_gate_state"] == "blocked"
         assert run["allowed_to_execute"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_approved_validation_still_requires_preflight_review():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Approved validation preflight campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Review validation gate",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            repository.update_campaign_task_status(
+                task.id,
+                "completed",
+                output_refs=["validation_run:approved"],
+            )
+            approval = repository.create_approval_record(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                program_id=campaign.program_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approval request",
+                requested_action="two_account_authorization_check",
+                asset=campaign.default_asset,
+                validation_mode="two_account_authorization_check",
+                plan_digest="plan_digest_preflight_required",
+                autonomy_level=campaign.autonomy_level,
+                safety_gate_state="awaiting_approval",
+            )
+            repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=None,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="planned",
+                safety_gate_state="awaiting_approval",
+                plan_digest="plan_digest_preflight_required",
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=0,
+                summary="Awaiting approval",
+                payload={},
+            )
+            campaign_id = campaign.id
+            approval_id = approval.id
+
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for preflight only.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        runs_response = client.get(f"/mythos/campaigns/{campaign_id}/validation-runs")
+        assert runs_response.status_code == 200
+        run = runs_response.json()[0]
+        assert run["approval_id"] == approval_id
+        assert run["status"] == "ready"
+        assert run["safety_gate_state"] == "approved_validation_record"
+        assert run["allowed_to_execute"] is False
+
+        control_response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+        assert control_response.status_code == 200
+        control_center = control_response.json()
+        assert control_center["safe_next_action"] == "review_validation_queue"
+        assert control_center["execution_allowed"] is False
     finally:
         app.dependency_overrides.clear()
 

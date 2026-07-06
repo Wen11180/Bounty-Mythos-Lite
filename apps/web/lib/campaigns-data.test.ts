@@ -483,7 +483,7 @@ test("toCampaignControlSummary routes learning outcome actions to report drafts"
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Record learning outcome");
+  assert.equal(summary.safeNextAction, "Review learning outcome");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/report-drafts");
 });
 
@@ -506,11 +506,65 @@ test("toCampaignControlSummary routes cycle review completion actions to timelin
     safe_next_action: "complete_cycle_review",
     approvals: [],
     blocked_reasons: ["campaign_cycle_review_required"],
-    pipeline_stages: [],
+    pipeline_stages: [
+      {
+        campaign_id: "campaign_1",
+        created_at: "2026-07-05T00:14:00Z",
+        id: "stage_cycle_review_awaiting",
+        input_refs: ["campaign:campaign_1?cookie=session=secret"],
+        output_refs: ["notes:Authorization: Bearer secret-token"],
+        pipeline_run_id: null,
+        safety_gate_state: "allowed",
+        stage_key: "campaign_cycle_review",
+        stage_order: 5,
+        status: "awaiting_review",
+        stop_reason: "campaign_cycle_review_required",
+        task_id: null,
+      },
+      {
+        campaign_id: "campaign_1",
+        created_at: "2026-07-05T00:15:00Z",
+        id: "stage_cycle_review_completed",
+        input_refs: ["campaign:campaign_1?cookie=session=secret"],
+        output_refs: ["notes:Authorization: Bearer secret-token"],
+        pipeline_run_id: null,
+        safety_gate_state: "allowed",
+        stage_key: "campaign_cycle_review",
+        stage_order: 4,
+        status: "completed",
+        stop_reason: null,
+        task_id: null,
+      },
+    ],
   });
 
-  assert.equal(summary.safeNextAction, "Complete cycle review");
+  assert.equal(summary.safeNextAction, "Review campaign cycle");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/timeline");
+  assert.equal(summary.cycleReviewAwaitingCount, 1);
+  assert.equal(summary.cycleReviewCompletedCount, 1);
+  assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|authorization: bearer/i);
+});
+
+test("toCampaignControlSummary keeps next action labels on a review-only allowlist", () => {
+  const actions = [
+    "execute_validation",
+    "submit_report",
+    "dispatch_ready_tasks",
+    "record_learning_outcome",
+    "unknown_future_action",
+  ];
+
+  for (const action of actions) {
+    const summary = toCampaignControlSummary({
+      ...controlCenter,
+      safe_next_action: action,
+      approvals: [],
+      blocked_reasons: [],
+      pipeline_stages: [],
+    });
+
+    assert.doesNotMatch(summary.safeNextAction, /execute|submit|dispatch|record/i);
+  }
 });
 
 test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {
@@ -798,6 +852,41 @@ test("toCampaignBrainSummary keeps Mythos Brain advisory and redacted", () => {
   assert.equal(summary.recentSignals[0].notes, "Triager accepted; cookie=[redacted]");
   assert.equal(summary.appliedLessons[0].reasons[1], "[redacted]");
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|token=secret/i);
+});
+
+test("campaign display mappers suppress restricted raw research text", () => {
+  const timeline = toCampaignTimelineSummaries([
+    {
+      ...controlCenter.pipeline_stages[0],
+      stop_reason: "scanner stdout: GET /private Authorization: Bearer secret-token",
+    },
+  ]);
+  const brain = toCampaignBrainSummary({
+    ...brainProfile,
+    recent_learning_signals: [
+      {
+        ...brainProfile.recent_learning_signals[0],
+        notes: "policy text: targets outside scope are excluded",
+      },
+    ],
+  });
+  const drafts = toCampaignReportDraftSummaries([
+    {
+      ...reportPreview,
+      safety_notes: ["raw evidence: full request response transcript"],
+      title: "raw payload: POST /api/private",
+      claim_ledger: [
+        {
+          ...reportPreview.claim_ledger[0],
+          text: "raw evidence: admin response body",
+        },
+      ],
+    },
+  ]);
+
+  const display = JSON.stringify({ timeline, brain, drafts });
+  assert.doesNotMatch(display, /scanner stdout|policy text|raw payload|raw evidence/i);
+  assert.doesNotMatch(display, /GET \/private|targets outside scope|POST \/api\/private|admin response body/i);
 });
 
 test("toCampaignLearningReviewSummary explains campaign learning review without raw feedback", () => {
@@ -1110,6 +1199,10 @@ test("campaign detail page reads the audited control center and stays read-only"
   assert.match(page, /safeNextAction/);
   assert.match(page, /validationEvidenceCount/);
   assert.match(page, /validationEvidenceGapCount/);
+  assert.match(page, /Cycle reviews/);
+  assert.match(page, /cycleReviewAwaitingCount/);
+  assert.match(page, /cycleReviewCompletedCount/);
+  assert.match(page, /Human review gate/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

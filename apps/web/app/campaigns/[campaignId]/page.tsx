@@ -107,6 +107,21 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               <Field label="Evidence" value={summary.validationEvidenceCount} />
               <Field label="Gaps" value={summary.validationEvidenceGapCount} />
             </dl>
+            <div className="mt-3 border-t border-[var(--line)] pt-3">
+              <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                Cycle reviews
+              </p>
+              <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                <Field label="Awaiting review" value={summary.cycleReviewAwaitingCount} />
+                <Field label="Completed" value={summary.cycleReviewCompletedCount} />
+              </dl>
+              {summary.cycleReviewAwaitingCount > 0 ? (
+                <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
+                  Human review gate. Timeline review explains the loop state but does not grant
+                  execution permission.
+                </p>
+              ) : null}
+            </div>
           </div>
         </div>
       </header>

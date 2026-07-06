@@ -516,6 +516,73 @@ def test_repository_repeated_approval_preserves_preflight_passed_validation_run(
         session.close()
 
 
+def test_repository_approval_decision_does_not_grant_execution_before_preflight():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Approval is not execution permission campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve test-account validation.",
+            requested_action="two_account_authorization_check",
+            asset=campaign.default_asset,
+            validation_mode="two_account_authorization_check",
+            plan_digest="plan_digest_approval_not_execution",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="plan_digest_approval_not_execution",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Awaiting approval",
+            payload={},
+        )
+
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for preflight review only.",
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        assert run.approval_id == approval.id
+        assert run.status == "ready"
+        assert run.safety_gate_state == "approved_validation_record"
+        assert run.allowed_to_execute is False
+    finally:
+        session.close()
+
+
 def test_repository_repeated_approval_preserves_manual_validation_result():
     session, _ = build_session()
     try:

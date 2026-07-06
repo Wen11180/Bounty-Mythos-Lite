@@ -723,7 +723,7 @@ class DatabaseRepository:
                 if validation_run.status not in _VALIDATION_APPROVAL_PRESERVED_STATUSES:
                     validation_run.status = "ready"
                     validation_run.safety_gate_state = "approved_validation_record"
-                    validation_run.allowed_to_execute = True
+                    validation_run.allowed_to_execute = False
                 elif validation_run.status in _VALIDATION_MANUAL_RESULT_STATUSES:
                     validation_run.allowed_to_execute = False
                 else:

@@ -616,6 +616,15 @@ def complete_mythos_campaign_cycle_review(
         raise HTTPException(status_code=404, detail="Cycle review stage not found")
     if stage.status != "awaiting_review":
         raise HTTPException(status_code=409, detail="Cycle review is not awaiting review")
+    completed_reviews = {
+        _cycle_review_signature(record)
+        for record in repository.list_campaign_pipeline_stages(campaign_id)
+        if record.stage_key == "campaign_cycle_review"
+        and record.status == "completed"
+        and record.safety_gate_state == "allowed"
+    }
+    if _cycle_review_signature(stage) in completed_reviews:
+        raise HTTPException(status_code=409, detail="Cycle review is already completed")
 
     completed = repository.save_pipeline_stage(
         pipeline_run_id=stage.pipeline_run_id,
@@ -1766,8 +1775,8 @@ def _campaign_control_center_safe_next_action(
         record.approval_required
         and not record.allowed_to_execute
         and (
-            record.status == "awaiting_approval"
-            or record.safety_gate_state == "awaiting_approval"
+            record.status in {"awaiting_approval", "ready"}
+            or record.safety_gate_state in {"awaiting_approval", "approved_validation_record"}
         )
         for record in validation_runs
     ):
@@ -1818,10 +1827,27 @@ def _campaign_has_report_preview_finding_candidate(
 def _campaign_has_awaiting_cycle_review(
     pipeline_stages: list[PipelineStageRecord],
 ) -> bool:
+    completed_reviews = {
+        _cycle_review_signature(stage)
+        for stage in pipeline_stages
+        if stage.stage_key == "campaign_cycle_review"
+        and stage.status == "completed"
+        and stage.safety_gate_state == "allowed"
+    }
     return any(
         stage.stage_key == "campaign_cycle_review"
         and stage.status == "awaiting_review"
+        and _cycle_review_signature(stage) not in completed_reviews
         for stage in pipeline_stages
+    )
+
+
+def _cycle_review_signature(stage: PipelineStageRecord) -> tuple:
+    return (
+        stage.stage_order,
+        stage.task_id,
+        tuple(stage.input_refs or []),
+        tuple(stage.output_refs or []),
     )
 
 
