@@ -55,7 +55,7 @@ export default async function CampaignBrainPage({ params }: PageProps) {
               {summary.programName}
             </h1>
             <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-              Advisory research memory for ranking and explanation. It cannot authorize execution.
+              Advisory research memory for ranking and explanation. It stays advisory only.
             </p>
           </div>
           <div className="border border-[var(--line)] bg-white p-4">
@@ -141,7 +141,7 @@ export default async function CampaignBrainPage({ params }: PageProps) {
             <dl className="grid gap-3 p-5 text-sm">
               <Field label="Ready" value={learningReview.reviewReady ? "Yes" : "No"} />
               <Field label="Safe next action" value={learningReview.safeNextAction} />
-              <Field label="Linked runs" value={String(learningReview.linkedRunCount)} />
+              <Field label="Linked audits" value={String(learningReview.linkedRunCount)} />
               <Field label="Recent signals" value={String(learningReview.recentSignalCount)} />
               <Field label="Strong evidence" value={String(learningReview.strongEvidenceSignalCount)} />
               <Field label="Applied lessons" value={String(learningReview.appliedLessonCount)} />
@@ -153,9 +153,58 @@ export default async function CampaignBrainPage({ params }: PageProps) {
             <SectionHeader title="Safety Boundary" />
             <dl className="grid gap-3 p-5 text-sm">
               <Field label="Advisory only" value={advisoryOnly ? "Yes" : "No"} />
-              <Field label="Execution allowed" value={summary.executionAllowed ? "Yes" : "No"} />
+              <Field
+                label="Review boundary"
+                value={summary.executionAllowed ? "Scope Guard reviewed" : "Brain advisory memory"}
+              />
               <Field label="Program" value={summary.programId} />
             </dl>
+          </section>
+
+          <section className="border border-[var(--line)] bg-white">
+            <SectionHeader title="Reasoning Memory" />
+            <div className="grid gap-4 p-5 text-sm">
+              <dl className="grid grid-cols-2 gap-3">
+                <Field
+                  label="Highest score"
+                  value={String(summary.reasoningMemory.highestReasoningReviewScore)}
+                />
+                <Field
+                  label="Contexts"
+                  value={String(summary.reasoningMemory.learningSignalContextCount)}
+                />
+                <Field
+                  label="Candidates"
+                  value={String(summary.reasoningMemory.candidateContextCount)}
+                />
+                <Field label="Gate" value="Advisory memory only" />
+              </dl>
+              {summary.reasoningMemory.topPlaybooks.length > 0 ? (
+                <ul className="grid gap-2 border-t border-[var(--line)] pt-3">
+                  {summary.reasoningMemory.topPlaybooks.map((playbook) => (
+                    <li key={playbook.playbookId} className="grid gap-1">
+                      <p className="break-words font-semibold">{playbook.playbookId}</p>
+                      <p className="text-xs text-[var(--muted)]">
+                        Score {playbook.highestReasoningReviewScore} from{" "}
+                        {playbook.learningSignalContextCount} signal context(s)
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {summary.reasoningMemory.safetyNotes.length > 0 ? (
+                <ul className="flex flex-wrap gap-1.5">
+                  {summary.reasoningMemory.safetyNotes.map((note) => (
+                    <li
+                      key={`reasoning-memory-${note}`}
+                      className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold text-[var(--muted)]"
+                    >
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           </section>
 
           <section className="border border-[var(--line)] bg-white">

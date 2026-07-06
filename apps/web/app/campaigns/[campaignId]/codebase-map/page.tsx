@@ -25,7 +25,7 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <Code2 size={17} aria-hidden="true" />
-          Codebase Map
+          Code Review Map
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
             Read only
           </span>
@@ -52,7 +52,7 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
           <article className="border border-[var(--line)] bg-white">
             <SectionHeader icon={Radar} title="Mapped Repositories" />
             {view.maps.length === 0 ? (
-              <EmptyState label="No codebase map records" />
+              <EmptyState label="No mapped repositories ready" />
             ) : (
               <div className="divide-y divide-[var(--line)]">
                 {view.maps.map((map) => (
@@ -83,7 +83,7 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
           <article className="border border-[var(--line)] bg-white">
             <SectionHeader icon={FileSearch} title="Code Facts" />
             {view.facts.length === 0 ? (
-              <EmptyState label="No code facts recorded" />
+              <EmptyState label="No code facts ready" />
             ) : (
               <div className="divide-y divide-[var(--line)]">
                 {view.facts.map((fact) => (
@@ -112,17 +112,17 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={ShieldCheck} title="Safety Boundary" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Scanner execution" value="Not available from this page" />
+              <Field label="Scanner permission" value="Not available from this read-only view" />
               <Field label="Raw stdout" value="Not displayed" />
               <Field label="Findings" value="Candidates only" />
-              <Field label="Scanner runs" value={String(view.scannerRunCount)} />
+              <Field label="Scanner audits" value={String(view.scannerRunCount)} />
             </dl>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={FileSearch} title="Scanner Runs" />
+            <SectionHeader icon={FileSearch} title="Scanner Audits" />
             {view.scannerRuns.length === 0 ? (
-              <EmptyState label="No scanner runs recorded" />
+              <EmptyState label="No scanner audits ready" />
             ) : (
               <div className="divide-y divide-[var(--line)]">
                 {view.scannerRuns.map((run) => (
@@ -132,10 +132,10 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
                       <p className="mt-1 break-words text-[var(--muted)]">{run.summary}</p>
                     </div>
                     <dl className="grid gap-2 text-xs text-[var(--muted)]">
-                      <Field label="Run" value={run.id} />
+                      <Field label="Audit" value={run.id} />
                       <Field label="Command" value={run.commandHash} />
                       <Field label="Status" value={run.status} />
-                      <Field label="Safety gate" value={run.safetyGateState} />
+                      <Field label="Review gate" value={run.safetyGateState} />
                       <Field label="Candidates" value={String(run.candidateCount)} />
                       <Field label="Static findings" value={String(run.findingCount)} />
                     </dl>

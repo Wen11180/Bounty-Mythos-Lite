@@ -1,8 +1,8 @@
 # Bounty Mythos-Lite
 
-Bounty Mythos-Lite is a bug bounty research assistant scaffold. It starts as a safe engineering foundation for program policy parsing, scope guarding, hypothesis generation, validation planning, evidence building, reporting, and learning loops.
+Bounty Mythos-Lite is an authorized autonomous vulnerability research system for lawful bug bounty work. It centers on campaign-driven research: policy parsing, Scope Guard checks, target modeling, hypothesis generation, refutation, non-destructive validation planning, evidence review, report drafts, and advisory learning loops.
 
-This initialization deliberately does not perform public-target scanning, exploit execution, destructive validation, or automatic bounty submission.
+It deliberately does not perform public-target scanning, exploit execution, destructive validation, credential attacks, real-user data collection, or automatic bounty submission.
 
 ## Structure
 
@@ -22,7 +22,7 @@ Copy `.env.example` to `.env` before running services that need environment vari
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-Backend tests:
+Backend verification:
 
 ```powershell
 cd apps/api
@@ -30,12 +30,20 @@ python -m pip install -r requirements.txt
 python -m pytest
 ```
 
-Frontend build:
+Frontend verification:
 
 ```powershell
 cd apps/web
 npm install
+npm test
+npm run lint
 npm run build
+```
+
+Docker Compose configuration check:
+
+```powershell
+docker compose -f infra/docker-compose.yml config --quiet
 ```
 
 The API Docker image uses Python 3.12. Local development should use the pinned

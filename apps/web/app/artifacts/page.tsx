@@ -68,7 +68,7 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
       </header>
       {artifactDataMode === "Demo data" ? (
         <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
-          Demo data is shown because artifact records came from fallback summaries.
+          Demo data is shown because sample Mythos artifact summaries are being shown.
         </p>
       ) : null}
 
@@ -83,7 +83,7 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
         <FilterField label="Provenance ref" name="provenance_ref" defaultValue={filters.provenanceRef} />
         <FilterField label="Fact type" name="fact_type" defaultValue={filters.factType} />
         <FilterField label="Usage type" name="usage_type" defaultValue={filters.usageType} />
-        <FilterField label="Usage run" name="usage_run_id" defaultValue={filters.usageRunId} />
+        <FilterField label="Usage audit" name="usage_run_id" defaultValue={filters.usageRunId} />
         <FilterField label="Sensitivity" name="sensitivity_label" defaultValue={filters.sensitivityLabel} />
         <FilterField label="Redaction" name="redaction_status" defaultValue={filters.redactionStatus} />
         <FilterField label="Report chain" name="report_chain_allowed" defaultValue={filters.reportChainAllowed} />
@@ -103,7 +103,7 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
 
       <section className="mt-5 border border-[var(--line)] bg-white">
         <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
-          <h2 className="text-lg font-semibold">Repository View</h2>
+          <h2 className="text-lg font-semibold">Artifact Review</h2>
           <Fingerprint size={19} className="text-[var(--accent)]" aria-hidden="true" />
         </div>
         {artifacts.length === 0 ? (
@@ -165,7 +165,7 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
                     <p className="mt-2 text-[var(--muted)]">{safety.reportChainAllowed}</p>
                   </div>
                   <div>
-                    <p className="text-xs font-semibold uppercase text-[var(--muted)]">Usages</p>
+                    <p className="text-xs font-semibold uppercase text-[var(--muted)]">Usage audit</p>
                     <p className="mt-1 font-semibold tabular-nums">{usageCount}</p>
                   </div>
                 </article>

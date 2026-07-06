@@ -19,11 +19,11 @@ export default async function CampaignDetailPage({ params }: PageProps) {
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
           <p className="flex items-center gap-2 text-sm font-semibold text-[var(--warning)]">
             <AlertTriangle size={17} aria-hidden="true" />
-            Campaign detail unavailable
+            Campaign control unavailable
           </p>
           <h1 className="mt-3 break-words text-3xl font-semibold text-balance">{campaignId}</h1>
           <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-            No audited control-center record was returned for this campaign.
+            No audited control summary was returned for this campaign.
           </p>
         </section>
       </main>
@@ -31,7 +31,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
   }
 
   const summary = toCampaignControlSummary(controlCenter);
-  const executionAllowed = summary.executionAllowed;
+  const runtimeGateState = summary.executionAllowed ? "Scope Guard clear" : "Scope Guard blocked";
   const safeNextAction = summary.safeNextAction;
 
   return (
@@ -55,27 +55,27 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               {summary.defaultAsset}
             </p>
             <nav className="mt-4 flex flex-wrap gap-2">
-              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/tasks`} label="Tasks" />
-              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/agent-runs`} label="Agent Runs" />
+              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/tasks`} label="Research Review" />
+              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/agent-runs`} label="Agent Audit" />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/attack-surface-map`}
                 label="Attack Surface Map"
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/codebase-map`}
-                label="Codebase Map"
+                label="Code Review Map"
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/artifacts`}
-                label="Artifacts"
+                label="Artifact Review"
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
-                label="Validation Queue"
+                label="Approval Review"
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/validation-runs`}
-                label="Validation Runs"
+                label="Validation Audit"
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/hypothesis-board`}
@@ -87,10 +87,10 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/report-drafts`}
-                label="Report Drafts"
+                label="Report Readiness"
               />
-              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/timeline`} label="Timeline" />
-              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/brain`} label="Brain" />
+              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/timeline`} label="Review Timeline" />
+              <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/brain`} label="Mythos Brain" />
             </nav>
           </div>
           <div className="border border-[var(--line)] bg-white p-4">
@@ -106,8 +106,35 @@ export default async function CampaignDetailPage({ params }: PageProps) {
             ) : (
               <p className="mt-2 font-semibold text-[var(--accent-strong)]">{safeNextAction}</p>
             )}
+            {summary.blockedReasons.length > 0 ? (
+              <div className="mt-3 border-t border-[var(--line)] pt-3">
+                <p className="text-xs font-semibold uppercase text-[var(--muted)]">Action blockers</p>
+                <ul className="mt-2 grid gap-1 text-xs leading-5 text-[var(--muted)]">
+                  {summary.blockedReasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {summary.promotionReviewBlockedCount > 0 ? (
+              <div className="mt-3 border-t border-[var(--line)] pt-3">
+                <p className="text-xs font-semibold uppercase text-[var(--muted)]">Promotion review</p>
+                <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                  <Field label="Blocked attempts" value={summary.promotionReviewBlockedCount} />
+                  <Field label="Provenance refs" value={summary.promotionReviewProvenanceRefCount} />
+                </dl>
+                {summary.promotionReviewLatestReason ? (
+                  <p className="mt-2 break-words text-xs leading-5 text-[var(--muted)]">
+                    {summary.promotionReviewLatestReason}
+                  </p>
+                ) : null}
+                <p className="mt-2 break-words text-xs leading-5 text-[var(--muted)]">
+                  {summary.promotionReviewNextAllowedAction}
+                </p>
+              </div>
+            ) : null}
             <dl className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--line)] pt-3 text-xs">
-              <Field label="Validation runs" value={summary.validationRunCount} />
+              <Field label="Validation audits" value={summary.validationRunCount} />
               <Field label="Evidence" value={summary.validationEvidenceCount} />
               <Field label="Gaps" value={summary.validationEvidenceGapCount} />
             </dl>
@@ -121,8 +148,8 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               </dl>
               {summary.cycleReviewAwaitingCount > 0 ? (
                 <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
-                  Human review gate. Timeline review explains the loop state but does not grant
-                  execution permission.
+                  Human review gate. Timeline review explains the loop state without starting
+                  validation.
                 </p>
               ) : null}
             </div>
@@ -130,11 +157,115 @@ export default async function CampaignDetailPage({ params }: PageProps) {
         </div>
       </header>
 
+      <section className="border-b border-[var(--line)] py-5">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold">Control readiness</p>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              Review only checkpoints for the campaign loop. These links cannot start validation.
+            </p>
+          </div>
+          <span className="text-xs font-semibold uppercase text-[var(--muted)]">
+            Audited navigation
+          </span>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/artifacts`}
+            label="Artifact review"
+            value="Review"
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
+            label="Approval review"
+            value={summary.pendingApprovalCount}
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/validation-runs`}
+            label="Validation audit"
+            value={summary.validationRunCount}
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/evidence-review`}
+            label="Evidence review"
+            value={summary.validationEvidenceGapCount}
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/report-drafts`}
+            label="Report readiness"
+            value="Review"
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/tasks`}
+            label="Review items"
+            value={summary.taskCount}
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/brain`}
+            label="Learning review"
+            value="Review"
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/timeline`}
+            label="Cycle review"
+            value={summary.cycleReviewAwaitingCount}
+          />
+          <ReadinessLink
+            href={`/campaigns/${encodeURIComponent(campaignId)}/timeline`}
+            label="Blocked stages"
+            value={summary.blockedStageCount}
+          />
+        </div>
+      </section>
+
+      {summary.researchQueueSuggestions.length > 0 ? (
+        <section className="border-b border-[var(--line)] py-5">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold">Research Memory Review</p>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Advisory reasoning-memory suggestions for human review. They stay advisory only.
+              </p>
+            </div>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">
+              Mythos brain
+            </span>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {summary.researchQueueSuggestions.map((suggestion) => (
+              <article
+                key={suggestion.queueKey}
+                className="grid gap-3 border border-[var(--line)] bg-white p-4 text-sm"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">{suggestion.title}</p>
+                    <p className="mt-1 text-[var(--muted)]">{suggestion.source}</p>
+                  </div>
+                  <span className="text-2xl font-semibold tabular-nums text-[var(--accent-strong)]">
+                    {suggestion.priorityScore}
+                  </span>
+                </div>
+                <dl className="grid gap-2 sm:grid-cols-2">
+                  <Field label="Playbook" value={suggestion.playbookId} />
+                  <Field label="Surface" value={suggestion.surfaceKey ?? "No surface"} />
+                  <Field label="Review gate" value={suggestion.safetyGate} />
+                  <Field label="Action gate" value="Review only" />
+                </dl>
+                <p className="text-pretty text-[var(--muted)]">
+                  {suggestion.nextAllowedAction}
+                </p>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Status" value={summary.status} />
         <Metric label="Scope" value={summary.scopeStatus} />
-        <Metric label="Tasks" value={summary.taskCount} />
-        <Metric label="Agent runs" value={summary.agentRunCount} />
+        <Metric label="Review items" value={summary.taskCount} />
+        <Metric label="Agent audits" value={summary.agentRunCount} />
         <Metric label="Pending approvals" value={summary.pendingApprovalCount} />
         <Metric label="Blocked stages" value={summary.blockedStageCount} />
         <Metric label="Validation evidence" value={summary.validationEvidenceCount} />
@@ -146,7 +277,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
           <SectionHeader icon={Gauge} title="Budget And Gates" />
           <dl className="grid gap-4 p-5 text-sm sm:grid-cols-2">
             <Field label="Budget" value={summary.budgetLabel} />
-            <Field label="Operator mode" value={executionAllowed ? "Allowed" : "Blocked"} />
+            <Field label="Runtime gate" value={runtimeGateState} />
             <Field label="Campaign status" value={summary.status} />
             <Field label="Scope status" value={summary.scopeStatus} />
           </dl>
@@ -154,7 +285,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ClipboardCheck} title="Blocked Reasons" />
+            <SectionHeader icon={ClipboardCheck} title="Action blockers" />
             {summary.blockedReasons.length > 0 ? (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {summary.blockedReasons.map((reason) => (
@@ -162,7 +293,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                 ))}
               </ul>
             ) : (
-              <p className="p-5 text-sm text-[var(--muted)]">No active blocker recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No active action blockers.</p>
             )}
           </section>
         </aside>
@@ -191,6 +322,18 @@ function AuditLink({ href, label }: { href: string; label: string }) {
     >
       <ClipboardCheck size={17} aria-hidden="true" />
       {label}
+    </Link>
+  );
+}
+
+function ReadinessLink({ href, label, value }: { href: string; label: string; value: React.ReactNode }) {
+  return (
+    <Link
+      href={href}
+      className="grid min-h-20 gap-2 border border-[var(--line)] bg-white p-3 text-sm"
+    >
+      <span className="font-semibold">{label}</span>
+      <span className="text-2xl font-semibold tabular-nums text-[var(--accent-strong)]">{value}</span>
     </Link>
   );
 }

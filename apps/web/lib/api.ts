@@ -4,6 +4,7 @@ import type {
   CampaignCodebaseMap,
   CampaignControlCenter,
   CampaignPipelineStage,
+  CampaignResearchTaskReview,
   CampaignTask,
   CampaignValidationRun,
 } from "./campaigns-data";
@@ -147,7 +148,16 @@ export type PipelineHypothesis = {
 export type PipelineRefutation = {
   status?: string;
   reasons?: string[];
+  questions?: string[];
   human_review_required?: boolean;
+};
+
+export type PipelineExploitChain = {
+  primitives?: string[];
+  preconditions?: string[];
+  impact?: string;
+  confidence?: number;
+  safety_notes?: string[];
 };
 
 export type PipelineValidationPlan = {
@@ -250,10 +260,18 @@ export type ClosedLoopSummary = {
   learning_signal_count: number;
   lesson_count?: number;
   brain_memory_status?: string;
+  reasoning_context?: ClosedLoopReasoningContext;
   memory_lessons?: ClosedLoopMemoryLesson[];
   blocked_reasons: string[];
   safety_notes: string[];
   steps?: ClosedLoopStep[];
+};
+
+export type ClosedLoopReasoningContext = {
+  source: string;
+  highest_reasoning_review_score: number;
+  learning_signal_context_count: number;
+  safety_gate: string;
 };
 
 export type ClosedLoopMemoryLesson = {
@@ -377,6 +395,7 @@ export type HypothesisLifecycleAssessment = {
   hypothesis?: PipelineHypothesis;
   scope_decision?: ScopeGuardDecision;
   refutation?: PipelineRefutation;
+  exploit_chain?: PipelineExploitChain;
   validation_plan?: PipelineValidationPlan;
   report_draft?: ReportDraftCandidate;
   evidence_hints?: ValidationWorkspaceEvidenceHint[];
@@ -665,11 +684,28 @@ export type ProgramIntelligenceProfile = {
   attack_surface_memory: AttackSurfaceMemory;
   high_value_surfaces: HighValueSurface[];
   learning_summary: LearningSummary;
+  reasoning_memory?: ReasoningMemorySummary;
   recent_learning_signals: LearningSignal[];
   applied_lessons: MythosLesson[];
   skipped_lessons: SkippedMythosLesson[];
   lesson_adjusted_surfaces: LessonAdjustedSurface[];
   safety_notes: string[];
+};
+
+export type ReasoningMemorySummary = {
+  source: string;
+  highest_reasoning_review_score: number;
+  learning_signal_context_count: number;
+  candidate_context_count: number;
+  top_playbooks: ReasoningMemoryPlaybook[];
+  safety_notes: string[];
+};
+
+export type ReasoningMemoryPlaybook = {
+  playbook_id: string;
+  highest_reasoning_review_score: number;
+  learning_signal_context_count: number;
+  candidate_context_count: number;
 };
 
 async function apiGet<T>(path: string, fallback: T): Promise<T> {
@@ -705,6 +741,30 @@ async function apiPost<T>(path: string, body: unknown, fallback: T): Promise<T> 
   }
 }
 
+export type FindingCandidatePromotionGateDetail = {
+  blocked_stage_count: number;
+  finding_promotion_allowed: false;
+  provenance_ref_count: number;
+  reason: "blocked_by_research_feedback_gate";
+  report_submission_allowed: false;
+};
+
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly detail: FindingCandidatePromotionGateDetail;
+
+  constructor(
+    message: string,
+    status: number,
+    detail: FindingCandidatePromotionGateDetail,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 export function getPrograms(fallback: Program[]): Promise<Program[]> {
   return apiGet("/programs", fallback);
 }
@@ -735,6 +795,17 @@ export function getCampaignTasks(
   fallback: CampaignTask[],
 ): Promise<CampaignTask[]> {
   return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/tasks`, fallback);
+}
+
+export function getCampaignResearchTaskReview(
+  campaignId: string,
+  taskId: string,
+  fallback: CampaignResearchTaskReview | null,
+): Promise<CampaignResearchTaskReview | null> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/research-queue/tasks/${encodeURIComponent(taskId)}/review`,
+    fallback,
+  );
 }
 
 export function getCampaignApprovals(
@@ -861,11 +932,79 @@ export function createFindingCandidate(
   runId: string,
   fallback: Finding | null,
 ): Promise<Finding | null> {
-  return apiPost(
-    `/mythos/pipeline/runs/${encodeURIComponent(runId)}/finding-candidates`,
-    {},
-    fallback,
-  );
+  return createFindingCandidateRequest(runId, fallback);
+}
+
+async function createFindingCandidateRequest(
+  runId: string,
+  fallback: Finding | null,
+): Promise<Finding | null> {
+  try {
+    const response = await fetch(
+      new URL(`/mythos/pipeline/runs/${encodeURIComponent(runId)}/finding-candidates`, API_BASE_URL),
+      {
+        body: JSON.stringify({}),
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+    );
+
+    if (response.status === 409) {
+      const detail = await safePromotionGateDetail(response);
+      if (detail) {
+        throw new ApiRequestError("Finding candidate promotion blocked", response.status, detail);
+      }
+    }
+
+    if (!response.ok) {
+      return fallback;
+    }
+
+    return (await response.json()) as Finding;
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      throw error;
+    }
+
+    return fallback;
+  }
+}
+
+async function safePromotionGateDetail(
+  response: Response,
+): Promise<FindingCandidatePromotionGateDetail | null> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    const detail = payload.detail;
+    if (!isRecord(detail)) {
+      return null;
+    }
+
+    if (
+      detail.reason !== "blocked_by_research_feedback_gate" ||
+      detail.finding_promotion_allowed !== false ||
+      detail.report_submission_allowed !== false ||
+      typeof detail.blocked_stage_count !== "number" ||
+      typeof detail.provenance_ref_count !== "number"
+    ) {
+      return null;
+    }
+
+    return {
+      blocked_stage_count: detail.blocked_stage_count,
+      finding_promotion_allowed: false,
+      provenance_ref_count: detail.provenance_ref_count,
+      reason: "blocked_by_research_feedback_gate",
+      report_submission_allowed: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function recordClaimReviewDecision(

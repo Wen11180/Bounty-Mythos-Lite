@@ -19,13 +19,14 @@ export default async function CampaignValidationQueuePage({ params }: PageProps)
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ClipboardCheck size={17} aria-hidden="true" />
-          Validation Queue
+          Approval Review
         </p>
         <h1 className="mt-3 max-w-4xl break-words text-3xl font-semibold leading-tight text-balance">
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Approval-required validation records, shown as read-only audit state.
+          Approval requests, shown as read-only audit state. Preflight still required
+          before any validation can start.
         </p>
       </header>
 
@@ -33,18 +34,19 @@ export default async function CampaignValidationQueuePage({ params }: PageProps)
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
           <p className="flex items-center gap-2 text-sm font-semibold text-[var(--warning)]">
             <AlertTriangle size={17} aria-hidden="true" />
-            No approval-required validation records
+            No approval requests ready
           </p>
           <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-            Approval records will appear here when the campaign reaches a human gate.
+            Approval requests will appear here when the campaign reaches a human gate.
+            Preflight still required after review.
           </p>
         </section>
       ) : (
         <section className="mt-5 border border-[var(--line)] bg-white">
           <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_170px_170px]">
-            <span>Approval</span>
+            <span>Approval review</span>
             <span>Status</span>
-            <span>Safety gate</span>
+            <span>Approval gate state</span>
             <span>Validation mode</span>
           </div>
           <div className="divide-y divide-[var(--line)]">

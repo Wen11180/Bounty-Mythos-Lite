@@ -48,18 +48,18 @@ import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
 const navigation = [
   { label: "Dashboard", icon: Home },
   { label: "Campaigns", icon: ShieldCheck, href: "/campaigns" },
-  { label: "Programs", icon: Target },
-  { label: "Assets", icon: Layers },
+  { label: "Program Scope", icon: Target },
+  { label: "Target Map", icon: Layers },
   { label: "Artifact Repository", icon: Database, href: "/artifacts" },
-  { label: "API Model", icon: GitBranch },
-  { label: "Business Flows", icon: ListChecks },
-  { label: "Hypotheses", icon: Bot },
-  { label: "Validation Plans", icon: ClipboardCheck },
-  { label: "Findings", icon: FileSearch },
-  { label: "Reports", icon: FileText },
-  { label: "Submissions", icon: Upload },
-  { label: "Knowledge Base", icon: BookOpen },
-  { label: "Settings / Policy Guard", icon: Settings },
+  { label: "Attack Surface Map", icon: GitBranch },
+  { label: "Invariant Review", icon: ListChecks },
+  { label: "Hypothesis Board", icon: Bot },
+  { label: "Approval Review", icon: ClipboardCheck },
+  { label: "Finding Candidates", icon: FileSearch },
+  { label: "Report Readiness", icon: FileText },
+  { label: "Manual Submission Gate", icon: Upload },
+  { label: "Mythos Brain", icon: BookOpen },
+  { label: "Scope Guard", icon: Settings },
 ];
 
 const kpis = [
@@ -278,7 +278,7 @@ export default async function Dashboard() {
         </header>
         {dashboardDataMode === "Demo data" ? (
           <p className="-mt-4 mb-5 rounded-md border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
-            Demo data is shown because one or more dashboard panels came from fallback records.
+            Demo data is shown because one or more dashboard panels are using sample Mythos workspace summaries.
           </p>
         ) : null}
 
@@ -375,7 +375,7 @@ export default async function Dashboard() {
                   <RadarMetric
                     label="Memory lessons"
                     value={intelligenceRadar.reusableLessonCount}
-                    detail={`${intelligenceRadar.memoryReadyRuns} runs ready`}
+                    detail={`${intelligenceRadar.memoryReadyRuns} audits ready`}
                   />
                   <RadarMetric
                     label="Unsafe requirements"
@@ -409,9 +409,9 @@ export default async function Dashboard() {
             <section className="rounded-md border border-[var(--line)] bg-white">
               <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
                 <div>
-                  <h3 className="text-lg font-semibold">Pipeline Runs / Evidence Snapshot</h3>
+                  <h3 className="text-lg font-semibold">Mythos Evidence Snapshot</h3>
                   <p className="mt-1 text-sm text-[var(--muted)]">
-                    Dry-run history with evidence chain counts
+                    Review-ready research history with evidence chain counts
                   </p>
                 </div>
                 <span
@@ -427,7 +427,7 @@ export default async function Dashboard() {
               </div>
               {pipelineRunDataMode === "Demo data" ? (
                 <p className="border-b border-[var(--line)] px-5 py-3 text-sm font-semibold text-[var(--warning)]">
-                  Demo data is shown because no pipeline run records were returned.
+                  Demo data is shown because sample Mythos research audit summaries are being shown.
                 </p>
               ) : null}
               <div className="divide-y divide-[var(--line)]">
@@ -441,7 +441,7 @@ export default async function Dashboard() {
                     >
                     <div className="grid content-start gap-3">
                       <div>
-                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Run ID</p>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Audit ID</p>
                         <p className="mt-1 break-all font-semibold">{run.runId}</p>
                       </div>
                       <div>
@@ -470,7 +470,7 @@ export default async function Dashboard() {
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <WorkbenchLink href={`/runs/${encodeURIComponent(run.runId)}`}>
-                          Run
+                          Review
                         </WorkbenchLink>
                         {run.artifact.artifactId ? (
                           <WorkbenchLink href={`/artifacts/${encodeURIComponent(run.artifact.artifactId)}`}>
@@ -862,9 +862,9 @@ export default async function Dashboard() {
               <div className="grid gap-3">
                 <div className="rounded-md border border-[var(--line)] bg-[#f7f7f4] p-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-semibold">当前验证决策</span>
+                    <span className="font-semibold">Scope Guard decision</span>
                     <span className={scopeGuardDecision.allowed ? "text-[var(--accent-strong)]" : "text-[var(--danger)]"}>
-                      {scopeGuardDecision.allowed ? "Allowed" : "Blocked"}
+                      {scopeGuardDecision.allowed ? "Scope Guard clear" : "Scope Guard blocked"}
                     </span>
                   </div>
                   <p className="mt-2 text-[var(--muted)]">{titleCase(scopeGuardDecision.reason)}</p>

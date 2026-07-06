@@ -100,6 +100,28 @@ class LearningSummary(BaseModel):
     penalized_playbooks: list[str] = Field(default_factory=list)
 
 
+class ReasoningMemoryPlaybook(BaseModel):
+    playbook_id: str
+    highest_reasoning_review_score: int = Field(default=0, ge=0, le=100)
+    learning_signal_context_count: int = 0
+    candidate_context_count: int = 0
+
+
+class ReasoningMemorySummary(BaseModel):
+    source: str = "artifact_usage"
+    highest_reasoning_review_score: int = Field(default=0, ge=0, le=100)
+    learning_signal_context_count: int = 0
+    candidate_context_count: int = 0
+    top_playbooks: list[ReasoningMemoryPlaybook] = Field(default_factory=list)
+    safety_notes: list[str] = Field(
+        default_factory=lambda: [
+            "advisory_memory_only",
+            "no_execution_permission",
+            "does_not_confirm_vulnerability",
+        ]
+    )
+
+
 class ProgramIntelligenceProfile(BaseModel):
     program_id: str
     program_name: str
@@ -107,6 +129,7 @@ class ProgramIntelligenceProfile(BaseModel):
     attack_surface_memory: AttackSurfaceMemory
     high_value_surfaces: list[HighValueSurface] = Field(default_factory=list)
     learning_summary: LearningSummary
+    reasoning_memory: ReasoningMemorySummary = Field(default_factory=ReasoningMemorySummary)
     recent_learning_signals: list[LearningSignal] = Field(default_factory=list)
     applied_lessons: list[MythosLesson] = Field(default_factory=list)
     skipped_lessons: list[dict[str, str]] = Field(default_factory=list)

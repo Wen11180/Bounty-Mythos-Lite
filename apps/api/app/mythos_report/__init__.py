@@ -43,6 +43,17 @@ SECURITY_IMPACT_OBSERVATION_TYPES = {
     "request_response_diff",
     "role_matrix_observation",
 }
+REPORT_SAFE_REVIEW_EVIDENCE_REFS = {
+    "local_code_reference",
+    "log_ref",
+    "request_response_diff",
+    "role_matrix_snapshot",
+    "sanitized_cross_account_diff",
+    "sanitized_parent_child_matrix",
+    "sanitized_request_response",
+    "sanitized_role_matrix",
+    "screenshot_ref",
+}
 
 
 class ClaimLedgerEntry(BaseModel):
@@ -106,9 +117,27 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
     provenance_edges_by_claim_type = claim_provenance_edges_by_type(record)
     report_chain_blocked_refs = artifact_report_chain_blocked_refs(payload)
     manual_evidence_refs_by_claim = manual_observation_evidence_refs_by_claim(payload)
-    impact_observation_claim_ids = security_impact_observation_claim_ids(payload)
+    evidence_refs = [
+        safe_preview_text(item.get("type", "evidence_item"))
+        for item in evidence_items
+        if isinstance(item, dict)
+    ]
+    supported_observation_refs = unique_preview_refs(
+        safe_preview_lines([
+            *REPORT_SAFE_REVIEW_EVIDENCE_REFS,
+            *evidence_refs,
+        ])
+    )
+    impact_evidence_refs_by_claim = security_impact_observation_evidence_refs_by_claim(
+        payload,
+        supported_evidence_refs=supported_observation_refs,
+    )
+    impact_observation_claim_ids = set(impact_evidence_refs_by_claim)
     boundary_matrix_observation_claim_ids = (
-        security_boundary_matrix_observation_claim_ids(payload)
+        security_boundary_matrix_observation_claim_ids(
+            payload,
+            supported_evidence_refs=supported_observation_refs,
+        )
     )
     manual_observation_missing_safe_evidence_claim_ids = (
         manual_observation_claim_ids_missing_safe_evidence(payload)
@@ -116,14 +145,15 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
 
     human_review_required = True
     submission_blocked = True
-    evidence_refs = [
-        safe_preview_text(item.get("type", "evidence_item"))
-        for item in evidence_items
-        if isinstance(item, dict)
-    ]
     sections = ReportPreviewSections(
         observed_facts=safe_preview_lines(
-            observed_fact_lines(record, timeline, evidence_items, payload)
+            observed_fact_lines(
+                record,
+                timeline,
+                evidence_items,
+                payload,
+                supported_evidence_refs=supported_observation_refs,
+            )
         ),
         model_reasoning=safe_preview_lines(
             model_reasoning_lines(hypotheses, invariants)
@@ -159,6 +189,7 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
             provenance_edges_by_claim_type=provenance_edges_by_claim_type,
             report_chain_blocked_refs=report_chain_blocked_refs,
             manual_evidence_refs_by_claim=manual_evidence_refs_by_claim,
+            impact_evidence_refs_by_claim=impact_evidence_refs_by_claim,
             impact_observation_claim_ids=impact_observation_claim_ids,
             boundary_matrix_observation_claim_ids=boundary_matrix_observation_claim_ids,
             manual_observation_missing_safe_evidence_claim_ids=(
@@ -198,6 +229,7 @@ def observed_fact_lines(
     timeline: list,
     evidence_items: list,
     payload: dict | None = None,
+    supported_evidence_refs: list[str] | None = None,
 ) -> list[str]:
     lines = [
         f"Pipeline run {record.id} was created for asset {record.asset}.",
@@ -211,7 +243,12 @@ def observed_fact_lines(
             if name and status:
                 lines.append(f"Stage {name} recorded status {status}.")
     if payload is not None:
-        lines.extend(security_impact_observation_lines(payload))
+        lines.extend(
+            security_impact_observation_lines(
+                payload,
+                supported_evidence_refs=supported_evidence_refs,
+            )
+        )
     return lines
 
 
@@ -335,12 +372,30 @@ def manual_observation_claim_ids_missing_safe_evidence(payload: dict) -> set[str
     return observed_claim_ids - claims_with_safe_refs
 
 
-def security_impact_observation_claim_ids(payload: dict) -> set[str]:
+def security_impact_observation_claim_ids(
+    payload: dict,
+    *,
+    supported_evidence_refs: list[str] | None = None,
+) -> set[str]:
+    return set(
+        security_impact_observation_evidence_refs_by_claim(
+            payload,
+            supported_evidence_refs=supported_evidence_refs,
+        )
+    )
+
+
+def security_impact_observation_evidence_refs_by_claim(
+    payload: dict,
+    *,
+    supported_evidence_refs: list[str] | None = None,
+) -> dict[str, list[str]]:
     observations = payload.get("manual_observations", [])
     if not isinstance(observations, list):
-        return set()
+        return {}
 
-    claim_ids: set[str] = set()
+    supported_refs = set(supported_evidence_refs or REPORT_SAFE_REVIEW_EVIDENCE_REFS)
+    refs_by_claim: dict[str, list[str]] = {}
     for observation in observations:
         if not isinstance(observation, dict):
             continue
@@ -352,14 +407,21 @@ def security_impact_observation_claim_ids(payload: dict) -> set[str]:
         safe_refs = [
             ref
             for ref in safe_string_list(observation.get("evidence_refs", []))
-            if ref != "[REDACTED]"
+            if ref != "[REDACTED]" and ref in supported_refs
         ]
         if safe_refs:
-            claim_ids.add(claim_id)
-    return claim_ids
+            refs_by_claim[claim_id] = unique_preview_refs([
+                *refs_by_claim.get(claim_id, []),
+                *safe_refs,
+            ])
+    return refs_by_claim
 
 
-def security_boundary_matrix_observation_claim_ids(payload: dict) -> set[str]:
+def security_boundary_matrix_observation_claim_ids(
+    payload: dict,
+    *,
+    supported_evidence_refs: list[str] | None = None,
+) -> set[str]:
     target_model = payload.get("target_model")
     if not isinstance(target_model, dict):
         return set()
@@ -371,6 +433,7 @@ def security_boundary_matrix_observation_claim_ids(payload: dict) -> set[str]:
     if not isinstance(observations, list):
         return set()
 
+    supported_refs = set(supported_evidence_refs or REPORT_SAFE_REVIEW_EVIDENCE_REFS)
     claim_ids: set[str] = set()
     for observation in observations:
         if not isinstance(observation, dict):
@@ -383,18 +446,23 @@ def security_boundary_matrix_observation_claim_ids(payload: dict) -> set[str]:
         safe_refs = [
             ref
             for ref in safe_string_list(observation.get("evidence_refs", []))
-            if ref != "[REDACTED]"
+            if ref != "[REDACTED]" and ref in supported_refs
         ]
         if safe_refs:
             claim_ids.add(claim_id)
     return claim_ids
 
 
-def security_impact_observation_lines(payload: dict) -> list[str]:
+def security_impact_observation_lines(
+    payload: dict,
+    *,
+    supported_evidence_refs: list[str] | None = None,
+) -> list[str]:
     observations = payload.get("manual_observations", [])
     if not isinstance(observations, list):
         return []
 
+    supported_refs = set(supported_evidence_refs or REPORT_SAFE_REVIEW_EVIDENCE_REFS)
     lines: list[str] = []
     for observation in observations:
         if not isinstance(observation, dict):
@@ -408,7 +476,7 @@ def security_impact_observation_lines(payload: dict) -> list[str]:
         safe_refs = [
             ref
             for ref in safe_string_list(observation.get("evidence_refs", []))
-            if ref != "[REDACTED]"
+            if ref != "[REDACTED]" and ref in supported_refs
         ]
         if not safe_refs:
             continue
@@ -462,6 +530,7 @@ def claim_ledger_entries(
     provenance_edges_by_claim_type: dict[str, list[ProvenanceEdge]] | None = None,
     report_chain_blocked_refs: list[str] | None = None,
     manual_evidence_refs_by_claim: dict[str, list[str]] | None = None,
+    impact_evidence_refs_by_claim: dict[str, list[str]] | None = None,
     impact_observation_claim_ids: set[str] | None = None,
     boundary_matrix_observation_claim_ids: set[str] | None = None,
     manual_observation_missing_safe_evidence_claim_ids: set[str] | None = None,
@@ -471,6 +540,7 @@ def claim_ledger_entries(
     provenance_edges_by_claim_type = provenance_edges_by_claim_type or {}
     report_chain_blocked_refs = report_chain_blocked_refs or []
     manual_evidence_refs_by_claim = manual_evidence_refs_by_claim or {}
+    impact_evidence_refs_by_claim = impact_evidence_refs_by_claim or {}
     impact_observation_claim_ids = impact_observation_claim_ids or set()
     boundary_matrix_observation_claim_ids = boundary_matrix_observation_claim_ids or set()
     manual_observation_missing_safe_evidence_claim_ids = (
@@ -507,8 +577,23 @@ def claim_ledger_entries(
         for index, line in enumerate(lines, start=1):
             claim_id = f"claim_{claim_type}_{index}"
             review_decision = review_decisions.get(claim_id)
-            safe_text = safe_preview_text(line)
             manual_evidence_refs = manual_evidence_refs_by_claim.get(claim_id, [])
+            impact_evidence_refs = impact_evidence_refs_by_claim.get(claim_id, [])
+            supported_review_refs = unique_preview_refs(
+                safe_preview_lines([
+                    *REPORT_SAFE_REVIEW_EVIDENCE_REFS,
+                    *group_evidence_refs,
+                    *impact_evidence_refs,
+                ])
+            )
+            if not claim_review_decision_supported_for_claim(
+                claim_type=claim_type,
+                review_decision=review_decision,
+                has_supported_manual_evidence=bool(impact_evidence_refs),
+                supported_evidence_refs=supported_review_refs,
+            ):
+                review_decision = None
+            safe_text = safe_preview_text(line)
             safe_evidence_refs = unique_preview_refs(
                 safe_preview_lines([*group_evidence_refs, *manual_evidence_refs])
             )
@@ -571,6 +656,27 @@ def claim_ledger_entries(
             )
 
     return entries
+
+
+def claim_review_decision_supported_for_claim(
+    *,
+    claim_type: str,
+    review_decision: ClaimReviewDecisionResponse | None,
+    has_supported_manual_evidence: bool = False,
+    supported_evidence_refs: list[str] | None = None,
+) -> bool:
+    if review_decision is None:
+        return True
+    if review_decision.decision != "confirmed_observed_fact":
+        return True
+    if claim_type != "observed_fact":
+        return False
+    if review_decision.evidence_refs:
+        return (
+            review_evidence_refs_are_report_safe(review_decision.evidence_refs)
+            and set(review_decision.evidence_refs) <= set(supported_evidence_refs or [])
+        )
+    return has_supported_manual_evidence
 
 
 def claim_quality(

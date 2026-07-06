@@ -29,7 +29,7 @@ export default async function RunDetailPage({ params }: PageProps) {
       <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
         <PageBack />
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
-          <h1 className="text-2xl font-semibold text-balance">Run not found</h1>
+          <h1 className="text-2xl font-semibold text-balance">Research audit not found</h1>
           <p className="mt-2 text-pretty text-[var(--muted)]">{safeDisplay(runId)}</p>
         </section>
       </main>
@@ -52,6 +52,7 @@ export default async function RunDetailPage({ params }: PageProps) {
   const closedLoopSafetyNotes = safeStringList(closedLoop?.safety_notes);
   const closedLoopSteps = closedLoop?.steps ?? [];
   const memoryLessons = closedLoop?.memory_lessons ?? [];
+  const closedLoopReasoningContext = closedLoop?.reasoning_context;
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -68,7 +69,7 @@ export default async function RunDetailPage({ params }: PageProps) {
         <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="max-w-4xl text-3xl font-semibold leading-tight text-balance">
-              {safeDisplay(summary.reportTitle, "Run Detail")}
+              {safeDisplay(summary.reportTitle, "Research Audit")}
             </h1>
             <p className="mt-2 text-pretty text-[var(--muted)]">
               {safeDisplay(summary.asset)}
@@ -91,7 +92,7 @@ export default async function RunDetailPage({ params }: PageProps) {
       </header>
       {runDataMode === "Demo data" ? (
         <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
-          Demo data is shown because this run detail comes from a fallback record.
+          Demo data is shown because this research audit uses a sample Mythos research summary.
         </p>
       ) : null}
 
@@ -112,6 +113,10 @@ export default async function RunDetailPage({ params }: PageProps) {
               <div className="divide-y divide-[var(--line)]">
                 {candidateAssessments.map((candidate, index) => {
                   const reasons = safeStringList(candidate.refutation?.reasons);
+                  const primitives = safeStringList(candidate.exploit_chain?.primitives);
+                  const preconditions = safeStringList(candidate.exploit_chain?.preconditions);
+                  const refutationQuestions = safeStringList(candidate.refutation?.questions);
+                  const chainConfidence = percentScore(candidate.exploit_chain?.confidence);
 
                   return (
                     <article
@@ -136,7 +141,32 @@ export default async function RunDetailPage({ params }: PageProps) {
                             label="Evidence hints"
                             value={candidate.evidence_hints?.length ?? 0}
                           />
+                          <Field
+                            label="Chain confidence"
+                            value={chainConfidence === null ? "Unavailable" : `${chainConfidence}%`}
+                          />
+                          <Field label="Primitive(s)" value={primitives.length} />
+                          <Field label="Precondition(s)" value={preconditions.length} />
+                          <Field label="Refutation question(s)" value={refutationQuestions.length} />
                         </dl>
+                        {candidate.exploit_chain ? (
+                          <div className="mt-4 grid gap-2 border-t border-[var(--line)] pt-3 text-xs text-[var(--muted)]">
+                            <p className="font-semibold uppercase">Exploit-chain reasoning</p>
+                            <p className="break-words">
+                              {safeDisplay(candidate.exploit_chain.impact, "Impact summary unavailable")}
+                            </p>
+                            <ul className="flex flex-wrap gap-1.5">
+                              {safeStringList(candidate.exploit_chain.safety_notes).map((note) => (
+                                <li
+                                  key={`${candidate.candidate_id}-${note}`}
+                                  className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold"
+                                >
+                                  {formatLabel(note)}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                         {reasons.length > 0 ? (
                           <ul className="mt-4 flex flex-wrap gap-1.5">
                             {reasons.map((reason) => (
@@ -169,7 +199,7 @@ export default async function RunDetailPage({ params }: PageProps) {
           ) : null}
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Target} title="Stage Timeline" />
+            <SectionHeader icon={Target} title="Mythos Review Timeline" />
             <ol className="divide-y divide-[var(--line)]">
               {summary.stages.map((stage) => (
                 <li
@@ -285,6 +315,28 @@ export default async function RunDetailPage({ params }: PageProps) {
                 <Field label="Lessons" value={closedLoop?.lesson_count ?? 0} />
                 <Field label="Memory" value={formatLabel(closedLoop?.brain_memory_status ?? "waiting_for_learning")} />
               </dl>
+              {closedLoopReasoningContext ? (
+                <div className="grid gap-2 border-t border-[var(--line)] pt-4">
+                  <p className="font-semibold uppercase text-[var(--muted)]">
+                    Reasoning memory
+                  </p>
+                  <dl className="grid grid-cols-2 gap-3">
+                    <Field
+                      label="Highest score"
+                      value={closedLoopReasoningContext.highest_reasoning_review_score}
+                    />
+                    <Field
+                      label="Contexts"
+                      value={closedLoopReasoningContext.learning_signal_context_count}
+                    />
+                    <Field label="Source" value={closedLoopReasoningContext.source} />
+                    <Field
+                      label="Gate"
+                      value={closedLoopReasoningContext.safety_gate ?? "advisory_memory_only"}
+                    />
+                  </dl>
+                </div>
+              ) : null}
               {closedLoopSteps.length > 0 ? (
                 <ol className="grid gap-3 border-t border-[var(--line)] pt-4">
                   {closedLoopSteps.map((step) => (
@@ -454,6 +506,16 @@ function closedLoopStepClass(status: string): string {
     default:
       return "text-[var(--warning)]";
   }
+}
+
+function percentScore(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const normalized = value >= 0 && value <= 1 ? value * 100 : value;
+
+  return Math.max(0, Math.min(100, Math.round(normalized)));
 }
 
 function PageBack() {

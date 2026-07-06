@@ -1,10 +1,18 @@
 import { AlertTriangle, ArrowLeft, FileText, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { getCampaignControlCenter, getCampaignValidationRuns, getReportPreview } from "@/lib/api";
+import {
+  getCampaignControlCenter,
+  getCampaignPipelineStages,
+  getCampaignResearchTaskReview,
+  getCampaignTasks,
+  getCampaignValidationRuns,
+  getReportPreview,
+} from "@/lib/api";
 import {
   toCampaignFindingCandidateGateSummary,
   toCampaignReportDraftEvidenceSummary,
   toCampaignReportDraftSummaries,
+  toCampaignResearchFeedbackEvidenceSummaries,
 } from "@/lib/campaigns-data";
 
 type PageProps = {
@@ -25,8 +33,20 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
     await Promise.all(runIds.map((runId) => getReportPreview(runId, null)))
   ).filter((preview): preview is NonNullable<typeof preview> => preview !== null);
   const validationRuns = await getCampaignValidationRuns(campaignId, []);
+  const pipelineStages = await getCampaignPipelineStages(campaignId, []);
+  const tasks = (await getCampaignTasks(campaignId, [])).filter(
+    (task) => task.task_type === "research_queue_review",
+  );
+  const researchReviews = (
+    await Promise.all(tasks.map((task) => getCampaignResearchTaskReview(campaignId, task.id, null)))
+  ).filter((review): review is NonNullable<typeof review> => review !== null);
   const drafts = toCampaignReportDraftSummaries(previews);
-  const findingCandidateGate = toCampaignFindingCandidateGateSummary(previews);
+  const researchFeedbackEvidence = toCampaignResearchFeedbackEvidenceSummaries(researchReviews);
+  const findingCandidateGate = toCampaignFindingCandidateGateSummary(
+    previews,
+    researchFeedbackEvidence,
+    pipelineStages,
+  );
   const validationEvidence = toCampaignReportDraftEvidenceSummary(validationRuns);
 
   return (
@@ -36,7 +56,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <FileText size={17} aria-hidden="true" />
-          Report Drafts
+          Report Readiness
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
             Read only
           </span>
@@ -63,7 +83,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
       </section>
 
       <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
-        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
+        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px_150px]">
           <div className="min-w-0">
             <p className="font-semibold">Manual validation state</p>
             <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
@@ -71,7 +91,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
               request data, and response data remain outside this view.
             </p>
           </div>
-          <Field label="Runs" value={String(validationEvidence.validationRunCount)} />
+          <Field label="Validation audits" value={String(validationEvidence.validationRunCount)} />
           <Field label="Evidence refs" value={String(validationEvidence.evidenceRefCount)} />
           <Field label="Evidence gaps" value={String(validationEvidence.evidenceGapCount)} />
         </div>
@@ -87,10 +107,21 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
             </p>
           </div>
           <Field label="Eligible" value={String(findingCandidateGate.eligibleClaimCount)} />
-          <Field label="Blocked" value={String(findingCandidateGate.blockedClaimCount)} />
+          <Field label="Research feedback" value={String(findingCandidateGate.researchFeedbackCount)} />
+          <Field label="Promotion blocked" value={String(findingCandidateGate.researchPromotionBlockedCount)} />
+          <Field
+            label="Promotion attempts blocked"
+            value={String(findingCandidateGate.promotionAuditBlockedCount)}
+          />
           <Field
             label="Mode"
-            value={findingCandidateGate.manualPromotionOnly ? "Manual only" : "Blocked"}
+            value={
+              findingCandidateGate.promotionAuditLatestReason
+                ? findingCandidateGate.promotionAuditLatestReason
+                : findingCandidateGate.manualPromotionOnly
+                ? `Manual review required; ${findingCandidateGate.blockedClaimCount} blocked claim(s)`
+                : "Blocked"
+            }
           />
         </div>
       </section>
@@ -98,14 +129,14 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
       <section className="border border-[var(--line)] bg-white">
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
           <span>Draft</span>
-          <span>Submission</span>
+          <span>Manual submission gate</span>
           <span>Claims</span>
           <span>Evidence</span>
         </div>
         {drafts.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No campaign-linked report drafts recorded.
+            No report drafts ready for review.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -117,7 +148,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{draft.title}</p>
                   <dl className="mt-2 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Run" value={draft.runId} />
+                    <Field label="Research audit" value={draft.runId} />
                     <Field label="Severity" value={draft.severity} />
                     <Field label="Scope" value={draft.scopeStatus} />
                   </dl>
@@ -132,7 +163,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
                   ) : null}
                 </div>
                 <div className="grid content-start gap-2">
-                  <GateText value={draft.submissionBlocked ? "Blocked" : "Review ready"} />
+                  <GateText value={draft.submissionBlocked ? "Submission blocked" : "Human review ready"} />
                   <p className="text-xs text-[var(--muted)]">
                     {draft.humanReviewRequired ? "Human review required" : "Human review not required"}
                   </p>

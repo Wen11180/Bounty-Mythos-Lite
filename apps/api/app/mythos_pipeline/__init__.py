@@ -111,12 +111,21 @@ class PipelineValidationGate(BaseModel):
     evidence_count: int
 
 
+class ExploitChainReasoning(BaseModel):
+    primitives: list[str] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    impact: str
+    confidence: float
+    safety_notes: list[str] = Field(default_factory=list)
+
+
 class HypothesisLifecycleAssessment(BaseModel):
     candidate_id: str
     hypothesis_index: int
     hypothesis: VulnerabilityHypothesis
     scope_decision: ScopeGuardDecision
     refutation: RefutationResult
+    exploit_chain: ExploitChainReasoning
     validation_plan: ValidationPlan
     report_draft: ReportDraftCandidate
     evidence_hints: list[dict[str, str]] = Field(default_factory=list)
@@ -260,6 +269,7 @@ def build_hypothesis_lifecycle_assessments(
                 hypothesis=hypothesis,
                 scope_decision=scope_decision,
                 refutation=refutation,
+                exploit_chain=build_exploit_chain_reasoning(hypothesis, refutation),
                 validation_plan=validation_plan,
                 report_draft=report_draft,
                 evidence_hints=[
@@ -272,6 +282,81 @@ def build_hypothesis_lifecycle_assessments(
         )
 
     return assessments
+
+
+def build_exploit_chain_reasoning(
+    hypothesis: VulnerabilityHypothesis,
+    refutation: RefutationResult,
+) -> ExploitChainReasoning:
+    primitives = _chain_primitives(hypothesis.vuln_type)
+    preconditions = [
+        "authorized test accounts only",
+        "human approval before validation",
+        "synthetic fixtures only",
+    ]
+    if refutation.status == "blocked":
+        preconditions.append("refutation blockers resolved before validation")
+    confidence = _chain_confidence(hypothesis, refutation)
+    return ExploitChainReasoning(
+        primitives=primitives,
+        preconditions=preconditions,
+        impact=_chain_impact(hypothesis),
+        confidence=confidence,
+        safety_notes=[
+            "non_executable_chain_summary",
+            "no_payloads_or_requests",
+            "human_review_required",
+        ],
+    )
+
+
+def _chain_primitives(vuln_type: str) -> list[str]:
+    primitives_by_type = {
+        "broken_access_control": [
+            "identifier authorization boundary",
+            "cross-account object access comparison",
+        ],
+        "privilege_escalation": [
+            "role boundary comparison",
+            "admin action authorization check",
+        ],
+        "business_logic_authorization": [
+            "server trust boundary",
+            "non-destructive parameter review",
+        ],
+    }
+    return primitives_by_type.get(
+        vuln_type,
+        ["security invariant mismatch", "non-destructive evidence comparison"],
+    )
+
+
+def _chain_impact(hypothesis: VulnerabilityHypothesis) -> str:
+    impact_by_risk = {
+        "critical": "Potential critical impact if the invariant is broken.",
+        "high": "Potential high impact if the invariant is broken.",
+        "medium": "Potential medium impact if the invariant is broken.",
+        "low": "Potential low impact if the invariant is broken.",
+    }
+    return impact_by_risk.get(
+        hypothesis.risk_level,
+        "Potential impact depends on reviewed evidence.",
+    )
+
+
+def _chain_confidence(
+    hypothesis: VulnerabilityHypothesis,
+    refutation: RefutationResult,
+) -> float:
+    score = 0.35 if refutation.status == "blocked" else 0.55
+    if hypothesis.risk_level in {"high", "critical"}:
+        score += 0.1
+    if hypothesis.validation_mode in {
+        "two_account_authorization_check",
+        "role_based_authorization_check",
+    }:
+        score += 0.05
+    return min(score, 0.85)
 
 
 def select_top_hypothesis_assessment(
@@ -652,9 +737,17 @@ def build_pipeline_timeline(
                 f"Generated {len(hypotheses)} vulnerability candidate(s); "
                 f"assessed {len(hypothesis_assessments)} candidate lifecycle(s)."
             ),
-            safety_notes=["non_destructive_candidates_only"],
+            safety_notes=[
+                "non_destructive_candidates_only",
+                "non_executable_chain_summary",
+            ],
             role="Hypothesis Agent",
             allowed_actions=["generate_candidates", "attach_evidence_requirements"],
+            details={
+                "reasoning_summary": hypothesis_reasoning_summary(
+                    hypothesis_assessments,
+                ),
+            },
         ),
         refutation_stage,
         validation_plan_stage,
@@ -670,6 +763,22 @@ def safety_notes(*groups: list[str]) -> list[str]:
             if note not in notes:
                 notes.append(note)
     return notes
+
+
+def hypothesis_reasoning_summary(
+    assessments: list[HypothesisLifecycleAssessment],
+) -> dict[str, int]:
+    return {
+        "chain_mapped_count": sum(
+            1 for assessment in assessments if assessment.exploit_chain.primitives
+        ),
+        "refutation_question_count": sum(
+            len(assessment.refutation.questions) for assessment in assessments
+        ),
+        "human_review_required_count": sum(
+            1 for assessment in assessments if assessment.refutation.human_review_required
+        ),
+    }
 
 
 __all__ = [

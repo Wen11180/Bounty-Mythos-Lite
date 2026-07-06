@@ -115,7 +115,12 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
       ) : null}
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
-        <GateMetric label="Allowed to execute" value={workspace.allowed_to_execute === true} dangerOnTrue />
+        <GateMetric
+          label="Preflight gate"
+          value={workspace.allowed_to_execute === true}
+          trueLabel="Preflight clear"
+          falseLabel="Preflight blocked"
+        />
         <GateMetric label="Test accounts only" value={workspace.test_accounts_only !== false} />
         <GateMetric label="No real user data" value={workspace.no_real_user_data !== false} />
         <GateMetric label="Non destructive only" value={workspace.non_destructive_only !== false} />
@@ -126,7 +131,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={ClipboardCheck} title="Safe Steps" />
             {steps.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No validation steps recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No validation steps ready.</p>
             ) : (
               <ol className="divide-y divide-[var(--line)]">
                 {steps.map((step, index) => (
@@ -149,9 +154,9 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Target} title="Claim Tasks" />
+            <SectionHeader icon={Target} title="Claim Review" />
             {claimTasks.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No claim tasks recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No claim review items ready.</p>
             ) : (
               <ol className="divide-y divide-[var(--line)]">
                 {claimTasks.map((task) => {
@@ -199,8 +204,8 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                             value={evidenceFocus.length === 0 ? "None" : evidenceFocus.join(", ")}
                           />
                           <Field
-                            label="Execution"
-                            value={task.execution_allowed ? "Allowed" : "Blocked"}
+                            label="Preflight status"
+                            value={task.execution_allowed ? "Preflight clear" : "Preflight blocked"}
                           />
                           <Field
                             label="Required observation"
@@ -289,7 +294,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={FileText} title="Manual Observations" />
             {manualObservations.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No manual observations recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No manual observations ready for review.</p>
             ) : (
               <ol className="divide-y divide-[var(--line)]">
                 {manualObservations.map((observation, index) => {
@@ -315,7 +320,10 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                         <dl className="mt-4 grid gap-3 sm:grid-cols-2">
                           <Field label="Claim" value={observation.claim_id} />
                           <Field label="Redaction" value={observation.redaction_status} />
-                          <Field label="Execution allowed" value={observation.execution_allowed ? "Yes" : "No"} />
+                          <Field
+                            label="Observation boundary"
+                            value={observation.execution_allowed ? "Preflight reviewed" : "Review only"}
+                          />
                           <Field label="Report chain" value={observation.report_chain_blocked ? "Blocked" : "Open"} />
                           <Field label="Created" value={observation.created_at} />
                           <Field
@@ -343,7 +351,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ShieldCheck} title="Approval Gate" />
+            <SectionHeader icon={ShieldCheck} title="Preflight Gate" />
             <dl className="grid gap-3 p-5 text-sm">
               <Field label="Workspace" value={workspace.status} />
               <Field label="Plan" value={workspace.validation_plan_status} />
@@ -357,7 +365,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={Lock} title="Blocked Reasons" />
             {blockedReasons.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No blocking reason recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No active blocking reasons.</p>
             ) : (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {blockedReasons.map((reason) => (
@@ -370,7 +378,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={Target} title="Evidence Hints" />
             {evidenceHints.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No evidence hints recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No evidence hints ready.</p>
             ) : (
               <dl className="grid gap-0 divide-y divide-[var(--line)] text-sm">
                 {evidenceHints.map((hint, index) => (
@@ -424,11 +432,15 @@ function ActionLink({
 
 function GateMetric({
   dangerOnTrue = false,
+  falseLabel = "false",
   label,
+  trueLabel = "true",
   value,
 }: {
   dangerOnTrue?: boolean;
+  falseLabel?: string;
   label: string;
+  trueLabel?: string;
   value: boolean;
 }) {
   const risky = dangerOnTrue ? value : !value;
@@ -437,7 +449,7 @@ function GateMetric({
     <div className="border border-[var(--line)] bg-white p-4">
       <p className="text-sm text-[var(--muted)]">{label}</p>
       <p className={`mt-3 text-2xl font-semibold ${risky ? "text-[var(--danger)]" : "text-[var(--accent-strong)]"}`}>
-        {value ? "true" : "false"}
+        {value ? trueLabel : falseLabel}
       </p>
     </div>
   );

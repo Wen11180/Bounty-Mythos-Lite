@@ -12,6 +12,7 @@ SAFE_VALIDATION_METHODS = {
 class RefutationResult(BaseModel):
     status: str
     reasons: list[str] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list)
     human_review_required: bool = True
 
 
@@ -50,8 +51,30 @@ def refute_hypothesis(hypothesis: dict, scope_decision: dict) -> RefutationResul
     return RefutationResult(
         status="blocked" if reasons else "passed",
         reasons=reasons,
+        questions=build_refutation_questions(reasons),
         human_review_required=True,
     )
+
+
+def build_refutation_questions(reasons: list[str]) -> list[str]:
+    if not reasons:
+        return [
+            "What non-destructive evidence would disprove this hypothesis?",
+            "Which access-control or ownership invariant must remain true?",
+            "Is the evidence sufficient after redaction and human review?",
+        ]
+
+    questions = []
+    if any(reason in {"out_of_scope", "scope_guard_blocked"} for reason in reasons):
+        questions.append("Is the candidate asset covered by the declared program scope?")
+    if "requires_real_user_data" in reasons:
+        questions.append("Can this be reviewed without touching real user data?")
+    if "high_policy_risk" in reasons:
+        questions.append("Which program policy clause blocks this validation path?")
+    if not questions:
+        questions.append("Which blocker must be resolved before any validation planning?")
+    questions.append("What safe artifact or manual observation would resolve the blocker?")
+    return questions
 
 
 def build_validation_plan(hypothesis: dict, refutation: RefutationResult) -> ValidationPlan:

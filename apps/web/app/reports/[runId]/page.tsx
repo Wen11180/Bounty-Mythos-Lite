@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { ArrowLeft, ClipboardCheck, FileText, ListChecks, ShieldCheck, Target } from "lucide-react";
 import {
+  ApiRequestError,
   createFindingCandidate,
   getPipelineRun,
   getReportPreview,
@@ -20,6 +22,7 @@ import {
 
 type PageProps = {
   params: Promise<{ runId: string }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 const sectionMeta = [
@@ -45,8 +48,9 @@ const promotionBlockingReadinessBlockers = new Set([
   "missing_security_impact_observation",
 ]);
 
-export default async function ReportPreviewPage({ params }: PageProps) {
+export default async function ReportPreviewPage({ params, searchParams }: PageProps) {
   const { runId } = await params;
+  const query = (await searchParams) ?? {};
   const [run, preview] = await Promise.all([
     getPipelineRun(runId, fallbackRunDetail(runId)),
     getReportPreview(runId, fallbackReportPreview(runId)),
@@ -66,6 +70,15 @@ export default async function ReportPreviewPage({ params }: PageProps) {
 
   const reportDataMode = run?.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
   const currentRunId = preview.run_id;
+  const promotionGateStatus = firstParam(query.promotion_status);
+  const promotionGateReason = firstParam(query.promotion_reason);
+  const blockedStageCount = firstParam(query.blocked_stage_count);
+  const provenanceRefCount = firstParam(query.provenance_ref_count);
+  const findingPromotionAllowed = firstParam(query.finding_promotion_allowed);
+  const reportSubmissionAllowed = firstParam(query.report_submission_allowed);
+  const showPromotionGateNotice =
+    promotionGateStatus === "blocked" &&
+    promotionGateReason === "blocked_by_research_feedback_gate";
   const hasPromotionCandidate = preview.claim_ledger.some(
     (claim) =>
       claim.claim_type === "observed_fact" &&
@@ -77,11 +90,40 @@ export default async function ReportPreviewPage({ params }: PageProps) {
       claim.readiness_blockers.every((blocker) => !promotionBlockingReadinessBlockers.has(blocker)),
   );
   const canPromoteFindingCandidate = reportDataMode === "Live data" && hasPromotionCandidate;
+  const blockedStageDisplayCount = blockedStageCount ?? String(preview.claim_ledger.filter(
+    (claim) => claim.readiness_blockers.length > 0,
+  ).length);
+  const provenanceRefDisplayCount =
+    provenanceRefCount ?? String(new Set(preview.claim_ledger.flatMap((claim) => claim.provenance_refs)).size);
+  const promotionGateDisplayStatus = showPromotionGateNotice
+    ? promotionGateReason
+    : canPromoteFindingCandidate
+      ? "manual_promotion_review_ready"
+      : "awaiting_review_candidate";
 
   async function promoteFindingCandidateAction() {
     "use server";
 
-    await createFindingCandidate(currentRunId, null);
+    try {
+      await createFindingCandidate(currentRunId, null);
+    } catch (error) {
+      if (
+        error instanceof ApiRequestError &&
+        error.detail.reason === "blocked_by_research_feedback_gate"
+      ) {
+        redirect(
+          `/reports/${encodeURIComponent(currentRunId)}?promotion_status=blocked` +
+            `&promotion_reason=${encodeURIComponent(error.detail.reason)}` +
+            `&blocked_stage_count=${encodeURIComponent(String(error.detail.blocked_stage_count))}` +
+            `&provenance_ref_count=${encodeURIComponent(String(error.detail.provenance_ref_count))}` +
+            `&finding_promotion_allowed=${encodeURIComponent(String(error.detail.finding_promotion_allowed))}` +
+            `&report_submission_allowed=${encodeURIComponent(String(error.detail.report_submission_allowed))}`,
+        );
+      }
+
+      throw error;
+    }
+
     revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);
     revalidatePath(`/runs/${encodeURIComponent(currentRunId)}`);
   }
@@ -150,12 +192,32 @@ export default async function ReportPreviewPage({ params }: PageProps) {
           Demo data is shown because this claim ledger comes from a fallback report preview.
         </p>
       ) : null}
+      {showPromotionGateNotice ? (
+        <section className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm">
+          <p className="font-semibold text-[var(--warning)]">
+            Research feedback gate blocked finding promotion.
+          </p>
+          <p className="mt-2 text-[var(--muted)]">
+            Finding candidate was not created. Submission remains manual.
+          </p>
+          <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Field label="Reason" value={promotionGateReason} />
+            <Field label="Blocked stages" value={blockedStageCount} />
+            <Field label="Provenance refs" value={provenanceRefCount} />
+            <Field label="Finding promotion allowed" value={findingPromotionAllowed} />
+            <Field label="Report submission allowed" value={reportSubmissionAllowed} />
+          </dl>
+        </section>
+      ) : null}
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Severity" value={formatLabel(preview.severity)} />
         <Metric label="Scope" value={formatLabel(preview.scope_status)} />
         <Metric label="Human review" value={preview.human_review_required ? "Required" : "Not required"} />
-        <Metric label="Submission" value={preview.submission_blocked ? "Blocked" : "Ready"} />
+        <Metric
+          label="Manual submission gate"
+          value={preview.submission_blocked ? "Submission blocked" : "Human review ready"}
+        />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -163,7 +225,7 @@ export default async function ReportPreviewPage({ params }: PageProps) {
           <article className="border border-[var(--line)] bg-white">
             <SectionHeader icon={FileText} title="Claim Ledger" />
             {preview.claim_ledger.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No claim ledger entries recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No claim ledger entries ready for review.</p>
             ) : (
               <div className="divide-y divide-[var(--line)]">
                 {preview.claim_ledger.map((claim) => (
@@ -212,7 +274,7 @@ export default async function ReportPreviewPage({ params }: PageProps) {
                       <div className="mt-4">
                         <p className="text-xs font-semibold uppercase text-[var(--muted)]">Review rationale</p>
                         <p className="mt-1 break-words text-[var(--muted)]">
-                          {safeDisplay(claim.review_rationale, "No review rationale recorded.")}
+                          {safeDisplay(claim.review_rationale, "No review rationale ready.")}
                         </p>
                       </div>
                       <div className="mt-4">
@@ -261,7 +323,7 @@ export default async function ReportPreviewPage({ params }: PageProps) {
                   {safeDisplay(claimLabel)}
                 </div>
                 {lines.length === 0 ? (
-                  <p className="p-5 text-sm text-[var(--muted)]">No claims recorded.</p>
+                  <p className="p-5 text-sm text-[var(--muted)]">No report section claims ready.</p>
                 ) : (
                   <ol className="divide-y divide-[var(--line)] text-sm">
                     {lines.map((line, index) => (
@@ -281,7 +343,7 @@ export default async function ReportPreviewPage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={ShieldCheck} title="Safety Notes" />
             {preview.safety_notes.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No safety notes recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No safety notes ready.</p>
             ) : (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {preview.safety_notes.map((note) => (
@@ -294,7 +356,7 @@ export default async function ReportPreviewPage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={ListChecks} title="Evidence Refs" />
             {preview.evidence_refs.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No evidence refs recorded.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No evidence references ready.</p>
             ) : (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {preview.evidence_refs.map((ref) => (
@@ -305,16 +367,23 @@ export default async function ReportPreviewPage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={FileText} title="Submission Gate" />
+            <SectionHeader icon={FileText} title="Manual submission gate" />
             <dl className="grid gap-3 p-5 text-sm">
               <Field label="Human review" value={preview.human_review_required ? "Required" : "Not required"} />
-              <Field label="Submission blocked" value={preview.submission_blocked ? "Yes" : "No"} />
+              <Field
+                label="Submission status"
+                value={preview.submission_blocked ? "Submission blocked" : "Human review ready"}
+              />
+              <Field label="Research feedback gate" value={promotionGateDisplayStatus} />
+              <Field label="Blocked stages" value={blockedStageDisplayCount} />
+              <Field label="Provenance refs" value={provenanceRefDisplayCount} />
               <Field label="Run" value={preview.run_id} />
             </dl>
             {canPromoteFindingCandidate ? (
               <form action={promoteFindingCandidateAction} className="border-t border-[var(--line)] p-5">
                 <p className="mb-3 text-sm text-[var(--muted)]">
-                  Promote the eligible human-reviewed observed claim into Finding DB. Submission remains manual.
+                  Promote the eligible human-reviewed observed claim into Finding DB. Research feedback gates can still
+                  block promotion. Submission remains manual.
                 </p>
                 <button
                   type="submit"
@@ -324,9 +393,14 @@ export default async function ReportPreviewPage({ params }: PageProps) {
                 </button>
               </form>
             ) : (
-              <p className="border-t border-[var(--line)] p-5 text-sm font-semibold text-[var(--muted)]">
-                Promotion waits for a live, human-reviewed observed claim.
-              </p>
+              <div className="border-t border-[var(--line)] p-5 text-sm font-semibold text-[var(--muted)]">
+                <p>
+                  Promotion waits for a live, human-reviewed observed claim. Research feedback gates can still block promotion.
+                </p>
+                <p className="mt-2 text-[var(--warning)]">
+                  Research feedback gate blocked finding promotion.
+                </p>
+              </div>
             )}
           </section>
 
@@ -403,6 +477,14 @@ function optionalFormValue(formData: FormData, name: string) {
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+function firstParam(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+
+  return value || undefined;
 }
 
 function PageBack() {

@@ -25,7 +25,7 @@ export default async function CampaignAgentRunsPage({ params }: PageProps) {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <Bot size={17} aria-hidden="true" />
-          Agent run audit
+          Agent Audit
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
             Read only
           </span>
@@ -34,13 +34,13 @@ export default async function CampaignAgentRunsPage({ params }: PageProps) {
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Inspect agent status, safety gates, stop reasons, and ref counts without exposing raw
+          Inspect agent status, review gates, stop reasons, and ref counts without exposing raw
           prompts, payloads, tool calls, or evidence refs.
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-3">
-        <Metric label="Agent runs" value={summaries.length} />
+        <Metric label="Agent audits" value={summaries.length} />
         <Metric
           label="Blocked"
           value={summaries.filter((run) => run.status === "Blocked").length}
@@ -55,12 +55,12 @@ export default async function CampaignAgentRunsPage({ params }: PageProps) {
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_110px_110px]">
           <span>Agent</span>
           <span>Status</span>
-          <span>Safety gate</span>
+          <span>Scope Guard decision</span>
           <span>Inputs</span>
           <span>Outputs</span>
         </div>
         {summaries.length === 0 ? (
-          <p className="p-5 text-sm text-[var(--muted)]">No agent runs recorded.</p>
+          <p className="p-5 text-sm text-[var(--muted)]">No agent audits ready.</p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
             {summaries.map((run) => (

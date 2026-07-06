@@ -39,12 +39,12 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
           Campaign target-model facts: endpoints, objects, roles, relationships, and sensitive
-          actions extracted from authorized runs.
+          actions extracted from authorized audit sources.
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
-        <Metric label="Runs" value={map.runCount} />
+        <Metric label="Audited sources" value={map.runCount} />
         <Metric label="Endpoints" value={map.endpointCount} />
         <Metric label="Objects" value={map.objectCount} />
         <Metric label="Roles" value={map.roleCount} />
@@ -54,28 +54,28 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="grid gap-5">
-          <SurfaceTable title="Endpoints" emptyLabel="No endpoint facts recorded.">
+          <SurfaceTable title="Endpoints" emptyLabel="No endpoints mapped yet.">
             {map.endpoints.map((endpoint) => (
               <article key={`${endpoint.runId}-${endpoint.route}`} className="grid gap-2 p-5 text-sm">
                 <p className="break-words font-semibold">{endpoint.route}</p>
                 {endpoint.summary ? <p className="break-words text-[var(--muted)]">{endpoint.summary}</p> : null}
-                <Field label="Run" value={endpoint.runId} />
+                <Field label="Audit source" value={endpoint.runId} />
               </article>
             ))}
           </SurfaceTable>
 
-          <SurfaceTable title="Sensitive Actions" emptyLabel="No sensitive action facts recorded.">
+          <SurfaceTable title="Sensitive Actions" emptyLabel="No sensitive actions mapped yet.">
             {map.sensitiveActions.map((action) => (
               <article key={`${action.runId}-${action.action}-${action.route}`} className="grid gap-2 p-5 text-sm">
                 <p className="break-words font-semibold">{action.action}</p>
                 <Field label="Route" value={action.route} />
                 <Field label="Roles" value={String(action.roleCount)} />
-                <Field label="Run" value={action.runId} />
+                <Field label="Audit source" value={action.runId} />
               </article>
             ))}
           </SurfaceTable>
 
-          <SurfaceTable title="Relationships" emptyLabel="No relationship facts recorded.">
+          <SurfaceTable title="Relationships" emptyLabel="No relationships mapped yet.">
             {map.relationships.map((relationship) => (
               <article
                 key={`${relationship.runId}-${relationship.summary}-${relationship.relationship}`}
@@ -84,7 +84,7 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
                 <p className="break-words font-semibold">{relationship.summary}</p>
                 <Field label="Relationship" value={relationship.relationship} />
                 <Field label="Paths" value={String(relationship.pathCount)} />
-                <Field label="Run" value={relationship.runId} />
+                <Field label="Audit source" value={relationship.runId} />
               </article>
             ))}
           </SurfaceTable>
@@ -94,14 +94,14 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Objects" />
             {map.objects.length === 0 ? (
-              <EmptyState label="No objects recorded." />
+              <EmptyState label="No objects mapped yet." />
             ) : (
               <div className="divide-y divide-[var(--line)]">
                 {map.objects.map((object) => (
                   <article key={`${object.runId}-${object.name}`} className="grid gap-2 p-5 text-sm">
                     <p className="break-words font-semibold">{object.name}</p>
                     <Field label="Identifiers" value={String(object.identifierCount)} />
-                    <Field label="Run" value={object.runId} />
+                    <Field label="Audit source" value={object.runId} />
                   </article>
                 ))}
               </div>
@@ -111,7 +111,7 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Roles" />
             {map.roles.length === 0 ? (
-              <EmptyState label="No roles recorded." />
+              <EmptyState label="No roles mapped yet." />
             ) : (
               <ul className="grid gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
                 {map.roles.map((role) => (
@@ -124,7 +124,7 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Safety Boundary" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Execution" value="Not available from this page" />
+              <Field label="Review boundary" value="Not available from this read-only view" />
               <Field label="Fact status" value="Target model facts, not confirmed findings" />
               <Field label="Raw payloads" value="Not displayed" />
             </dl>

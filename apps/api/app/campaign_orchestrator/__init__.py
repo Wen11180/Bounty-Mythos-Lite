@@ -2,7 +2,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.db_models import CampaignRecord
-from app.repository import DatabaseRepository
+from app.repository import DatabaseRepository, approval_record_is_active
 
 
 DispatchCampaignTask = Callable[..., Any]
@@ -91,8 +91,15 @@ def tick_campaign(
     if review_gate is not None:
         return review_gate
 
+    remaining_tool_calls = _remaining_tool_call_budget(campaign, repository)
+    task_specs = (
+        READ_ONLY_RESEARCH_TASKS
+        if remaining_tool_calls is None
+        else READ_ONLY_RESEARCH_TASKS[:remaining_tool_calls]
+    )
+
     dispatched_task_ids: list[str] = []
-    for stage_order, task_spec in enumerate(READ_ONLY_RESEARCH_TASKS):
+    for stage_order, task_spec in enumerate(task_specs):
         task = repository.create_campaign_task(
             campaign_id=campaign.id,
             task_type=task_spec["task_type"],
@@ -129,13 +136,34 @@ def tick_campaign(
             stop_reason=None,
             payload={"dispatch_contract": "id_only"},
         )
+        repository.update_campaign_task_status(task.id, "dispatched")
         dispatcher(campaign_task_id=task.id)
         dispatched_task_ids.append(task.id)
 
+    partial_dispatch = len(task_specs) < len(READ_ONLY_RESEARCH_TASKS)
+    if partial_dispatch:
+        repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=campaign.id,
+            task_id=None,
+            stage_key="campaign_tick",
+            stage_order=len(dispatched_task_ids),
+            status="blocked",
+            input_refs=[f"campaign:{campaign.id}"],
+            output_refs=[f"campaign_task:{task_id}" for task_id in dispatched_task_ids],
+            safety_gate_state="blocked",
+            stop_reason="budget_exhausted",
+            payload={
+                "dispatch": "partially_dispatched",
+                "reserved_task_count": len(dispatched_task_ids),
+                "remaining_task_count": len(READ_ONLY_RESEARCH_TASKS) - len(dispatched_task_ids),
+            },
+        )
+
     return {
-        "status": "dispatched",
+        "status": "partially_dispatched" if partial_dispatch else "dispatched",
         "dispatched_task_ids": dispatched_task_ids,
-        "stop_reasons": [],
+        "stop_reasons": ["budget_exhausted"] if partial_dispatch else [],
     }
 
 
@@ -163,7 +191,25 @@ def _campaign_stop_reason(
     ]
     if any(value is not None and value <= 0 for value in budgets):
         return "budget_exhausted"
+    remaining_tool_calls = _remaining_tool_call_budget(campaign, repository)
+    if remaining_tool_calls is not None and remaining_tool_calls <= 0:
+        return "budget_exhausted"
     return None
+
+
+def _remaining_tool_call_budget(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> int | None:
+    budget = repository.get_campaign_budget(campaign.id)
+    if budget is None or budget.tool_call_budget is None:
+        return None
+    reserved_or_used = sum(
+        1
+        for run in repository.list_campaign_agent_runs(campaign.id)
+        if run.safety_gate_state == "allowed"
+    )
+    return budget.tool_call_budget - reserved_or_used
 
 
 def _completed_research_cycle_review(
@@ -199,6 +245,7 @@ def _completed_research_cycle_review(
     pending_approvals = [
         approval for approval in approvals
         if approval.status in {"pending", "requested"}
+        and approval_record_is_active(approval)
         and f"approval:{approval.id}" not in reviewed_output_refs
     ]
     awaiting_validation_runs = [
@@ -206,8 +253,8 @@ def _completed_research_cycle_review(
         if run.approval_required
         and not run.allowed_to_execute
         and (
-            run.status == "awaiting_approval"
-            or run.safety_gate_state == "awaiting_approval"
+            run.status in {"awaiting_approval", "ready"}
+            or run.safety_gate_state in {"awaiting_approval", "approved_validation_record"}
         )
         and f"validation_run:{run.id}" not in reviewed_output_refs
     ]
@@ -287,11 +334,8 @@ def _completed_research_cycle_review(
 
 
 def _validation_run_has_manual_evidence(run: Any) -> bool:
-    return (
-        run.status in {"evidence_recorded", "refuted", "needs_evidence"}
-        or run.evidence_ref_count > 0
-        or str(run.safety_gate_state).startswith("manual_")
-    )
+    payload = getattr(run, "payload", None)
+    return isinstance(payload, dict) and isinstance(payload.get("manual_result"), dict)
 
 
 def _completed_cycle_review_output_refs(

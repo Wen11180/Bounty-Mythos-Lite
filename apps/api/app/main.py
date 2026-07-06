@@ -37,6 +37,8 @@ from app.mythos_brain import (
     LessonScopeType,
     MythosLesson,
     ProgramIntelligenceProfile,
+    ReasoningMemoryPlaybook,
+    ReasoningMemorySummary,
     build_learning_signal_from_outcome,
     build_mythos_lessons,
     build_program_intelligence,
@@ -66,7 +68,12 @@ from app.mythos_report import (
     safe_preview_text,
     safe_string_list,
 )
-from app.repository import DatabaseRepository
+from app.repository import (
+    APPROVAL_TERMINAL_STATUSES,
+    DatabaseRepository,
+    _safe_asset_value,
+    approval_record_is_active,
+)
 from app.scope_guard import (
     ScopeGuardDecision,
     ScopeGuardRule,
@@ -156,7 +163,11 @@ class CampaignBudgetResponse(BaseModel):
     time_budget_minutes: int | None = None
     token_budget: int | None = None
     tool_call_budget: int | None = None
+    tool_call_used: int = 0
+    tool_call_remaining: int | None = None
     validation_budget: int | None = None
+    validation_budget_used: int = 0
+    validation_budget_remaining: int | None = None
     status: str
     created_at: str
 
@@ -333,6 +344,21 @@ ManualObservationType = Literal[
     "request_response_diff",
     "redaction_note",
 ]
+REPORT_SAFE_REVIEW_EVIDENCE_REFS = {
+    "local_code_reference",
+    "log_ref",
+    "request_response_diff",
+    "sanitized_cross_account_diff",
+    "sanitized_parent_child_matrix",
+    "role_matrix_snapshot",
+    "sanitized_request_response",
+    "sanitized_role_matrix",
+    "screenshot_ref",
+}
+SECURITY_IMPACT_OBSERVATION_TYPES = {
+    "request_response_diff",
+    "role_matrix_observation",
+}
 
 
 class ManualObservationRequest(BaseModel):
@@ -364,11 +390,12 @@ class ApprovalRecordRequest(BaseModel):
     asset: str | None = None
     validation_mode: str | None = None
     plan_digest: str | None = None
+    expires_at: datetime | None = None
     requester: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=1000)
 
 
-ApprovalDecisionValue = Literal["approved", "denied", "revoked"]
+ApprovalDecisionValue = Literal["approved", "denied", "revoked", "expired", "used"]
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -397,7 +424,118 @@ class ApprovalRecordResponse(BaseModel):
     decision_reason: str | None
     decided_by: str | None
     decided_at: str | None
+    expires_at: str | None
     created_at: str
+
+
+class ResearchQueueSuggestionResponse(BaseModel):
+    queue_key: str
+    title: str
+    source: str
+    playbook_id: str | None = None
+    surface_key: str | None = None
+    priority_score: int = Field(ge=0, le=100)
+    safety_gate: str
+    next_allowed_action: str
+    execution_allowed: bool = False
+
+
+class ResearchQueueTaskRequest(BaseModel):
+    queue_key: str = Field(min_length=1, max_length=255)
+    requester: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ResearchTaskReviewResponse(BaseModel):
+    task_id: str
+    campaign_id: str
+    queue_key: str
+    title: str
+    status: str
+    source: str
+    playbook_id: str | None = None
+    surface_key: str | None = None
+    priority_score: int = Field(ge=0, le=100)
+    safety_gate: str
+    next_allowed_action: str
+    non_destructive_plan: list[str] = Field(default_factory=list)
+    required_human_gates: list[str] = Field(default_factory=list)
+    execution_allowed: bool = False
+    dispatch_allowed: bool = False
+    report_submission_allowed: bool = False
+    latest_review_plan: dict | None = None
+    latest_refutation_decision: dict | None = None
+    latest_validation_feedback: dict | None = None
+
+
+class ResearchReviewPlanRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=100)
+    rationale: str = Field(default="", max_length=1000)
+    hypothesis: str = Field(min_length=1, max_length=1000)
+    refutation_questions: list[str] = Field(default_factory=list, max_length=10)
+    evidence_plan: list[str] = Field(default_factory=list, max_length=10)
+
+
+class ResearchReviewPlanResponse(BaseModel):
+    plan_id: str
+    task_id: str
+    campaign_id: str
+    status: str
+    hypothesis: str
+    refutation_questions: list[str] = Field(default_factory=list)
+    evidence_plan: list[str] = Field(default_factory=list)
+    required_human_gates: list[str] = Field(default_factory=list)
+    safety_gate: str
+    next_allowed_action: str
+    execution_allowed: bool = False
+    dispatch_allowed: bool = False
+    validation_allowed: bool = False
+    report_submission_allowed: bool = False
+
+
+ResearchRefutationDecisionValue = Literal[
+    "refuted",
+    "needs_evidence",
+    "needs_validation_review",
+    "parked_duplicate",
+    "policy_blocked",
+]
+
+
+class ResearchRefutationDecisionRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=255)
+    reviewer: str = Field(min_length=1, max_length=100)
+    decision: ResearchRefutationDecisionValue
+    rationale: str = Field(min_length=1, max_length=1000)
+    refutation_answers: list[str] = Field(default_factory=list, max_length=10)
+    validation_mode: str | None = Field(default=None, max_length=100)
+    target_ref: str | None = Field(default=None, max_length=1000)
+
+
+class ResearchRefutationDecisionResponse(BaseModel):
+    decision_id: str
+    task_id: str
+    campaign_id: str
+    plan_id: str
+    decision: ResearchRefutationDecisionValue
+    rationale: str
+    refutation_answers: list[str] = Field(default_factory=list)
+    next_allowed_action: str
+    validation_run_id: str | None = None
+    approval_id: str | None = None
+    execution_allowed: bool = False
+    dispatch_allowed: bool = False
+    validation_allowed: bool = False
+    report_submission_allowed: bool = False
+
+
+class CampaignPromotionReviewSummary(BaseModel):
+    blocked_attempt_count: int = 0
+    finding_promotion_allowed: bool = False
+    latest_reason: str | None = None
+    next_allowed_action: str = "Review claim evidence and human gates before candidate promotion."
+    provenance_ref_count: int = 0
+    report_submission_allowed: bool = False
 
 
 class CampaignControlCenterResponse(BaseModel):
@@ -411,6 +549,11 @@ class CampaignControlCenterResponse(BaseModel):
     safe_next_action: str
     blocked_reasons: list[str] = Field(default_factory=list)
     execution_allowed: bool = False
+    promotion_review: CampaignPromotionReviewSummary = Field(
+        default_factory=CampaignPromotionReviewSummary,
+    )
+    research_queue_suggestions: list[ResearchQueueSuggestionResponse] = Field(default_factory=list)
+    research_review_plans: list[ResearchReviewPlanResponse] = Field(default_factory=list)
 
 
 class LearningSignalRequest(BaseModel):
@@ -543,15 +686,7 @@ def resume_mythos_campaign(
     if campaign.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
     budget = repository.get_campaign_budget(campaign_id)
-    if budget is not None and any(
-        value is not None and value <= 0
-        for value in (
-            budget.time_budget_minutes,
-            budget.token_budget,
-            budget.tool_call_budget,
-            budget.validation_budget,
-        )
-    ):
+    if _campaign_budget_exhausted(budget):
         raise HTTPException(status_code=409, detail="budget_exhausted")
     return _update_campaign_status(campaign_id, "running", session)
 
@@ -568,6 +703,281 @@ def list_mythos_campaign_tasks(
         _campaign_task_response(record)
         for record in repository.list_campaign_tasks(campaign_id)
     ]
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/research-queue/tasks",
+    response_model=CampaignTaskResponse,
+)
+def materialize_mythos_research_queue_task(
+    campaign_id: str,
+    request: ResearchQueueTaskRequest,
+    session: Session = Depends(get_session),
+) -> CampaignTaskResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if _campaign_budget_exhausted(repository.get_campaign_budget(campaign.id)):
+        raise HTTPException(status_code=409, detail="budget_exhausted")
+
+    suggestion = _campaign_research_queue_suggestion_by_key(
+        campaign=campaign,
+        repository=repository,
+        queue_key=request.queue_key,
+    )
+    if suggestion is None:
+        raise HTTPException(
+            status_code=409,
+            detail="research_queue_suggestion_not_available",
+        )
+
+    existing = _existing_research_queue_task(
+        repository=repository,
+        campaign_id=campaign.id,
+        queue_key=suggestion.queue_key,
+    )
+    if existing is not None:
+        return _campaign_task_response(existing)
+
+    input_refs = _research_queue_task_input_refs(campaign.id, suggestion)
+    task = repository.create_campaign_task(
+        campaign_id=campaign.id,
+        task_type="research_queue_review",
+        agent_type="human_research_reviewer",
+        title=suggestion.title,
+        input_refs=input_refs,
+        payload={
+            "source": suggestion.source,
+            "queue_key": suggestion.queue_key,
+            "playbook_id": suggestion.playbook_id,
+            "surface_key": suggestion.surface_key,
+            "priority_score": suggestion.priority_score,
+            "safety_gate": "advisory_memory_only",
+            "next_allowed_action": suggestion.next_allowed_action,
+            "requester": request.requester,
+            "reason": request.reason,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+        },
+    )
+    task = repository.update_campaign_task_status(task.id, "queued_review") or task
+    return _campaign_task_response(task)
+
+
+@app.get(
+    "/mythos/campaigns/{campaign_id}/research-queue/tasks/{task_id}/review",
+    response_model=ResearchTaskReviewResponse,
+)
+def get_mythos_research_task_review(
+    campaign_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+) -> ResearchTaskReviewResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    task = repository.session.get(CampaignTaskRecord, task_id)
+    if task is None or task.campaign_id != campaign.id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.task_type != "research_queue_review":
+        raise HTTPException(status_code=409, detail="not_research_queue_task")
+    return _research_task_review_response(task, repository=repository)
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/research-queue/tasks/{task_id}/review-plans",
+    response_model=ResearchReviewPlanResponse,
+)
+def create_mythos_research_review_plan(
+    campaign_id: str,
+    task_id: str,
+    request: ResearchReviewPlanRequest,
+    session: Session = Depends(get_session),
+) -> ResearchReviewPlanResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if _campaign_budget_exhausted(repository.get_campaign_budget(campaign.id)):
+        raise HTTPException(status_code=409, detail="budget_exhausted")
+
+    task = repository.session.get(CampaignTaskRecord, task_id)
+    if task is None or task.campaign_id != campaign.id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.task_type != "research_queue_review":
+        raise HTTPException(status_code=409, detail="not_research_queue_task")
+
+    response = _research_review_plan_response(
+        task=task,
+        request=request,
+    )
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    queue_key = safe_preview_text(task_payload.get("queue_key", "research_queue"))
+    repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_key="research_task_review_plan",
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status=response.status,
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"campaign_task:{task.id}",
+            f"research_queue:{queue_key}",
+        ],
+        output_refs=[f"research_plan:{response.plan_id}"],
+        safety_gate_state=response.safety_gate,
+        stop_reason=None,
+        payload={
+            "plan_id": response.plan_id,
+            "hypothesis": response.hypothesis,
+            "refutation_questions": response.refutation_questions,
+            "evidence_plan": response.evidence_plan,
+            "reviewer": safe_preview_text(request.reviewer),
+            "rationale": safe_preview_text(request.rationale),
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+    return response
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/research-queue/tasks/{task_id}/review-decisions",
+    response_model=ResearchRefutationDecisionResponse,
+    response_model_exclude_none=True,
+)
+def create_mythos_research_refutation_decision(
+    campaign_id: str,
+    task_id: str,
+    request: ResearchRefutationDecisionRequest,
+    session: Session = Depends(get_session),
+) -> ResearchRefutationDecisionResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    task = repository.session.get(CampaignTaskRecord, task_id)
+    if task is None or task.campaign_id != campaign.id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.task_type != "research_queue_review":
+        raise HTTPException(status_code=409, detail="not_research_queue_task")
+
+    latest_plan = _latest_research_review_plan(repository, task)
+    if latest_plan is None or latest_plan["plan_id"] != safe_preview_text(request.plan_id):
+        raise HTTPException(status_code=409, detail="research_review_plan_not_current")
+
+    response = _research_refutation_decision_response(
+        task=task,
+        request=request,
+    )
+    validation_run_id = None
+    approval_id = None
+    if response.decision == "needs_validation_review":
+        validation_mode = safe_preview_text(request.validation_mode or "")
+        if not validation_mode:
+            raise HTTPException(status_code=422, detail="validation_mode_required")
+        if validation_mode not in safe_string_list(campaign.allowed_tools):
+            raise HTTPException(status_code=409, detail="validation_mode_not_allowed")
+        target_ref = safe_preview_text(request.target_ref or f"campaign:{campaign.id}")
+        approval_asset = campaign.default_asset if target_ref == f"campaign:{campaign.id}" else target_ref
+        plan_digest = f"research_plan:{response.plan_id}"
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor=request.reviewer,
+            reason="Human approval required before validation preflight.",
+            requested_action="validation_preflight_review",
+            asset=approval_asset,
+            validation_mode=validation_mode,
+            plan_digest=plan_digest,
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+            payload={
+                "source": "research_task_refutation_decision",
+                "decision_id": response.decision_id,
+                "plan_id": response.plan_id,
+                "raw_payload_processed": False,
+                "execution_allowed": False,
+            },
+        )
+        approval_id = approval.id
+        response.approval_id = approval_id
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=approval_id,
+            validation_mode=validation_mode,
+            target_ref=target_ref,
+            status="awaiting_approval",
+            safety_gate_state="awaiting_approval",
+            plan_digest=plan_digest,
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Human approval required before validation. Refutation review requested validation planning.",
+            payload={
+                "source": "research_task_refutation_decision",
+                "decision_id": response.decision_id,
+                "plan_id": response.plan_id,
+                "approval_record_id": approval_id,
+                "raw_payload_processed": False,
+                "execution_allowed": False,
+            },
+        )
+        validation_run_id = validation_run.id
+        response.validation_run_id = validation_run_id
+    repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_key="research_task_refutation_decision",
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status=response.decision,
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"campaign_task:{task.id}",
+            f"research_plan:{response.plan_id}",
+        ],
+        output_refs=[
+            f"refutation_decision:{response.decision_id}",
+            *(
+                [f"approval:{approval_id}"]
+                if approval_id is not None
+                else []
+            ),
+            *(
+                [f"validation_run:{validation_run_id}"]
+                if validation_run_id is not None
+                else []
+            ),
+        ],
+        safety_gate_state="advisory_refutation_only",
+        stop_reason=None,
+        payload={
+            "decision_id": response.decision_id,
+            "plan_id": response.plan_id,
+            "decision": response.decision,
+            "reviewer": safe_preview_text(request.reviewer),
+            "rationale": response.rationale,
+            "refutation_answers": response.refutation_answers,
+            "approval_id": approval_id,
+            "validation_run_id": validation_run_id,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+    return response
 
 
 @app.get("/mythos/campaigns/{campaign_id}/agent-runs", response_model=list[AgentRunResponse])
@@ -638,6 +1048,8 @@ def complete_mythos_campaign_cycle_review(
         raise HTTPException(status_code=404, detail="Cycle review stage not found")
     if stage.status != "awaiting_review":
         raise HTTPException(status_code=409, detail="Cycle review is not awaiting review")
+    if _cycle_review_unresolved_gate_refs(repository, stage):
+        raise HTTPException(status_code=409, detail="Cycle review has unresolved gates")
     completed_reviews = {
         _cycle_review_signature(record)
         for record in repository.list_campaign_pipeline_stages(campaign_id)
@@ -702,7 +1114,20 @@ def preflight_mythos_validation_run(
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    if validation_run.status not in {"ready", "preflight_passed"}:
+    campaign_budget = repository.get_campaign_budget(campaign.id)
+    if _campaign_budget_exhausted(campaign_budget) or _campaign_validation_budget_exhausted(
+        repository,
+        budget=campaign_budget,
+        validation_run=validation_run,
+    ):
+        decision = ScopeGuardDecision(
+            allowed=False,
+            reason="budget_exhausted",
+        )
+    elif validation_run.status not in {
+        "ready",
+        "preflight_passed",
+    } and not _validation_run_awaits_approval_review(validation_run):
         decision = ScopeGuardDecision(
             allowed=False,
             reason="validation_run_not_ready",
@@ -732,20 +1157,32 @@ def preflight_mythos_validation_run(
                 if validation_run.approval_id
                 else None
             )
-            decision = (
-                ScopeGuardDecision(allowed=True, reason="approved_validation_record")
-                if approval is not None
-                and _validation_run_approval_matches(
-                    approval=approval,
-                    validation_run=validation_run,
-                    campaign=campaign,
-                    asset=asset,
+            if approval is not None and _validation_run_approval_matches(
+                approval=approval,
+                validation_run=validation_run,
+                campaign=campaign,
+                asset=asset,
+            ):
+                decision = (
+                    ScopeGuardDecision(
+                        allowed=False,
+                        reason="approval_budget_exhausted",
+                    )
+                    if _approval_validation_budget_exhausted(
+                        repository,
+                        approval=approval,
+                        validation_run=validation_run,
+                    )
+                    else ScopeGuardDecision(
+                        allowed=True,
+                        reason="approved_validation_record",
+                    )
                 )
-                else ScopeGuardDecision(
+            else:
+                decision = ScopeGuardDecision(
                     allowed=False,
                     reason="approval_record_required",
                 )
-            )
 
     updated_run = repository.record_validation_run_preflight(
         validation_run.id,
@@ -779,6 +1216,30 @@ def record_mythos_validation_run_manual_result(
             status_code=409,
             detail="Validation run preflight has not passed",
         )
+    if not validation_run.allowed_to_execute:
+        raise HTTPException(
+            status_code=409,
+            detail="Validation run preflight is not active",
+        )
+    if validation_run.approval_required:
+        campaign = repository.get_campaign(validation_run.campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        approval = (
+            repository.session.get(ApprovalRecord, validation_run.approval_id)
+            if validation_run.approval_id
+            else None
+        )
+        if approval is None or not _validation_run_approval_matches(
+            approval=approval,
+            validation_run=validation_run,
+            campaign=campaign,
+            asset=_validation_run_scope_asset(validation_run, campaign),
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Validation run approval is not active",
+            )
 
     updated_run = repository.record_validation_run_manual_result(
         validation_run.id,
@@ -807,6 +1268,7 @@ def record_mythos_validation_run_manual_result(
             "execution_started": False,
         },
     )
+    _record_research_validation_feedback_stage(repository, updated_run, request)
     return _validation_run_response(updated_run)
 
 
@@ -859,12 +1321,14 @@ def get_mythos_campaign_control_center(
     blocked_reasons = _campaign_control_center_blocked_reasons(
         campaign=campaign,
         budget=budget,
+        agent_runs=agent_runs,
+        validation_runs=validation_runs,
         stages=stages,
     )
 
     return CampaignControlCenterResponse(
         campaign=_campaign_control_campaign_response(campaign),
-        budget=_campaign_budget_response(budget),
+        budget=_campaign_budget_response(budget, repository=repository),
         tasks=[_campaign_task_response(record) for record in tasks],
         agent_runs=[_agent_run_response(record) for record in agent_runs],
         approvals=[_approval_record_response(record) for record in approvals],
@@ -883,6 +1347,15 @@ def get_mythos_campaign_control_center(
         ),
         blocked_reasons=blocked_reasons,
         execution_allowed=False,
+        promotion_review=_campaign_promotion_review_summary(stages),
+        research_queue_suggestions=_campaign_research_queue_suggestions(
+            campaign,
+            repository,
+        ),
+        research_review_plans=_campaign_research_review_plans(
+            campaign,
+            repository,
+        ),
     )
 
 
@@ -936,6 +1409,7 @@ def create_approval_record(
         asset=request.asset,
         validation_mode=request.validation_mode,
         plan_digest=request.plan_digest,
+        expires_at=request.expires_at,
         requester=request.requester,
         reason=request.reason,
         status="requested",
@@ -977,14 +1451,21 @@ def _decide_approval_record_response(
     request: ApprovalDecisionRequest,
     session: Session,
 ) -> ApprovalRecordResponse:
-    record = DatabaseRepository(session).decide_approval_record(
+    repository = DatabaseRepository(session)
+    current_record = repository.session.get(ApprovalRecord, approval_id)
+    if current_record is None:
+        raise HTTPException(status_code=404, detail="Approval record not found")
+    if current_record.status in APPROVAL_TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="Approval record already terminal")
+    if request.decision == "approved" and not approval_record_is_active(current_record):
+        raise HTTPException(status_code=409, detail="Approval record expired")
+
+    record = repository.decide_approval_record(
         approval_id=approval_id,
         decision=request.decision,
         actor=request.actor,
         reason=request.reason,
     )
-    if record is None:
-        raise HTTPException(status_code=404, detail="Approval record not found")
     return _approval_record_response(record)
 
 
@@ -1367,21 +1848,31 @@ def create_claim_review_decision(
     claim = claims_by_id.get(request.claim_id)
     if claim is None:
         raise HTTPException(status_code=404, detail="Claim not found")
+    if request.decision == "confirmed_observed_fact" and claim.claim_type != "observed_fact":
+        raise HTTPException(status_code=422, detail="Only observed fact claims can be confirmed")
+    evidence_refs = safe_preview_lines(request.evidence_refs)
+    if request.decision == "confirmed_observed_fact" and not _claim_review_evidence_refs_supported(
+        claim,
+        evidence_refs,
+    ):
+        raise HTTPException(status_code=422, detail="Unsupported evidence refs")
 
     decision = ClaimReviewDecisionResponse(
         claim_id=safe_preview_text(request.claim_id),
         decision=request.decision,
         reviewer=safe_preview_text(request.reviewer),
         rationale=safe_preview_text(request.rationale),
-        evidence_refs=safe_preview_lines(request.evidence_refs),
+        evidence_refs=evidence_refs,
         reviewed_at=datetime.now(UTC).isoformat(),
     )
     updated_record = repository.append_claim_review_decision(
         run_id=run_id,
         decision=decision.model_dump(mode="json"),
+        claim_type=claim.claim_type,
+        evidence_refs_supported=True,
     )
     if updated_record is None:
-        raise HTTPException(status_code=404, detail="Pipeline run not found")
+        raise HTTPException(status_code=422, detail="Unsupported evidence refs")
     usage_record = _artifact_usage_record_for_claim_review_decision(
         record=updated_record,
         claim=claim,
@@ -1407,6 +1898,17 @@ def create_finding_candidate_from_pipeline_run(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
 
     preview = _build_report_preview_response_or_404(record)
+    research_feedback_gate = _research_feedback_promotion_gate_for_run(
+        repository,
+        run_id=record.id,
+    )
+    if research_feedback_gate is not None:
+        _record_research_feedback_promotion_block(
+            repository,
+            run_id=record.id,
+            gate=research_feedback_gate,
+        )
+        raise HTTPException(status_code=409, detail=research_feedback_gate)
     try:
         finding = promote_pipeline_run_to_finding_candidate(
             repository=repository,
@@ -1450,6 +1952,14 @@ def create_manual_observation(
     claim = claims_by_id.get(request.claim_id)
     if claim is None:
         raise HTTPException(status_code=404, detail="Claim not found")
+    if (
+        request.observation_type in SECURITY_IMPACT_OBSERVATION_TYPES
+        and claim.claim_type != "observed_fact"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Security impact observations require observed fact claims",
+        )
 
     observation = ManualObservationResponse(
         observation_id=f"manual_observation_{uuid4().hex}",
@@ -1464,9 +1974,11 @@ def create_manual_observation(
     updated_record = repository.append_manual_observation(
         run_id=run_id,
         observation=observation.model_dump(mode="json"),
+        claim_exists=True,
+        claim_type=claim.claim_type,
     )
     if updated_record is None:
-        raise HTTPException(status_code=404, detail="Pipeline run not found")
+        raise HTTPException(status_code=422, detail="Unsupported evidence refs")
     usage_record = _artifact_usage_record_for_manual_observation(
         record=updated_record,
         claim=claim,
@@ -1528,6 +2040,7 @@ def _approval_record_response(record: ApprovalRecord) -> ApprovalRecordResponse:
         decision_reason=record.decision_reason,
         decided_by=record.decided_by,
         decided_at=record.decided_at.isoformat() if record.decided_at else None,
+        expires_at=record.expires_at.isoformat() if record.expires_at else None,
         created_at=record.created_at.isoformat(),
     )
 
@@ -1571,7 +2084,10 @@ def _campaign_response(
         allowed_tools=record.allowed_tools,
         created_by=record.created_by,
         created_at=record.created_at.isoformat(),
-        budget=_campaign_budget_response(repository.get_campaign_budget(record.id)),
+        budget=_campaign_budget_response(
+            repository.get_campaign_budget(record.id),
+            repository=repository,
+        ),
     )
 
 
@@ -1595,18 +2111,65 @@ def _campaign_control_campaign_response(
 
 def _campaign_budget_response(
     record: CampaignBudgetRecord | None,
+    *,
+    repository: DatabaseRepository | None = None,
 ) -> CampaignBudgetResponse | None:
     if record is None:
         return None
+    tool_call_used = (
+        _campaign_tool_call_used(record.campaign_id, repository)
+        if repository is not None
+        else 0
+    )
+    tool_call_remaining = (
+        None
+        if record.tool_call_budget is None
+        else max(record.tool_call_budget - tool_call_used, 0)
+    )
+    validation_budget_used = (
+        _campaign_validation_budget_used(
+            repository.list_campaign_validation_runs(record.campaign_id)
+        )
+        if repository is not None
+        else 0
+    )
+    validation_budget_remaining = (
+        None
+        if record.validation_budget is None
+        else max(record.validation_budget - validation_budget_used, 0)
+    )
     return CampaignBudgetResponse(
         id=record.id,
         campaign_id=record.campaign_id,
         time_budget_minutes=record.time_budget_minutes,
         token_budget=record.token_budget,
         tool_call_budget=record.tool_call_budget,
+        tool_call_used=tool_call_used,
+        tool_call_remaining=tool_call_remaining,
         validation_budget=record.validation_budget,
+        validation_budget_used=validation_budget_used,
+        validation_budget_remaining=validation_budget_remaining,
         status=record.status,
         created_at=record.created_at.isoformat(),
+    )
+
+
+def _campaign_tool_call_used(
+    campaign_id: str,
+    repository: DatabaseRepository,
+) -> int:
+    return _campaign_tool_call_used_from_runs(
+        repository.list_campaign_agent_runs(campaign_id)
+    )
+
+
+def _campaign_tool_call_used_from_runs(
+    agent_runs: list[AgentRunRecord],
+) -> int:
+    return sum(
+        1
+        for run in agent_runs
+        if run.safety_gate_state == "allowed"
     )
 
 
@@ -1622,6 +2185,358 @@ def _campaign_task_response(record: CampaignTaskRecord) -> CampaignTaskResponse:
         output_refs=safe_string_list(record.output_refs),
         created_at=record.created_at.isoformat(),
     )
+
+
+def _research_task_review_response(
+    record: CampaignTaskRecord,
+    *,
+    repository: DatabaseRepository | None = None,
+) -> ResearchTaskReviewResponse:
+    payload = record.payload if isinstance(record.payload, dict) else {}
+    return ResearchTaskReviewResponse(
+        task_id=record.id,
+        campaign_id=record.campaign_id,
+        queue_key=safe_preview_text(payload.get("queue_key", "research_queue")),
+        title=safe_preview_text(record.title),
+        status=safe_preview_text(record.status),
+        source=safe_preview_text(payload.get("source", "mythos_brain_reasoning_memory")),
+        playbook_id=(
+            safe_preview_text(payload["playbook_id"])
+            if isinstance(payload.get("playbook_id"), str)
+            else None
+        ),
+        surface_key=(
+            safe_preview_text(payload["surface_key"])
+            if isinstance(payload.get("surface_key"), str)
+            else None
+        ),
+        priority_score=_safe_priority_score(payload.get("priority_score")),
+        safety_gate="advisory_memory_only",
+        next_allowed_action=safe_preview_text(
+            payload.get(
+                "next_allowed_action",
+                "Review hypothesis board and plan non-destructive evidence work.",
+            )
+        ),
+        non_destructive_plan=[
+            "Review existing hypothesis board entries for this playbook and surface.",
+            "Collect only redacted artifact summaries and provenance counts.",
+            "Draft refutation questions before any validation request.",
+            "Prepare a human-approved validation plan without executing it.",
+        ],
+        required_human_gates=[
+            "scope_guard_review",
+            "redaction_review",
+            "approval_required_before_validation",
+        ],
+        execution_allowed=False,
+        dispatch_allowed=False,
+        report_submission_allowed=False,
+        latest_review_plan=(
+            _latest_research_review_plan(repository, record)
+            if repository is not None
+            else None
+        ),
+        latest_refutation_decision=(
+            _latest_research_refutation_decision(repository, record)
+            if repository is not None
+            else None
+        ),
+        latest_validation_feedback=(
+            _latest_research_validation_feedback(repository, record)
+            if repository is not None
+            else None
+        ),
+    )
+
+
+def _latest_research_review_plan(
+    repository: DatabaseRepository,
+    task: CampaignTaskRecord,
+) -> dict | None:
+    stages = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(task.campaign_id)
+        if stage.task_id == task.id
+        and stage.stage_key == "research_task_review_plan"
+        and isinstance(stage.payload, dict)
+    ]
+    if not stages:
+        return None
+    stage = max(stages, key=lambda record: (record.stage_order, record.created_at, record.id))
+    payload = stage.payload
+    return ResearchReviewPlanResponse(
+        plan_id=safe_preview_text(payload.get("plan_id", "research_plan")),
+        task_id=task.id,
+        campaign_id=task.campaign_id,
+        status=safe_preview_text(stage.status),
+        hypothesis=safe_preview_text(payload.get("hypothesis", "Hypothesis redacted")),
+        refutation_questions=safe_preview_lines(payload.get("refutation_questions", [])),
+        evidence_plan=safe_preview_lines(payload.get("evidence_plan", [])),
+        required_human_gates=[
+            "scope_guard_review",
+            "redaction_review",
+            "approval_required_before_validation",
+        ],
+        safety_gate=safe_preview_text(stage.safety_gate_state),
+        next_allowed_action="Review hypothesis board and request approval before validation.",
+        execution_allowed=False,
+        dispatch_allowed=False,
+        validation_allowed=False,
+        report_submission_allowed=False,
+    ).model_dump(mode="json")
+
+
+def _latest_research_refutation_decision(
+    repository: DatabaseRepository,
+    task: CampaignTaskRecord,
+) -> dict | None:
+    stages = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(task.campaign_id)
+        if stage.task_id == task.id
+        and stage.stage_key == "research_task_refutation_decision"
+        and isinstance(stage.payload, dict)
+    ]
+    if not stages:
+        return None
+    stage = max(stages, key=lambda record: (record.stage_order, record.created_at, record.id))
+    payload = stage.payload
+    decision = safe_preview_text(payload.get("decision", "needs_evidence"))
+    if decision not in {
+        "refuted",
+        "needs_evidence",
+        "needs_validation_review",
+        "parked_duplicate",
+        "policy_blocked",
+    }:
+        decision = "needs_evidence"
+    return ResearchRefutationDecisionResponse(
+        decision_id=safe_preview_text(payload.get("decision_id", "refutation_decision")),
+        task_id=task.id,
+        campaign_id=task.campaign_id,
+        plan_id=safe_preview_text(payload.get("plan_id", "research_plan")),
+        decision=decision,
+        rationale=safe_preview_text(payload.get("rationale", "Refutation review recorded.")),
+        refutation_answers=safe_preview_lines(payload.get("refutation_answers", [])),
+        next_allowed_action=_research_refutation_next_allowed_action(decision),
+        validation_run_id=(
+            safe_preview_text(payload.get("validation_run_id"))
+            if payload.get("validation_run_id")
+            else None
+        ),
+        approval_id=(
+            safe_preview_text(payload.get("approval_id"))
+            if payload.get("approval_id")
+            else None
+        ),
+        execution_allowed=False,
+        dispatch_allowed=False,
+        validation_allowed=False,
+        report_submission_allowed=False,
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _latest_research_validation_feedback(
+    repository: DatabaseRepository,
+    task: CampaignTaskRecord,
+) -> dict | None:
+    stages = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(task.campaign_id)
+        if stage.task_id == task.id
+        and stage.stage_key == "research_task_validation_feedback"
+        and isinstance(stage.payload, dict)
+    ]
+    if not stages:
+        return None
+    stage = max(stages, key=lambda record: (record.stage_order, record.created_at, record.id))
+    payload = stage.payload
+    evidence_ref_count = _safe_non_negative_int(payload.get("evidence_ref_count"))
+    next_allowed_action = "Review validation evidence before finding promotion."
+    return {
+        "campaign_id": task.campaign_id,
+        "task_id": task.id,
+        "plan_id": safe_preview_text(payload.get("plan_id", "research_plan")),
+        "decision_id": safe_preview_text(payload.get("decision_id", "refutation_decision")),
+        "approval_id": safe_preview_text(payload.get("approval_id", "approval")),
+        "validation_run_id": safe_preview_text(
+            payload.get("validation_run_id", "validation_run")
+        ),
+        "status": safe_preview_text(stage.status),
+        "outcome": safe_preview_text(payload.get("outcome", "needs_more_evidence")),
+        "evidence_ref_count": evidence_ref_count,
+        "safety_gate": safe_preview_text(stage.safety_gate_state),
+        "next_allowed_action": next_allowed_action,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "finding_confirmation_allowed": False,
+        "report_submission_allowed": False,
+        "promotion_gate": {
+            "status": "manual_review_required",
+            "reason": "research_validation_feedback_is_advisory",
+            "provenance_refs": safe_preview_lines(stage.input_refs),
+            "evidence_ref_count": evidence_ref_count,
+            "finding_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "next_allowed_action": next_allowed_action,
+        },
+}
+
+
+def _safe_non_negative_int(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    return 0
+
+
+def _campaign_research_review_plans(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> list[ResearchReviewPlanResponse]:
+    plans: list[ResearchReviewPlanResponse] = []
+    seen_task_ids: set[str] = set()
+    for stage in repository.list_campaign_pipeline_stages(campaign.id):
+        if (
+            stage.stage_key != "research_task_review_plan"
+            or stage.task_id is None
+            or not isinstance(stage.payload, dict)
+        ):
+            continue
+        if stage.task_id in seen_task_ids:
+            continue
+        task = repository.session.get(CampaignTaskRecord, stage.task_id)
+        if task is None or task.campaign_id != campaign.id:
+            continue
+        plan = _latest_research_review_plan(repository, task)
+        if plan is not None:
+            plans.append(ResearchReviewPlanResponse(**plan))
+            seen_task_ids.add(stage.task_id)
+    return plans
+
+
+def _research_review_plan_response(
+    *,
+    task: CampaignTaskRecord,
+    request: ResearchReviewPlanRequest,
+) -> ResearchReviewPlanResponse:
+    return ResearchReviewPlanResponse(
+        plan_id=f"research_plan_{uuid4().hex}",
+        task_id=task.id,
+        campaign_id=task.campaign_id,
+        status="drafted",
+        hypothesis=safe_preview_text(request.hypothesis),
+        refutation_questions=safe_preview_lines(request.refutation_questions),
+        evidence_plan=safe_preview_lines(request.evidence_plan),
+        required_human_gates=[
+            "scope_guard_review",
+            "redaction_review",
+            "approval_required_before_validation",
+        ],
+        safety_gate="advisory_plan_only",
+        next_allowed_action="Review hypothesis board and request approval before validation.",
+        execution_allowed=False,
+        dispatch_allowed=False,
+        validation_allowed=False,
+        report_submission_allowed=False,
+    )
+
+
+def _research_refutation_next_allowed_action(decision: str) -> str:
+    action_by_decision = {
+        "refuted": "Park this hypothesis and continue reviewing other candidates.",
+        "needs_evidence": "Collect redacted evidence or refine the hypothesis before validation.",
+        "needs_validation_review": "Prepare a human-approved validation plan without executing it.",
+        "parked_duplicate": "Park this hypothesis as a duplicate-risk candidate.",
+        "policy_blocked": "Stop this hypothesis unless program scope or policy changes.",
+    }
+    return action_by_decision.get(
+        decision,
+        "Collect redacted evidence or refine the hypothesis before validation.",
+    )
+
+
+def _research_refutation_decision_response(
+    *,
+    task: CampaignTaskRecord,
+    request: ResearchRefutationDecisionRequest,
+) -> ResearchRefutationDecisionResponse:
+    decision = request.decision
+    return ResearchRefutationDecisionResponse(
+        decision_id=f"refutation_decision_{uuid4().hex}",
+        task_id=task.id,
+        campaign_id=task.campaign_id,
+        plan_id=safe_preview_text(request.plan_id),
+        decision=decision,
+        rationale=safe_preview_text(request.rationale),
+        refutation_answers=safe_preview_lines(request.refutation_answers),
+        next_allowed_action=_research_refutation_next_allowed_action(decision),
+        execution_allowed=False,
+        dispatch_allowed=False,
+        validation_allowed=False,
+        report_submission_allowed=False,
+    )
+
+
+def _record_research_validation_feedback_stage(
+    repository: DatabaseRepository,
+    validation_run: ValidationRunRecord,
+    request: ValidationRunManualResultRequest,
+) -> None:
+    payload = validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    if payload.get("source") != "research_task_refutation_decision":
+        return
+    if validation_run.task_id is None:
+        return
+
+    plan_id = safe_preview_text(payload.get("plan_id", ""))
+    decision_id = safe_preview_text(payload.get("decision_id", ""))
+    approval_id = safe_preview_text(
+        validation_run.approval_id or payload.get("approval_record_id", "")
+    )
+    if not plan_id or not decision_id or not approval_id:
+        return
+
+    repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=validation_run.campaign_id,
+        task_id=validation_run.task_id,
+        stage_key="research_task_validation_feedback",
+        stage_order=len(repository.list_campaign_pipeline_stages(validation_run.campaign_id)),
+        status=safe_preview_text(validation_run.status),
+        input_refs=[
+            f"campaign:{validation_run.campaign_id}",
+            f"campaign_task:{validation_run.task_id}",
+            f"research_plan:{plan_id}",
+            f"refutation_decision:{decision_id}",
+            f"approval:{approval_id}",
+            f"validation_run:{validation_run.id}",
+        ],
+        output_refs=[f"validation_run:{validation_run.id}"],
+        safety_gate_state="advisory_validation_feedback_only",
+        stop_reason=None,
+        payload={
+            "source": "research_task_refutation_decision",
+            "plan_id": plan_id,
+            "decision_id": decision_id,
+            "approval_id": approval_id,
+            "validation_run_id": validation_run.id,
+            "outcome": safe_preview_text(request.outcome),
+            "evidence_ref_count": validation_run.evidence_ref_count,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "finding_confirmation_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+
+
+def _safe_priority_score(value: Any) -> int:
+    score = int(value) if isinstance(value, int | float) else 0
+    return max(0, min(100, score))
 
 
 def _agent_run_response(record: AgentRunRecord) -> AgentRunResponse:
@@ -1752,26 +2667,81 @@ def _validation_run_approval_matches(
 ) -> bool:
     return (
         approval.status == "approved"
+        and approval_record_is_active(approval)
         and approval.campaign_id == campaign.id
         and approval.task_id == validation_run.task_id
-        and approval.asset == asset
+        and approval.asset is not None
+        and _safe_asset_value(approval.asset) == _safe_asset_value(asset)
         and approval.validation_mode == validation_run.validation_mode
         and approval.plan_digest == validation_run.plan_digest
+        and _approval_scope_reference_matches(approval, validation_run)
+        and _approval_allowed_accounts_match(approval, validation_run)
     )
 
 
-def _campaign_control_center_blocked_reasons(
+def _approval_scope_reference_matches(
+    approval: ApprovalRecord,
+    validation_run: ValidationRunRecord,
+) -> bool:
+    if approval.scope_reference is None:
+        return True
+    payload = validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    return payload.get("scope_reference") == approval.scope_reference
+
+
+def _approval_allowed_accounts_match(
+    approval: ApprovalRecord,
+    validation_run: ValidationRunRecord,
+) -> bool:
+    approval_accounts = _payload_string_set(approval.payload, "allowed_accounts")
+    if not approval_accounts:
+        return True
+    validation_accounts = _payload_string_set(validation_run.payload, "allowed_accounts")
+    return bool(validation_accounts) and validation_accounts <= approval_accounts
+
+
+def _approval_validation_budget_exhausted(
+    repository: DatabaseRepository,
     *,
-    campaign: CampaignRecord,
-    budget: CampaignBudgetRecord | None,
-    stages: list[PipelineStageRecord],
-) -> list[str]:
-    reasons: list[str] = []
-    if campaign.scope_status != "in_scope":
-        reasons.append("scope_not_in_scope")
-    if campaign.status in {"blocked", "canceled", "failed"}:
-        reasons.append(f"campaign_{campaign.status}")
-    if budget is not None and any(
+    approval: ApprovalRecord,
+    validation_run: ValidationRunRecord,
+) -> bool:
+    validation_budget = _payload_int(approval.payload, "validation_budget")
+    if validation_budget is None:
+        return False
+    used_count = sum(
+        1
+        for record in repository.list_campaign_validation_runs(validation_run.campaign_id)
+        if record.approval_id == approval.id
+        and record.id != validation_run.id
+        and record.status
+        in {
+            "ready",
+            "preflight_passed",
+            "evidence_recorded",
+            "refuted",
+            "needs_evidence",
+        }
+    )
+    return used_count >= validation_budget
+
+
+def _payload_string_set(payload: dict, key: str) -> set[str]:
+    values = payload.get(key) if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return set()
+    return {value for value in values if isinstance(value, str) and value}
+
+
+def _payload_int(payload: dict, key: str) -> int | None:
+    value = payload.get(key) if isinstance(payload, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _campaign_budget_exhausted(budget: CampaignBudgetRecord | None) -> bool:
+    if budget is None:
+        return False
+    return any(
         value is not None and value <= 0
         for value in (
             budget.time_budget_minutes,
@@ -1779,6 +2749,71 @@ def _campaign_control_center_blocked_reasons(
             budget.tool_call_budget,
             budget.validation_budget,
         )
+    )
+
+
+def _campaign_validation_budget_exhausted(
+    repository: DatabaseRepository,
+    *,
+    budget: CampaignBudgetRecord | None,
+    validation_run: ValidationRunRecord,
+) -> bool:
+    if budget is None or budget.validation_budget is None:
+        return False
+    used_or_reserved = _campaign_validation_budget_used(
+        repository.list_campaign_validation_runs(validation_run.campaign_id),
+        excluded_validation_run_id=validation_run.id,
+    )
+    return used_or_reserved >= budget.validation_budget
+
+
+def _campaign_validation_budget_used(
+    validation_runs: list[ValidationRunRecord],
+    *,
+    excluded_validation_run_id: str | None = None,
+) -> int:
+    return sum(
+        1
+        for run in validation_runs
+        if run.id != excluded_validation_run_id
+        and _validation_run_consumes_campaign_budget(run)
+    )
+
+
+def _validation_run_consumes_campaign_budget(run: ValidationRunRecord) -> bool:
+    return (
+        run.allowed_to_execute
+        or run.status in {"preflight_passed", "evidence_recorded", "refuted", "needs_evidence"}
+        or run.evidence_ref_count > 0
+        or str(run.safety_gate_state).startswith("manual_")
+    )
+
+
+def _campaign_control_center_blocked_reasons(
+    *,
+    campaign: CampaignRecord,
+    budget: CampaignBudgetRecord | None,
+    agent_runs: list[AgentRunRecord],
+    validation_runs: list[ValidationRunRecord],
+    stages: list[PipelineStageRecord],
+) -> list[str]:
+    reasons: list[str] = []
+    if campaign.scope_status != "in_scope":
+        reasons.append("scope_not_in_scope")
+    if campaign.status in {"blocked", "canceled", "failed"}:
+        reasons.append(f"campaign_{campaign.status}")
+    if _campaign_budget_exhausted(budget):
+        reasons.append("budget_exhausted")
+    if (
+        budget is not None
+        and budget.tool_call_budget is not None
+        and _campaign_tool_call_used_from_runs(agent_runs) >= budget.tool_call_budget
+    ):
+        reasons.append("budget_exhausted")
+    if (
+        budget is not None
+        and budget.validation_budget is not None
+        and _campaign_validation_budget_used(validation_runs) >= budget.validation_budget
     ):
         reasons.append("budget_exhausted")
     for stage in stages:
@@ -1799,20 +2834,19 @@ def _campaign_control_center_safe_next_action(
     repository: DatabaseRepository,
     blocked_reasons: list[str],
 ) -> str:
-    if any(record.status == "pending" for record in approvals):
+    if any(
+        record.status in {"pending", "requested"} and approval_record_is_active(record)
+        for record in approvals
+    ):
         return "review_approval_queue"
     if any(
-        record.approval_required
-        and not record.allowed_to_execute
-        and (
-            record.status in {"awaiting_approval", "ready"}
-            or record.safety_gate_state in {"awaiting_approval", "approved_validation_record"}
-        )
-        for record in validation_runs
+        _validation_run_awaits_approval_review(record) for record in validation_runs
     ):
         return "review_validation_queue"
     if any(_validation_run_has_manual_result(record) for record in validation_runs):
         return "review_evidence_or_report_drafts"
+    if _campaign_has_blocked_finding_promotion(pipeline_stages):
+        return "review_blocked_promotion"
     if _campaign_has_report_preview_learning_signal(pipeline_stages, repository):
         return "review_learning_outcome"
     if _campaign_has_report_preview_finding_candidate(
@@ -1820,6 +2854,11 @@ def _campaign_control_center_safe_next_action(
         repository,
     ):
         return "record_learning_outcome"
+    if _campaign_has_hypothesis_reasoning_review(
+        pipeline_stages,
+        repository,
+    ):
+        return "review_hypothesis_board"
     if _campaign_has_awaiting_cycle_review(pipeline_stages):
         return "complete_cycle_review"
     if blocked_reasons:
@@ -1830,9 +2869,92 @@ def _campaign_control_center_safe_next_action(
         return "set_campaign_budget"
     if any(record.status in {"dispatched", "running"} for record in agent_runs):
         return "monitor_agent_runs"
-    if any(record.status in {"queued", "ready"} for record in tasks):
-        return "dispatch_ready_tasks"
+    if any(record.status in {"queued", "queued_review", "ready"} for record in tasks):
+        return "review_ready_tasks"
     return "plan_next_tick"
+
+
+def _campaign_research_queue_suggestions(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> list[ResearchQueueSuggestionResponse]:
+    if campaign.scope_status != "in_scope" or campaign.program_id is None:
+        return []
+
+    try:
+        profile = _program_intelligence_profile(repository, campaign.program_id)
+    except HTTPException:
+        return []
+
+    surfaces_by_playbook: dict[str, str] = {}
+    for surface in profile.high_value_surfaces:
+        for playbook_id in surface.playbooks:
+            surfaces_by_playbook.setdefault(playbook_id, surface.surface_key)
+
+    suggestions: list[ResearchQueueSuggestionResponse] = []
+    for playbook in profile.reasoning_memory.top_playbooks[:3]:
+        playbook_id = safe_preview_text(playbook.playbook_id)
+        suggestions.append(
+            ResearchQueueSuggestionResponse(
+                queue_key=f"reasoning_memory:{playbook_id}",
+                title=f"Review {playbook_id} reasoning memory",
+                source="mythos_brain_reasoning_memory",
+                playbook_id=playbook_id,
+                surface_key=surfaces_by_playbook.get(playbook.playbook_id),
+                priority_score=playbook.highest_reasoning_review_score,
+                safety_gate="advisory_memory_only",
+                next_allowed_action=(
+                    "Review hypothesis board and plan non-destructive evidence work."
+                ),
+                execution_allowed=False,
+            )
+        )
+    return suggestions
+
+
+def _campaign_research_queue_suggestion_by_key(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    queue_key: str,
+) -> ResearchQueueSuggestionResponse | None:
+    safe_queue_key = safe_preview_text(queue_key)
+    return next(
+        (
+            suggestion
+            for suggestion in _campaign_research_queue_suggestions(campaign, repository)
+            if suggestion.queue_key == safe_queue_key
+        ),
+        None,
+    )
+
+
+def _research_queue_task_input_refs(
+    campaign_id: str,
+    suggestion: ResearchQueueSuggestionResponse,
+) -> list[str]:
+    refs = [
+        f"campaign:{safe_preview_text(campaign_id)}",
+        f"research_queue:{safe_preview_text(suggestion.queue_key)}",
+    ]
+    if suggestion.playbook_id:
+        refs.append(f"playbook:{safe_preview_text(suggestion.playbook_id)}")
+    if suggestion.surface_key:
+        refs.append(f"surface:{safe_preview_text(suggestion.surface_key)}")
+    return refs
+
+
+def _existing_research_queue_task(
+    *,
+    repository: DatabaseRepository,
+    campaign_id: str,
+    queue_key: str,
+) -> CampaignTaskRecord | None:
+    queue_ref = f"research_queue:{safe_preview_text(queue_key)}"
+    for task in repository.list_campaign_tasks(campaign_id):
+        if task.task_type == "research_queue_review" and queue_ref in task.input_refs:
+            return task
+    return None
 
 
 def _campaign_has_report_preview_finding_candidate(
@@ -1854,6 +2976,38 @@ def _campaign_has_report_preview_finding_candidate(
     return False
 
 
+def _campaign_has_hypothesis_reasoning_review(
+    pipeline_stages: list[PipelineStageRecord],
+    repository: DatabaseRepository,
+) -> bool:
+    pipeline_run_ids = [
+        stage.pipeline_run_id
+        for stage in pipeline_stages
+        if stage.stage_key == "campaign_report_preview" and stage.pipeline_run_id
+    ]
+    for run_id in pipeline_run_ids:
+        record = repository.get_pipeline_run(run_id)
+        if record is None:
+            continue
+        assessments = record.payload.get("hypothesis_assessments", [])
+        if not isinstance(assessments, list):
+            continue
+        for assessment in assessments:
+            if not isinstance(assessment, dict):
+                continue
+            exploit_chain = assessment.get("exploit_chain")
+            refutation = assessment.get("refutation")
+            has_chain = isinstance(exploit_chain, dict) and bool(
+                exploit_chain.get("primitives")
+            )
+            has_refutation_questions = isinstance(refutation, dict) and bool(
+                refutation.get("questions")
+            )
+            if has_chain or has_refutation_questions:
+                return True
+    return False
+
+
 def _campaign_has_awaiting_cycle_review(
     pipeline_stages: list[PipelineStageRecord],
 ) -> bool:
@@ -1872,12 +3026,93 @@ def _campaign_has_awaiting_cycle_review(
     )
 
 
+def _campaign_has_blocked_finding_promotion(
+    pipeline_stages: list[PipelineStageRecord],
+) -> bool:
+    return any(
+        stage.stage_key == "finding_promotion_blocked"
+        and stage.status == "blocked"
+        and stage.stop_reason == "blocked_by_research_feedback_gate"
+        for stage in pipeline_stages
+    )
+
+
+def _campaign_promotion_review_summary(
+    pipeline_stages: list[PipelineStageRecord],
+) -> CampaignPromotionReviewSummary:
+    blocked_stages = [
+        stage
+        for stage in pipeline_stages
+        if stage.stage_key == "finding_promotion_blocked"
+        and stage.status == "blocked"
+        and stage.stop_reason == "blocked_by_research_feedback_gate"
+    ]
+    if not blocked_stages:
+        return CampaignPromotionReviewSummary()
+
+    latest_stage = blocked_stages[-1]
+    provenance_ref_count = _payload_int(
+        latest_stage.payload,
+        "provenance_ref_count",
+    )
+
+    return CampaignPromotionReviewSummary(
+        blocked_attempt_count=len(blocked_stages),
+        latest_reason=(
+            safe_preview_text(latest_stage.stop_reason)
+            if latest_stage.stop_reason
+            else "blocked_by_research_feedback_gate"
+        ),
+        next_allowed_action="Review blocked promotion evidence before retrying candidate promotion.",
+        provenance_ref_count=provenance_ref_count or 0,
+    )
+
+
 def _cycle_review_signature(stage: PipelineStageRecord) -> tuple:
     return (
         stage.stage_order,
         stage.task_id,
         tuple(stage.input_refs or []),
         tuple(stage.output_refs or []),
+    )
+
+
+def _cycle_review_unresolved_gate_refs(
+    repository: DatabaseRepository,
+    stage: PipelineStageRecord,
+) -> list[str]:
+    unresolved_refs: list[str] = []
+    for ref in stage.output_refs or []:
+        if ref.startswith("approval:"):
+            approval = repository.session.get(ApprovalRecord, ref.removeprefix("approval:"))
+            if (
+                approval is not None
+                and approval.campaign_id == stage.campaign_id
+                and approval.status in {"pending", "requested"}
+                and approval_record_is_active(approval)
+            ):
+                unresolved_refs.append(ref)
+        elif ref.startswith("validation_run:"):
+            validation_run = repository.get_validation_run(
+                ref.removeprefix("validation_run:")
+            )
+            if (
+                validation_run is not None
+                and validation_run.campaign_id == stage.campaign_id
+                and _validation_run_awaits_approval_review(validation_run)
+            ):
+                unresolved_refs.append(ref)
+    return unresolved_refs
+
+
+def _validation_run_awaits_approval_review(record: ValidationRunRecord) -> bool:
+    return (
+        record.approval_required
+        and not record.allowed_to_execute
+        and (
+            record.status in {"awaiting_approval", "ready"}
+            or record.safety_gate_state in {"awaiting_approval", "approved_validation_record"}
+        )
     )
 
 
@@ -1901,10 +3136,9 @@ def _campaign_has_report_preview_learning_signal(
 
 
 def _validation_run_has_manual_result(record: ValidationRunRecord) -> bool:
-    return (
-        record.status in {"evidence_recorded", "refuted", "needs_evidence"}
-        or record.evidence_ref_count > 0
-        or record.safety_gate_state.startswith("manual_")
+    return isinstance(record.payload, dict) and isinstance(
+        record.payload.get("manual_result"),
+        dict,
     )
 
 
@@ -1999,6 +3233,21 @@ def _artifact_usage_records_for_run(
             hypothesis = assessment.get("hypothesis")
             hunter_assessment = assessment.get("hunter_assessment")
             refutation = assessment.get("refutation")
+            exploit_chain = assessment.get("exploit_chain")
+            chain_primitive_count = _safe_count(
+                exploit_chain.get("primitives") if isinstance(exploit_chain, dict) else []
+            )
+            chain_precondition_count = _safe_count(
+                exploit_chain.get("preconditions") if isinstance(exploit_chain, dict) else []
+            )
+            refutation_question_count = _safe_count(
+                refutation.get("questions") if isinstance(refutation, dict) else []
+            )
+            hunter_priority_score = (
+                hunter_assessment.get("hunter_priority_score")
+                if isinstance(hunter_assessment, dict)
+                else None
+            )
             candidate_id = safe_preview_text(
                 assessment.get("candidate_id", f"hypothesis_{index}")
             )
@@ -2028,10 +3277,15 @@ def _artifact_usage_records_for_run(
                         if isinstance(hunter_assessment, dict)
                         else "unknown"
                     ),
-                    "hunter_priority_score": (
-                        hunter_assessment.get("hunter_priority_score")
-                        if isinstance(hunter_assessment, dict)
-                        else None
+                    "hunter_priority_score": hunter_priority_score,
+                    "chain_primitive_count": chain_primitive_count,
+                    "chain_precondition_count": chain_precondition_count,
+                    "refutation_question_count": refutation_question_count,
+                    "reasoning_review_score": _reasoning_review_score(
+                        hunter_priority_score,
+                        chain_primitive_count,
+                        chain_precondition_count,
+                        refutation_question_count,
                     ),
                 }
             )
@@ -2054,6 +3308,30 @@ def _artifact_usage_records_for_run(
             }
         )
     return usage_records
+
+
+def _safe_count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _reasoning_review_score(
+    hunter_priority_score: Any,
+    chain_primitive_count: int,
+    chain_precondition_count: int,
+    refutation_question_count: int,
+) -> int:
+    hunter_score = (
+        int(hunter_priority_score)
+        if isinstance(hunter_priority_score, int | float)
+        else 0
+    )
+    score = (
+        hunter_score
+        + chain_primitive_count * 2
+        + chain_precondition_count
+        + refutation_question_count * 2
+    )
+    return max(0, min(100, score))
 
 
 def _artifact_usage_record_for_manual_observation(
@@ -2167,7 +3445,33 @@ def _artifact_usage_record_for_learning_signal(
         usage["evidence_quality"] = signal.evidence_quality
     if signal.target_relationships:
         usage["target_relationships"] = signal.target_relationships
+    reasoning_context = _learning_signal_reasoning_context(record, str(artifact_id), signal)
+    if reasoning_context is not None:
+        usage["reasoning_context"] = reasoning_context
     return str(artifact_id), usage
+
+
+def _learning_signal_reasoning_context(
+    record: PipelineRunRecord,
+    artifact_id: str,
+    signal: LearningSignal,
+) -> dict | None:
+    scores = [
+        usage.get("reasoning_review_score")
+        for usage in _artifact_usage_records_for_run(record, artifact_id)
+        if usage.get("usage_type") == "hypothesis_candidate"
+        and usage.get("playbook_id") == signal.playbook_id
+        and isinstance(usage.get("reasoning_review_score"), int)
+    ]
+
+    if not scores:
+        return None
+    return {
+        "source": "hypothesis_lifecycle",
+        "reasoning_review_score": max(scores),
+        "candidate_context_count": len(scores),
+        "safety_gate": "advisory_memory_only",
+    }
 
 
 def _save_campaign_learning_outcome_stage(
@@ -2221,6 +3525,23 @@ def _learning_signal_response(record: LearningSignalRecord) -> LearningSignal:
         target_relationships=record.target_relationships,
         created_at=record.created_at.isoformat(),
     )
+
+
+def _claim_review_evidence_refs_supported(
+    claim: ClaimLedgerEntry,
+    evidence_refs: list[str],
+) -> bool:
+    if not evidence_refs:
+        return (
+            "has_security_impact_observation" in claim.quality_reasons
+            and "manual_observation_missing_safe_evidence" not in claim.quality_reasons
+        )
+    if not review_evidence_refs_are_report_safe(evidence_refs):
+        return False
+    supported_refs = set(REPORT_SAFE_REVIEW_EVIDENCE_REFS)
+    if "has_security_impact_observation" in claim.quality_reasons:
+        supported_refs.update(claim.evidence_refs)
+    return set(evidence_refs) <= supported_refs
 
 
 def _evidence_quality_from_reviewed_claims(
@@ -2431,11 +3752,73 @@ def _program_intelligence_profile(
         _learning_signal_response(record)
         for record in repository.list_all_learning_signals()
     ]
-    return build_program_intelligence(
+    profile = build_program_intelligence(
         program=program,
         pipeline_runs=pipeline_runs,
         learning_signals=learning_signals,
         lesson_signals=lesson_signals,
+    )
+    profile.reasoning_memory = _program_reasoning_memory(repository, program_id)
+    return profile
+
+
+def _program_reasoning_memory(
+    repository: DatabaseRepository,
+    program_id: str,
+) -> ReasoningMemorySummary:
+    playbooks: dict[str, dict[str, int]] = {}
+    for record in repository.list_pipeline_runs_for_program(program_id):
+        for usage in _closed_loop_artifact_usage_records(record, repository):
+            if usage.get("usage_type") != "learning_signal":
+                continue
+            context = usage.get("reasoning_context")
+            if not isinstance(context, dict):
+                continue
+            score = context.get("reasoning_review_score")
+            if not isinstance(score, int):
+                continue
+            playbook_id = safe_preview_text(usage.get("playbook_id", "unknown_playbook"))
+            entry = playbooks.setdefault(
+                playbook_id,
+                {
+                    "highest_reasoning_review_score": 0,
+                    "learning_signal_context_count": 0,
+                    "candidate_context_count": 0,
+                },
+            )
+            entry["highest_reasoning_review_score"] = max(
+                entry["highest_reasoning_review_score"],
+                max(0, min(100, score)),
+            )
+            entry["learning_signal_context_count"] += 1
+            candidate_context_count = context.get("candidate_context_count")
+            if isinstance(candidate_context_count, int):
+                entry["candidate_context_count"] += max(0, candidate_context_count)
+
+    all_playbooks = [
+        ReasoningMemoryPlaybook(
+            playbook_id=playbook_id,
+            highest_reasoning_review_score=data["highest_reasoning_review_score"],
+            learning_signal_context_count=data["learning_signal_context_count"],
+            candidate_context_count=data["candidate_context_count"],
+        )
+        for playbook_id, data in sorted(
+            playbooks.items(),
+            key=lambda item: (-item[1]["highest_reasoning_review_score"], item[0]),
+        )
+    ]
+    if not all_playbooks:
+        return ReasoningMemorySummary()
+
+    return ReasoningMemorySummary(
+        highest_reasoning_review_score=max(
+            item.highest_reasoning_review_score for item in all_playbooks
+        ),
+        learning_signal_context_count=sum(
+            item.learning_signal_context_count for item in all_playbooks
+        ),
+        candidate_context_count=sum(item.candidate_context_count for item in all_playbooks),
+        top_playbooks=all_playbooks[:5],
     )
 
 
@@ -2459,6 +3842,86 @@ def _build_report_preview_response_or_404(
         return build_report_preview_response(record)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _research_feedback_promotion_gate_for_run(
+    repository: DatabaseRepository,
+    *,
+    run_id: str,
+) -> dict | None:
+    campaign_ids = {
+        stage.campaign_id
+        for stage in repository.list_pipeline_stages_for_run(run_id)
+        if stage.campaign_id
+        and stage.stage_key == "campaign_report_preview"
+    }
+    blocked_stages: list[PipelineStageRecord] = []
+    for campaign_id in campaign_ids:
+        blocked_stages.extend(
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign_id)
+            if stage.stage_key == "research_task_validation_feedback"
+            and _research_feedback_stage_blocks_promotion(stage)
+        )
+    if not blocked_stages:
+        return None
+
+    provenance_refs = {
+        safe_preview_text(ref)
+        for stage in blocked_stages
+        for ref in (stage.input_refs or [])
+        if safe_preview_text(ref) != "[REDACTED]"
+    }
+    return {
+        "reason": "blocked_by_research_feedback_gate",
+        "blocked_stage_count": len(blocked_stages),
+        "provenance_ref_count": len(provenance_refs),
+        "finding_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _record_research_feedback_promotion_block(
+    repository: DatabaseRepository,
+    *,
+    run_id: str,
+    gate: dict,
+) -> None:
+    campaign_ids = {
+        stage.campaign_id
+        for stage in repository.list_pipeline_stages_for_run(run_id)
+        if stage.campaign_id
+        and stage.stage_key == "campaign_report_preview"
+    }
+    for campaign_id in campaign_ids:
+        repository.save_pipeline_stage(
+            pipeline_run_id=run_id,
+            campaign_id=campaign_id,
+            task_id=None,
+            stage_key="finding_promotion_blocked",
+            stage_order=len(repository.list_campaign_pipeline_stages(campaign_id)),
+            status="blocked",
+            input_refs=[f"pipeline_run:{run_id}"],
+            output_refs=[],
+            safety_gate_state="manual_review_required",
+            stop_reason="blocked_by_research_feedback_gate",
+            payload={
+                "reason": "blocked_by_research_feedback_gate",
+                "blocked_stage_count": gate.get("blocked_stage_count", 0),
+                "provenance_ref_count": gate.get("provenance_ref_count", 0),
+                "finding_promotion_allowed": False,
+                "report_submission_allowed": False,
+                "raw_payload_processed": False,
+            },
+        )
+
+
+def _research_feedback_stage_blocks_promotion(stage: PipelineStageRecord) -> bool:
+    payload = stage.payload if isinstance(stage.payload, dict) else {}
+    return (
+        stage.safety_gate_state == "advisory_validation_feedback_only"
+        and payload.get("finding_confirmation_allowed") is not True
+    )
 
 
 SECURITY_IMPACT_REQUIRED_OBSERVATION_TYPES = [
@@ -2587,9 +4050,10 @@ def _closed_loop_summary(
         learning_signal_count=learning_signal_count,
         lesson_count=lesson_count,
     )
+    reasoning_context = _closed_loop_reasoning_context(usage_records)
     blocked_reasons = _closed_loop_blocked_reasons(record)
 
-    return {
+    summary = {
         "status": _closed_loop_status(
             manual_observation_count=len(manual_observations),
             reviewed_claim_count=len(claim_review_decisions),
@@ -2604,9 +4068,7 @@ def _closed_loop_summary(
         "learning_signal_count": learning_signal_count,
         "lesson_count": lesson_count,
         "brain_memory_status": brain_memory_status,
-        "memory_lessons": [
-            _closed_loop_memory_lesson(lesson) for lesson in memory_lessons
-        ],
+        "memory_lessons": [_closed_loop_memory_lesson(lesson) for lesson in memory_lessons],
         "blocked_reasons": blocked_reasons,
         "safety_notes": [
             "no_live_requests",
@@ -2623,6 +4085,28 @@ def _closed_loop_summary(
             brain_memory_status=brain_memory_status,
             blocked_reasons=blocked_reasons,
         ),
+    }
+    if reasoning_context is not None:
+        summary["reasoning_context"] = reasoning_context
+    return summary
+
+
+def _closed_loop_reasoning_context(usage_records: list[dict]) -> dict | None:
+    scores = [
+        context.get("reasoning_review_score")
+        for usage in usage_records
+        if usage.get("usage_type") == "learning_signal"
+        for context in [usage.get("reasoning_context")]
+        if isinstance(context, dict)
+        and isinstance(context.get("reasoning_review_score"), int)
+    ]
+    if not scores:
+        return None
+    return {
+        "source": "hypothesis_lifecycle",
+        "highest_reasoning_review_score": max(0, min(100, max(scores))),
+        "learning_signal_context_count": len(scores),
+        "safety_gate": "advisory_memory_only",
     }
 
 

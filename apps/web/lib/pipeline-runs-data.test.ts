@@ -325,6 +325,17 @@ test("dashboard labels fallback pipeline runs as demo data", async () => {
 
   assert.match(page, /pipelineRunDataMode/);
   assert.match(page, /Demo data/);
+  assert.match(page, /Mythos Evidence Snapshot/);
+  assert.match(page, /sample Mythos research audit summaries/);
+  assert.match(page, /audits ready/);
+  assert.match(page, /Audit ID/);
+  assert.match(page, />\s*Review\s*</);
+  assert.doesNotMatch(page, /Pipeline Runs \/ Evidence Snapshot/);
+  assert.doesNotMatch(page, /pipeline run records were returned/);
+  assert.doesNotMatch(page, /sample Mythos run summaries/);
+  assert.doesNotMatch(page, /runs ready/);
+  assert.doesNotMatch(page, /Run ID/);
+  assert.doesNotMatch(page, />\s*Run\s*</);
 });
 
 test("dashboard labels fallback shell data as demo data", async () => {
@@ -339,9 +350,51 @@ test("dashboard labels fallback shell data as demo data", async () => {
   assert.match(page, /brainProfile === fallbackBrainProfile/);
   assert.match(page, /scopeGuardDecision === fallbackScopeGuardDecision/);
   assert.match(page, /Demo data/);
+  assert.match(page, /sample Mythos workspace summaries/);
+  assert.doesNotMatch(page, /fallback records/);
 });
 
-test("run detail labels fallback run records as demo data", async () => {
+test("dashboard labels Scope Guard state as clearance, not allowed execution", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /Scope Guard decision/);
+  assert.match(page, /Scope Guard clear/);
+  assert.match(page, /Scope Guard blocked/);
+  assert.doesNotMatch(page, /\? "Allowed" : "Blocked"/);
+});
+
+test("dashboard navigation uses Mythos review workspace labels", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /Approval Review/);
+  assert.match(page, /Program Scope/);
+  assert.match(page, /Target Map/);
+  assert.match(page, /Attack Surface Map/);
+  assert.match(page, /Invariant Review/);
+  assert.match(page, /Hypothesis Board/);
+  assert.match(page, /Finding Candidates/);
+  assert.match(page, /Report Readiness/);
+  assert.match(page, /Manual Submission Gate/);
+  assert.match(page, /Mythos Brain/);
+  assert.match(page, /Scope Guard/);
+  assert.doesNotMatch(page, /label: "Programs"/);
+  assert.doesNotMatch(page, /label: "Assets"/);
+  assert.doesNotMatch(page, /label: "API Model"/);
+  assert.doesNotMatch(page, /label: "Business Flows"/);
+  assert.doesNotMatch(page, /label: "Hypotheses"/);
+  assert.doesNotMatch(page, /label: "Validation Plans"/);
+  assert.doesNotMatch(page, /label: "Findings"/);
+  assert.doesNotMatch(page, /label: "Reports"/);
+  assert.doesNotMatch(page, /label: "Submissions"/);
+  assert.doesNotMatch(page, /label: "Knowledge Base"/);
+  assert.doesNotMatch(page, /label: "Settings \/ Policy Guard"/);
+});
+
+test("run detail labels fallback research audits as demo data", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
   );
@@ -349,6 +402,12 @@ test("run detail labels fallback run records as demo data", async () => {
   assert.match(page, /runDataMode/);
   assert.match(page, /fallback-only/);
   assert.match(page, /Demo data/);
+  assert.match(page, /Research Audit/);
+  assert.match(page, /sample Mythos research summary/);
+  assert.match(page, /Mythos Review Timeline/);
+  assert.doesNotMatch(page, /Run Detail/);
+  assert.doesNotMatch(page, /fallback record/);
+  assert.doesNotMatch(page, /Stage Timeline/);
 });
 
 test("run detail shows stage agent boundaries", async () => {
@@ -359,6 +418,30 @@ test("run detail shows stage agent boundaries", async () => {
   assert.match(page, /agentBoundary/);
   assert.match(page, /Agent Boundary/);
   assert.match(page, /blockedActions/);
+});
+
+test("run detail shows read-only exploit-chain reasoning summaries", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /exploit_chain/);
+  assert.match(page, /Chain confidence/);
+  assert.match(page, /Primitive\(s\)/);
+  assert.match(page, /Precondition\(s\)/);
+  assert.match(page, /Refutation question\(s\)/);
+  assert.doesNotMatch(page, /executeValidation|approveValidation|submitReport/);
+});
+
+test("run detail shows advisory reasoning memory context", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /Reasoning memory/);
+  assert.match(page, /highest_reasoning_review_score/);
+  assert.match(page, /advisory_memory_only/);
+  assert.doesNotMatch(page, /execution_allowed|submission_allowed/);
 });
 
 test("fallback run detail includes stage agent boundaries", async () => {
@@ -394,8 +477,39 @@ test("report preview can promote reviewed claims to finding candidates", async (
   assert.match(page, /promoteFindingCandidateAction/);
   assert.match(page, /Promote Finding Candidate/);
   assert.match(page, /human-reviewed observed claim/);
+  assert.match(page, /Research feedback gates can still block promotion/);
+  assert.match(page, /promotionGateStatus/);
+  assert.match(page, /blocked_by_research_feedback_gate/);
+  assert.match(page, /Research feedback gate blocked finding promotion/);
+  assert.match(page, /blockedStageCount/);
+  assert.match(page, /provenanceRefCount/);
   assert.match(page, /Promotion waits for a live, human-reviewed observed claim/);
   assert.match(page, /submission_blocked/);
+});
+
+test("report preview keeps submission status behind a manual gate", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /Manual submission gate/);
+  assert.match(page, /Research audit/);
+  assert.match(page, /Human review ready/);
+  assert.match(page, /Submission blocked/);
+  assert.match(page, /No claim ledger entries ready for review/);
+  assert.match(page, /No review rationale ready/);
+  assert.match(page, /No report section claims ready/);
+  assert.match(page, /No safety notes ready/);
+  assert.match(page, /No evidence references ready/);
+  assert.doesNotMatch(page, /No claim ledger entries recorded/);
+  assert.doesNotMatch(page, /No review rationale recorded/);
+  assert.doesNotMatch(page, /No claims recorded/);
+  assert.doesNotMatch(page, /No safety notes recorded/);
+  assert.doesNotMatch(page, /No evidence refs recorded/);
+  assert.doesNotMatch(page, /label="Submission"/);
+  assert.doesNotMatch(page, /label="Run"/);
+  assert.doesNotMatch(page, />\s*Run\s*</);
+  assert.doesNotMatch(page, /\? "Blocked" : "Ready"/);
 });
 
 test("report preview can record advisory learning outcomes", async () => {
@@ -421,6 +535,44 @@ test("validation workspace labels fallback workspaces as demo data", async () =>
   assert.match(page, /workspaceDataMode/);
   assert.match(page, /fallback-only/);
   assert.match(page, /Demo data/);
+});
+
+test("validation workspace labels execution state as preflight, not permission", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /Preflight gate/);
+  assert.match(page, /Preflight clear/);
+  assert.match(page, /Preflight blocked/);
+  assert.match(page, /Observation boundary/);
+  assert.match(page, /Preflight reviewed/);
+  assert.match(page, /Review only/);
+  assert.doesNotMatch(page, /Execution permission/);
+  assert.doesNotMatch(page, /No execution permission/);
+  assert.doesNotMatch(page, /Allowed to execute/);
+  assert.doesNotMatch(page, /Execution allowed/);
+  assert.doesNotMatch(page, /\? "Allowed" : "Blocked"/);
+});
+
+test("validation workspace empty states read as review readiness, not records", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /Claim Review/);
+  assert.match(page, /No validation steps ready/);
+  assert.match(page, /No claim review items ready/);
+  assert.match(page, /No manual observations ready for review/);
+  assert.match(page, /No active blocking reasons/);
+  assert.match(page, /No evidence hints ready/);
+  assert.doesNotMatch(page, /Claim Tasks/);
+  assert.doesNotMatch(page, /No validation steps recorded/);
+  assert.doesNotMatch(page, /No claim tasks ready/);
+  assert.doesNotMatch(page, /No claim tasks recorded/);
+  assert.doesNotMatch(page, /No manual observations recorded/);
+  assert.doesNotMatch(page, /No blocking reason recorded/);
+  assert.doesNotMatch(page, /No evidence hints recorded/);
 });
 
 test("validation workspace can record safe manual observations", async () => {
@@ -455,6 +607,12 @@ test("artifact repository labels fallback artifacts as demo data", async () => {
   assert.match(page, /artifactDataMode/);
   assert.match(page, /fallback-only/);
   assert.match(page, /Demo data/);
+  assert.match(page, /sample Mythos artifact summaries/);
+  assert.match(page, /Artifact Review/);
+  assert.match(page, /Usage audit/);
+  assert.doesNotMatch(page, /Usage run/);
+  assert.doesNotMatch(page, /artifact records came from fallback summaries/);
+  assert.doesNotMatch(page, />Repository View</);
 });
 
 test("artifact detail labels fallback artifacts as demo data", async () => {
@@ -465,4 +623,23 @@ test("artifact detail labels fallback artifacts as demo data", async () => {
   assert.match(page, /artifactDataMode/);
   assert.match(page, /fallback-only/);
   assert.match(page, /Demo data/);
+  assert.match(page, /No payload summary ready/);
+  assert.match(page, /No provenance summary ready/);
+  assert.match(page, /No derived facts ready/);
+  assert.match(page, /No artifact usage ready/);
+  assert.doesNotMatch(page, /No payload summary recorded/);
+  assert.doesNotMatch(page, /No provenance summary recorded/);
+  assert.doesNotMatch(page, /No derived facts recorded/);
+  assert.doesNotMatch(page, /No artifact usage recorded/);
+});
+
+test("artifact detail describes report-chain eligibility without allowed wording", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/artifacts/[artifactId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /Report-chain eligibility/);
+  assert.match(page, /Eligible for report chain/);
+  assert.match(page, /Blocked for report chain/);
+  assert.doesNotMatch(page, /\? "Allowed" : "Blocked"/);
 });

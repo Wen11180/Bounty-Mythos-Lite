@@ -93,8 +93,18 @@ def test_mythos_pipeline_dry_run_assesses_each_hypothesis_lifecycle():
         }
         assert all(item["scope_decision"]["reason"] for item in assessments)
         assert all(item["refutation"]["status"] == "blocked" for item in assessments)
+        assert all(item["refutation"]["questions"] for item in assessments)
+        assert all(item["exploit_chain"]["primitives"] for item in assessments)
+        assert all(item["exploit_chain"]["preconditions"] for item in assessments)
+        assert all(item["exploit_chain"]["impact"] for item in assessments)
+        assert all(0 <= item["exploit_chain"]["confidence"] <= 1 for item in assessments)
+        assert "non_executable_chain_summary" in assessments[0]["exploit_chain"]["safety_notes"]
         assert all(item["validation_plan"]["human_approval_required"] is True for item in assessments)
         assert all(item["evidence_hints"] for item in assessments)
+        serialized_assessments = str(assessments)
+        assert "Authorization" not in serialized_assessments
+        assert "secret-token" not in serialized_assessments
+        assert "session=secret" not in serialized_assessments
         assert {
             item["hunter_assessment"]["playbook_id"]
             for item in assessments
@@ -124,6 +134,13 @@ def test_mythos_pipeline_dry_run_assesses_each_hypothesis_lifecycle():
         assert detail_payload["hypothesis_assessments"] == assessments
         by_name = {stage["name"]: stage for stage in detail_payload["timeline"]}
         assert "3 candidate lifecycle(s)" in by_name["hypotheses"]["output_summary"]
+        reasoning = by_name["hypotheses"]["details"]["reasoning_summary"]
+        assert reasoning == {
+            "chain_mapped_count": 3,
+            "refutation_question_count": 6,
+            "human_review_required_count": 3,
+        }
+        assert "non_executable_chain_summary" in by_name["hypotheses"]["safety_notes"]
 
         artifact_response = client.get(f"/mythos/artifacts/{body['artifact']['artifact_id']}")
         assert artifact_response.status_code == 200
@@ -146,7 +163,13 @@ def test_mythos_pipeline_dry_run_assesses_each_hypothesis_lifecycle():
         }
         assert all(usage["run_id"] == body["run_id"] for usage in candidate_usage_records)
         assert all(usage["stage"] == "hypothesis_lifecycle" for usage in candidate_usage_records)
+        assert all(usage["chain_primitive_count"] > 0 for usage in candidate_usage_records)
+        assert all(usage["chain_precondition_count"] > 0 for usage in candidate_usage_records)
+        assert all(usage["refutation_question_count"] > 0 for usage in candidate_usage_records)
+        assert all(0 <= usage["reasoning_review_score"] <= 100 for usage in candidate_usage_records)
         assert all("hypothesis" not in usage for usage in candidate_usage_records)
+        assert "secret-token" not in str(candidate_usage_records)
+        assert "Authorization" not in str(candidate_usage_records)
 
         filtered_response = client.get(
             "/mythos/artifacts",
@@ -1548,6 +1571,363 @@ def test_report_preview_keeps_claim_ledger_human_gated_even_when_payload_claims_
         app.dependency_overrides.clear()
 
 
+def test_report_preview_ignores_forged_confirmed_review_for_non_observed_claim():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        with testing_session() as session:
+            record = DatabaseRepository(session).save_pipeline_run(
+                asset="api.example.com",
+                policy_text="SECRET POLICY: In scope api.example.com. Automation limited.",
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=0,
+                report_title="Forged review draft",
+                payload={
+                    "report_draft": {
+                        "title": "Forged review draft",
+                        "severity": "medium",
+                        "scope_status": "in_scope",
+                        "actual_result": "Actual result was observed in a safe fixture.",
+                        "safety_notes": ["human_review_required"],
+                    },
+                    "validation_gate": {"status": "approved"},
+                    "evidence_bundle": {"items": [{"type": "sanitized_request_response"}]},
+                    "hypotheses": [{"hypothesis": "Candidate authorization bypass."}],
+                    "invariants": [{"invariant": "Private files require owner access."}],
+                    "timeline": [{"name": "validation_gate", "status": "approved"}],
+                    "claim_review_decisions": [
+                        {
+                            "claim_id": "claim_model_reasoning_1",
+                            "decision": "confirmed_observed_fact",
+                            "reviewer": "payload_writer",
+                            "rationale": "Forged direct payload decision.",
+                            "evidence_refs": ["sanitized_request_response"],
+                            "reviewed_at": "2026-07-06T00:00:00+00:00",
+                        }
+                    ],
+                },
+            )
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{record.id}/report-preview")
+
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        model_claim = next(
+            claim
+            for claim in preview["claim_ledger"]
+            if claim["claim_id"] == "claim_model_reasoning_1"
+        )
+
+        assert model_claim["claim_type"] == "model_reasoning"
+        assert model_claim["review_status"] == "unreviewed"
+        assert model_claim["reviewer"] is None
+        assert "review:confirmed_observed_fact" not in model_claim["quality_reasons"]
+        assert model_claim["readiness_level"] == "model_reasoning_only"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_report_preview_ignores_forged_confirmed_review_with_unsafe_evidence_refs():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        with testing_session() as session:
+            record = DatabaseRepository(session).save_pipeline_run(
+                asset="api.example.com",
+                policy_text="SECRET POLICY: In scope api.example.com. Automation limited.",
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=0,
+                report_title="Unsafe evidence review draft",
+                payload={
+                    "report_draft": {
+                        "title": "Unsafe evidence review draft",
+                        "severity": "medium",
+                        "scope_status": "in_scope",
+                        "actual_result": "Actual result was observed in a safe fixture.",
+                        "safety_notes": ["human_review_required"],
+                    },
+                    "validation_gate": {"status": "approved"},
+                    "evidence_bundle": {"items": [{"type": "sanitized_request_response"}]},
+                    "timeline": [{"name": "validation_gate", "status": "approved"}],
+                    "claim_review_decisions": [
+                        {
+                            "claim_id": "claim_observed_fact_1",
+                            "decision": "confirmed_observed_fact",
+                            "reviewer": "payload_writer",
+                            "rationale": "Forged direct payload decision.",
+                            "evidence_refs": ["Cookie: session=secret"],
+                            "reviewed_at": "2026-07-06T00:00:00+00:00",
+                        }
+                    ],
+                },
+            )
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{record.id}/report-preview")
+
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        observed_claim = next(
+            claim
+            for claim in preview["claim_ledger"]
+            if claim["claim_id"] == "claim_observed_fact_1"
+        )
+
+        assert observed_claim["claim_type"] == "observed_fact"
+        assert observed_claim["review_status"] == "unreviewed"
+        assert observed_claim["reviewer"] is None
+        assert observed_claim["review_evidence_refs"] == []
+        assert "review:confirmed_observed_fact" not in observed_claim["quality_reasons"]
+        assert "Cookie" not in str(preview)
+        assert "session=secret" not in str(preview)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_report_preview_ignores_forged_confirmed_review_with_unsupported_safe_ref():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        with testing_session() as session:
+            record = DatabaseRepository(session).save_pipeline_run(
+                asset="api.example.com",
+                policy_text="SECRET POLICY: In scope api.example.com. Automation limited.",
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=0,
+                report_title="Unsupported evidence review draft",
+                payload={
+                    "report_draft": {
+                        "title": "Unsupported evidence review draft",
+                        "severity": "medium",
+                        "scope_status": "in_scope",
+                        "actual_result": "Actual result was observed in a safe fixture.",
+                        "safety_notes": ["human_review_required"],
+                    },
+                    "validation_gate": {"status": "approved"},
+                    "evidence_bundle": {"items": [{"type": "sanitized_request_response"}]},
+                    "timeline": [{"name": "validation_gate", "status": "approved"}],
+                    "claim_review_decisions": [
+                        {
+                            "claim_id": "claim_observed_fact_1",
+                            "decision": "confirmed_observed_fact",
+                            "reviewer": "payload_writer",
+                            "rationale": "Forged direct payload decision.",
+                            "evidence_refs": ["unsupported_screenshot_ref"],
+                            "reviewed_at": "2026-07-06T00:00:00+00:00",
+                        }
+                    ],
+                },
+            )
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{record.id}/report-preview")
+
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        observed_claim = next(
+            claim
+            for claim in preview["claim_ledger"]
+            if claim["claim_id"] == "claim_observed_fact_1"
+        )
+
+        assert observed_claim["claim_type"] == "observed_fact"
+        assert observed_claim["review_status"] == "unreviewed"
+        assert observed_claim["reviewer"] is None
+        assert observed_claim["review_evidence_refs"] == []
+        assert "review:confirmed_observed_fact" not in observed_claim["quality_reasons"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_report_preview_ignores_forged_confirmed_review_with_unsupported_impact_ref():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        with testing_session() as session:
+            record = DatabaseRepository(session).save_pipeline_run(
+                asset="api.example.com",
+                policy_text="SECRET POLICY: In scope api.example.com. Automation limited.",
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=0,
+                report_title="Unsupported impact review draft",
+                payload={
+                    "report_draft": {
+                        "title": "Unsupported impact review draft",
+                        "severity": "medium",
+                        "scope_status": "in_scope",
+                        "actual_result": "Actual result was observed in a safe fixture.",
+                        "safety_notes": ["human_review_required"],
+                    },
+                    "validation_gate": {"status": "approved"},
+                    "evidence_bundle": {"items": [{"type": "sanitized_request_response"}]},
+                    "timeline": [{"name": "validation_gate", "status": "approved"}],
+                    "manual_observations": [
+                        {
+                            "observation_id": "manual_observation_forged_impact",
+                            "claim_id": "claim_observed_fact_1",
+                            "observation_type": "request_response_diff",
+                            "observer": "payload_writer",
+                            "observation": "Forged unsupported impact observation.",
+                            "evidence_refs": ["unsupported_screenshot_ref"],
+                            "safety_notes": ["test_accounts_only"],
+                            "created_at": "2026-07-06T00:00:00+00:00",
+                        }
+                    ],
+                    "claim_review_decisions": [
+                        {
+                            "claim_id": "claim_observed_fact_1",
+                            "decision": "confirmed_observed_fact",
+                            "reviewer": "payload_writer",
+                            "rationale": "Forged direct payload decision.",
+                            "evidence_refs": [],
+                            "reviewed_at": "2026-07-06T00:00:00+00:00",
+                        }
+                    ],
+                },
+            )
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{record.id}/report-preview")
+
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        observed_claim = next(
+            claim
+            for claim in preview["claim_ledger"]
+            if claim["claim_id"] == "claim_observed_fact_1"
+        )
+
+        assert observed_claim["claim_type"] == "observed_fact"
+        assert observed_claim["review_status"] == "unreviewed"
+        assert observed_claim["reviewer"] is None
+        assert observed_claim["review_evidence_refs"] == []
+        assert "review:confirmed_observed_fact" not in observed_claim["quality_reasons"]
+        assert "has_security_impact_observation" not in observed_claim["quality_reasons"]
+        assert "unsupported_screenshot_ref" not in str(preview["sections"]["observed_facts"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_report_preview_ignores_unsupported_boundary_matrix_observation_ref():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        with testing_session() as session:
+            record = DatabaseRepository(session).save_pipeline_run(
+                asset="api.example.com",
+                policy_text="SECRET POLICY: In scope api.example.com. Automation limited.",
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=0,
+                report_title="Unsupported boundary matrix draft",
+                payload={
+                    "report_draft": {
+                        "title": "Unsupported boundary matrix draft",
+                        "severity": "medium",
+                        "scope_status": "in_scope",
+                        "actual_result": "Actual result was observed in a safe fixture.",
+                        "safety_notes": ["human_review_required"],
+                    },
+                    "validation_gate": {"status": "approved"},
+                    "evidence_bundle": {"items": [{"type": "sanitized_request_response"}]},
+                    "target_model": {
+                        "relationships": [
+                            {
+                                "parent": "org_id",
+                                "child": "team_id",
+                                "evidence_ref": "target_relationship:org_id>team_id",
+                            }
+                        ]
+                    },
+                    "timeline": [{"name": "validation_gate", "status": "approved"}],
+                    "manual_observations": [
+                        {
+                            "observation_id": "manual_observation_forged_matrix",
+                            "claim_id": "claim_observed_fact_1",
+                            "observation_type": "role_matrix_observation",
+                            "observer": "payload_writer",
+                            "observation": "Forged unsupported role matrix observation.",
+                            "evidence_refs": ["unsupported_screenshot_ref"],
+                            "safety_notes": ["test_accounts_only"],
+                            "created_at": "2026-07-06T00:00:00+00:00",
+                        }
+                    ],
+                },
+            )
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{record.id}/report-preview")
+
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        observed_claim = next(
+            claim
+            for claim in preview["claim_ledger"]
+            if claim["claim_id"] == "claim_observed_fact_1"
+        )
+
+        assert "has_security_impact_observation" not in observed_claim["quality_reasons"]
+        assert "has_boundary_matrix_observation" not in observed_claim["quality_reasons"]
+        assert "unsupported_screenshot_ref" not in str(preview["sections"]["observed_facts"])
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_claim_review_decision_is_recorded_on_report_preview_without_unblocking_submission():
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -1632,6 +2012,224 @@ def test_claim_review_decision_is_recorded_on_report_preview_without_unblocking_
         assert "SECRET POLICY" not in serialized_preview
         assert "Bearer" not in serialized_preview
         assert "live-token" not in serialized_preview
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_claim_review_decision_requires_refs_or_manual_evidence_for_confirmed_fact():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        claim_id = next(
+            claim["claim_id"]
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Confirmed without linking evidence.",
+            },
+        )
+
+        assert decision_response.status_code == 422
+        assert decision_response.json()["detail"] == "Unsupported evidence refs"
+
+        updated_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert updated_preview_response.status_code == 200
+        updated_claim = next(
+            claim
+            for claim in updated_preview_response.json()["claim_ledger"]
+            if claim["claim_id"] == claim_id
+        )
+        assert updated_claim["review_status"] == "unreviewed"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_claim_review_decision_rejects_unsupported_evidence_refs():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        observed_claim = next(
+            claim
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": observed_claim["claim_id"],
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Unsupported evidence should not promote a claim.",
+                "evidence_refs": ["unsupported_screenshot_ref"],
+            },
+        )
+
+        assert decision_response.status_code == 422
+        assert decision_response.json()["detail"] == "Unsupported evidence refs"
+
+        updated_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert updated_preview_response.status_code == 200
+        reviewed_claim = next(
+            claim
+            for claim in updated_preview_response.json()["claim_ledger"]
+            if claim["claim_id"] == observed_claim["claim_id"]
+        )
+        assert reviewed_claim["review_status"] == "unreviewed"
+        assert reviewed_claim["review_evidence_refs"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_manual_observation_rejects_unsupported_security_evidence_refs():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        observed_claim = next(
+            claim
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": observed_claim["claim_id"],
+                "observation_type": "request_response_diff",
+                "observer": "lead_reviewer",
+                "observation": "Unsupported evidence should not promote a claim.",
+                "evidence_refs": ["unsupported_screenshot_ref"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+
+        assert observation_response.status_code == 422
+        assert observation_response.json()["detail"] == "Unsupported evidence refs"
+
+        updated_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert updated_preview_response.status_code == 200
+        reviewed_claim = next(
+            claim
+            for claim in updated_preview_response.json()["claim_ledger"]
+            if claim["claim_id"] == observed_claim["claim_id"]
+        )
+        assert "has_security_impact_observation" not in reviewed_claim["quality_reasons"]
+        assert reviewed_claim["evidence_refs"] == observed_claim["evidence_refs"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_claim_review_decision_cannot_confirm_non_observed_claim():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        unverified_claim = next(
+            claim
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "unverified_claim"
+        )
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": unverified_claim["claim_id"],
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Non-observed claims must not become observed facts.",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+
+        assert decision_response.status_code == 422
+        assert decision_response.json()["detail"] == "Only observed fact claims can be confirmed"
+
+        updated_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert updated_preview_response.status_code == 200
+        reviewed_claim = next(
+            claim
+            for claim in updated_preview_response.json()["claim_ledger"]
+            if claim["claim_id"] == unverified_claim["claim_id"]
+        )
+        assert reviewed_claim["review_status"] == "unreviewed"
     finally:
         app.dependency_overrides.clear()
 
@@ -1772,7 +2370,8 @@ def test_redacted_only_review_evidence_cannot_promote_to_finding_candidate():
                 "evidence_refs": ["Authorization: Bearer live-token"],
             },
         )
-        assert decision_response.status_code == 200
+        assert decision_response.status_code == 422
+        assert decision_response.json()["detail"] == "Unsupported evidence refs"
 
         reviewed_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
         assert reviewed_preview_response.status_code == 200
@@ -1781,8 +2380,8 @@ def test_redacted_only_review_evidence_cannot_promote_to_finding_candidate():
             for claim in reviewed_preview_response.json()["claim_ledger"]
             if claim["claim_id"] == claim_id
         )
-        assert reviewed_claim["review_evidence_refs"] == ["[REDACTED]"]
-        assert reviewed_claim["quality_score"] >= 80
+        assert reviewed_claim["review_status"] == "unreviewed"
+        assert reviewed_claim["review_evidence_refs"] == []
         assert "review:evidence_refs" not in reviewed_claim["quality_reasons"]
 
         candidate_response = client.post(f"/mythos/pipeline/runs/{run_id}/finding-candidates")
@@ -1958,6 +2557,264 @@ def test_pipeline_run_can_promote_impact_observation_to_finding_candidate_withou
         app.dependency_overrides.clear()
 
 
+def test_finding_candidate_omits_unsupported_manual_refs_from_fallback_evidence():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        claim_id = next(
+            claim["claim_id"]
+            for claim in client.get(f"/mythos/pipeline/runs/{run_id}/report-preview").json()[
+                "claim_ledger"
+            ]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        plain_observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "manual_observation",
+                "observer": "lead_reviewer",
+                "observation": "Plain note should not become promoted evidence.",
+                "evidence_refs": ["unsupported_screenshot_ref"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert plain_observation_response.status_code == 200
+
+        impact_observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "request_response_diff",
+                "observer": "lead_reviewer",
+                "observation": "Safe test-account diff showed an authorization boundary.",
+                "evidence_refs": ["sanitized_request_response"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert impact_observation_response.status_code == 200
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Confirmed from supported impact evidence.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        candidate_response = client.post(f"/mythos/pipeline/runs/{run_id}/finding-candidates")
+
+        assert candidate_response.status_code == 200
+        candidate = candidate_response.json()
+        assert candidate["submission_recommendation"] == "promote_to_finding_candidate"
+        assert candidate["evidence_refs"] == ["sanitized_request_response"]
+        assert "unsupported_screenshot_ref" not in str(candidate)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_research_validation_feedback_gate_blocks_finding_candidate_promotion():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        claim_id = next(
+            claim["claim_id"]
+            for claim in client.get(f"/mythos/pipeline/runs/{run_id}/report-preview").json()[
+                "claim_ledger"
+            ]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "request_response_diff",
+                "observer": "lead_reviewer",
+                "observation": "Safe test-account diff showed an authorization boundary.",
+                "evidence_refs": ["sanitized_request_response"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert observation_response.status_code == 200
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Confirmed with sanitized fixture.",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+        assert decision_response.status_code == 200
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Research feedback gate campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="research_queue_review",
+                agent_type="human_research_reviewer",
+                title="Review bola_idor reasoning memory",
+                input_refs=[
+                    f"campaign:{campaign.id}",
+                    "research_queue:reasoning_memory:bola_idor",
+                ],
+                payload={"queue_key": "reasoning_memory:bola_idor"},
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id=run_id,
+                campaign_id=campaign.id,
+                task_id=None,
+                stage_key="campaign_report_preview",
+                stage_order=1,
+                status="awaiting_review",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[f"pipeline_run:{run_id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason=None,
+                payload={"raw_payload_processed": False},
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=task.id,
+                stage_key="research_task_validation_feedback",
+                stage_order=2,
+                status="evidence_recorded",
+                input_refs=[
+                    f"campaign:{campaign.id}",
+                    f"campaign_task:{task.id}",
+                    "research_plan:research_plan_1",
+                    "refutation_decision:refutation_decision_1",
+                    "approval:approval_1",
+                    "validation_run:validation_run_1",
+                ],
+                output_refs=["validation_run:validation_run_1"],
+                safety_gate_state="advisory_validation_feedback_only",
+                stop_reason=None,
+                payload={
+                    "source": "research_task_refutation_decision",
+                    "plan_id": "research_plan_1",
+                    "decision_id": "refutation_decision_1",
+                    "approval_id": "approval_1",
+                    "validation_run_id": "validation_run_1",
+                    "outcome": "observed",
+                    "evidence_ref_count": 1,
+                    "finding_confirmation_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+
+        candidate_response = client.post(f"/mythos/pipeline/runs/{run_id}/finding-candidates")
+
+        assert candidate_response.status_code == 409
+        assert candidate_response.json()["detail"] == {
+            "reason": "blocked_by_research_feedback_gate",
+            "blocked_stage_count": 1,
+            "provenance_ref_count": 6,
+            "finding_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+        assert "secret-token" not in str(candidate_response.json())
+        assert "Authorization" not in str(candidate_response.json())
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            blocked_audits = [
+                stage
+                for stage in repository.list_campaign_pipeline_stages(campaign.id)
+                if stage.stage_key == "finding_promotion_blocked"
+            ]
+            assert len(blocked_audits) == 1
+            audit = blocked_audits[0]
+            assert audit.pipeline_run_id == run_id
+            assert audit.status == "blocked"
+            assert audit.safety_gate_state == "manual_review_required"
+            assert audit.stop_reason == "blocked_by_research_feedback_gate"
+            assert audit.input_refs == [f"pipeline_run:{run_id}"]
+            assert audit.output_refs == []
+            assert audit.payload == {
+                "reason": "blocked_by_research_feedback_gate",
+                "blocked_stage_count": 1,
+                "provenance_ref_count": 6,
+                "finding_promotion_allowed": False,
+                "report_submission_allowed": False,
+                "raw_payload_processed": False,
+            }
+            assert "secret-token" not in str(audit.payload)
+            assert "Authorization" not in str(audit.payload)
+        findings_response = client.get("/findings")
+        assert findings_response.status_code == 200
+        assert not any(
+            item["id"].startswith("finding_candidate_")
+            for item in findings_response.json()
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_report_preview_surfaces_impact_observations_as_observed_facts():
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -2093,6 +2950,70 @@ def test_boundary_matrix_observation_becomes_finding_promotion_reason():
         app.dependency_overrides.clear()
 
 
+def test_finding_candidate_omits_target_relationship_without_boundary_matrix_observation():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/orgs/{org_id}/teams/{team_id}/files/{file_id}/export": {
+                            "get": {"operationId": "exportTeamFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        claim_id = next(
+            claim["claim_id"]
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "request_response_diff",
+                "observer": "lead_reviewer",
+                "observation": "Safe test-account diff showed an authorization boundary.",
+                "evidence_refs": ["sanitized_request_response"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert observation_response.status_code == 200
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Confirmed with sanitized request-response evidence.",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+        assert decision_response.status_code == 200
+
+        candidate_response = client.post(f"/mythos/pipeline/runs/{run_id}/finding-candidates")
+
+        assert candidate_response.status_code == 200
+        candidate = candidate_response.json()
+        assert candidate["submission_recommendation"] == "promote_to_finding_candidate"
+        assert "claim_quality:boundary_matrix_observed" not in candidate["operating_reasons"]
+        assert "target_relationship:org_id>team_id>file_id" not in candidate["operating_reasons"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_pipeline_run_detail_exposes_closed_loop_summary_after_candidate_learning():
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -2181,6 +3102,12 @@ def test_pipeline_run_detail_exposes_closed_loop_summary_after_candidate_learnin
             "learning_signal_count": 1,
             "lesson_count": 0,
             "brain_memory_status": "learning_recorded",
+            "reasoning_context": {
+                "source": "hypothesis_lifecycle",
+                "highest_reasoning_review_score": 69,
+                "learning_signal_context_count": 1,
+                "safety_gate": "advisory_memory_only",
+            },
             "memory_lessons": [],
             "blocked_reasons": [],
             "safety_notes": [
@@ -2374,24 +3301,16 @@ def test_pipeline_run_detail_blocks_closed_loop_when_reviewed_claim_is_not_promo
                 "evidence_refs": ["Authorization: Bearer raw-token"],
             },
         )
-        assert review_response.status_code == 200
-        assert review_response.json()["evidence_refs"] == ["[REDACTED]"]
+        assert review_response.status_code == 422
+        assert review_response.json()["detail"] == "Unsupported evidence refs"
 
         detail_response = client.get(f"/mythos/pipeline/runs/{run_id}")
         assert detail_response.status_code == 200
         summary = detail_response.json()["payload"]["closed_loop_summary"]
 
-        assert summary["status"] == "blocked"
-        assert summary["reviewed_claim_count"] == 1
+        assert summary["reviewed_claim_count"] == 0
         assert summary["finding_candidate_count"] == 0
-        assert summary["blocked_reasons"] == ["no_promotion_eligible_claim"]
-        assert summary["steps"][0]["status"] == "waiting"
-        assert summary["steps"][0]["next_allowed_action"] == "Record a sanitized manual observation."
-        assert summary["steps"][1]["status"] == "blocked"
-        assert summary["steps"][1]["reason"] == "Reviewed claim is not promotion eligible."
-        assert summary["steps"][1]["safety_gate"] == "no_promotion_eligible_claim"
-        assert summary["steps"][2]["status"] == "blocked"
-        assert summary["steps"][2]["next_allowed_action"] == "Resolve blockers before promotion."
+        assert "raw-token" not in str(summary)
     finally:
         app.dependency_overrides.clear()
 
@@ -2519,15 +3438,16 @@ def test_evidence_support_summary_tracks_human_gated_and_redacted_claims():
                 "evidence_refs": ["Authorization: Bearer raw-token"],
             },
         )
-        assert unsafe_response.status_code == 200
+        assert unsafe_response.status_code == 422
+        assert unsafe_response.json()["detail"] == "Unsupported evidence refs"
 
         unsafe_detail_response = client.get(f"/mythos/pipeline/runs/{run_id}")
         assert unsafe_detail_response.status_code == 200
         unsafe_summary = unsafe_detail_response.json()["payload"]["evidence_support_summary"]
 
-        assert unsafe_summary["unsafe_or_redacted_requirement_count"] == 1
-        assert unsafe_summary["top_support_status"] == "unsafe_or_redacted_evidence"
-        assert unsafe_summary["status_counts"]["unsafe_or_redacted_evidence"] == 1
+        assert unsafe_summary["satisfied_human_gated_count"] == 1
+        assert unsafe_summary["top_support_status"] == "human_gated_supported"
+        assert unsafe_summary["status_counts"]["human_gated_supported"] == 1
     finally:
         app.dependency_overrides.clear()
 
@@ -2798,6 +3718,143 @@ def test_manual_observation_is_recorded_in_validation_workspace_with_claim_mappi
         app.dependency_overrides.clear()
 
 
+def test_claim_review_rejects_plain_manual_observation_ref_as_confirming_evidence():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        claim_id = next(
+            claim["claim_id"]
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "manual_observation",
+                "observer": "lead_reviewer",
+                "observation": "Observed a safe fixture response using test accounts only.",
+                "evidence_refs": ["sanitized_response_403"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert observation_response.status_code == 200
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Plain manual notes are not impact evidence.",
+                "evidence_refs": ["sanitized_response_403"],
+            },
+        )
+
+        assert decision_response.status_code == 422
+        assert decision_response.json()["detail"] == "Unsupported evidence refs"
+
+        updated_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert updated_preview_response.status_code == 200
+        reviewed_claim = next(
+            claim
+            for claim in updated_preview_response.json()["claim_ledger"]
+            if claim["claim_id"] == claim_id
+        )
+        assert reviewed_claim["review_status"] == "unreviewed"
+        assert "has_manual_observation" in reviewed_claim["quality_reasons"]
+        assert "has_security_impact_observation" not in reviewed_claim["quality_reasons"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_claim_review_rejects_plain_manual_observation_without_confirming_refs():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        claim_id = next(
+            claim["claim_id"]
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "manual_observation",
+                "observer": "lead_reviewer",
+                "observation": "Observed a safe fixture response using test accounts only.",
+                "evidence_refs": ["sanitized_response_403"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert observation_response.status_code == 200
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Plain manual notes are not impact evidence.",
+            },
+        )
+
+        assert decision_response.status_code == 422
+        assert decision_response.json()["detail"] == "Unsupported evidence refs"
+
+        updated_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert updated_preview_response.status_code == 200
+        reviewed_claim = next(
+            claim
+            for claim in updated_preview_response.json()["claim_ledger"]
+            if claim["claim_id"] == claim_id
+        )
+        assert reviewed_claim["review_status"] == "unreviewed"
+        assert "has_manual_observation" in reviewed_claim["quality_reasons"]
+        assert "has_security_impact_observation" not in reviewed_claim["quality_reasons"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_manual_observation_with_only_redacted_evidence_does_not_count_as_safe_evidence():
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -2908,6 +3965,54 @@ def test_manual_observation_rejects_unknown_claim_id():
 
         assert observation_response.status_code == 404
         assert observation_response.json()["detail"] == "Claim not found"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_security_impact_observation_rejects_non_observed_claim():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "asset": "api.example.com",
+                "policy_text": "In scope api.example.com. Automation limited.",
+                "openapi": {"paths": {"/files/{file_id}/export": {"get": {}}}},
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        unverified_claim = next(
+            claim
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "unverified_claim"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": unverified_claim["claim_id"],
+                "observation_type": "request_response_diff",
+                "observer": "lead_reviewer",
+                "observation": "Unverified claim should not gain observed impact.",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+
+        assert observation_response.status_code == 422
+        assert observation_response.json()["detail"] == (
+            "Security impact observations require observed fact claims"
+        )
+
+        updated_preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert updated_preview_response.status_code == 200
+        assert (
+            "Security impact observation request_response_diff was recorded for "
+            f"{unverified_claim['claim_id']}"
+        ) not in str(updated_preview_response.json()["sections"]["observed_facts"])
     finally:
         app.dependency_overrides.clear()
 

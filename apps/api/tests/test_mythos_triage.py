@@ -13,6 +13,9 @@ def test_refutation_blocks_scope_guard_blocked_hypothesis():
 
     assert refutation.status == "blocked"
     assert "out_of_scope" in refutation.reasons
+    assert refutation.questions
+    assert all("Authorization" not in question for question in refutation.questions)
+    assert all("secret" not in question.lower() for question in refutation.questions)
 
 
 def test_validation_plan_uses_only_safe_non_destructive_methods():
@@ -29,6 +32,18 @@ def test_validation_plan_uses_only_safe_non_destructive_methods():
     assert plan.human_approval_required is True
     assert plan.methods == ["role_matrix_check", "request_response_diff"]
     assert all("DoS" not in step for step in plan.steps)
+
+
+def test_refutation_questions_do_not_echo_sensitive_terms_when_passed():
+    refutation = refute_hypothesis(
+        {"hypothesis": "x", "policy_risk": "low"},
+        {"allowed": True, "reason": "allowed_validation"},
+    )
+
+    assert refutation.status == "passed"
+    assert refutation.questions
+    assert all("authorization" not in question.lower() for question in refutation.questions)
+    assert all("secret" not in question.lower() for question in refutation.questions)
 
 
 def test_report_draft_requires_human_review_and_contains_core_fields():

@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 import re
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -43,6 +44,29 @@ _VALIDATION_MANUAL_RESULT_STATUSES = {
 _VALIDATION_APPROVAL_PRESERVED_STATUSES = {
     "preflight_passed",
     *_VALIDATION_MANUAL_RESULT_STATUSES,
+}
+_VALIDATION_APPROVAL_BUDGET_STATUSES = {
+    "ready",
+    "preflight_passed",
+    *_VALIDATION_MANUAL_RESULT_STATUSES,
+}
+APPROVAL_TERMINAL_STATUSES = {"denied", "revoked", "expired", "used"}
+APPROVAL_DECISION_STATUSES = {"approved", *APPROVAL_TERMINAL_STATUSES}
+APPROVAL_INITIAL_STATUSES = {"pending", "requested"}
+_SECURITY_IMPACT_OBSERVATION_TYPES = {
+    "request_response_diff",
+    "role_matrix_observation",
+}
+_REPORT_SAFE_REVIEW_EVIDENCE_REFS = {
+    "local_code_reference",
+    "log_ref",
+    "request_response_diff",
+    "sanitized_cross_account_diff",
+    "sanitized_parent_child_matrix",
+    "role_matrix_snapshot",
+    "sanitized_request_response",
+    "sanitized_role_matrix",
+    "screenshot_ref",
 }
 
 
@@ -201,7 +225,7 @@ class DatabaseRepository:
         record = ArtifactRecord(
             id=f"artifact_{uuid4().hex}",
             program_id=program_id,
-            asset=asset,
+            asset=_safe_asset_value(asset),
             kind=kind,
             source_type=source_type,
             source_hash=source_hash,
@@ -233,8 +257,6 @@ class DatabaseRepository:
         query = select(ArtifactRecord)
         if program_id is not None:
             query = query.where(ArtifactRecord.program_id == program_id)
-        if asset is not None:
-            query = query.where(ArtifactRecord.asset == asset)
         if source_type is not None:
             query = query.where(ArtifactRecord.source_type == source_type)
         if ingestion_status is not None:
@@ -245,6 +267,13 @@ class DatabaseRepository:
                 ArtifactRecord.id.desc(),
             )
         ).all()
+        if asset is not None:
+            safe_asset = _safe_asset_value(asset)
+            records = [
+                record
+                for record in records
+                if _safe_asset_value(record.asset) == safe_asset
+            ]
         if (
             provenance_ref is None
             and fact_type is None
@@ -351,9 +380,26 @@ class DatabaseRepository:
         *,
         run_id: str,
         decision: dict,
+        claim_type: str | None = None,
+        evidence_refs_supported: bool = False,
     ) -> PipelineRunRecord | None:
         record = self.get_pipeline_run(run_id)
         if record is None:
+            return None
+        if (
+            decision.get("decision") == "confirmed_observed_fact"
+            and claim_type != "observed_fact"
+        ):
+            return None
+        if (
+            decision.get("decision") == "confirmed_observed_fact"
+            and not evidence_refs_supported
+        ):
+            return None
+        if (
+            decision.get("decision") == "confirmed_observed_fact"
+            and not _claim_review_has_evidence_support(record.payload, decision)
+        ):
             return None
 
         payload = dict(record.payload)
@@ -371,9 +417,26 @@ class DatabaseRepository:
         *,
         run_id: str,
         observation: dict,
+        claim_exists: bool = False,
+        claim_type: str | None = None,
     ) -> PipelineRunRecord | None:
         record = self.get_pipeline_run(run_id)
         if record is None:
+            return None
+        if not claim_exists:
+            return None
+        if (
+            observation.get("observation_type") in _SECURITY_IMPACT_OBSERVATION_TYPES
+            and claim_type != "observed_fact"
+        ):
+            return None
+        if (
+            observation.get("observation_type") in _SECURITY_IMPACT_OBSERVATION_TYPES
+            and not _manual_observation_has_supported_evidence_refs(
+                record.payload,
+                observation,
+            )
+        ):
             return None
 
         safe_observation = _safe_display_value(observation)
@@ -428,7 +491,7 @@ class DatabaseRepository:
             autonomy_level=_safe_display_value(autonomy_level),
             scope_status=_safe_display_value(scope_status),
             policy_text_hash=sha256(policy_text.encode("utf-8")).hexdigest(),
-            default_asset=_safe_display_value(default_asset),
+            default_asset=_safe_asset_value(default_asset),
             target_classes=_safe_display_value(target_classes or []),
             allowed_tools=_safe_display_value(allowed_tools or []),
             created_by=_safe_display_value(created_by),
@@ -647,6 +710,7 @@ class DatabaseRepository:
         autonomy_level: str | None = None,
         safety_gate_state: str = "awaiting_approval",
         status: str | None = None,
+        expires_at: datetime | None = None,
         payload: dict | None = None,
     ) -> ApprovalRecord:
         record = ApprovalRecord(
@@ -660,12 +724,13 @@ class DatabaseRepository:
             reason=_safe_display_value(reason),
             scope_reference=_safe_display_value(scope_reference),
             requested_action=_safe_display_value(requested_action),
-            asset=_safe_display_value(asset),
+            asset=_safe_asset_value(asset) if asset is not None else None,
             validation_mode=_safe_display_value(validation_mode),
             plan_digest=_safe_display_value(plan_digest),
             autonomy_level=_safe_display_value(autonomy_level),
             safety_gate_state=_safe_display_value(safety_gate_state),
-            status=status or ("pending" if campaign_id is not None else "requested"),
+            status=_approval_initial_status(status, campaign_id=campaign_id),
+            expires_at=expires_at,
             payload=_safe_display_value(payload or {}),
         )
         self.session.add(record)
@@ -683,6 +748,12 @@ class DatabaseRepository:
     ) -> ApprovalRecord | None:
         record = self.session.get(ApprovalRecord, approval_id)
         if record is None:
+            return None
+        if decision not in APPROVAL_DECISION_STATUSES:
+            return None
+        if record.status in APPROVAL_TERMINAL_STATUSES:
+            return None
+        if decision == "approved" and not approval_record_is_active(record):
             return None
         record.status = _safe_display_value(decision)
         record.decided_by = _safe_display_value(actor)
@@ -715,8 +786,27 @@ class DatabaseRepository:
         if approval.task_id is not None:
             query = query.where(ValidationRunRecord.task_id == approval.task_id)
 
+        validation_budget = _payload_int(approval.payload, "validation_budget")
+        reserved_count = self._approval_validation_budget_used(approval.id)
         for validation_run in self.session.scalars(query).all():
             if not self._validation_run_asset_matches_approval(validation_run, approval):
+                continue
+            if not self._validation_run_scope_reference_matches_approval(
+                validation_run,
+                approval,
+            ):
+                continue
+            if not self._validation_run_allowed_accounts_match_approval(
+                validation_run,
+                approval,
+            ):
+                continue
+            if (
+                approval.status == "approved"
+                and validation_run.approval_id != approval.id
+                and validation_budget is not None
+                and reserved_count >= validation_budget
+            ):
                 continue
             validation_run.approval_id = approval.id
             if approval.status == "approved":
@@ -735,6 +825,21 @@ class DatabaseRepository:
                 validation_run.allowed_to_execute = False
                 validation_run.finished_at = datetime.now(UTC)
             self.session.add(validation_run)
+            if (
+                approval.status == "approved"
+                and validation_run.status in _VALIDATION_APPROVAL_BUDGET_STATUSES
+            ):
+                reserved_count += 1
+
+    def _approval_validation_budget_used(self, approval_id: str) -> int:
+        records = self.session.scalars(
+            select(ValidationRunRecord).where(ValidationRunRecord.approval_id == approval_id)
+        ).all()
+        return sum(
+            1
+            for record in records
+            if record.status in _VALIDATION_APPROVAL_BUDGET_STATUSES
+        )
 
     def _validation_run_asset_matches_approval(
         self,
@@ -751,7 +856,31 @@ class DatabaseRepository:
                 return False
             validation_asset = campaign.default_asset
 
-        return validation_asset == approval.asset
+        return _safe_asset_value(validation_asset) == _safe_asset_value(approval.asset)
+
+    def _validation_run_scope_reference_matches_approval(
+        self,
+        validation_run: ValidationRunRecord,
+        approval: ApprovalRecord,
+    ) -> bool:
+        if approval.scope_reference is None:
+            return True
+        payload = validation_run.payload if isinstance(validation_run.payload, dict) else {}
+        return payload.get("scope_reference") == approval.scope_reference
+
+    def _validation_run_allowed_accounts_match_approval(
+        self,
+        validation_run: ValidationRunRecord,
+        approval: ApprovalRecord,
+    ) -> bool:
+        approval_accounts = _payload_string_set(approval.payload, "allowed_accounts")
+        if not approval_accounts:
+            return True
+        validation_accounts = _payload_string_set(
+            validation_run.payload,
+            "allowed_accounts",
+        )
+        return bool(validation_accounts) and validation_accounts <= approval_accounts
 
     def list_approval_records(self, *, run_id: str | None = None) -> list[ApprovalRecord]:
         query = select(ApprovalRecord)
@@ -787,7 +916,7 @@ class DatabaseRepository:
         query = (
             select(ApprovalRecord)
             .where(ApprovalRecord.status == "approved")
-            .where(ApprovalRecord.asset == _safe_display_value(asset))
+            .where(ApprovalRecord.asset == _safe_asset_value(asset))
             .where(ApprovalRecord.validation_mode == _safe_display_value(validation_mode))
             .where(ApprovalRecord.plan_digest == _safe_display_value(plan_digest))
         )
@@ -797,13 +926,21 @@ class DatabaseRepository:
             query = query.where(ApprovalRecord.task_id == _safe_display_value(task_id))
         if run_id is not None:
             query = query.where(ApprovalRecord.run_id == _safe_display_value(run_id))
-        return self.session.scalars(
+        now = datetime.now(UTC)
+        records = self.session.scalars(
             query.order_by(
                 ApprovalRecord.decided_at.desc(),
                 ApprovalRecord.created_at.desc(),
                 ApprovalRecord.id.desc(),
             )
-        ).first()
+        ).all()
+        return next(
+            (
+                record for record in records
+                if record.expires_at is None or _as_utc(record.expires_at) > now
+            ),
+            None,
+        )
 
     def save_pipeline_stage(
         self,
@@ -1029,6 +1166,11 @@ class DatabaseRepository:
     ) -> ValidationRunRecord:
         gated_without_approval = approval_required and approval_id is None
         gated_status = "awaiting_approval" if gated_without_approval else _safe_display_value(status)
+        gated_allowed_to_execute = _validation_initial_allowed_to_execute(
+            allowed_to_execute,
+            approval_required=approval_required,
+            status=gated_status,
+        )
         record = ValidationRunRecord(
             id=f"validation_run_{uuid4().hex}",
             campaign_id=campaign_id,
@@ -1042,7 +1184,7 @@ class DatabaseRepository:
             else _safe_display_value(safety_gate_state),
             plan_digest=_safe_display_value(plan_digest),
             approval_required=approval_required,
-            allowed_to_execute=allowed_to_execute and not gated_without_approval,
+            allowed_to_execute=gated_allowed_to_execute and not gated_without_approval,
             evidence_ref_count=max(0, evidence_ref_count),
             summary=_safe_display_value(summary),
             payload=_safe_display_value(payload or {}),
@@ -1075,13 +1217,17 @@ class DatabaseRepository:
         record = self.get_validation_run(validation_run_id)
         if record is None:
             return None
+        if allowed and record.status not in {"ready", "preflight_passed"}:
+            allowed = False
+            reason = "validation_run_not_ready"
         if allowed:
             record.status = "preflight_passed"
             record.safety_gate_state = "scope_guard_preflight_passed"
             record.allowed_to_execute = True
         else:
-            record.status = "blocked"
-            record.safety_gate_state = "blocked"
+            if record.status not in _VALIDATION_MANUAL_RESULT_STATUSES:
+                record.status = "blocked"
+                record.safety_gate_state = "blocked"
             record.allowed_to_execute = False
             record.finished_at = datetime.now(UTC)
         payload = dict(record.payload)
@@ -1106,6 +1252,8 @@ class DatabaseRepository:
     ) -> ValidationRunRecord | None:
         record = self.get_validation_run(validation_run_id)
         if record is None:
+            return None
+        if record.status != "preflight_passed" or not record.allowed_to_execute:
             return None
 
         safe_outcome = _safe_display_value(outcome)
@@ -1452,6 +1600,126 @@ def _safe_source_path(value: str) -> str:
     return _safe_display_value(path)
 
 
+def _safe_asset_value(value: str) -> str:
+    text = value.strip()
+    parsed = urlparse(text)
+    if parsed.netloc:
+        host = parsed.hostname or parsed.netloc
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port is not None:
+            host = f"{host}:{port}"
+        text = f"{host}{parsed.path}"
+    else:
+        text = text.split("?", 1)[0].split("#", 1)[0]
+    return _safe_display_value(text.rstrip("/") or text)
+
+
+def _payload_string_set(payload: dict, key: str) -> set[str]:
+    values = payload.get(key) if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return set()
+    return {value for value in values if isinstance(value, str) and value}
+
+
+def _claim_review_has_evidence_support(payload: dict, decision: dict) -> bool:
+    refs = _safe_evidence_refs(decision.get("evidence_refs", []))
+    claim_id = _safe_display_value(decision.get("claim_id", ""))
+    if refs:
+        return set(refs) <= _supported_claim_review_refs(payload, claim_id)
+
+    return bool(_manual_observation_refs_for_claim(payload, claim_id))
+
+
+def _safe_evidence_refs(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [
+        ref
+        for ref in (_safe_display_value(value) for value in values)
+        if isinstance(ref, str) and ref and ref != REDACTED
+    ]
+
+
+def _supported_claim_review_refs(payload: dict, claim_id: str) -> set[str]:
+    return {
+        *_REPORT_SAFE_REVIEW_EVIDENCE_REFS,
+        *_evidence_bundle_refs(payload),
+        *_manual_observation_refs_for_claim(payload, claim_id),
+    }
+
+
+def _manual_observation_has_supported_evidence_refs(
+    payload: dict,
+    observation: dict,
+) -> bool:
+    refs = _safe_evidence_refs(observation.get("evidence_refs", []))
+    if not refs:
+        return True
+    return set(refs) <= _supported_manual_observation_refs(payload)
+
+
+def _supported_manual_observation_refs(payload: dict) -> set[str]:
+    return {
+        *_REPORT_SAFE_REVIEW_EVIDENCE_REFS,
+        *_evidence_bundle_refs(payload),
+    }
+
+
+def _evidence_bundle_refs(payload: dict) -> set[str]:
+    bundle = payload.get("evidence_bundle") if isinstance(payload, dict) else None
+    items = bundle.get("items", []) if isinstance(bundle, dict) else []
+    if not isinstance(items, list):
+        return set()
+    refs: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        refs.update(_safe_evidence_refs([item.get("type", "")]))
+    return refs
+
+
+def _manual_observation_refs_for_claim(payload: dict, claim_id: str) -> set[str]:
+    observations = payload.get("manual_observations", []) if isinstance(payload, dict) else []
+    if not claim_id or not isinstance(observations, list):
+        return set()
+    refs: set[str] = set()
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        if observation.get("observation_type") not in _SECURITY_IMPACT_OBSERVATION_TYPES:
+            continue
+        if _safe_display_value(observation.get("claim_id", "")) != claim_id:
+            continue
+        refs.update(_safe_evidence_refs(observation.get("evidence_refs", [])))
+    return refs
+
+
+def _payload_int(payload: dict, key: str) -> int | None:
+    value = payload.get(key) if isinstance(payload, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def approval_record_is_active(approval: ApprovalRecord) -> bool:
+    if approval.expires_at is None:
+        return True
+    return _as_utc(approval.expires_at) > datetime.now(UTC)
+
+
+def _approval_initial_status(status: str | None, *, campaign_id: str | None) -> str:
+    if status in APPROVAL_INITIAL_STATUSES:
+        return status
+    return "pending" if campaign_id is not None else "requested"
+
+
 def _safe_display_value(value: Any) -> Any:
     if isinstance(value, str):
         return (
@@ -1530,6 +1798,17 @@ def _validation_result_safety_gate(outcome: str, *, safe_evidence_ref_count: int
     if outcome == "needs_more_evidence" or safe_evidence_ref_count == 0:
         return "manual_evidence_gap_recorded"
     return "manual_evidence_recorded"
+
+
+def _validation_initial_allowed_to_execute(
+    allowed_to_execute: bool,
+    *,
+    approval_required: bool,
+    status: str,
+) -> bool:
+    if approval_required and status != "preflight_passed":
+        return False
+    return allowed_to_execute
 
 
 def _program_from_record(record: ProgramRecord) -> Program:

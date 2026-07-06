@@ -14,6 +14,12 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
   const manualValidationResultCount = timeline.filter(
     (stage) => stage.isManualValidationResult,
   ).length;
+  const researchValidationFeedbackCount = timeline.filter(
+    (stage) => stage.isResearchValidationFeedback,
+  ).length;
+  const findingPromotionBlockedCount = timeline.filter(
+    (stage) => stage.isFindingPromotionBlocked,
+  ).length;
   const learningOutcomeCount = timeline.filter((stage) => stage.isLearningOutcome).length;
   const cycleReviewCount = timeline.filter((stage) => stage.isCycleReview).length;
 
@@ -24,7 +30,7 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ClipboardCheck size={17} aria-hidden="true" />
-          Pipeline timeline
+          Review Timeline
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
             Read only
           </span>
@@ -33,18 +39,20 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Review stage order, safety gates, stop reasons, and ref counts without exposing raw
+          Review gates, stage order, stop reasons, and ref counts without exposing raw
           payloads, prompts, or evidence refs.
         </p>
       </header>
 
-      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
+      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-8">
         <Metric label="Stages" value={timeline.length} />
         <Metric
           label="Blocked"
           value={timeline.filter((stage) => stage.status === "Blocked").length}
         />
         <Metric label="Manual results" value={manualValidationResultCount} />
+        <Metric label="Research feedback" value={researchValidationFeedbackCount} />
+        <Metric label="Promotion blocks" value={findingPromotionBlockedCount} />
         <Metric label="Learning outcomes" value={learningOutcomeCount} />
         <Metric label="Cycle reviews" value={cycleReviewCount} />
         <Metric
@@ -58,12 +66,12 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
           <span>Order</span>
           <span>Stage</span>
           <span>Status</span>
-          <span>Safety gate</span>
+          <span>Review gate</span>
           <span>Inputs</span>
           <span>Outputs</span>
         </div>
         {timeline.length === 0 ? (
-          <p className="p-5 text-sm text-[var(--muted)]">No pipeline stages recorded.</p>
+          <p className="p-5 text-sm text-[var(--muted)]">No review timeline ready.</p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
             {timeline.map((stage) => (

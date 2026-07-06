@@ -90,7 +90,7 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader icon={Layers} title="Payload Summary" />
-          <KeyValueGrid entries={payloadSummary} empty="No payload summary recorded." />
+          <KeyValueGrid entries={payloadSummary} empty="No payload summary ready." />
         </section>
 
         <aside className="grid content-start gap-5">
@@ -100,8 +100,14 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
               <Field label="Sensitivity" value={formatLabel(artifact.sensitivity_label)} />
               <Field label="Redaction" value={formatLabel(artifact.redaction_status)} />
               <Field
-                label="Report chain"
-                value={artifact.report_chain_allowed ? "Allowed" : "Blocked"}
+                label="Report-chain eligibility"
+                value={
+                  artifact.report_chain_allowed === true
+                    ? "Eligible for report chain"
+                    : artifact.report_chain_allowed === false
+                      ? "Blocked for report chain"
+                      : "Unknown"
+                }
               />
               <Field
                 label="Blockers"
@@ -116,7 +122,7 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
 
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={Fingerprint} title="Provenance" />
-            <KeyValueGrid entries={provenance} empty="No provenance summary recorded." />
+            <KeyValueGrid entries={provenance} empty="No provenance summary ready." />
             {duplicateImports.length > 0 ? (
               <div className="border-t border-[var(--line)] p-5">
                 <p className="text-xs font-semibold uppercase text-[var(--muted)]">
@@ -138,7 +144,7 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
 
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={FileText} title="Derived Facts" />
-            <KeyValueGrid entries={derivedFacts} empty="No derived facts recorded." />
+            <KeyValueGrid entries={derivedFacts} empty="No derived facts ready." />
           </section>
 
           <section className="border border-[var(--line)] bg-white">
@@ -246,7 +252,7 @@ function formatSafetyBlocker(value: string): string {
 
 function UsageRecords({ records }: { records: ArtifactUsageRecord[] }) {
   if (records.length === 0) {
-    return <p className="p-5 text-sm text-[var(--muted)]">No artifact usage recorded.</p>;
+    return <p className="p-5 text-sm text-[var(--muted)]">No artifact usage ready.</p>;
   }
 
   return (

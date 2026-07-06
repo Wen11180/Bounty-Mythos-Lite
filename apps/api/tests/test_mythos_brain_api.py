@@ -265,6 +265,25 @@ def test_mythos_brain_outcome_intake_accepts_evidence_context_and_redacts_feedba
         assert "learning:bounty_paid" in profile["high_value_surfaces"][0]["reasons"]
         assert "learning:strong_evidence" in profile["high_value_surfaces"][0]["reasons"]
         assert "learning:severity_up" in profile["high_value_surfaces"][0]["reasons"]
+        assert profile["reasoning_memory"] == {
+            "source": "artifact_usage",
+            "highest_reasoning_review_score": 69,
+            "learning_signal_context_count": 1,
+            "candidate_context_count": 1,
+            "top_playbooks": [
+                {
+                    "playbook_id": "bola_idor",
+                    "highest_reasoning_review_score": 69,
+                    "learning_signal_context_count": 1,
+                    "candidate_context_count": 1,
+                },
+            ],
+            "safety_notes": [
+                "advisory_memory_only",
+                "no_execution_permission",
+                "does_not_confirm_vulnerability",
+            ],
+        }
         assert signal["bounty_amount"] == 3000
         assert signal["severity_delta"] == "up"
         assert signal["evidence_quality"] == "strong"
@@ -291,9 +310,22 @@ def test_mythos_brain_outcome_intake_accepts_evidence_context_and_redacts_feedba
             "bounty_amount": 3000,
             "severity_delta": "up",
             "evidence_quality": "strong",
+            "reasoning_context": {
+                "source": "hypothesis_lifecycle",
+                "reasoning_review_score": 69,
+                "candidate_context_count": 1,
+                "safety_gate": "advisory_memory_only",
+            },
         }
         assert "Authorization" not in str(learning_usage)
         assert "great evidence" not in str(learning_usage)
+        assert "triager_feedback" not in learning_usage
+        assert "notes" not in learning_usage
+        assert "execution_allowed" not in learning_usage
+        assert "submission_allowed" not in learning_usage
+        assert "Authorization" not in str(profile["reasoning_memory"])
+        assert "execution_allowed" not in str(profile["reasoning_memory"])
+        assert "submission_allowed" not in str(profile["reasoning_memory"])
     finally:
         app.dependency_overrides.clear()
 

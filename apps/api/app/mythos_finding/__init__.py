@@ -136,6 +136,10 @@ def candidate_target_relationship_reasons(
     payload: dict,
     claim: object,
 ) -> list[str]:
+    quality_reasons = set(getattr(claim, "quality_reasons", []))
+    if "has_boundary_matrix_observation" not in quality_reasons:
+        return []
+
     target_model = payload.get("target_model")
     if not isinstance(target_model, dict):
         return []

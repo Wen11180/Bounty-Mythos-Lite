@@ -27,7 +27,7 @@ export default async function CampaignArtifactsPage({ params }: PageProps) {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <Database size={17} aria-hidden="true" />
-          Campaign Artifacts
+          Artifact Review
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
             Read only
           </span>
@@ -43,7 +43,7 @@ export default async function CampaignArtifactsPage({ params }: PageProps) {
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Artifacts" value={summaries.length} />
-        <Metric label="Report-chain allowed" value={reportChainAllowedCount} />
+        <Metric label="Report-chain eligible" value={reportChainAllowedCount} />
         <Metric label="Report-chain blocked" value={reportChainBlockedCount} />
         <Metric
           label="Usage refs"
@@ -52,24 +52,24 @@ export default async function CampaignArtifactsPage({ params }: PageProps) {
       </section>
 
       <section className="border border-[var(--line)] bg-white">
-        <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_130px_150px_130px_110px]">
+        <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_130px_150px_130px_180px]">
           <span>Artifact</span>
           <span>Status</span>
           <span>Sensitivity</span>
           <span>Report chain</span>
-          <span>Usage</span>
+          <span>Usage provenance</span>
         </div>
         {summaries.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No campaign artifacts recorded.
+            No authorized artifacts ready.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
             {summaries.map((artifact) => (
               <article
                 key={artifact.id}
-                className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[minmax(0,1fr)_130px_150px_130px_110px]"
+                className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[minmax(0,1fr)_130px_150px_130px_180px]"
               >
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{artifact.kind}</p>
@@ -85,10 +85,14 @@ export default async function CampaignArtifactsPage({ params }: PageProps) {
                 <p className="flex items-start gap-2 break-words font-semibold">
                   <ShieldCheck size={16} className="mt-0.5 text-[var(--accent)]" aria-hidden="true" />
                   {artifact.reportChainAllowed
-                    ? "Allowed"
-                    : `Blocked (${artifact.safetyBlockerCount})`}
+                    ? "Eligible for report chain"
+                    : `Blocked for report chain (${artifact.safetyBlockerCount})`}
                 </p>
-                <span className="font-semibold tabular-nums">{artifact.usageCount}</span>
+                <div className="grid content-start gap-2">
+                  <span className="font-semibold tabular-nums">{artifact.usageCount}</span>
+                  <CountList label="Stages" values={artifact.usageStages} />
+                  <CountList label="Types" values={artifact.usageTypes} />
+                </div>
               </article>
             ))}
           </div>
@@ -130,4 +134,16 @@ function Field({ label, value }: { label: string; value: string }) {
 
 function StatusText({ value }: { value: string }) {
   return <span className="break-words font-semibold">{value}</span>;
+}
+
+function CountList({ label, values }: { label: string; values: { count: number; label: string }[] }) {
+  if (values.length === 0) {
+    return <p className="text-xs text-[var(--muted)]">{label}: none</p>;
+  }
+
+  return (
+    <p className="text-xs text-[var(--muted)]">
+      {label}: {values.map((value) => `${value.label} (${value.count})`).join(", ")}
+    </p>
+  );
 }

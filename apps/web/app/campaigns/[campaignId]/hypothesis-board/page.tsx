@@ -20,7 +20,7 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
   const runs = (
     await Promise.all(runIds.map((runId) => getPipelineRun(runId, null)))
   ).filter((run): run is NonNullable<typeof run> => run !== null);
-  const candidates = toCampaignHypothesisBoardSummaries(runs);
+  const candidates = toCampaignHypothesisBoardSummaries(runs, controlCenter?.research_review_plans ?? []);
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -39,20 +39,24 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
           Candidate vulnerability hypotheses ranked by hunter priority, impact, duplicate risk,
-          policy risk, refutation state, and evidence path.
+          policy risk, exploit-chain reasoning, refutation state, and evidence path.
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Runs" value={runIds.length} />
+        <Metric label="Research audits" value={runIds.length} />
         <Metric label="Candidates" value={candidates.length} />
         <Metric
           label="High priority"
-          value={candidates.filter((candidate) => candidate.hunterPriorityScore >= 70).length}
+          value={candidates.filter((candidate) => candidate.reviewPriorityScore >= 70).length}
         />
         <Metric
           label="Needs evidence"
           value={candidates.filter((candidate) => candidate.evidenceNeededCount > 0).length}
+        />
+        <Metric
+          label="Chains mapped"
+          value={candidates.filter((candidate) => candidate.primitiveCount > 0).length}
         />
       </section>
 
@@ -66,7 +70,7 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
         {candidates.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No campaign-linked hypothesis candidates recorded.
+            No hypotheses ready for review.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -78,15 +82,29 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{candidate.hypothesis}</p>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Run" value={candidate.runId} />
+                    <Field label="Research audit" value={candidate.runId} />
                     <Field label="Candidate" value={candidate.candidateId} />
+                    <Field label="Source" value={candidate.source} />
                     <Field label="Playbook" value={candidate.playbook} />
                     <Field label="Validation" value={candidate.validationMode ?? "No validation mode"} />
                     <Field label="Invariant" value={candidate.brokenInvariant ?? "No invariant"} />
                     <Field label="Refutation" value={candidate.refutationStatus ?? "No refutation"} />
+                    <Field
+                      label="Chain confidence"
+                      value={
+                        candidate.chainConfidence === null
+                          ? "No confidence"
+                          : `${candidate.chainConfidence}%`
+                      }
+                    />
                   </dl>
                   {candidate.nextAction ? (
                     <p className="mt-3 break-words text-[var(--muted)]">{candidate.nextAction}</p>
+                  ) : null}
+                  {candidate.chainImpact ? (
+                    <p className="mt-3 break-words text-xs font-semibold text-[var(--muted)]">
+                      Chain impact: {candidate.chainImpact}
+                    </p>
                   ) : null}
                   {candidate.reasons.length > 0 ? (
                     <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs font-semibold uppercase text-[var(--muted)]">
@@ -97,7 +115,13 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
                   ) : null}
                 </div>
                 <div className="grid content-start gap-2">
-                  <p className="text-3xl font-semibold tabular-nums">{candidate.hunterPriorityScore}</p>
+                  <p className="text-3xl font-semibold tabular-nums">{candidate.reviewPriorityScore}</p>
+                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                    Review priority
+                  </p>
+                  <p className="text-xs text-[var(--muted)]">
+                    Hunter {candidate.hunterPriorityScore}
+                  </p>
                   <StatusText value={candidate.recommendation} />
                   <StatusText value={candidate.candidateStatus} />
                 </div>
@@ -113,6 +137,15 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
                   <p className="text-xs text-[var(--muted)]">
                     {candidate.evidenceFocusCount} evidence focus item(s)
                   </p>
+                  <p className="text-xs text-[var(--muted)]">
+                    {candidate.primitiveCount} primitive(s), {candidate.preconditionCount} precondition(s)
+                  </p>
+                  <p className="text-xs text-[var(--muted)]">
+                    {candidate.refutationQuestionCount} refutation question(s)
+                  </p>
+                  <PreviewList label="Primitives" values={candidate.primitives} />
+                  <PreviewList label="Preconditions" values={candidate.preconditions} />
+                  <PreviewList label="Refutation" values={candidate.refutationQuestions} />
                 </div>
               </article>
             ))}
@@ -159,6 +192,25 @@ function GateText({ value }: { value: string }) {
       <ShieldCheck size={16} className="mt-0.5 text-[var(--accent)]" aria-hidden="true" />
       {value}
     </span>
+  );
+}
+
+function PreviewList({ label, values }: { label: string; values: string[] }) {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-1 text-xs text-[var(--muted)]">
+      <p className="font-semibold uppercase">{label}</p>
+      <ul className="grid gap-1">
+        {values.map((value) => (
+          <li key={`${label}-${value}`} className="break-words">
+            {value}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

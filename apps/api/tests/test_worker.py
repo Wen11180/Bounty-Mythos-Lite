@@ -136,6 +136,621 @@ def test_run_agent_task_reconciles_existing_dispatched_agent_run():
         session.close()
 
 
+def test_run_agent_task_extracts_authorized_codebase_facts_without_secret_payloads():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Static code map campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+
+router = APIRouter()
+
+class FileExport(BaseModel):
+    file_id: str
+    owner_id: str
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user = Depends(require_user)):
+    authorize_owner_or_admin(current_user, file_id)
+    return send_file(file_id)
+""",
+                    }
+                ],
+                "authorization": "Bearer secret-token",
+            },
+        )
+
+        result = run_agent_task(task.id, repository=repository)
+
+        assert result["status"] == "completed"
+        maps = repository.list_campaign_codebase_maps(campaign.id)
+        facts = repository.list_campaign_codebase_facts(campaign.id)
+        scanner_runs = repository.list_campaign_scanner_runs(campaign.id)
+
+        assert len(maps) == 1
+        assert maps[0].repository == "authorized/service"
+        assert maps[0].route_count == 1
+        assert maps[0].handler_count == 1
+        assert maps[0].model_count == 1
+        assert maps[0].authz_check_count == 1
+        assert maps[0].sensitive_sink_count == 1
+        assert maps[0].payload == {
+            "file_count": 1,
+            "mapping_mode": "static_code_snippet_analysis",
+            "raw_payload_processed": False,
+        }
+
+        facts_by_type = {fact.fact_type: fact for fact in facts}
+        assert set(facts_by_type) == {
+            "authz_check",
+            "data_model",
+            "route_handler",
+            "sensitive_sink",
+        }
+        assert facts_by_type["route_handler"].source_path == "apps/api/routes/files.py"
+        assert facts_by_type["route_handler"].symbol_name == "export_file"
+        assert facts_by_type["route_handler"].route_method == "GET"
+        assert facts_by_type["route_handler"].route_path == "/files/{file_id}/export"
+        assert facts_by_type["authz_check"].authz_hint == "owner_or_admin_check"
+        assert facts_by_type["sensitive_sink"].symbol_name == "send_file"
+        assert facts_by_type["data_model"].symbol_name == "FileExport"
+
+        assert len(scanner_runs) == 1
+        assert scanner_runs[0].tool_name == "mythos_static_code_mapper"
+        assert scanner_runs[0].candidate_count == 4
+        assert "secret-token" not in str(maps + facts + scanner_runs)
+        assert "Bearer" not in str(maps + facts + scanner_runs)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_generates_hypothesis_from_codebase_facts():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code fact hypothesis campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate code-backed hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={"authorization": "Bearer secret-token"},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert len(pipeline_runs) == 1
+
+        payload = pipeline_runs[0].payload
+        hypothesis = payload["hypotheses"][0]
+        assessment = payload["hypothesis_assessments"][0]
+
+        assert pipeline_runs[0].hypothesis_count == 1
+        assert hypothesis["hypothesis"] == (
+            "Review GET /files/{file_id}/export for object authorization boundary drift."
+        )
+        assert hypothesis["source_facts"] == [
+            {
+                "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "fact_type": "route_handler",
+                "route_method": "GET",
+                "route_path": "/files/{file_id}/export",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "export_file",
+            },
+            {
+                "fact_ref": "codebase_fact:authz_check:owner_or_admin_check",
+                "authz_hint": "owner_or_admin_check",
+                "fact_type": "authz_check",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "authorize_owner_or_admin",
+            },
+            {
+                "fact_ref": "codebase_fact:sensitive_sink:send_file",
+                "fact_type": "sensitive_sink",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "send_file",
+            },
+        ]
+        assert payload["target_model"] == {
+            "objects": ["file"],
+            "roles": ["user", "owner"],
+            "sensitive_actions": ["GET /files/{file_id}/export"],
+            "source_fact_refs": [
+                "codebase_fact:route_handler:/files/{file_id}/export",
+                "codebase_fact:authz_check:owner_or_admin_check",
+                "codebase_fact:sensitive_sink:send_file",
+            ],
+        }
+        assert assessment["candidate_id"] == "codebase_fact_hypothesis_1"
+        assert assessment["candidate_status"] == "needs_human_review"
+        assert assessment["refutation"]["reasons"] == ["codebase_fact_candidate_not_validated"]
+        assert assessment["exploit_chain"]["primitives"] == [
+            "GET /files/{file_id}/export",
+            "owner_or_admin_check",
+            "send_file",
+        ]
+        assert assessment["validation_plan"]["human_approval_required"] is True
+        assert "secret-token" not in str(payload)
+        assert "Bearer" not in str(payload)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_does_not_borrow_hypothesis_facts_from_unrelated_files():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code fact source scoping campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return {"file_id": file_id}
+""",
+                    },
+                    {
+                        "path": "apps/api/routes/admin.py",
+                        "content": """
+def admin_archive(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+""",
+                    },
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate code-backed hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        payload = pipeline_runs[0].payload
+        assessment = payload["hypothesis_assessments"][0]
+
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert payload["hypotheses"][0]["source_facts"] == [
+            {
+                "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "fact_type": "route_handler",
+                "route_method": "GET",
+                "route_path": "/files/{file_id}/export",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "export_file",
+            }
+        ]
+        assert payload["target_model"]["source_fact_refs"] == [
+            "codebase_fact:route_handler:/files/{file_id}/export"
+        ]
+        assert assessment["exploit_chain"]["primitives"] == ["GET /files/{file_id}/export"]
+    finally:
+        session.close()
+
+
+def test_run_agent_task_does_not_borrow_hypothesis_facts_from_unrelated_handlers():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code fact handler scoping campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return {"file_id": file_id}
+
+def admin_archive(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate handler-scoped hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        payload = pipeline_runs[0].payload
+        assessment = payload["hypothesis_assessments"][0]
+
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert payload["hypotheses"][0]["source_facts"] == [
+            {
+                "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "fact_type": "route_handler",
+                "route_method": "GET",
+                "route_path": "/files/{file_id}/export",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "export_file",
+            }
+        ]
+        assert payload["target_model"]["source_fact_refs"] == [
+            "codebase_fact:route_handler:/files/{file_id}/export"
+        ]
+        assert assessment["exploit_chain"]["primitives"] == ["GET /files/{file_id}/export"]
+    finally:
+        session.close()
+
+
+def test_run_agent_task_ignores_comment_and_string_calls_when_mapping_code_facts():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code fact lexical scoping campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    # authorize_owner_or_admin(file_id) is intentionally not active code
+    note = "send_file(file_id) should not be mapped from documentation text"
+    return {"file_id": file_id, "note": note}
+''',
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate lexical code-backed hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        facts = repository.list_campaign_codebase_facts(campaign.id)
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        payload = pipeline_runs[0].payload
+        assessment = payload["hypothesis_assessments"][0]
+
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert {fact.fact_type for fact in facts} == {"route_handler"}
+        assert payload["hypotheses"][0]["source_facts"] == [
+            {
+                "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "fact_type": "route_handler",
+                "route_method": "GET",
+                "route_path": "/files/{file_id}/export",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "export_file",
+            }
+        ]
+        assert payload["target_model"]["source_fact_refs"] == [
+            "codebase_fact:route_handler:/files/{file_id}/export"
+        ]
+        assert assessment["exploit_chain"]["primitives"] == ["GET /files/{file_id}/export"]
+    finally:
+        session.close()
+
+
+def test_run_agent_task_does_not_attach_module_level_calls_to_route_hypotheses():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code fact module scope campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+authorize_owner_or_admin("startup-check")
+send_file("startup-check")
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return {"file_id": file_id}
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate module-scope-safe hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        payload = pipeline_runs[0].payload
+        assessment = payload["hypothesis_assessments"][0]
+
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert payload["hypotheses"][0]["source_facts"] == [
+            {
+                "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "fact_type": "route_handler",
+                "route_method": "GET",
+                "route_path": "/files/{file_id}/export",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "export_file",
+            }
+        ]
+        assert payload["target_model"]["source_fact_refs"] == [
+            "codebase_fact:route_handler:/files/{file_id}/export"
+        ]
+        assert assessment["exploit_chain"]["primitives"] == ["GET /files/{file_id}/export"]
+    finally:
+        session.close()
+
+
+def test_run_agent_task_plans_validation_against_codebase_fact_target():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code fact validation plan campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+""",
+                    }
+                ],
+            },
+        )
+        report_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review code-backed validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={"cookie": "session=secret"},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(report_task.id, repository=repository)
+
+        validation_runs = repository.list_campaign_validation_runs(campaign.id)
+        approvals = repository.list_campaign_approval_records(campaign.id)
+
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert len(validation_runs) == 1
+        assert len(approvals) == 1
+        validation_run = validation_runs[0]
+        approval = approvals[0]
+
+        assert validation_run.target_ref == "codebase_fact:route_handler:/files/{file_id}/export"
+        assert validation_run.approval_required is True
+        assert validation_run.allowed_to_execute is False
+        assert validation_run.safety_gate_state == "awaiting_approval"
+        assert validation_run.summary == (
+            "Validation is planned for mapped code fact GET /files/{file_id}/export but blocked pending durable human approval."
+        )
+        assert validation_run.payload == {
+            "approval_record_id": approval.id,
+            "no_live_requests": True,
+            "raw_payload_processed": False,
+            "source_fact_refs": [
+                "codebase_fact:route_handler:/files/{file_id}/export",
+                "codebase_fact:authz_check:owner_or_admin_check",
+                "codebase_fact:sensitive_sink:send_file",
+            ],
+            "target_route": "GET /files/{file_id}/export",
+        }
+        assert approval.requested_action == "two_account_authorization_check"
+        assert approval.asset == "authorized/service"
+        assert approval.plan_digest == validation_run.plan_digest
+        assert "session=secret" not in str(validation_runs + approvals)
+    finally:
+        session.close()
+
+
 def test_run_agent_task_blocks_out_of_scope_campaign_without_processing_payload():
     repository, session = build_repository()
     try:
@@ -218,6 +833,149 @@ def test_run_agent_task_blocks_existing_dispatched_run_without_duplicate_record(
         session.close()
 
 
+def test_run_agent_task_blocks_paused_campaign_with_specific_stop_reason():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Paused worker campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing paused",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "paused")
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map surface",
+            payload={"cookie": "session=secret"},
+        )
+
+        result = run_agent_task(task.id, repository=repository)
+
+        updated_task = repository.list_campaign_tasks(campaign.id)[0]
+        agent_run = repository.list_campaign_agent_runs(campaign.id)[0]
+        assert result["status"] == "blocked"
+        assert result["stop_reason"] == "campaign_paused"
+        assert updated_task.status == "blocked"
+        assert agent_run.status == "blocked"
+        assert agent_run.stop_reason == "campaign_paused"
+        assert repository.list_campaign_codebase_maps(campaign.id) == []
+        assert "session=secret" not in str(agent_run.payload)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_blocks_budget_exhausted_without_materializing_artifacts():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Budget exhausted worker campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing budget",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=None,
+            token_budget=None,
+            tool_call_budget=None,
+            validation_budget=0,
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map surface",
+            payload={"cookie": "session=secret"},
+        )
+
+        result = run_agent_task(task.id, repository=repository)
+
+        updated_task = repository.list_campaign_tasks(campaign.id)[0]
+        agent_run = repository.list_campaign_agent_runs(campaign.id)[0]
+        assert result["status"] == "blocked"
+        assert result["stop_reason"] == "budget_exhausted"
+        assert updated_task.status == "blocked"
+        assert agent_run.status == "blocked"
+        assert agent_run.stop_reason == "budget_exhausted"
+        assert repository.list_campaign_codebase_maps(campaign.id) == []
+        assert "session=secret" not in str(agent_run.payload)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_blocks_consumed_tool_call_budget_without_materializing_artifacts():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Consumed tool budget worker campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing budget",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=None,
+            token_budget=None,
+            tool_call_budget=1,
+            validation_budget=None,
+        )
+        first_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="campaign_observation",
+            agent_type="orchestrator_agent",
+            title="Observe",
+        )
+        repository.save_agent_run(
+            campaign_id=campaign.id,
+            task_id=first_task.id,
+            agent_type=first_task.agent_type,
+            status="completed",
+            input_refs=[f"campaign_task:{first_task.id}"],
+            output_refs=[],
+            tool_calls=[],
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload={"raw_payload_processed": False},
+        )
+        second_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map surface",
+            payload={"cookie": "session=secret"},
+        )
+
+        result = run_agent_task(second_task.id, repository=repository)
+
+        updated_tasks = repository.list_campaign_tasks(campaign.id)
+        agent_runs = repository.list_campaign_agent_runs(campaign.id)
+        blocked_run = next(run for run in agent_runs if run.task_id == second_task.id)
+        assert result["status"] == "blocked"
+        assert result["stop_reason"] == "budget_exhausted"
+        assert len(agent_runs) == 2
+        assert blocked_run.status == "blocked"
+        assert blocked_run.safety_gate_state == "blocked"
+        assert blocked_run.stop_reason == "budget_exhausted"
+        assert next(task for task in updated_tasks if task.id == second_task.id).status == "blocked"
+        assert repository.list_campaign_codebase_maps(campaign.id) == []
+        assert "session=secret" not in str(blocked_run.payload)
+    finally:
+        session.close()
+
+
 def test_run_agent_task_materializes_read_only_research_artifacts_by_task_type():
     repository, session = build_repository()
     try:
@@ -283,6 +1041,15 @@ def test_run_agent_task_materializes_read_only_research_artifacts_by_task_type()
         assert pipeline_runs[0].blocked_count == 1
         assert pipeline_runs[0].payload["campaign_id"] == campaign.id
         assert pipeline_runs[0].payload["source_task_id"] == tasks[1].id
+        worker_assessment = pipeline_runs[0].payload["hypothesis_assessments"][0]
+        assert worker_assessment["refutation"]["questions"]
+        assert worker_assessment["exploit_chain"]["primitives"]
+        assert worker_assessment["exploit_chain"]["preconditions"]
+        assert worker_assessment["exploit_chain"]["safety_notes"] == [
+            "non_executable_chain_summary",
+            "no_payloads_or_requests",
+            "human_review_required",
+        ]
         linked_preview_stages = [
             stage
             for stage in repository.list_campaign_pipeline_stages(campaign.id)

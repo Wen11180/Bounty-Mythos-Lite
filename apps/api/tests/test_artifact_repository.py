@@ -368,6 +368,66 @@ def test_list_artifacts_filters_by_program_asset_source_type_and_status():
         session.close()
 
 
+def test_list_artifacts_matches_safe_asset_without_query_broadening_scope():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        matching = repository.save_artifact(
+            program_id="program_example",
+            asset="https://api.example.com/path?session=secret",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"matching path artifact").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "matching-openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/path"]},
+        )
+        repository.save_artifact(
+            program_id="program_example",
+            asset="https://api.example.com/other?session=secret",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"other path artifact").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "other-path-openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/other"]},
+        )
+        repository.save_artifact(
+            program_id="program_example",
+            asset="https://evil.example.com/path?session=secret",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"other host artifact").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "other-host-openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/path"]},
+        )
+
+        artifacts = repository.list_artifacts(
+            program_id="program_example",
+            asset="api.example.com/path?session=secret",
+        )
+
+        assert matching.asset == "api.example.com/path"
+        assert [artifact.id for artifact in artifacts] == [matching.id]
+        assert "session=secret" not in json.dumps(
+            [
+                {
+                    "asset": artifact.asset,
+                    "provenance": artifact.provenance,
+                    "payload_summary": artifact.payload_summary,
+                    "derived_facts": artifact.derived_facts,
+                }
+                for artifact in artifacts
+            ]
+        )
+    finally:
+        session.close()
+
+
 def test_list_artifacts_filters_by_safety_metadata():
     session = build_session()
     try:

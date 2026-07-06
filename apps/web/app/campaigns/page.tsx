@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowLeft, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { getCampaigns } from "@/lib/api";
+import { campaignBudgetLabel } from "@/lib/campaigns-data";
 
 export default async function CampaignsPage() {
   const campaigns = await getCampaigns([]);
@@ -34,10 +35,11 @@ export default async function CampaignsPage() {
         </section>
       ) : (
         <section className="mt-5 border border-[var(--line)] bg-white">
-          <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] md:grid-cols-[minmax(0,1fr)_140px_140px_160px]">
+          <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] md:grid-cols-[minmax(0,1fr)_140px_140px_180px_160px]">
             <span>Campaign</span>
             <span>Status</span>
             <span>Scope</span>
+            <span>Budget</span>
             <span>Autonomy</span>
           </div>
           <div className="divide-y divide-[var(--line)]">
@@ -45,7 +47,7 @@ export default async function CampaignsPage() {
               <Link
                 key={campaign.id}
                 href={`/campaigns/${encodeURIComponent(campaign.id)}`}
-                className="grid gap-3 px-5 py-4 text-sm md:grid-cols-[minmax(0,1fr)_140px_140px_160px]"
+                className="grid gap-3 px-5 py-4 text-sm md:grid-cols-[minmax(0,1fr)_140px_140px_180px_160px]"
               >
                 <span className="min-w-0">
                   <span className="block break-words font-semibold">{campaign.name}</span>
@@ -55,6 +57,7 @@ export default async function CampaignsPage() {
                 </span>
                 <StatusText value={campaign.status} />
                 <StatusText value={campaign.scope_status} />
+                <span className="break-words font-semibold">{campaignBudgetLabel(campaign.budget)}</span>
                 <StatusText value={campaign.autonomy_level} />
               </Link>
             ))}
