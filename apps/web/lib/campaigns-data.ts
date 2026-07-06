@@ -70,6 +70,7 @@ export type CampaignControlCenter = {
     task_id: string | null;
     validation_mode: string | null;
   }[];
+  validation_runs?: CampaignValidationRun[];
   pipeline_stages: {
     campaign_id: string | null;
     created_at: string;
@@ -104,6 +105,9 @@ export type CampaignControlSummary = {
   scopeStatus: string;
   status: string;
   taskCount: number;
+  validationEvidenceCount: number;
+  validationEvidenceGapCount: number;
+  validationRunCount: number;
 };
 
 export type CampaignAgentRun = CampaignControlCenter["agent_runs"][number];
@@ -369,6 +373,13 @@ export type CampaignReportDraftSummary = {
   topClaims: string[];
 };
 
+export type CampaignReportDraftEvidenceSummary = {
+  evidenceGapCount: number;
+  evidenceRefCount: number;
+  manualEvidenceCount: number;
+  validationRunCount: number;
+};
+
 export type CampaignHypothesisBoardSummary = {
   brokenInvariant: string | null;
   candidateId: string;
@@ -546,7 +557,9 @@ function safeNextHref(campaignId: string, action: string): string | null {
     review_attack_surface_map: "attack-surface-map",
     review_evidence_or_report_drafts: "evidence-review",
     review_hypothesis_board: "hypothesis-board",
+    review_learning_outcome: "brain",
     review_validation_queue: "validation-runs",
+    record_learning_outcome: "report-drafts",
   };
   const route = routeByAction[action];
 
@@ -557,6 +570,7 @@ export function toCampaignControlSummary(
   controlCenter: CampaignControlCenter,
 ): CampaignControlSummary {
   const campaignId = safeText(controlCenter.campaign.id, "campaign");
+  const validationEvidence = toCampaignReportDraftEvidenceSummary(controlCenter.validation_runs ?? []);
 
   return {
     agentRunCount: controlCenter.agent_runs.length,
@@ -575,6 +589,9 @@ export function toCampaignControlSummary(
     scopeStatus: safeText(humanize(controlCenter.campaign.scope_status), "Unknown scope"),
     status: safeText(humanize(controlCenter.campaign.status), "Unknown status"),
     taskCount: controlCenter.tasks.length,
+    validationEvidenceCount: validationEvidence.manualEvidenceCount,
+    validationEvidenceGapCount: validationEvidence.evidenceGapCount,
+    validationRunCount: validationEvidence.validationRunCount,
   };
 }
 
@@ -832,6 +849,29 @@ export function toCampaignReportDraftSummaries(
       ),
     };
   });
+}
+
+export function toCampaignReportDraftEvidenceSummary(
+  runs: CampaignValidationRun[],
+): CampaignReportDraftEvidenceSummary {
+  const relevantRuns = runs.filter(
+    (run) =>
+      run.status === "evidence_recorded" ||
+      run.status === "needs_evidence" ||
+      run.safety_gate_state === "manual_evidence_recorded" ||
+      run.safety_gate_state === "manual_evidence_gap_recorded",
+  );
+
+  return {
+    evidenceGapCount: relevantRuns.filter(
+      (run) => run.status === "needs_evidence" || run.safety_gate_state === "manual_evidence_gap_recorded",
+    ).length,
+    evidenceRefCount: relevantRuns.reduce((total, run) => total + run.evidence_ref_count, 0),
+    manualEvidenceCount: relevantRuns.filter(
+      (run) => run.status === "evidence_recorded" || run.safety_gate_state === "manual_evidence_recorded",
+    ).length,
+    validationRunCount: relevantRuns.length,
+  };
 }
 
 export function toCampaignHypothesisBoardSummaries(

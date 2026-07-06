@@ -102,17 +102,24 @@ export default async function CampaignDetailPage({ params }: PageProps) {
             ) : (
               <p className="mt-2 font-semibold text-[var(--accent-strong)]">{safeNextAction}</p>
             )}
+            <dl className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--line)] pt-3 text-xs">
+              <Field label="Validation runs" value={summary.validationRunCount} />
+              <Field label="Evidence" value={summary.validationEvidenceCount} />
+              <Field label="Gaps" value={summary.validationEvidenceGapCount} />
+            </dl>
           </div>
         </div>
       </header>
 
-      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
+      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Status" value={summary.status} />
         <Metric label="Scope" value={summary.scopeStatus} />
         <Metric label="Tasks" value={summary.taskCount} />
         <Metric label="Agent runs" value={summary.agentRunCount} />
         <Metric label="Pending approvals" value={summary.pendingApprovalCount} />
         <Metric label="Blocked stages" value={summary.blockedStageCount} />
+        <Metric label="Validation evidence" value={summary.validationEvidenceCount} />
+        <Metric label="Evidence gaps" value={summary.validationEvidenceGapCount} />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">

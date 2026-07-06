@@ -1,7 +1,10 @@
 import { AlertTriangle, ArrowLeft, FileText, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { getCampaignControlCenter, getReportPreview } from "@/lib/api";
-import { toCampaignReportDraftSummaries } from "@/lib/campaigns-data";
+import { getCampaignControlCenter, getCampaignValidationRuns, getReportPreview } from "@/lib/api";
+import {
+  toCampaignReportDraftEvidenceSummary,
+  toCampaignReportDraftSummaries,
+} from "@/lib/campaigns-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string }>;
@@ -20,7 +23,9 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
   const previews = (
     await Promise.all(runIds.map((runId) => getReportPreview(runId, null)))
   ).filter((preview): preview is NonNullable<typeof preview> => preview !== null);
+  const validationRuns = await getCampaignValidationRuns(campaignId, []);
   const drafts = toCampaignReportDraftSummaries(previews);
+  const validationEvidence = toCampaignReportDraftEvidenceSummary(validationRuns);
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -38,12 +43,13 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Campaign-linked report previews summarized by review state, claim readiness, and evidence
-          ref counts. Draft bodies and raw evidence payloads stay out of this view.
+          Campaign-linked report previews summarized by review state, claim readiness, manual
+          validation state, and evidence ref counts. Draft bodies and raw evidence payloads stay out
+          of this view.
         </p>
       </header>
 
-      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-5">
         <Metric label="Drafts" value={drafts.length} />
         <Metric label="Ready claims" value={drafts.reduce((total, draft) => total + draft.readyClaimCount, 0)} />
         <Metric
@@ -51,6 +57,22 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
           value={drafts.reduce((total, draft) => total + draft.blockedClaimCount, 0)}
         />
         <Metric label="Evidence refs" value={drafts.reduce((total, draft) => total + draft.evidenceRefCount, 0)} />
+        <Metric label="Manual evidence" value={validationEvidence.manualEvidenceCount} />
+      </section>
+
+      <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
+        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
+          <div className="min-w-0">
+            <p className="font-semibold">Manual validation state</p>
+            <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
+              Report drafts can see reviewed validation outcomes as counts only; raw observations,
+              request data, and response data remain outside this view.
+            </p>
+          </div>
+          <Field label="Runs" value={String(validationEvidence.validationRunCount)} />
+          <Field label="Evidence refs" value={String(validationEvidence.evidenceRefCount)} />
+          <Field label="Evidence gaps" value={String(validationEvidence.evidenceGapCount)} />
+        </div>
       </section>
 
       <section className="border border-[var(--line)] bg-white">

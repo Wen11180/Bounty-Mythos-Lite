@@ -9,12 +9,14 @@ import {
   toCampaignControlSummary,
   toCampaignEvidenceReviewSummaries,
   toCampaignHypothesisBoardSummaries,
+  toCampaignReportDraftEvidenceSummary,
   toCampaignReportDraftSummaries,
   toCampaignTaskSummaries,
   toCampaignTimelineSummaries,
   toCampaignValidationRunSummaries,
   toCampaignValidationQueueSummaries,
   type CampaignControlCenter,
+  type CampaignValidationRun,
 } from "./campaigns-data.ts";
 
 const controlCenter = {
@@ -107,6 +109,42 @@ const controlCenter = {
       status: "blocked",
       stop_reason: "approval_required",
       task_id: "task_1",
+    },
+  ],
+  validation_runs: [
+    {
+      allowed_to_execute: false,
+      approval_id: "approval_1",
+      approval_required: true,
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:00:00Z",
+      evidence_ref_count: 1,
+      finished_at: "2026-07-05T00:03:00Z",
+      id: "validation_run_1",
+      plan_digest: "plan_digest_1",
+      safety_gate_state: "manual_evidence_recorded",
+      status: "evidence_recorded",
+      summary: "Manual validation result recorded: observed",
+      target_ref: "campaign:campaign_1",
+      task_id: "task_1",
+      validation_mode: "two_account_authorization_check",
+    },
+    {
+      allowed_to_execute: false,
+      approval_id: "approval_1",
+      approval_required: true,
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:04:00Z",
+      evidence_ref_count: 0,
+      finished_at: "2026-07-05T00:05:00Z",
+      id: "validation_run_2",
+      plan_digest: "plan_digest_2",
+      safety_gate_state: "manual_evidence_gap_recorded",
+      status: "needs_evidence",
+      summary: "Needs more evidence; Authorization: Bearer secret-token",
+      target_ref: "campaign:campaign_1?session=secret",
+      task_id: "task_1",
+      validation_mode: "two_account_authorization_check",
     },
   ],
   blocked_reasons: ["approval_required"],
@@ -401,6 +439,9 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
   assert.equal(summary.agentRunCount, 1);
   assert.equal(summary.pendingApprovalCount, 1);
   assert.equal(summary.blockedStageCount, 1);
+  assert.equal(summary.validationRunCount, 2);
+  assert.equal(summary.validationEvidenceCount, 1);
+  assert.equal(summary.validationEvidenceGapCount, 1);
   assert.equal(summary.defaultAsset, "api.example.com/path");
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|token=secret/i);
 });
@@ -429,6 +470,32 @@ test("toCampaignControlSummary routes manual evidence actions to evidence review
 
   assert.equal(summary.safeNextAction, "Review evidence or report drafts");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/evidence-review");
+});
+
+test("toCampaignControlSummary routes learning outcome actions to report drafts", () => {
+  const summary = toCampaignControlSummary({
+    ...controlCenter,
+    safe_next_action: "record_learning_outcome",
+    approvals: [],
+    blocked_reasons: [],
+    pipeline_stages: [],
+  });
+
+  assert.equal(summary.safeNextAction, "Record learning outcome");
+  assert.equal(summary.safeNextHref, "/campaigns/campaign_1/report-drafts");
+});
+
+test("toCampaignControlSummary routes learning review actions to brain", () => {
+  const summary = toCampaignControlSummary({
+    ...controlCenter,
+    safe_next_action: "review_learning_outcome",
+    approvals: [],
+    blocked_reasons: [],
+    pipeline_stages: [],
+  });
+
+  assert.equal(summary.safeNextAction, "Review learning outcome");
+  assert.equal(summary.safeNextHref, "/campaigns/campaign_1/brain");
 });
 
 test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {
@@ -709,6 +776,55 @@ test("toCampaignReportDraftSummaries keeps report draft status redacted and gate
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
 });
 
+test("toCampaignReportDraftEvidenceSummary exposes manual validation state without raw evidence", () => {
+  const validationRuns: CampaignValidationRun[] = [
+    {
+      allowed_to_execute: false,
+      approval_id: "approval_1",
+      approval_required: true,
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:00:00Z",
+      evidence_ref_count: 2,
+      finished_at: "2026-07-05T00:05:00Z",
+      id: "validation_1",
+      plan_digest: "digest_1",
+      safety_gate_state: "manual_evidence_recorded",
+      status: "evidence_recorded",
+      summary: "Manual observation recorded; cookie=session=secret",
+      target_ref: "https://api.example.com/files?token=secret",
+      task_id: "task_1",
+      validation_mode: "two_account_authorization_check",
+    },
+    {
+      allowed_to_execute: false,
+      approval_id: "approval_2",
+      approval_required: true,
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:06:00Z",
+      evidence_ref_count: 0,
+      finished_at: "2026-07-05T00:08:00Z",
+      id: "validation_2",
+      plan_digest: "digest_2",
+      safety_gate_state: "manual_evidence_gap_recorded",
+      status: "needs_evidence",
+      summary: "Evidence redacted; Authorization: Bearer secret-token",
+      target_ref: "api.example.com",
+      task_id: "task_2",
+      validation_mode: "manual_review",
+    },
+  ];
+
+  const summary = toCampaignReportDraftEvidenceSummary(validationRuns);
+
+  assert.deepEqual(summary, {
+    evidenceGapCount: 1,
+    evidenceRefCount: 2,
+    manualEvidenceCount: 1,
+    validationRunCount: 2,
+  });
+  assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|authorization: bearer/i);
+});
+
 test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates", () => {
   const summaries = toCampaignHypothesisBoardSummaries([pipelineRunDetail]);
 
@@ -776,6 +892,8 @@ test("campaign detail page reads the audited control center and stays read-only"
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/brain/);
   assert.match(page, /executionAllowed/);
   assert.match(page, /safeNextAction/);
+  assert.match(page, /validationEvidenceCount/);
+  assert.match(page, /validationEvidenceGapCount/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
@@ -860,7 +978,7 @@ test("campaign evidence review page reads report previews and validation runs wh
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 
-test("campaign report drafts page reads report previews and stays read-only", async () => {
+test("campaign report drafts page reads report previews and manual validation state while staying read-only", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/campaigns/[campaignId]/report-drafts/page.tsx", import.meta.url), "utf8"),
   );
@@ -868,6 +986,8 @@ test("campaign report drafts page reads report previews and stays read-only", as
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /getReportPreview\(runId, null\)/);
+  assert.match(page, /getCampaignValidationRuns\(campaignId, \[\]\)/);
+  assert.match(page, /toCampaignReportDraftEvidenceSummary/);
   assert.match(page, /toCampaignReportDraftSummaries/);
   assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|recordMythosBrainOutcome|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);

@@ -401,6 +401,7 @@ class CampaignControlCenterResponse(BaseModel):
     tasks: list[CampaignTaskResponse] = Field(default_factory=list)
     agent_runs: list[AgentRunResponse] = Field(default_factory=list)
     approvals: list[ApprovalRecordResponse] = Field(default_factory=list)
+    validation_runs: list[ValidationRunResponse] = Field(default_factory=list)
     pipeline_stages: list[PipelineStageResponse] = Field(default_factory=list)
     safe_next_action: str
     blocked_reasons: list[str] = Field(default_factory=list)
@@ -784,6 +785,7 @@ def get_mythos_campaign_control_center(
         tasks=[_campaign_task_response(record) for record in tasks],
         agent_runs=[_agent_run_response(record) for record in agent_runs],
         approvals=[_approval_record_response(record) for record in approvals],
+        validation_runs=[_validation_run_response(record) for record in validation_runs],
         pipeline_stages=[_pipeline_stage_response(record) for record in stages],
         safe_next_action=_campaign_control_center_safe_next_action(
             campaign=campaign,
@@ -792,6 +794,8 @@ def get_mythos_campaign_control_center(
             agent_runs=agent_runs,
             approvals=approvals,
             validation_runs=validation_runs,
+            pipeline_stages=stages,
+            repository=repository,
             blocked_reasons=blocked_reasons,
         ),
         blocked_reasons=blocked_reasons,
@@ -1695,6 +1699,8 @@ def _campaign_control_center_safe_next_action(
     agent_runs: list[AgentRunRecord],
     approvals: list[ApprovalRecord],
     validation_runs: list[ValidationRunRecord],
+    pipeline_stages: list[PipelineStageRecord],
+    repository: DatabaseRepository,
     blocked_reasons: list[str],
 ) -> str:
     if any(record.status == "pending" for record in approvals):
@@ -1709,6 +1715,11 @@ def _campaign_control_center_safe_next_action(
         for record in validation_runs
     ):
         return "review_validation_queue"
+    if _campaign_has_report_preview_finding_candidate(
+        pipeline_stages,
+        repository,
+    ):
+        return "record_learning_outcome"
     if any(_validation_run_has_manual_result(record) for record in validation_runs):
         return "review_evidence_or_report_drafts"
     if blocked_reasons:
@@ -1722,6 +1733,25 @@ def _campaign_control_center_safe_next_action(
     if any(record.status in {"queued", "ready"} for record in tasks):
         return "dispatch_ready_tasks"
     return "plan_next_tick"
+
+
+def _campaign_has_report_preview_finding_candidate(
+    pipeline_stages: list[PipelineStageRecord],
+    repository: DatabaseRepository,
+) -> bool:
+    pipeline_run_ids = [
+        stage.pipeline_run_id
+        for stage in pipeline_stages
+        if stage.stage_key == "campaign_report_preview" and stage.pipeline_run_id
+    ]
+    for run_id in pipeline_run_ids:
+        record = repository.get_pipeline_run(run_id)
+        if record is None:
+            continue
+        usage_records = _closed_loop_artifact_usage_records(record, repository)
+        if _closed_loop_usage_count(usage_records, "finding_candidate", record.id):
+            return True
+    return False
 
 
 def _validation_run_has_manual_result(record: ValidationRunRecord) -> bool:

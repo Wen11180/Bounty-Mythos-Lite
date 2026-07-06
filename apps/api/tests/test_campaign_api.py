@@ -420,6 +420,125 @@ def test_campaign_pipeline_stages_expose_report_preview_run_links_without_payloa
         app.dependency_overrides.clear()
 
 
+def test_campaign_control_center_moves_to_learning_after_finding_candidate():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Finding candidate campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            campaign_id = campaign.id
+
+        dry_run_response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert dry_run_response.status_code == 200
+        run_id = dry_run_response.json()["run_id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            repository.save_pipeline_stage(
+                pipeline_run_id=run_id,
+                campaign_id=campaign_id,
+                task_id=None,
+                stage_key="campaign_report_preview",
+                stage_order=20,
+                status="awaiting_review",
+                input_refs=[f"campaign:{campaign_id}"],
+                output_refs=[f"pipeline_run:{run_id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason=None,
+                payload={
+                    "review_gate": "human_review_required",
+                    "submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        claim_id = next(
+            claim["claim_id"]
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "request_response_diff",
+                "observer": "lead_reviewer",
+                "observation": "Safe test-account diff showed an authorization boundary.",
+                "evidence_refs": ["sanitized_request_response"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert observation_response.status_code == 200
+
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Confirmed with sanitized fixture.",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+        assert decision_response.status_code == 200
+
+        candidate_response = client.post(f"/mythos/pipeline/runs/{run_id}/finding-candidates")
+        assert candidate_response.status_code == 200
+        assert candidate_response.json()["submission_recommendation"] == "promote_to_finding_candidate"
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        control_center = response.json()
+        assert control_center["safe_next_action"] == "record_learning_outcome"
+        assert control_center["execution_allowed"] is False
+        assert "report_ready" not in str(control_center)
+        assert "secret-token" not in str(control_center)
+        assert "SECRET POLICY" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_api_returns_codebase_map_without_raw_scanner_or_secret_payloads():
     testing_session = build_testing_session()
 
@@ -1416,6 +1535,9 @@ def test_campaign_control_center_points_to_evidence_review_after_manual_evidence
         assert response.status_code == 200
         control_center = response.json()
         assert control_center["safe_next_action"] == "review_evidence_or_report_drafts"
+        assert control_center["validation_runs"][0]["id"].startswith("validation_run_")
+        assert control_center["validation_runs"][0]["status"] == "evidence_recorded"
+        assert control_center["validation_runs"][0]["evidence_ref_count"] == 2
         assert control_center["execution_allowed"] is False
         assert "secret-token" not in str(control_center)
         assert "session=secret" not in str(control_center)
@@ -1590,6 +1712,7 @@ def test_campaign_control_center_returns_audited_read_only_summary():
         assert control_center["agent_runs"][0]["safety_gate_state"] == "allowed"
         assert control_center["approvals"][0]["status"] == "pending"
         assert control_center["pipeline_stages"][0]["stop_reason"] == "approval_required"
+        assert control_center["validation_runs"] == []
         assert control_center["safe_next_action"] == "review_approval_queue"
         assert control_center["blocked_reasons"] == ["approval_required"]
         assert control_center["execution_allowed"] is False
