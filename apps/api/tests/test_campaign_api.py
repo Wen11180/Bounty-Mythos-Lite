@@ -535,6 +535,242 @@ def test_campaign_control_center_moves_to_learning_after_finding_candidate():
         assert "report_ready" not in str(control_center)
         assert "secret-token" not in str(control_center)
         assert "SECRET POLICY" not in str(control_center)
+
+        outcome_response = client.post(
+            "/mythos/brain/outcomes",
+            json={
+                "run_id": run_id,
+                "outcome": "accepted",
+                "notes": "Accepted safe fixture; Authorization: Bearer secret-token",
+                "evidence_quality": "strong",
+            },
+        )
+        assert outcome_response.status_code == 200
+
+        review_response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert review_response.status_code == 200
+        review_control_center = review_response.json()
+        assert review_control_center["safe_next_action"] == "review_learning_outcome"
+        assert review_control_center["execution_allowed"] is False
+        assert "Accepted safe fixture" not in str(review_control_center)
+        assert "secret-token" not in str(review_control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_ignores_other_campaign_finding_candidates():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            source_campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Source finding candidate campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            unrelated_campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Unrelated campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer other-secret-token",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            for campaign in [source_campaign, unrelated_campaign]:
+                repository.update_campaign_status(campaign.id, "running")
+                repository.upsert_campaign_budget(
+                    campaign_id=campaign.id,
+                    time_budget_minutes=30,
+                    token_budget=1000,
+                    tool_call_budget=10,
+                    validation_budget=1,
+                )
+            source_campaign_id = source_campaign.id
+            unrelated_campaign_id = unrelated_campaign.id
+
+        dry_run_response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert dry_run_response.status_code == 200
+        run_id = dry_run_response.json()["run_id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            repository.save_pipeline_stage(
+                pipeline_run_id=run_id,
+                campaign_id=source_campaign_id,
+                task_id=None,
+                stage_key="campaign_report_preview",
+                stage_order=20,
+                status="awaiting_review",
+                input_refs=[f"campaign:{source_campaign_id}"],
+                output_refs=[f"pipeline_run:{run_id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason=None,
+                payload={"submission_allowed": False, "raw_payload_processed": False},
+            )
+
+        preview_response = client.get(f"/mythos/pipeline/runs/{run_id}/report-preview")
+        assert preview_response.status_code == 200
+        claim_id = next(
+            claim["claim_id"]
+            for claim in preview_response.json()["claim_ledger"]
+            if claim["claim_type"] == "observed_fact"
+        )
+
+        observation_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/manual-observations",
+            json={
+                "claim_id": claim_id,
+                "observation_type": "request_response_diff",
+                "observer": "lead_reviewer",
+                "observation": "Safe test-account diff showed an authorization boundary.",
+                "evidence_refs": ["sanitized_request_response"],
+                "safety_notes": ["test_accounts_only", "no_real_user_data"],
+            },
+        )
+        assert observation_response.status_code == 200
+        decision_response = client.post(
+            f"/mythos/pipeline/runs/{run_id}/claim-review-decisions",
+            json={
+                "claim_id": claim_id,
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Confirmed with sanitized fixture.",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+        assert decision_response.status_code == 200
+        candidate_response = client.post(f"/mythos/pipeline/runs/{run_id}/finding-candidates")
+        assert candidate_response.status_code == 200
+
+        source_response = client.get(f"/mythos/campaigns/{source_campaign_id}/control-center")
+        unrelated_response = client.get(f"/mythos/campaigns/{unrelated_campaign_id}/control-center")
+
+        assert source_response.status_code == 200
+        assert unrelated_response.status_code == 200
+        assert source_response.json()["safe_next_action"] == "record_learning_outcome"
+        unrelated_control_center = unrelated_response.json()
+        assert unrelated_control_center["safe_next_action"] == "plan_next_tick"
+        assert unrelated_control_center["execution_allowed"] is False
+        assert "report_ready" not in str(unrelated_control_center)
+        assert "secret-token" not in str(unrelated_control_center)
+        assert "SECRET POLICY" not in str(unrelated_control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_reviews_learning_signal_without_finding_candidate():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Learning signal campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            campaign_id = campaign.id
+
+        dry_run_response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert dry_run_response.status_code == 200
+        run_id = dry_run_response.json()["run_id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            repository.save_pipeline_stage(
+                pipeline_run_id=run_id,
+                campaign_id=campaign_id,
+                task_id=None,
+                stage_key="campaign_report_preview",
+                stage_order=20,
+                status="awaiting_review",
+                input_refs=[f"campaign:{campaign_id}"],
+                output_refs=[f"pipeline_run:{run_id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason=None,
+                payload={"submission_allowed": False, "raw_payload_processed": False},
+            )
+
+        outcome_response = client.post(
+            "/mythos/brain/outcomes",
+            json={
+                "run_id": run_id,
+                "outcome": "informative",
+                "notes": "Informative safe fixture; Authorization: Bearer secret-token",
+                "evidence_quality": "adequate",
+            },
+        )
+        assert outcome_response.status_code == 200
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        control_center = response.json()
+        assert control_center["safe_next_action"] == "review_learning_outcome"
+        assert control_center["execution_allowed"] is False
+        assert "Informative safe fixture" not in str(control_center)
+        assert "secret-token" not in str(control_center)
+        assert "SECRET POLICY" not in str(control_center)
     finally:
         app.dependency_overrides.clear()
 
@@ -1541,6 +1777,154 @@ def test_campaign_control_center_points_to_evidence_review_after_manual_evidence
         assert control_center["execution_allowed"] is False
         assert "secret-token" not in str(control_center)
         assert "session=secret" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_prioritizes_manual_evidence_over_learning_review():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Evidence before learning campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Review validation gate",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            approval = repository.create_approval_record(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                program_id=campaign.program_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approved evidence review validation",
+                requested_action="two_account_authorization_check",
+                asset=campaign.default_asset,
+                validation_mode="two_account_authorization_check",
+                plan_digest="manual_evidence_before_learning",
+                autonomy_level=campaign.autonomy_level,
+                safety_gate_state="approved_validation_record",
+            )
+            repository.decide_approval_record(
+                approval_id=approval.id,
+                decision="approved",
+                actor="lead_reviewer",
+                reason="Approved for test accounts only.",
+            )
+            repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=approval.id,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="evidence_recorded",
+                safety_gate_state="manual_evidence_recorded",
+                plan_digest="manual_evidence_before_learning",
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=1,
+                summary="Manual validation result recorded: observed",
+                payload={
+                    "manual_result": {
+                        "summary": "Observed safe diff; Authorization: Bearer secret-token",
+                        "evidence_refs": ["Cookie: session=secret"],
+                    }
+                },
+            )
+            campaign_id = campaign.id
+
+        dry_run_response = client.post(
+            "/mythos/pipeline/dry-run",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "policy_text": "SECRET POLICY: In scope api.example.com. Automation limited.",
+                "openapi": {
+                    "paths": {
+                        "/files/{file_id}/export": {
+                            "get": {"operationId": "exportFile"},
+                        }
+                    }
+                },
+            },
+        )
+        assert dry_run_response.status_code == 200
+        run_id = dry_run_response.json()["run_id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            repository.save_pipeline_stage(
+                pipeline_run_id=run_id,
+                campaign_id=campaign_id,
+                task_id=None,
+                stage_key="campaign_report_preview",
+                stage_order=20,
+                status="awaiting_review",
+                input_refs=[f"campaign:{campaign_id}"],
+                output_refs=[f"pipeline_run:{run_id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason=None,
+                payload={"submission_allowed": False, "raw_payload_processed": False},
+            )
+            signal = repository.save_learning_signal(
+                program_id="program_example",
+                playbook_id="bola_idor",
+                outcome="informative",
+                surface_key="file_id:export",
+                notes="Informative safe fixture; Authorization: Bearer secret-token",
+                evidence_quality="adequate",
+            )
+            pipeline_run = repository.get_pipeline_run(run_id)
+            assert pipeline_run is not None
+            artifact_id = pipeline_run.payload["artifact"]["artifact_id"]
+            repository.append_artifact_usage_records(
+                artifact_id=artifact_id,
+                usage_records=[
+                    {
+                        "usage_type": "learning_signal",
+                        "run_id": run_id,
+                        "ref": f"learning_signal:{signal.id}",
+                        "learning_signal_id": signal.id,
+                    }
+                ],
+            )
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        control_center = response.json()
+        assert control_center["safe_next_action"] == "review_evidence_or_report_drafts"
+        assert control_center["execution_allowed"] is False
+        assert "Informative safe fixture" not in str(control_center)
+        assert "secret-token" not in str(control_center)
+        assert "SECRET POLICY" not in str(control_center)
     finally:
         app.dependency_overrides.clear()
 

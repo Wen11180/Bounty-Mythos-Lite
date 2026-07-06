@@ -1715,13 +1715,15 @@ def _campaign_control_center_safe_next_action(
         for record in validation_runs
     ):
         return "review_validation_queue"
+    if any(_validation_run_has_manual_result(record) for record in validation_runs):
+        return "review_evidence_or_report_drafts"
+    if _campaign_has_report_preview_learning_signal(pipeline_stages, repository):
+        return "review_learning_outcome"
     if _campaign_has_report_preview_finding_candidate(
         pipeline_stages,
         repository,
     ):
         return "record_learning_outcome"
-    if any(_validation_run_has_manual_result(record) for record in validation_runs):
-        return "review_evidence_or_report_drafts"
     if blocked_reasons:
         return "resolve_blockers"
     if campaign.status != "running":
@@ -1750,6 +1752,25 @@ def _campaign_has_report_preview_finding_candidate(
             continue
         usage_records = _closed_loop_artifact_usage_records(record, repository)
         if _closed_loop_usage_count(usage_records, "finding_candidate", record.id):
+            return True
+    return False
+
+
+def _campaign_has_report_preview_learning_signal(
+    pipeline_stages: list[PipelineStageRecord],
+    repository: DatabaseRepository,
+) -> bool:
+    pipeline_run_ids = [
+        stage.pipeline_run_id
+        for stage in pipeline_stages
+        if stage.stage_key == "campaign_report_preview" and stage.pipeline_run_id
+    ]
+    for run_id in pipeline_run_ids:
+        record = repository.get_pipeline_run(run_id)
+        if record is None:
+            continue
+        usage_records = _closed_loop_artifact_usage_records(record, repository)
+        if _closed_loop_usage_count(usage_records, "learning_signal", record.id):
             return True
     return False
 

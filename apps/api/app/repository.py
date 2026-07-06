@@ -729,8 +729,9 @@ class DatabaseRepository:
                 else:
                     validation_run.allowed_to_execute = True
             else:
-                validation_run.status = "blocked"
-                validation_run.safety_gate_state = "blocked"
+                if validation_run.status not in _VALIDATION_MANUAL_RESULT_STATUSES:
+                    validation_run.status = "blocked"
+                    validation_run.safety_gate_state = "blocked"
                 validation_run.allowed_to_execute = False
                 validation_run.finished_at = datetime.now(UTC)
             self.session.add(validation_run)
