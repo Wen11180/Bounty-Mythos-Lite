@@ -1781,6 +1781,8 @@ def _campaign_control_center_safe_next_action(
         repository,
     ):
         return "record_learning_outcome"
+    if _campaign_has_awaiting_cycle_review(pipeline_stages):
+        return "complete_cycle_review"
     if blocked_reasons:
         return "resolve_blockers"
     if campaign.status != "running":
@@ -1811,6 +1813,16 @@ def _campaign_has_report_preview_finding_candidate(
         if _closed_loop_usage_count(usage_records, "finding_candidate", record.id):
             return True
     return False
+
+
+def _campaign_has_awaiting_cycle_review(
+    pipeline_stages: list[PipelineStageRecord],
+) -> bool:
+    return any(
+        stage.stage_key == "campaign_cycle_review"
+        and stage.status == "awaiting_review"
+        for stage in pipeline_stages
+    )
 
 
 def _campaign_has_report_preview_learning_signal(

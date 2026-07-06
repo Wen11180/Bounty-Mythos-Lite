@@ -500,6 +500,19 @@ test("toCampaignControlSummary routes learning review actions to brain", () => {
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/brain");
 });
 
+test("toCampaignControlSummary routes cycle review completion actions to timeline", () => {
+  const summary = toCampaignControlSummary({
+    ...controlCenter,
+    safe_next_action: "complete_cycle_review",
+    approvals: [],
+    blocked_reasons: ["campaign_cycle_review_required"],
+    pipeline_stages: [],
+  });
+
+  assert.equal(summary.safeNextAction, "Complete cycle review");
+  assert.equal(summary.safeNextHref, "/campaigns/campaign_1/timeline");
+});
+
 test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {
   const summaries = toCampaignAgentRunSummaries([
     {
@@ -638,6 +651,7 @@ test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", (
       auditLabel: "Campaign tick",
       id: "stage_1",
       inputRefCount: 2,
+      isCycleReview: false,
       isLearningOutcome: false,
       isManualValidationResult: false,
       outputRefCount: 1,
@@ -675,6 +689,7 @@ test("toCampaignTimelineSummaries highlights manual validation result stages wit
       auditLabel: "Manual validation result",
       id: "stage_manual_result",
       inputRefCount: 1,
+      isCycleReview: false,
       isLearningOutcome: false,
       isManualValidationResult: true,
       outputRefCount: 2,
@@ -712,6 +727,7 @@ test("toCampaignTimelineSummaries highlights advisory learning outcome stages wi
       auditLabel: "Advisory Brain learning",
       id: "stage_learning_result",
       inputRefCount: 1,
+      isCycleReview: false,
       isLearningOutcome: true,
       isManualValidationResult: false,
       outputRefCount: 2,
@@ -721,6 +737,44 @@ test("toCampaignTimelineSummaries highlights advisory learning outcome stages wi
       status: "Recorded",
       stopReason: null,
       taskId: "task_1",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
+});
+
+test("toCampaignTimelineSummaries highlights cycle review gates without refs", () => {
+  const summaries = toCampaignTimelineSummaries([
+    {
+      campaign_id: "campaign_1",
+      created_at: "2026-07-05T00:14:00Z",
+      id: "stage_cycle_review",
+      input_refs: ["campaign:campaign_1?cookie=session=secret"],
+      output_refs: ["pipeline_run:run_1", "notes:Authorization: Bearer secret-token"],
+      pipeline_run_id: null,
+      safety_gate_state: "allowed",
+      stage_key: "campaign_cycle_review",
+      stage_order: 5,
+      status: "awaiting_review",
+      stop_reason: "campaign_cycle_review_required",
+      task_id: null,
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      auditLabel: "Campaign cycle review",
+      id: "stage_cycle_review",
+      inputRefCount: 1,
+      isCycleReview: true,
+      isLearningOutcome: false,
+      isManualValidationResult: false,
+      outputRefCount: 2,
+      safetyGateState: "Allowed",
+      stageKey: "Campaign cycle review",
+      stageOrder: 5,
+      status: "Awaiting review",
+      stopReason: "Campaign cycle review required",
+      taskId: null,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
@@ -1205,6 +1259,7 @@ test("campaign timeline page reads pipeline stage records and stays read-only", 
   assert.match(page, /toCampaignTimelineSummaries/);
   assert.match(page, /manualValidationResultCount/);
   assert.match(page, /learningOutcomeCount/);
+  assert.match(page, /cycleReviewCount/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });

@@ -15,6 +15,7 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
     (stage) => stage.isManualValidationResult,
   ).length;
   const learningOutcomeCount = timeline.filter((stage) => stage.isLearningOutcome).length;
+  const cycleReviewCount = timeline.filter((stage) => stage.isCycleReview).length;
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -37,7 +38,7 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
         </p>
       </header>
 
-      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
         <Metric label="Stages" value={timeline.length} />
         <Metric
           label="Blocked"
@@ -45,6 +46,7 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
         />
         <Metric label="Manual results" value={manualValidationResultCount} />
         <Metric label="Learning outcomes" value={learningOutcomeCount} />
+        <Metric label="Cycle reviews" value={cycleReviewCount} />
         <Metric
           label="With stop reason"
           value={timeline.filter((stage) => stage.stopReason !== null).length}

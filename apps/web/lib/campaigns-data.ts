@@ -193,6 +193,7 @@ export type CampaignTimelineSummary = {
   auditLabel: string;
   id: string;
   inputRefCount: number;
+  isCycleReview: boolean;
   isLearningOutcome: boolean;
   isManualValidationResult: boolean;
   outputRefCount: number;
@@ -574,10 +575,12 @@ function budgetLabel(controlCenter: CampaignControlCenter): string {
 function safeNextHref(campaignId: string, action: string): string | null {
   const encodedCampaignId = encodeURIComponent(campaignId);
   const routeByAction: Record<string, string> = {
+    complete_cycle_review: "timeline",
     dispatch_ready_tasks: "tasks",
     monitor_agent_runs: "agent-runs",
     review_approval_queue: "validation-queue",
     review_attack_surface_map: "attack-surface-map",
+    review_campaign_cycle: "timeline",
     review_evidence_or_report_drafts: "evidence-review",
     review_hypothesis_board: "hypothesis-board",
     review_learning_outcome: "brain",
@@ -705,17 +708,21 @@ export function toCampaignTimelineSummaries(
 ): CampaignTimelineSummary[] {
   return stages.map((stage) => {
     const stageKey = safeText(humanize(stage.stage_key), "Stage");
+    const isCycleReview = stage.stage_key === "campaign_cycle_review";
     const isLearningOutcome = stage.stage_key === "learning_outcome_recorded";
     const isManualValidationResult = stage.stage_key === "validation_manual_result";
 
     return {
-      auditLabel: isLearningOutcome
-        ? "Advisory Brain learning"
-        : isManualValidationResult
-          ? "Manual validation result"
-          : stageKey,
+      auditLabel: isCycleReview
+        ? "Campaign cycle review"
+        : isLearningOutcome
+          ? "Advisory Brain learning"
+          : isManualValidationResult
+            ? "Manual validation result"
+            : stageKey,
       id: safeText(stage.id, "stage"),
       inputRefCount: stage.input_refs.length,
+      isCycleReview,
       isLearningOutcome,
       isManualValidationResult,
       outputRefCount: stage.output_refs.length,

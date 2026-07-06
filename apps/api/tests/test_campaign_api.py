@@ -445,6 +445,67 @@ def test_campaign_api_completes_cycle_review_without_dispatch_or_payload_leaks()
         app.dependency_overrides.clear()
 
 
+def test_campaign_control_center_points_to_cycle_review_completion_gate():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Cycle review gate campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=None,
+                stage_key="campaign_cycle_review",
+                stage_order=4,
+                status="awaiting_review",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[
+                    "pipeline_run:hypothesis_summary",
+                    "codebase_fact:authorization_boundary",
+                ],
+                safety_gate_state="allowed",
+                stop_reason="campaign_cycle_review_required",
+                payload={
+                    "review_gate": "human_review_required",
+                    "notes": "Authorization: Bearer secret-token",
+                },
+            )
+            campaign_id = campaign.id
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        control_center = response.json()
+        assert control_center["safe_next_action"] == "complete_cycle_review"
+        assert control_center["execution_allowed"] is False
+        assert "secret-token" not in str(control_center)
+        assert "Authorization" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_pipeline_stages_expose_report_preview_run_links_without_payload_leaks():
     testing_session = build_testing_session()
 
