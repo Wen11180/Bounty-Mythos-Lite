@@ -326,3 +326,89 @@ def test_tick_enters_review_gate_after_research_cycle_materializes_artifacts():
         assert "secret-token" not in str(review_stages)
     finally:
         session.close()
+
+
+def test_tick_points_to_evidence_review_after_manual_validation_evidence():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Evidence review cycle campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed. Authorization: Bearer secret-token",
+            default_asset="api.example.com",
+            target_classes=["idor"],
+            allowed_tools=["two_account_authorization_check"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=1,
+        )
+
+        first = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        for task_id in first["dispatched_task_ids"]:
+            run_agent_task(task_id, repository=repository)
+
+        approval = repository.list_campaign_approval_records(campaign.id)[0]
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for test accounts only.",
+        )
+        validation_run = repository.list_campaign_validation_runs(campaign.id)[0]
+        repository.record_validation_run_preflight(
+            validation_run.id,
+            allowed=True,
+            reason="approved_validation_record",
+        )
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="lead_reviewer",
+            summary="Observed safe diff; Authorization: Bearer secret-token",
+            evidence_refs=["sanitized_request_response", "Cookie: session=secret"],
+        )
+
+        second = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert second["status"] == "awaiting_review"
+        assert second["dispatched_task_ids"] == []
+        assert second["stop_reasons"] == ["campaign_cycle_review_required"]
+        assert second["next_actions"] == [
+            "review_evidence_or_report_drafts",
+            "review_hypothesis_board",
+            "review_attack_surface_map",
+        ]
+        assert len(repository.list_campaign_tasks(campaign.id)) == 4
+        assert len(dispatched) == 4
+        review_stages = [
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign.id)
+            if stage.stage_key == "campaign_cycle_review"
+        ]
+        assert len(review_stages) == 1
+        assert review_stages[0].status == "awaiting_review"
+        assert review_stages[0].safety_gate_state == "allowed"
+        assert review_stages[0].stop_reason == "campaign_cycle_review_required"
+        assert "secret-token" not in str(second)
+        assert "session=secret" not in str(second)
+        assert "secret-token" not in str(review_stages)
+        assert "session=secret" not in str(review_stages)
+    finally:
+        session.close()

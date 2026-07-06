@@ -299,6 +299,16 @@ class ValidationRunPreflightResponse(BaseModel):
     execution_started: bool = False
 
 
+ValidationRunManualOutcome = Literal["observed", "refuted", "needs_more_evidence"]
+
+
+class ValidationRunManualResultRequest(BaseModel):
+    outcome: ValidationRunManualOutcome
+    reviewer: str = Field(min_length=1, max_length=100)
+    summary: str = Field(min_length=1, max_length=1000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+
+
 class CampaignCodebaseMapResponse(BaseModel):
     maps: list[CodebaseMapResponse] = Field(default_factory=list)
     facts: list[CodebaseFactResponse] = Field(default_factory=list)
@@ -665,6 +675,37 @@ def preflight_mythos_validation_run(
         validation_run=_validation_run_response(updated_run),
         execution_started=False,
     )
+
+
+@app.post(
+    "/mythos/validation-runs/{validation_run_id}/manual-results",
+    response_model=ValidationRunResponse,
+)
+def record_mythos_validation_run_manual_result(
+    validation_run_id: str,
+    request: ValidationRunManualResultRequest,
+    session: Session = Depends(get_session),
+) -> ValidationRunResponse:
+    repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(validation_run_id)
+    if validation_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+    if validation_run.status != "preflight_passed":
+        raise HTTPException(
+            status_code=409,
+            detail="Validation run preflight has not passed",
+        )
+
+    updated_run = repository.record_validation_run_manual_result(
+        validation_run.id,
+        outcome=request.outcome,
+        reviewer=safe_preview_text(request.reviewer),
+        summary=safe_preview_text(request.summary),
+        evidence_refs=safe_preview_lines(request.evidence_refs),
+    )
+    if updated_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+    return _validation_run_response(updated_run)
 
 
 @app.get(
@@ -1650,6 +1691,8 @@ def _campaign_control_center_safe_next_action(
         for record in validation_runs
     ):
         return "review_validation_queue"
+    if any(_validation_run_has_manual_result(record) for record in validation_runs):
+        return "review_evidence_or_report_drafts"
     if blocked_reasons:
         return "resolve_blockers"
     if campaign.status != "running":
@@ -1661,6 +1704,14 @@ def _campaign_control_center_safe_next_action(
     if any(record.status in {"queued", "ready"} for record in tasks):
         return "dispatch_ready_tasks"
     return "plan_next_tick"
+
+
+def _validation_run_has_manual_result(record: ValidationRunRecord) -> bool:
+    return (
+        record.status in {"evidence_recorded", "refuted", "needs_evidence"}
+        or record.evidence_ref_count > 0
+        or record.safety_gate_state.startswith("manual_")
+    )
 
 
 def _update_campaign_status(

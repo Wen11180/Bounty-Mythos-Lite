@@ -544,6 +544,7 @@ function safeNextHref(campaignId: string, action: string): string | null {
     monitor_agent_runs: "agent-runs",
     review_approval_queue: "validation-queue",
     review_attack_surface_map: "attack-surface-map",
+    review_evidence_or_report_drafts: "evidence-review",
     review_hypothesis_board: "hypothesis-board",
     review_validation_queue: "validation-runs",
   };

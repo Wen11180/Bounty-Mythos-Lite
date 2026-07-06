@@ -203,6 +203,10 @@ def _completed_research_cycle_review(
             or run.safety_gate_state == "awaiting_approval"
         )
     ]
+    manual_evidence_runs = [
+        run for run in validation_runs
+        if _validation_run_has_manual_evidence(run)
+    ]
 
     next_actions: list[str] = []
     stop_reasons: list[str] = []
@@ -212,6 +216,8 @@ def _completed_research_cycle_review(
     if awaiting_validation_runs:
         next_actions.append("review_validation_queue")
         stop_reasons.append("validation_approval_required")
+    if manual_evidence_runs:
+        next_actions.append("review_evidence_or_report_drafts")
     if hypothesis_output_refs:
         next_actions.append("review_hypothesis_board")
     if codebase_facts:
@@ -229,6 +235,7 @@ def _completed_research_cycle_review(
     output_refs = [
         *[f"approval:{approval.id}" for approval in pending_approvals],
         *[f"validation_run:{run.id}" for run in awaiting_validation_runs],
+        *[f"validation_run:{run.id}" for run in manual_evidence_runs],
         *hypothesis_output_refs,
         *[f"codebase_fact:{fact.id}" for fact in codebase_facts],
     ]
@@ -237,6 +244,7 @@ def _completed_research_cycle_review(
         "completed_task_types": sorted(completed_task_types),
         "pending_approval_count": len(pending_approvals),
         "awaiting_validation_count": len(awaiting_validation_runs),
+        "manual_evidence_count": len(manual_evidence_runs),
         "hypothesis_ref_count": len(hypothesis_output_refs),
         "codebase_fact_count": len(codebase_facts),
         "next_actions": next_actions,
@@ -267,3 +275,11 @@ def _completed_research_cycle_review(
         "stop_reasons": stop_reasons or ["campaign_cycle_review_required"],
         "next_actions": next_actions,
     }
+
+
+def _validation_run_has_manual_evidence(run: Any) -> bool:
+    return (
+        run.status in {"evidence_recorded", "refuted", "needs_evidence"}
+        or run.evidence_ref_count > 0
+        or str(run.safety_gate_state).startswith("manual_")
+    )

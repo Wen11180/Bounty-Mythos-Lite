@@ -418,6 +418,19 @@ test("toCampaignControlSummary routes validation review actions to validation qu
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/validation-runs");
 });
 
+test("toCampaignControlSummary routes manual evidence actions to evidence review", () => {
+  const summary = toCampaignControlSummary({
+    ...controlCenter,
+    safe_next_action: "review_evidence_or_report_drafts",
+    approvals: [],
+    blocked_reasons: [],
+    pipeline_stages: [],
+  });
+
+  assert.equal(summary.safeNextAction, "Review evidence or report drafts");
+  assert.equal(summary.safeNextHref, "/campaigns/campaign_1/evidence-review");
+});
+
 test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {
   const summaries = toCampaignAgentRunSummaries([
     {

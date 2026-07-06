@@ -35,6 +35,15 @@ EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNO
 JWT_PATTERN = re.compile(
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
 )
+_VALIDATION_MANUAL_RESULT_STATUSES = {
+    "evidence_recorded",
+    "refuted",
+    "needs_evidence",
+}
+_VALIDATION_APPROVAL_PRESERVED_STATUSES = {
+    "preflight_passed",
+    *_VALIDATION_MANUAL_RESULT_STATUSES,
+}
 
 
 class DatabaseRepository:
@@ -711,9 +720,14 @@ class DatabaseRepository:
                 continue
             validation_run.approval_id = approval.id
             if approval.status == "approved":
-                validation_run.status = "ready"
-                validation_run.safety_gate_state = "approved_validation_record"
-                validation_run.allowed_to_execute = True
+                if validation_run.status not in _VALIDATION_APPROVAL_PRESERVED_STATUSES:
+                    validation_run.status = "ready"
+                    validation_run.safety_gate_state = "approved_validation_record"
+                    validation_run.allowed_to_execute = True
+                elif validation_run.status in _VALIDATION_MANUAL_RESULT_STATUSES:
+                    validation_run.allowed_to_execute = False
+                else:
+                    validation_run.allowed_to_execute = True
             else:
                 validation_run.status = "blocked"
                 validation_run.safety_gate_state = "blocked"
@@ -1048,6 +1062,43 @@ class DatabaseRepository:
         payload["scope_guard_preflight"] = _safe_display_value({
             "allowed": allowed,
             "reason": reason,
+        })
+        record.payload = payload
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def record_validation_run_manual_result(
+        self,
+        validation_run_id: str,
+        *,
+        outcome: str,
+        reviewer: str,
+        summary: str,
+        evidence_refs: list[str],
+    ) -> ValidationRunRecord | None:
+        record = self.get_validation_run(validation_run_id)
+        if record is None:
+            return None
+
+        safe_outcome = _safe_display_value(outcome)
+        safe_evidence_refs = _safe_display_value(evidence_refs)
+        record.status = _validation_result_status(safe_outcome)
+        record.safety_gate_state = _validation_result_safety_gate(safe_outcome)
+        record.allowed_to_execute = False
+        record.evidence_ref_count = len(safe_evidence_refs)
+        record.summary = _safe_display_value(f"Manual validation result recorded: {safe_outcome}")
+        record.finished_at = datetime.now(UTC)
+
+        payload = dict(record.payload)
+        payload["manual_result"] = _safe_display_value({
+            "outcome": safe_outcome,
+            "reviewer": reviewer,
+            "summary": summary,
+            "evidence_refs": safe_evidence_refs,
+            "recorded_at": record.finished_at.isoformat(),
+            "execution_started": False,
         })
         record.payload = payload
         self.session.add(record)
@@ -1423,6 +1474,22 @@ def _is_secret_like(value: str) -> bool:
         or EMAIL_PATTERN.search(value) is not None
         or JWT_PATTERN.search(value) is not None
     )
+
+
+def _validation_result_status(outcome: str) -> str:
+    if outcome == "refuted":
+        return "refuted"
+    if outcome == "needs_more_evidence":
+        return "needs_evidence"
+    return "evidence_recorded"
+
+
+def _validation_result_safety_gate(outcome: str) -> str:
+    if outcome == "refuted":
+        return "manual_refutation_recorded"
+    if outcome == "needs_more_evidence":
+        return "manual_evidence_gap_recorded"
+    return "manual_evidence_recorded"
 
 
 def _program_from_record(record: ProgramRecord) -> Program:

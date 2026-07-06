@@ -990,6 +990,270 @@ def test_validation_run_preflight_rejects_unbound_cross_campaign_approval_record
         app.dependency_overrides.clear()
 
 
+def test_validation_run_manual_result_records_redacted_evidence_after_preflight():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Manual result campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Review validation gate",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            approval = repository.create_approval_record(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                program_id=campaign.program_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approve test-account validation.",
+                requested_action="two_account_authorization_check",
+                asset=campaign.default_asset,
+                validation_mode="two_account_authorization_check",
+                plan_digest="manual_result_plan",
+                autonomy_level=campaign.autonomy_level,
+                safety_gate_state="awaiting_approval",
+            )
+            validation = repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=None,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="planned",
+                safety_gate_state="awaiting_approval",
+                plan_digest="manual_result_plan",
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=0,
+                summary="Awaiting approval",
+                payload={},
+            )
+            campaign_id = campaign.id
+            approval_id = approval.id
+            validation_id = validation.id
+
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for test accounts only.",
+            },
+        )
+        assert decision_response.status_code == 200
+        preflight_response = client.post(
+            f"/mythos/validation-runs/{validation_id}/preflight"
+        )
+        assert preflight_response.status_code == 200
+        assert preflight_response.json()["decision"]["allowed"] is True
+
+        result_response = client.post(
+            f"/mythos/validation-runs/{validation_id}/manual-results",
+            json={
+                "outcome": "observed",
+                "reviewer": "lead_reviewer",
+                "summary": "Observed safe diff; Authorization: Bearer secret-token",
+                "evidence_refs": [
+                    "sanitized_request_response",
+                    "Cookie: session=secret",
+                ],
+            },
+        )
+
+        assert result_response.status_code == 200
+        result = result_response.json()
+        assert result["status"] == "evidence_recorded"
+        assert result["safety_gate_state"] == "manual_evidence_recorded"
+        assert result["allowed_to_execute"] is False
+        assert result["evidence_ref_count"] == 2
+        assert result["summary"] == "Manual validation result recorded: observed"
+        assert "secret-token" not in str(result)
+        assert "session=secret" not in str(result)
+
+        runs_response = client.get(f"/mythos/campaigns/{campaign_id}/validation-runs")
+        assert runs_response.status_code == 200
+        runs = runs_response.json()
+        assert runs[0]["id"] == validation_id
+        assert runs[0]["status"] == "evidence_recorded"
+        assert runs[0]["evidence_ref_count"] == 2
+        assert "secret-token" not in str(runs)
+        assert "session=secret" not in str(runs)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_validation_run_manual_result_requires_preflight_passed_state():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Manual result blocked campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Review validation gate",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            validation = repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=None,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="ready",
+                safety_gate_state="approved_validation_record",
+                plan_digest="manual_result_blocked_plan",
+                approval_required=True,
+                allowed_to_execute=True,
+                evidence_ref_count=0,
+                summary="Ready but not preflighted",
+                payload={},
+            )
+            validation_id = validation.id
+
+        result_response = client.post(
+            f"/mythos/validation-runs/{validation_id}/manual-results",
+            json={
+                "outcome": "observed",
+                "reviewer": "lead_reviewer",
+                "summary": "Should not record before preflight.",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+
+        assert result_response.status_code == 409
+        assert result_response.json()["detail"] == "Validation run preflight has not passed"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_points_to_evidence_review_after_manual_evidence():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Evidence review campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_chain_review",
+                agent_type="report_agent",
+                title="Review validation gate",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            approval = repository.create_approval_record(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                program_id=campaign.program_id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approved evidence review validation",
+                requested_action="two_account_authorization_check",
+                asset=campaign.default_asset,
+                validation_mode="two_account_authorization_check",
+                plan_digest="evidence_review_plan",
+                autonomy_level=campaign.autonomy_level,
+                safety_gate_state="approved_validation_record",
+            )
+            repository.decide_approval_record(
+                approval_id=approval.id,
+                decision="approved",
+                actor="lead_reviewer",
+                reason="Approved for test accounts only.",
+            )
+            repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=approval.id,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="evidence_recorded",
+                safety_gate_state="manual_evidence_recorded",
+                plan_digest="evidence_review_plan",
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=2,
+                summary="Manual validation result recorded: observed",
+                payload={
+                    "manual_result": {
+                        "summary": "Observed safe diff; Authorization: Bearer secret-token",
+                        "evidence_refs": ["Cookie: session=secret"],
+                    }
+                },
+            )
+            campaign_id = campaign.id
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        control_center = response.json()
+        assert control_center["safe_next_action"] == "review_evidence_or_report_drafts"
+        assert control_center["execution_allowed"] is False
+        assert "secret-token" not in str(control_center)
+        assert "session=secret" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_denied_approval_blocks_matching_validation_run():
     testing_session = build_testing_session()
 
