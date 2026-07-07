@@ -26,7 +26,8 @@ docs/       Design specs and project notes
 
 The recommended research workflow is Mythos Studio first. The desktop launcher
 starts the local API and Studio UI, waits for the local service to become ready,
-and opens the `/studio` workspace in an app window.
+chooses available local ports if the defaults are occupied, and opens the
+`/studio` workspace in an app window.
 
 ```powershell
 cd apps/api

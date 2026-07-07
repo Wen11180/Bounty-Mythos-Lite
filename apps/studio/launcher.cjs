@@ -1,5 +1,54 @@
 const http = require("node:http");
 const https = require("node:https");
+const net = require("node:net");
+
+const defaultHost = "127.0.0.1";
+
+async function createStudioLaunchConfig(env = process.env) {
+  const apiPort = await findAvailablePort(portFromEnv(env.MYTHOS_API_PORT, 8000));
+  const webPort = await findAvailablePort(portFromEnv(env.MYTHOS_WEB_PORT, 3000), {
+    reservedPorts: new Set([apiPort]),
+  });
+  const apiBaseUrl = `http://${defaultHost}:${apiPort}`;
+  const webBaseUrl = `http://${defaultHost}:${webPort}`;
+
+  return {
+    apiBaseUrl,
+    apiPort,
+    studioUrl: env.MYTHOS_STUDIO_URL || `${webBaseUrl}/studio`,
+    webPort,
+  };
+}
+
+async function findAvailablePort(preferredPort, options = {}) {
+  const host = options.host ?? defaultHost;
+  const maxAttempts = options.maxAttempts ?? 50;
+  const reservedPorts = options.reservedPorts ?? new Set();
+  for (let offset = 0; offset < maxAttempts; offset += 1) {
+    const port = preferredPort + offset;
+    if (!reservedPorts.has(port) && (await isPortAvailable(port, host))) {
+      return port;
+    }
+  }
+  throw new Error(`No available local port starting at ${preferredPort}`);
+}
+
+function isPortAvailable(port, host) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", (error) => {
+      if (error.code === "EADDRINUSE" || error.code === "EACCES") {
+        resolve(false);
+        return;
+      }
+      reject(error);
+    });
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, host);
+  });
+}
 
 function waitForUrl(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 60_000;
@@ -91,7 +140,14 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function portFromEnv(value, fallback) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 module.exports = {
+  createStudioLaunchConfig,
+  findAvailablePort,
   startupErrorHtml,
   waitForUrl,
 };

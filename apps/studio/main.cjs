@@ -2,13 +2,12 @@ const { app, BrowserWindow } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
-const { startupErrorHtml, waitForUrl } = require("./launcher.cjs");
+const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./launcher.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
-const studioUrl = process.env.MYTHOS_STUDIO_URL || "http://127.0.0.1:3000/studio";
 
-function spawnChild(command, args, cwd) {
+function spawnChild(command, args, cwd, env = {}) {
   const child = spawn(command, args, {
     cwd,
     shell: true,
@@ -17,9 +16,7 @@ function spawnChild(command, args, cwd) {
       ...process.env,
       DATABASE_URL: process.env.DATABASE_URL || "sqlite:///./bounty_mythos_studio.db",
       REDIS_URL: process.env.REDIS_URL || "redis://localhost:6379/0",
-      NEXT_PUBLIC_API_BASE_URL:
-        process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000",
-      API_BASE_URL: process.env.API_BASE_URL || "http://localhost:8000",
+      ...env,
     },
   });
 
@@ -27,16 +24,29 @@ function spawnChild(command, args, cwd) {
   return child;
 }
 
-function startServices() {
+function startServices(config) {
+  const apiBaseUrl = process.env.API_BASE_URL || config.apiBaseUrl;
   spawnChild(
     "python",
-    ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
+    [
+      "-m",
+      "uvicorn",
+      "app.main:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(config.apiPort),
+    ],
     path.join(root, "apps", "api"),
   );
   spawnChild(
     "npm",
-    ["run", "dev", "--", "--hostname", "127.0.0.1", "--port", "3000"],
+    ["run", "dev", "--", "--hostname", "127.0.0.1", "--port", String(config.webPort)],
     path.join(root, "apps", "web"),
+    {
+      API_BASE_URL: apiBaseUrl,
+      NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || apiBaseUrl,
+    },
   );
 }
 
@@ -62,14 +72,16 @@ function createWindow() {
   return window;
 }
 
-app.whenReady().then(() => {
-  startServices();
+app.whenReady().then(async () => {
   const window = createWindow();
-  waitForUrl(studioUrl)
-    .then(() => window.loadURL(studioUrl))
-    .catch((error) =>
-      window.loadURL(`data:text/html,${encodeURIComponent(startupErrorHtml(error))}`),
-    );
+  try {
+    const config = await createStudioLaunchConfig();
+    startServices(config);
+    await waitForUrl(config.studioUrl);
+    window.loadURL(config.studioUrl);
+  } catch (error) {
+    window.loadURL(`data:text/html,${encodeURIComponent(startupErrorHtml(error))}`);
+  }
 });
 
 app.on("window-all-closed", () => {

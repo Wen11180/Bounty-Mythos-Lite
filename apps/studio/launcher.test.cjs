@@ -2,7 +2,12 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const test = require("node:test");
 
-const { startupErrorHtml, waitForUrl } = require("./launcher.cjs");
+const {
+  createStudioLaunchConfig,
+  findAvailablePort,
+  startupErrorHtml,
+  waitForUrl,
+} = require("./launcher.cjs");
 
 test("waitForUrl resolves after the local service responds", async () => {
   const server = http.createServer((_, response) => {
@@ -51,8 +56,65 @@ test("startupErrorHtml escapes startup failure details", () => {
   assert.doesNotMatch(html, /<token>/);
 });
 
+test("findAvailablePort returns the preferred port when it is free", async () => {
+  const preferred = await reserveAndReleasePort();
+
+  assert.equal(await findAvailablePort(preferred), preferred);
+});
+
+test("findAvailablePort skips an occupied preferred port", async () => {
+  const server = http.createServer();
+  await listen(server);
+  const occupiedPort = server.address().port;
+
+  try {
+    const availablePort = await findAvailablePort(occupiedPort, { maxAttempts: 3 });
+
+    assert.notEqual(availablePort, occupiedPort);
+    assert.equal(availablePort, occupiedPort + 1);
+  } finally {
+    server.close();
+  }
+});
+
+test("createStudioLaunchConfig uses available local ports and API URLs", async () => {
+  const apiPort = await reserveAndReleasePort();
+  const webPort = await reserveAndReleasePort();
+
+  const config = await createStudioLaunchConfig({
+    MYTHOS_API_PORT: String(apiPort),
+    MYTHOS_WEB_PORT: String(webPort),
+  });
+
+  assert.equal(config.apiPort, apiPort);
+  assert.equal(config.webPort, webPort);
+  assert.equal(config.apiBaseUrl, `http://127.0.0.1:${apiPort}`);
+  assert.equal(config.studioUrl, `http://127.0.0.1:${webPort}/studio`);
+});
+
+test("createStudioLaunchConfig never assigns the same API and Web port", async () => {
+  const preferredPort = await reserveAndReleasePort();
+
+  const config = await createStudioLaunchConfig({
+    MYTHOS_API_PORT: String(preferredPort),
+    MYTHOS_WEB_PORT: String(preferredPort),
+  });
+
+  assert.equal(config.apiPort, preferredPort);
+  assert.notEqual(config.webPort, preferredPort);
+  assert.equal(config.webPort, preferredPort + 1);
+});
+
 function listen(server) {
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });
+}
+
+async function reserveAndReleasePort() {
+  const server = http.createServer();
+  await listen(server);
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
