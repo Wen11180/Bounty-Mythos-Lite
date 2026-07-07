@@ -12,6 +12,8 @@ WORKSPACE_DIRS = (
     "api",
     "har",
     "code",
+    "sbom",
+    "sarif",
     "evidence",
     "reports",
     "runs",

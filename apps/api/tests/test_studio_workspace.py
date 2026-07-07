@@ -22,6 +22,24 @@ def test_create_workspace_writes_local_manifest(tmp_path: Path):
     assert manifest["runs"] == []
 
 
+def test_create_workspace_creates_local_artifact_directories(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    for directory_name in (
+        "policy",
+        "scope",
+        "api",
+        "har",
+        "code",
+        "sbom",
+        "sarif",
+        "evidence",
+        "reports",
+        "runs",
+    ):
+        assert (workspace.path / directory_name).is_dir()
+
+
 def test_create_workspace_uses_safe_path_name_and_keeps_manifest_name(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="Acme API/Prod")
 
