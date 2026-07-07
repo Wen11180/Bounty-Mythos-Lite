@@ -258,3 +258,52 @@ def test_report_export_markdown_skips_secret_like_section_items(tmp_path: Path):
     assert "secret-token" not in markdown
     assert "Authorization: Bearer" not in markdown
     assert "secret-token" not in str(updated)
+
+
+def test_report_export_markdown_includes_repair_guidance_and_regression_test(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "suggested_fix": "Enforce ownership in the service layer before returning files.",
+            "regression_test": "Add a local test proving user B cannot export user A's file.",
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Suggested fix" in markdown
+    assert "Enforce ownership in the service layer before returning files." in markdown
+    assert "## Regression test" in markdown
+    assert "Add a local test proving user B cannot export user A's file." in markdown
+    assert "Enforce ownership in the service layer" not in str(updated)
+
+
+def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "suggested_fix": "Rotate Authorization: Bearer secret-token",
+            "regression_test": "Store cookie: session=secret-token in a fixture",
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Suggested fix" not in markdown
+    assert "## Regression test" not in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown

@@ -225,6 +225,12 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if notes:
         lines.extend(["", "## Safety notes"])
         lines.extend(f"- {note}" for note in notes)
+    suggested_fix = _markdown_safe_text(report.get("suggested_fix"))
+    if suggested_fix:
+        lines.extend(["", "## Suggested fix", "", suggested_fix])
+    regression_test = _markdown_safe_text(report.get("regression_test"))
+    if regression_test:
+        lines.extend(["", "## Regression test", "", regression_test])
     lines.extend(
         [
             "",
@@ -240,6 +246,13 @@ def _markdown_text(value: Any, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
     return value.replace("\r", " ").replace("\n", " ").strip() or fallback
+
+
+def _markdown_safe_text(value: Any) -> str:
+    text = _markdown_text(value, "")
+    if not text or _secret_like_text(text):
+        return ""
+    return text
 
 
 def _markdown_list(value: Any) -> list[str]:
