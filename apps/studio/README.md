@@ -2,6 +2,11 @@
 
 Local Electron launcher for Mythos Studio.
 
+It starts the local FastAPI backend and the local Next.js Studio surface, waits
+until the Studio URL is ready, and then opens `/studio` in a desktop window. If
+the local service does not become ready, the app shows a local startup error
+page instead of a blank window.
+
 ## Setup
 
 ```powershell
@@ -12,6 +17,12 @@ npm install
 cd ../studio
 npm install
 npm start
+```
+
+## Verification
+
+```powershell
+npm test
 ```
 
 ## Safety

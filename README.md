@@ -24,11 +24,25 @@ docs/       Design specs and project notes
 
 ## Recommended Startup
 
-The recommended research workflow is terminal-first. There is no installed
-global `aegis` command yet, so run the CLI from `apps/api` with
-`python -m app`. The older `python -m app.cli` form is still supported.
+The recommended research workflow is Mythos Studio first. The desktop launcher
+starts the local API and Studio UI, waits for the local service to become ready,
+and opens the `/studio` workspace in an app window.
 
-Install backend dependencies first:
+```powershell
+cd apps/api
+python -m pip install -r requirements.txt
+cd ../web
+npm install
+cd ../studio
+npm install
+npm start
+```
+
+Advanced automation can still use the CLI. There is no installed global `aegis`
+command yet, so run the CLI from `apps/api` with `python -m app`. The older
+`python -m app.cli` form is still supported.
+
+For CLI use, install backend dependencies first:
 
 ```powershell
 cd apps/api

@@ -2,8 +2,11 @@ const { app, BrowserWindow } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
+const { startupErrorHtml, waitForUrl } = require("./launcher.cjs");
+
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
+const studioUrl = process.env.MYTHOS_STUDIO_URL || "http://127.0.0.1:3000/studio";
 
 function spawnChild(command, args, cwd) {
   const child = spawn(command, args, {
@@ -56,12 +59,17 @@ function createWindow() {
     },
   });
 
-  window.loadURL("http://127.0.0.1:3000/studio");
+  return window;
 }
 
 app.whenReady().then(() => {
   startServices();
-  setTimeout(createWindow, 4500);
+  const window = createWindow();
+  waitForUrl(studioUrl)
+    .then(() => window.loadURL(studioUrl))
+    .catch((error) =>
+      window.loadURL(`data:text/html,${encodeURIComponent(startupErrorHtml(error))}`),
+    );
 });
 
 app.on("window-all-closed", () => {
