@@ -34,7 +34,7 @@
 - Create: `apps/api/app/studio_workspace.py`
 - Create: `apps/api/tests/test_studio_workspace.py`
 
-- [ ] **Step 1: Write failing tests for workspace manifest behavior**
+- [x] **Step 1: Write failing tests for workspace manifest behavior**
 
 Create `apps/api/tests/test_studio_workspace.py`:
 
@@ -79,7 +79,7 @@ def test_import_workspace_artifact_records_reference_without_copying_secret_text
     assert "secret-token" not in str(updated)
 ```
 
-- [ ] **Step 2: Run tests to confirm RED**
+- [x] **Step 2: Run tests to confirm RED**
 
 Run:
 
@@ -90,7 +90,7 @@ python -m pytest tests/test_studio_workspace.py -q
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'app.studio_workspace'`.
 
-- [ ] **Step 3: Implement the workspace manifest module**
+- [x] **Step 3: Implement the workspace manifest module**
 
 Create `apps/api/app/studio_workspace.py`:
 
@@ -233,7 +233,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 ```
 
-- [ ] **Step 4: Run tests to confirm GREEN**
+- [x] **Step 4: Run tests to confirm GREEN**
 
 Run:
 
@@ -252,7 +252,7 @@ Expected: `2 passed`.
 - Modify: `apps/api/app/main.py`
 - Create: `apps/api/tests/test_studio_api.py`
 
-- [ ] **Step 1: Write failing API tests**
+- [x] **Step 1: Write failing API tests**
 
 Create `apps/api/tests/test_studio_api.py`:
 
@@ -311,7 +311,7 @@ def test_studio_workspace_rejects_missing_artifact_path(tmp_path: Path):
     assert import_response.json()["detail"] == "artifact_source_not_found"
 ```
 
-- [ ] **Step 2: Run tests to confirm RED**
+- [ ] **Step 2: Run tests to confirm RED** *(not rerun in this checkpoint because the implementation was already present)*
 
 Run:
 
@@ -322,7 +322,7 @@ python -m pytest tests/test_studio_api.py -q
 
 Expected: FAIL with `404 Not Found` for `/mythos/studio/workspaces`.
 
-- [ ] **Step 3: Add request models and endpoints**
+- [x] **Step 3: Add request models and endpoints**
 
 Modify `apps/api/app/main.py`.
 
@@ -382,7 +382,7 @@ def import_mythos_studio_workspace_artifact(request: StudioArtifactImportRequest
     )
 ```
 
-- [ ] **Step 4: Run API tests**
+- [x] **Step 4: Run API tests**
 
 Run:
 
@@ -401,7 +401,7 @@ Expected: all tests pass.
 - Create: `apps/web/lib/studio-data.ts`
 - Create: `apps/web/lib/studio-data.test.ts`
 
-- [ ] **Step 1: Write failing mapper tests**
+- [x] **Step 1: Write failing mapper tests**
 
 Create `apps/web/lib/studio-data.test.ts`:
 
@@ -449,7 +449,7 @@ test("toStudioCandidateCards maps missing endpoint and code path as review gaps"
 });
 ```
 
-- [ ] **Step 2: Run tests to confirm RED**
+- [ ] **Step 2: Run tests to confirm RED** *(not rerun in this checkpoint because the implementation was already present)*
 
 Run:
 
@@ -460,7 +460,7 @@ npm test -- lib/studio-data.test.ts
 
 Expected: FAIL with module not found for `./studio-data`.
 
-- [ ] **Step 3: Implement Studio mappers**
+- [x] **Step 3: Implement Studio mappers**
 
 Create `apps/web/lib/studio-data.ts`:
 
@@ -572,7 +572,7 @@ function safeText(value: unknown, fallback: string): string {
 }
 ```
 
-- [ ] **Step 4: Run mapper tests**
+- [x] **Step 4: Run mapper tests**
 
 Run:
 

@@ -91,6 +91,12 @@ from app.source_audit import (
     run_source_audit,
     save_source_audit_pipeline_run,
 )
+from app.studio_workspace import (
+    StudioArtifactImport,
+    create_workspace,
+    import_workspace_artifact,
+    load_workspace_manifest,
+)
 from app.worker.tasks import dispatch_agent_task
 from pydantic import BaseModel, Field
 
@@ -151,6 +157,17 @@ class SourceAuditScanResponse(BaseModel):
     safety_gate_summary: dict = Field(default_factory=dict)
     audit_gate_summary: dict = Field(default_factory=dict)
     timeline_stage_summary: list[dict] = Field(default_factory=list)
+
+
+class StudioWorkspaceCreateRequest(BaseModel):
+    root_path: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=255)
+
+
+class StudioArtifactImportRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+    kind: str = Field(min_length=1, max_length=50)
+    source_path: str = Field(min_length=1)
 
 
 class ArtifactResponse(BaseModel):
@@ -2217,6 +2234,35 @@ def evaluate_scope_guard(
         )
 
     return evaluate_validation_request(request.rule, request.request)
+
+
+@app.post("/mythos/studio/workspaces")
+def create_mythos_studio_workspace(request: StudioWorkspaceCreateRequest) -> dict:
+    workspace = create_workspace(request.root_path, name=request.name)
+    return {"path": str(workspace.path), "manifest": workspace.manifest}
+
+
+@app.get("/mythos/studio/workspaces/manifest")
+def get_mythos_studio_workspace_manifest(workspace_path: str) -> dict:
+    try:
+        return load_workspace_manifest(workspace_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="workspace_manifest_not_found",
+        ) from exc
+
+
+@app.post("/mythos/studio/workspaces/imports")
+def import_mythos_studio_workspace_artifact(
+    request: StudioArtifactImportRequest,
+) -> dict:
+    if not Path(request.source_path).exists():
+        raise HTTPException(status_code=404, detail="artifact_source_not_found")
+    return import_workspace_artifact(
+        request.workspace_path,
+        StudioArtifactImport(kind=request.kind, source_path=request.source_path),
+    )
 
 
 @app.post("/mythos/source-audit/scans", response_model=SourceAuditScanResponse)
