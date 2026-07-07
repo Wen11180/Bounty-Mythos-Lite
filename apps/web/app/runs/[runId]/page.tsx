@@ -42,6 +42,7 @@ export default async function RunDetailPage({ params }: PageProps) {
   const artifactId = summary.artifact.artifactId;
   const validationWorkspace = payload?.validation_workspace;
   const reportDraft = payload?.report_draft;
+  const sourceAuditHypotheses = payload?.hypotheses ?? [];
   const candidateAssessments = payload?.hypothesis_assessments ?? [];
   const refutationReasons = safeStringList(payload?.refutation?.reasons);
   const targetModel = payload?.target_model;
@@ -107,6 +108,44 @@ export default async function RunDetailPage({ params }: PageProps) {
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="grid gap-5">
+          {sourceAuditHypotheses.length > 0 ? (
+            <section className="border border-[var(--line)] bg-white">
+              <SectionHeader icon={Target} title="Source Audit Hypotheses" />
+              <div className="divide-y divide-[var(--line)]">
+                {sourceAuditHypotheses.map((hypothesis, index) => {
+                  const evidenceNeeded = safeStringList(hypothesis.evidence_needed);
+                  const falsePositiveChecks = safeStringList(hypothesis.false_positive_checks);
+                  const rankingReasons = safeStringList(hypothesis.ranking_reasons);
+
+                  return (
+                    <article key={`source-audit-hypothesis-${index}`} className="grid gap-4 p-5 text-sm">
+                      <div className="grid gap-2">
+                        <p className="break-words text-pretty font-semibold">
+                          {safeDisplay(hypothesis.hypothesis, `Hypothesis ${index + 1}`)}
+                        </p>
+                        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                          <Field label="Type" value={hypothesis.vuln_type} />
+                          <Field label="Risk" value={hypothesis.risk_level} />
+                          <Field label="Priority score" value={hypothesis.priority_score ?? 0} />
+                          <Field label="Validation" value={hypothesis.validation_mode} />
+                          <Field
+                            label="Refutation status"
+                            value={hypothesis.refutation_status ?? "unverified"}
+                          />
+                        </dl>
+                      </div>
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <ReviewList title="Evidence needed" items={evidenceNeeded} />
+                        <ReviewList title="False positive checks" items={falsePositiveChecks} />
+                        <ReviewList title="Ranking reasons" items={rankingReasons} />
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
           {candidateAssessments.length > 0 ? (
             <section className="border border-[var(--line)] bg-white">
               <SectionHeader icon={Target} title="Candidate Lifecycle" />
@@ -581,6 +620,25 @@ function Field({ label, value }: { label: string; value: unknown }) {
     <div className="grid gap-1">
       <dt className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</dt>
       <dd className="break-words font-semibold">{safeDisplay(value)}</dd>
+    </div>
+  );
+}
+
+function ReviewList({ items, title }: { items: string[]; title: string }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase text-[var(--muted)]">{title}</p>
+      {items.length === 0 ? (
+        <p className="mt-1 font-semibold">None ready</p>
+      ) : (
+        <ul className="mt-2 grid gap-1 text-[var(--muted)]">
+          {items.map((item) => (
+            <li key={`${title}-${item}`} className="break-words">
+              {safeDisplay(item)}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 from app.models import Program, ScopeStatus
 from app.mythos_brain import (
     LearningSignal,
+    build_learning_signals_from_knowledge_artifact,
     build_mythos_lessons,
     build_learning_signal_from_outcome,
     build_program_intelligence,
@@ -829,3 +830,68 @@ def test_global_lessons_do_not_apply_when_scope_guard_blocks_program():
     assert profile.lesson_adjusted_surfaces == []
     assert profile.skipped_lessons[0]["reason"] == "lesson:skipped:scope_guard_blocked"
     assert "lesson:applied:surface_match" not in profile.high_value_surfaces[0].reasons
+
+
+def test_knowledge_artifact_import_requires_human_review_before_learning_signal():
+    artifact = {
+        "artifact_type": "v4_advisory_knowledge",
+        "status": "requires_human_review",
+        "storage_policy": "metadata_only_no_raw_secret_or_user_data",
+        "entries": [
+            {
+                "source_ref": "H-001",
+                "topic": "authorization",
+                "retained_fields": ["variant_search_pattern"],
+                "review_required": True,
+                "confidence": "low",
+            }
+        ],
+    }
+
+    result = build_learning_signals_from_knowledge_artifact(
+        program_id="program_example",
+        artifact=artifact,
+        human_review_approved=False,
+    )
+
+    assert result.status == "blocked_pending_human_review"
+    assert result.learning_signals == []
+    assert result.skipped_count == 1
+    assert "human_review_required" in result.safety_notes
+
+
+def test_approved_knowledge_artifact_imports_advisory_learning_signal_without_secrets():
+    artifact = {
+        "artifact_type": "v4_advisory_knowledge",
+        "status": "requires_human_review",
+        "storage_policy": "metadata_only_no_raw_secret_or_user_data",
+        "entries": [
+            {
+                "source_ref": "H-001",
+                "topic": "authorization",
+                "retained_fields": ["variant_search_pattern", "Authorization: Bearer token"],
+                "review_required": True,
+                "confidence": "low",
+            }
+        ],
+    }
+
+    result = build_learning_signals_from_knowledge_artifact(
+        program_id="program_example",
+        artifact=artifact,
+        human_review_approved=True,
+        reviewer="lead_reviewer",
+    )
+
+    serialized = str(result.model_dump())
+
+    assert result.status == "imported"
+    assert result.imported_count == 1
+    assert result.learning_signals[0].program_id == "program_example"
+    assert result.learning_signals[0].playbook_id == "v4_authorization"
+    assert result.learning_signals[0].outcome == "informative"
+    assert result.learning_signals[0].evidence_quality == "weak"
+    assert result.learning_signals[0].surface_key == "authorization:H-001"
+    assert result.learning_signals[0].target_relationships == ["v4_advisory_knowledge"]
+    assert "Authorization" not in serialized
+    assert "Bearer" not in serialized

@@ -159,6 +159,10 @@ export type PipelineHypothesis = {
   vuln_type?: string;
   broken_invariant?: string;
   evidence_needed?: string[];
+  false_positive_checks?: string[];
+  refutation_status?: string;
+  priority_score?: number;
+  ranking_reasons?: string[];
   source_facts?: {
     fact_type?: string;
     [key: string]: unknown;
@@ -481,10 +485,28 @@ export type PipelineRun = {
   closedLoopSummary?: ClosedLoopSummary | null;
   evidence_support_summary?: EvidenceSupportSummary | null;
   evidenceSupportSummary?: EvidenceSupportSummary | null;
+  payload?: PipelineRunPayload;
 };
 
 export type PipelineRunDetail = PipelineRun & {
   payload?: PipelineRunPayload;
+};
+
+export type SourceAuditScanRequest = {
+  repo_path: string;
+  scope_path: string;
+  policy_text?: string | null;
+  program_id?: string | null;
+};
+
+export type SourceAuditScanResponse = {
+  run_id: string;
+  artifact_id: string;
+  report_title: string;
+  scope_status: string;
+  hypothesis_count: number;
+  submission_blocked: boolean;
+  safety_notes: string[];
 };
 
 export type ArtifactRecord = {
@@ -849,6 +871,18 @@ export class ApiRequestError extends Error {
   }
 }
 
+export class SourceAuditScanError extends Error {
+  readonly detail: string;
+  readonly status: number;
+
+  constructor(message: string, status: number, detail: string) {
+    super(message);
+    this.name = "SourceAuditScanError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 export function getPrograms(fallback: Program[]): Promise<Program[]> {
   return apiGet("/programs", fallback);
 }
@@ -999,6 +1033,65 @@ export function getReports(fallback: ReportDraft[]): Promise<ReportDraft[]> {
 
 export function getPipelineRuns(fallback: PipelineRun[]): Promise<PipelineRun[]> {
   return apiGet("/mythos/pipeline/runs", fallback);
+}
+
+export function runSourceAuditScan(
+  request: SourceAuditScanRequest,
+  fallback: SourceAuditScanResponse | null,
+): Promise<SourceAuditScanResponse | null> {
+  return runSourceAuditScanRequest(request, fallback);
+}
+
+async function runSourceAuditScanRequest(
+  request: SourceAuditScanRequest,
+  fallback: SourceAuditScanResponse | null,
+): Promise<SourceAuditScanResponse | null> {
+  try {
+    const response = await fetch(new URL("/mythos/source-audit/scans", API_BASE_URL), {
+      body: JSON.stringify(sourceAuditScanRequestBody(request)),
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+
+    if (response.status === 403) {
+      throw new SourceAuditScanError(
+        "Source audit scan blocked by Scope Guard",
+        response.status,
+        await safeSourceAuditBlockDetail(response),
+      );
+    }
+
+    if (!response.ok) {
+      return fallback;
+    }
+
+    return (await response.json()) as SourceAuditScanResponse;
+  } catch (error) {
+    if (error instanceof SourceAuditScanError) {
+      throw error;
+    }
+
+    return fallback;
+  }
+}
+
+function sourceAuditScanRequestBody(request: SourceAuditScanRequest): SourceAuditScanRequest {
+  return {
+    ...(request.policy_text ? { policy_text: request.policy_text } : {}),
+    ...(request.program_id ? { program_id: request.program_id } : {}),
+    repo_path: request.repo_path,
+    scope_path: request.scope_path,
+  };
+}
+
+async function safeSourceAuditBlockDetail(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    return typeof payload.detail === "string" ? payload.detail : "source_audit_blocked";
+  } catch {
+    return "source_audit_blocked";
+  }
 }
 
 export function getPipelineRun(

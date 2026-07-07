@@ -7,7 +7,9 @@ import {
   createFindingCandidate,
   getPipelineRun,
   getReportPreview,
+  recordClaimReviewDecision,
   recordMythosBrainOutcome,
+  type ClaimReviewDecisionValue,
   type LearningEvidenceQuality,
   type LearningOutcome,
   type LearningSeverityDelta,
@@ -18,6 +20,7 @@ import {
   fallbackRunDetail,
   formatLabel,
   safeDisplay,
+  safeStringList,
 } from "@/lib/workbench-detail-data";
 
 type PageProps = {
@@ -78,6 +81,7 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
   const reportSubmissionAllowed = firstParam(query.report_submission_allowed);
   const findingPromotionGate = formatReviewGateFlag(findingPromotionAllowed);
   const reportSubmissionGate = formatReviewGateFlag(reportSubmissionAllowed);
+  const sourceAuditHypotheses = run?.payload?.hypotheses ?? [];
   const showPromotionGateNotice =
     promotionGateStatus === "blocked" &&
     promotionGateReason === "blocked_by_research_feedback_gate";
@@ -128,6 +132,42 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
 
     revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);
     revalidatePath(`/runs/${encodeURIComponent(currentRunId)}`);
+  }
+
+  async function recordClaimReviewDecisionAction(formData: FormData) {
+    "use server";
+
+    const claimId = optionalFormValue(formData, "claim_id");
+    const decision = optionalFormValue(formData, "decision") as ClaimReviewDecisionValue | null;
+    const reviewer = optionalFormValue(formData, "reviewer") ?? "lead_reviewer";
+    const rationale = optionalFormValue(formData, "rationale") ?? "";
+    const evidenceRefs = formList(formData, "evidence_refs");
+
+    if (!claimId || !decision) {
+      return;
+    }
+
+    await recordClaimReviewDecision(
+      currentRunId,
+      {
+        claim_id: claimId,
+        decision,
+        evidence_refs: evidenceRefs,
+        rationale,
+        reviewer,
+      },
+      {
+        claim_id: claimId,
+        decision,
+        evidence_refs: evidenceRefs,
+        rationale,
+        reviewed_at: new Date().toISOString(),
+        reviewer,
+      },
+    );
+    revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);
+    revalidatePath(`/runs/${encodeURIComponent(currentRunId)}`);
+    revalidatePath(`/validation-workspace/${encodeURIComponent(currentRunId)}`);
   }
 
   async function recordLearningOutcomeAction(formData: FormData) {
@@ -303,6 +343,58 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                           </ul>
                         )}
                       </div>
+                      <form
+                        action={recordClaimReviewDecisionAction}
+                        className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4"
+                      >
+                        <input name="claim_id" type="hidden" value={safeDisplay(claim.claim_id)} />
+                        <p className="text-sm font-semibold text-[var(--muted)]">
+                          Submission remains manual. This records only the human claim review gate.
+                        </p>
+                        <label className="grid gap-1">
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Decision</span>
+                          <select
+                            className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3"
+                            name="decision"
+                            defaultValue="needs_evidence"
+                          >
+                            <option value="confirmed_observed_fact">Confirmed observed fact</option>
+                            <option value="needs_evidence">Needs evidence</option>
+                            <option value="refuted">Refuted</option>
+                            <option value="not_reportable">Not reportable</option>
+                          </select>
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Reviewer</span>
+                          <input
+                            className="min-h-10 rounded-md border border-[var(--line)] px-3"
+                            name="reviewer"
+                            defaultValue="lead_reviewer"
+                          />
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Rationale</span>
+                          <textarea
+                            className="min-h-20 rounded-md border border-[var(--line)] px-3 py-2"
+                            name="rationale"
+                            defaultValue="Reviewed against sanitized local evidence."
+                          />
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence refs</span>
+                          <input
+                            className="min-h-10 rounded-md border border-[var(--line)] px-3"
+                            name="evidence_refs"
+                            placeholder="request_response_diff"
+                          />
+                        </label>
+                        <button
+                          type="submit"
+                          className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
+                        >
+                          Record Claim Review
+                        </button>
+                      </form>
                     </div>
                     <div className="grid content-start gap-2">
                       <p className="text-xs font-semibold uppercase text-[var(--muted)]">Status</p>
@@ -342,6 +434,59 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
         </section>
 
         <aside className="grid content-start gap-5">
+          {sourceAuditHypotheses.length > 0 ? (
+            <section className="border border-[var(--line)] bg-white">
+              <SectionHeader icon={ClipboardCheck} title="Refutation Review" />
+              <div className="divide-y divide-[var(--line)]">
+                {sourceAuditHypotheses.map((hypothesis, index) => {
+                  const evidenceNeeded = safeStringList(hypothesis.evidence_needed);
+                  const falsePositiveChecks = safeStringList(hypothesis.false_positive_checks);
+                  const rankingReasons = safeStringList(hypothesis.ranking_reasons);
+
+                  return (
+                    <article key={`refutation-review-${index}`} className="grid gap-3 p-5 text-sm">
+                      <p className="break-words font-semibold">
+                        {safeDisplay(hypothesis.hypothesis, `Hypothesis ${index + 1}`)}
+                      </p>
+                      <dl className="grid gap-3">
+                        <Field
+                          label="Refutation status"
+                          value={hypothesis.refutation_status ?? "unverified"}
+                        />
+                        <Field label="Priority score" value={hypothesis.priority_score ?? 0} />
+                        <Field label="Validation" value={hypothesis.validation_mode} />
+                        <Field label="Evidence needed" value={evidenceNeeded.length} />
+                        <Field label="False positive checks" value={falsePositiveChecks.length} />
+                        <Field label="Ranking reasons" value={rankingReasons.length} />
+                      </dl>
+                      {evidenceNeeded.length > 0 ? (
+                        <ul className="grid gap-1 text-[var(--muted)]">
+                          {evidenceNeeded.map((item) => (
+                            <li key={`evidence-needed-${index}-${item}`}>{safeDisplay(item)}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {falsePositiveChecks.length > 0 ? (
+                        <ul className="grid gap-1 text-[var(--muted)]">
+                          {falsePositiveChecks.map((item) => (
+                            <li key={`false-positive-check-${index}-${item}`}>{safeDisplay(item)}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {rankingReasons.length > 0 ? (
+                        <ul className="grid gap-1 text-[var(--muted)]">
+                          {rankingReasons.map((item) => (
+                            <li key={`ranking-reason-${index}-${item}`}>{formatLabel(item)}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={ShieldCheck} title="Safety Notes" />
             {preview.safety_notes.length === 0 ? (
@@ -478,6 +623,13 @@ function optionalFormValue(formData: FormData, name: string) {
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+function formList(formData: FormData, name: string): string[] {
+  return (optionalFormValue(formData, name) ?? "")
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function firstParam(value: string | string[] | undefined): string | undefined {

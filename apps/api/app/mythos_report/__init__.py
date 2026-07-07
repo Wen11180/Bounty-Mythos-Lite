@@ -89,6 +89,8 @@ class ReportPreviewResponse(BaseModel):
     claim_ledger: list[ClaimLedgerEntry]
     safety_notes: list[str]
     evidence_refs: list[str]
+    safety_gate_summary: dict = Field(default_factory=dict)
+    audit_gate_summary: dict = Field(default_factory=dict)
 
 
 class ClaimReviewDecisionResponse(BaseModel):
@@ -194,6 +196,16 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
         ),
         safety_notes=safe_string_list(report_draft.get("safety_notes", [])),
         evidence_refs=evidence_refs,
+        safety_gate_summary=(
+            payload.get("safety_gate_summary")
+            if isinstance(payload.get("safety_gate_summary"), dict)
+            else {}
+        ),
+        audit_gate_summary=(
+            payload.get("audit_gate_summary")
+            if isinstance(payload.get("audit_gate_summary"), dict)
+            else {}
+        ),
     )
 
 

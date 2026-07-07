@@ -7,7 +7,11 @@ import {
   createResearchRefutationDecision,
   createFindingCandidate,
   materializeResearchQueueTask,
+  recordClaimReviewDecision,
+  recordManualObservation,
   reviewValidationFeedbackForFindingPromotion,
+  runSourceAuditScan,
+  SourceAuditScanError,
   type Finding,
 } from "./api.ts";
 import type {
@@ -35,6 +39,273 @@ const fallbackFinding: Finding = {
   validation_status: "report_ready",
   vuln_type: "idor",
 };
+
+test("runSourceAuditScan posts only the local source audit request", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  let requestedBody: unknown = null;
+
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        artifact_id: "artifact_source_1",
+        hypothesis_count: 1,
+        report_title: "Source audit: target",
+        run_id: "pipeline_run_source_1",
+        safety_notes: [
+          "scope_guard_required",
+          "local_files_only",
+          "no_live_requests",
+          "no_auto_submission",
+        ],
+        scope_status: "in_scope",
+        submission_blocked: true,
+      }),
+      { headers: { "Content-Type": "application/json" }, status: 200 },
+    );
+  };
+
+  try {
+    const result = await runSourceAuditScan(
+      {
+        policy_text: "local source audit scope policy",
+        repo_path: "C:/workspace/target",
+        scope_path: "C:/workspace/scope.yaml",
+      },
+      null,
+    );
+
+    assert.match(requestedUrl, /\/mythos\/source-audit\/scans$/);
+    assert.deepEqual(requestedBody, {
+      policy_text: "local source audit scope policy",
+      repo_path: "C:/workspace/target",
+      scope_path: "C:/workspace/scope.yaml",
+    });
+    assert.equal(result?.run_id, "pipeline_run_source_1");
+    assert.equal(result?.submission_blocked, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runSourceAuditScan exposes Scope Guard block reasons", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "repo_not_allowlisted" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 403,
+    });
+
+  try {
+    await assert.rejects(
+      () =>
+        runSourceAuditScan(
+          {
+            repo_path: "C:/workspace/target",
+            scope_path: "C:/workspace/scope.yaml",
+          },
+          null,
+        ),
+      (error) => {
+        assert.equal(error instanceof SourceAuditScanError, true);
+        assert.equal((error as SourceAuditScanError).status, 403);
+        assert.equal((error as SourceAuditScanError).detail, "repo_not_allowlisted");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("source audit gated workflow smoke posts only manual review-gated calls", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+  let promotionAttempts = 0;
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ body, url });
+
+    if (url.endsWith("/mythos/source-audit/scans")) {
+      return new Response(
+        JSON.stringify({
+          artifact_id: "artifact_source_1",
+          hypothesis_count: 1,
+          report_title: "Source audit: target",
+          run_id: "pipeline_run_source_1",
+          safety_notes: [
+            "scope_guard_required",
+            "local_files_only",
+            "no_live_requests",
+            "no_auto_submission",
+          ],
+          scope_status: "in_scope",
+          submission_blocked: true,
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    if (url.endsWith("/mythos/pipeline/runs/pipeline_run_source_1/finding-candidates")) {
+      promotionAttempts += 1;
+      if (promotionAttempts === 1) {
+        return new Response(
+          JSON.stringify({ detail: "No claim is ready for candidate promotion" }),
+          { headers: { "Content-Type": "application/json" }, status: 422 },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          ...fallbackFinding,
+          evidence_refs: ["request_response_diff"],
+          id: "finding_candidate_source_1",
+          submission_recommendation: "promote_to_finding_candidate",
+          validation_status: "validation_plan_ready",
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    if (url.endsWith("/mythos/pipeline/runs/pipeline_run_source_1/manual-observations")) {
+      return new Response(
+        JSON.stringify({
+          claim_id: "claim_observed_1",
+          created_at: "2026-07-07T00:00:00Z",
+          evidence_refs: ["request_response_diff"],
+          execution_allowed: false,
+          observation: "Reviewer attached a sanitized local fixture diff.",
+          observation_id: "manual_observation_1",
+          observation_type: "request_response_diff",
+          observer: "lead_reviewer",
+          redaction_status: "redacted",
+          report_chain_blocked: true,
+          safety_notes: [
+            "test_accounts_only",
+            "no_real_user_data",
+            "human_review_required",
+          ],
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    if (url.endsWith("/mythos/pipeline/runs/pipeline_run_source_1/claim-review-decisions")) {
+      return new Response(
+        JSON.stringify({
+          claim_id: "claim_observed_1",
+          decision: "confirmed_observed_fact",
+          evidence_refs: ["request_response_diff"],
+          rationale: "Confirmed from sanitized local fixture only.",
+          reviewed_at: "2026-07-07T00:00:00Z",
+          reviewer: "lead_reviewer",
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    return new Response(JSON.stringify({ detail: "unexpected request" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 500,
+    });
+  };
+
+  try {
+    const scan = await runSourceAuditScan(
+      {
+        policy_text: "local source audit scope policy",
+        repo_path: "C:/workspace/target",
+        scope_path: "C:/workspace/scope.yaml",
+      },
+      null,
+    );
+    assert.equal(scan?.run_id, "pipeline_run_source_1");
+    assert.equal(scan?.submission_blocked, true);
+
+    const blockedCandidate = await createFindingCandidate("pipeline_run_source_1", null);
+    assert.equal(blockedCandidate, null);
+
+    const observation = await recordManualObservation(
+      "pipeline_run_source_1",
+      {
+        claim_id: "claim_observed_1",
+        evidence_refs: ["request_response_diff"],
+        observation: "Reviewer attached a sanitized local fixture diff.",
+        observation_type: "request_response_diff",
+        observer: "lead_reviewer",
+        safety_notes: [
+          "test_accounts_only",
+          "no_real_user_data",
+          "human_review_required",
+        ],
+      },
+      {
+        claim_id: "claim_observed_1",
+        created_at: "fallback",
+        evidence_refs: [],
+        execution_allowed: false,
+        observation: "fallback",
+        observation_id: "fallback_observation",
+        observation_type: "request_response_diff",
+        observer: "lead_reviewer",
+        redaction_status: "redacted",
+        report_chain_blocked: true,
+        safety_notes: [],
+      },
+    );
+    assert.equal(observation.observation_type, "request_response_diff");
+    assert.equal(observation.execution_allowed, false);
+    assert.equal(observation.report_chain_blocked, true);
+
+    const review = await recordClaimReviewDecision(
+      "pipeline_run_source_1",
+      {
+        claim_id: "claim_observed_1",
+        decision: "confirmed_observed_fact",
+        evidence_refs: ["request_response_diff"],
+        rationale: "Confirmed from sanitized local fixture only.",
+        reviewer: "lead_reviewer",
+      },
+      {
+        claim_id: "claim_observed_1",
+        decision: "needs_evidence",
+        evidence_refs: [],
+        rationale: "fallback",
+        reviewed_at: "fallback",
+        reviewer: "lead_reviewer",
+      },
+    );
+    assert.equal(review.decision, "confirmed_observed_fact");
+    assert.deepEqual(review.evidence_refs, ["request_response_diff"]);
+
+    const candidate = await createFindingCandidate("pipeline_run_source_1", null);
+    assert.equal(candidate?.id, "finding_candidate_source_1");
+    assert.equal(candidate?.validation_status, "validation_plan_ready");
+    assert.equal(candidate?.submission_recommendation, "promote_to_finding_candidate");
+    assert.deepEqual(candidate?.evidence_refs, ["request_response_diff"]);
+
+    assert.deepEqual(
+      calls.map((call) => new URL(call.url).pathname),
+      [
+        "/mythos/source-audit/scans",
+        "/mythos/pipeline/runs/pipeline_run_source_1/finding-candidates",
+        "/mythos/pipeline/runs/pipeline_run_source_1/manual-observations",
+        "/mythos/pipeline/runs/pipeline_run_source_1/claim-review-decisions",
+        "/mythos/pipeline/runs/pipeline_run_source_1/finding-candidates",
+      ],
+    );
+    assert.doesNotMatch(
+      JSON.stringify(calls),
+      /executeValidation|approveValidation|submitReport|Authorization\s*[:=]|secret-token/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("createFindingCandidate exposes research feedback gate failures", async () => {
   const originalFetch = globalThis.fetch;

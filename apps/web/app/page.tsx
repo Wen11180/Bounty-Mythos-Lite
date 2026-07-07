@@ -49,6 +49,7 @@ type NavigationItem =
 
 const navigation: NavigationItem[] = [
   { label: "Dashboard", icon: Home, href: "/" },
+  { label: "Source Audit", icon: FileText, href: "/source-audit" },
   { label: "Campaigns", icon: ShieldCheck, href: "/campaigns" },
   { label: "Program Scope", icon: Target, campaignPath: "" },
   { label: "Artifact Repository", icon: Database, href: "/artifacts" },
@@ -366,7 +367,7 @@ export default async function Dashboard() {
                     </p>
                   )}
                 </div>
-                <div className="grid min-w-0 gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid min-w-0 gap-3 p-5 sm:grid-cols-2 xl:grid-cols-6">
                   <RadarMetric
                     label="Evidence gaps"
                     value={intelligenceRadar.evidenceGapCount}
@@ -392,6 +393,12 @@ export default async function Dashboard() {
                     value={intelligenceRadar.unsafeOrRedactedRequirementCount}
                     detail="Review gate still required"
                     warn={intelligenceRadar.unsafeOrRedactedRequirementCount > 0}
+                  />
+                  <RadarMetric
+                    label="Unverified hypotheses"
+                    value={intelligenceRadar.unverifiedHypothesisCount}
+                    detail="Refutation review needed"
+                    warn={intelligenceRadar.unverifiedHypothesisCount > 0}
                   />
                 </div>
               </div>

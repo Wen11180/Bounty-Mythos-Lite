@@ -106,10 +106,7 @@ def tick_campaign(
             agent_type=task_spec["agent_type"],
             title=task_spec["title"],
             input_refs=[f"campaign:{campaign.id}"],
-            payload={
-                "mode": "read_only",
-                "raw_payload_in_dispatch": False,
-            },
+            payload=_read_only_task_payload(campaign, task_spec["task_type"]),
         )
         repository.save_agent_run(
             campaign_id=campaign.id,
@@ -165,6 +162,18 @@ def tick_campaign(
         "dispatched_task_ids": dispatched_task_ids,
         "stop_reasons": ["budget_exhausted"] if partial_dispatch else [],
     }
+
+
+def _read_only_task_payload(campaign: CampaignRecord, task_type: str) -> dict:
+    payload = {
+        "mode": "read_only",
+        "raw_payload_in_dispatch": False,
+    }
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    authorized_code_files = campaign_payload.get("authorized_code_files")
+    if task_type == "attack_surface_mapping" and isinstance(authorized_code_files, list):
+        payload["authorized_code_files"] = authorized_code_files
+    return payload
 
 
 def _campaign_stop_reason(

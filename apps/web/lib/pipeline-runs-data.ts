@@ -69,6 +69,13 @@ export type MemoryReadinessSummary = {
   topLesson: string | null;
 };
 
+export type RefutationReviewSummary = {
+  parked: number;
+  refuted: number;
+  total: number;
+  unverified: number;
+};
+
 export type PipelineRunSummary = {
   runId: string;
   asset: string;
@@ -82,6 +89,7 @@ export type PipelineRunSummary = {
   hunter: HunterPrioritySummary;
   evidenceSupportSummary: EvidenceSupportSummary | null;
   memory: MemoryReadinessSummary | null;
+  refutationSummary: RefutationReviewSummary;
 };
 
 export type RadarRunSignal = {
@@ -96,10 +104,13 @@ export type IntelligenceRadarSummary = {
   evidenceGapCount: number;
   humanGatePressure: number;
   memoryReadyRuns: number;
+  parkedHypothesisCount: number;
+  refutedHypothesisCount: number;
   reportableMomentum: number;
   reusableLessonCount: number;
   runSignals: RadarRunSignal[];
   topSignal: RadarRunSignal | null;
+  unverifiedHypothesisCount: number;
   unsafeOrRedactedRequirementCount: number;
 };
 
@@ -532,6 +543,34 @@ function resolveMemory(run: PipelineRun): MemoryReadinessSummary | null {
   };
 }
 
+function resolveRefutationSummary(run: PipelineRun): RefutationReviewSummary {
+  const hypotheses = run.payload?.hypotheses ?? [];
+
+  return hypotheses.reduce<RefutationReviewSummary>(
+    (summary, hypothesis) => {
+      const status = hypothesis.refutation_status?.trim().toLowerCase();
+
+      if (status === "refuted") {
+        summary.refuted += 1;
+      } else if (status === "parked") {
+        summary.parked += 1;
+      } else {
+        summary.unverified += 1;
+      }
+
+      summary.total += 1;
+
+      return summary;
+    },
+    {
+      parked: 0,
+      refuted: 0,
+      total: 0,
+      unverified: 0,
+    },
+  );
+}
+
 export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
   const seed: RunSeed = {
     asset: safeText(run.asset, "unknown asset"),
@@ -554,6 +593,7 @@ export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
     hunter: resolveHunter(run, seed),
     evidenceSupportSummary: resolveEvidenceSupportSummary(run),
     memory: resolveMemory(run),
+    refutationSummary: resolveRefutationSummary(run),
   };
 }
 
@@ -588,10 +628,22 @@ export function deriveIntelligenceRadar(
     evidenceGapCount: runs.reduce((total, run) => total + runEvidenceGapCount(run), 0),
     humanGatePressure: runs.filter(needsHumanGate).length,
     memoryReadyRuns: runs.filter(hasReadyMemory).length,
+    parkedHypothesisCount: runs.reduce(
+      (total, run) => total + (run.refutationSummary?.parked ?? 0),
+      0,
+    ),
+    refutedHypothesisCount: runs.reduce(
+      (total, run) => total + (run.refutationSummary?.refuted ?? 0),
+      0,
+    ),
     reportableMomentum: runs.filter(hasReportableMomentum).length,
     reusableLessonCount: runs.reduce((total, run) => total + (run.memory?.lessonCount ?? 0), 0),
     runSignals,
     topSignal: runSignals[0] ?? null,
+    unverifiedHypothesisCount: runs.reduce(
+      (total, run) => total + (run.refutationSummary?.unverified ?? 0),
+      0,
+    ),
     unsafeOrRedactedRequirementCount: runs.reduce(
       (total, run) =>
         total + (run.evidenceSupportSummary?.unsafe_or_redacted_requirement_count ?? 0),
@@ -720,6 +772,12 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
     },
     evidenceSupportSummary: null,
     memory: null,
+    refutationSummary: {
+      parked: 0,
+      refuted: 0,
+      total: 0,
+      unverified: 0,
+    },
   },
   {
     runId: "dry_run_2026_07_02_002",
@@ -783,6 +841,12 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
     },
     evidenceSupportSummary: null,
     memory: null,
+    refutationSummary: {
+      parked: 0,
+      refuted: 0,
+      total: 0,
+      unverified: 0,
+    },
   },
   {
     runId: "dry_run_2026_07_01_004",
@@ -846,5 +910,11 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
     },
     evidenceSupportSummary: null,
     memory: null,
+    refutationSummary: {
+      parked: 0,
+      refuted: 0,
+      total: 0,
+      unverified: 0,
+    },
   },
 ];

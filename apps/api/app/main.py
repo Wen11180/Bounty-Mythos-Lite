@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 from hashlib import sha256
+import json
+from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -37,11 +39,13 @@ from app.mythos_brain import (
     LearningSeverityDelta,
     LessonRecommendation,
     LessonScopeType,
+    KnowledgeArtifactImportResult,
     MythosLesson,
     ProgramIntelligenceProfile,
     ReasoningMemoryPlaybook,
     ReasoningMemorySummary,
     build_learning_signal_from_outcome,
+    build_learning_signals_from_knowledge_artifact,
     build_mythos_lessons,
     build_program_intelligence,
 )
@@ -82,6 +86,11 @@ from app.scope_guard import (
     ValidationRequest,
     evaluate_validation_request,
 )
+from app.source_audit import (
+    SourceAuditBlocked,
+    run_source_audit,
+    save_source_audit_pipeline_run,
+)
 from app.worker.tasks import dispatch_agent_task
 from pydantic import BaseModel, Field
 
@@ -114,10 +123,34 @@ class MythosPipelineRunSummary(BaseModel):
     hunter_intelligence: HunterIntelligence | None = None
     evidence_support_summary: dict | None = None
     closed_loop_summary: dict | None = None
+    safety_gate_summary: dict = Field(default_factory=dict)
+    audit_gate_summary: dict = Field(default_factory=dict)
+    timeline_stage_summary: list[dict] = Field(default_factory=list)
 
 
 class MythosPipelineRunDetail(MythosPipelineRunSummary):
     payload: dict
+
+
+class SourceAuditScanRequest(BaseModel):
+    repo_path: str = Field(min_length=1)
+    scope_path: str = Field(min_length=1)
+    policy_text: str | None = None
+    program_id: str | None = None
+    patch_diff_metadata: dict | None = None
+
+
+class SourceAuditScanResponse(BaseModel):
+    run_id: str
+    artifact_id: str
+    report_title: str
+    scope_status: str
+    hypothesis_count: int
+    submission_blocked: bool
+    safety_notes: list[str] = Field(default_factory=list)
+    safety_gate_summary: dict = Field(default_factory=dict)
+    audit_gate_summary: dict = Field(default_factory=dict)
+    timeline_stage_summary: list[dict] = Field(default_factory=list)
 
 
 class ArtifactResponse(BaseModel):
@@ -645,6 +678,14 @@ class LearningOutcomeRequest(BaseModel):
     evidence_quality: LearningEvidenceQuality | None = None
     triager_feedback: str | None = Field(default=None, max_length=1000)
     target_relationships: list[str] | None = Field(default=None, max_length=20)
+
+
+class KnowledgeArtifactImportRequest(BaseModel):
+    program_id: str
+    artifact: dict[str, Any]
+    approval_id: str | None = Field(default=None, max_length=100)
+    human_review_approved: bool = False
+    reviewer: str | None = Field(default=None, max_length=100)
 
 
 class CampaignCycleReviewCompletionRequest(BaseModel):
@@ -1840,6 +1881,156 @@ def create_mythos_brain_learning_signal(
     return _learning_signal_response(record)
 
 
+@app.post(
+    "/mythos/brain/knowledge-artifacts",
+    response_model=KnowledgeArtifactImportResult,
+)
+def import_mythos_brain_knowledge_artifact(
+    request: KnowledgeArtifactImportRequest,
+    session: Session = Depends(get_session),
+) -> KnowledgeArtifactImportResult:
+    repository = DatabaseRepository(session)
+    _program_or_404_in_scope(repository, request.program_id)
+    human_review_approved = request.human_review_approved
+    if request.approval_id is not None:
+        approval = repository.session.get(ApprovalRecord, request.approval_id)
+        if not _approval_allows_knowledge_artifact_import(
+            repository,
+            approval,
+            program_id=request.program_id,
+            artifact=request.artifact,
+        ):
+            return _knowledge_artifact_import_result_with_gate_notes(
+                KnowledgeArtifactImportResult(
+                    status="blocked_invalid_approval",
+                    skipped_count=_knowledge_artifact_entry_count(request.artifact),
+                )
+            )
+        human_review_approved = True
+    elif request.human_review_approved:
+        return _knowledge_artifact_import_result_with_gate_notes(
+            KnowledgeArtifactImportResult(
+                status="blocked_invalid_approval",
+                skipped_count=_knowledge_artifact_entry_count(request.artifact),
+            )
+        )
+
+    import_result = build_learning_signals_from_knowledge_artifact(
+        program_id=request.program_id,
+        artifact=request.artifact,
+        human_review_approved=human_review_approved,
+        reviewer=request.reviewer,
+    )
+    if import_result.status != "imported":
+        return _knowledge_artifact_import_result_with_gate_notes(import_result)
+
+    saved_signals: list[LearningSignal] = []
+    for signal in import_result.learning_signals:
+        signal = _knowledge_artifact_signal_with_provenance(
+            signal,
+            approval_id=request.approval_id,
+            artifact_digest=_knowledge_artifact_plan_digest(request.artifact),
+        )
+        record = _existing_learning_signal_for_outcome(
+            repository,
+            signal=signal,
+            run_record=None,
+        )
+        if record is None:
+            record = repository.save_learning_signal(
+                program_id=signal.program_id,
+                playbook_id=signal.playbook_id,
+                outcome=signal.outcome,
+                surface_key=signal.surface_key,
+                notes=signal.notes,
+                bounty_amount=signal.bounty_amount,
+                severity_delta=signal.severity_delta,
+                evidence_quality=signal.evidence_quality,
+                triager_feedback=signal.triager_feedback,
+                target_relationships=signal.target_relationships,
+            )
+        saved_signals.append(_learning_signal_response(record))
+
+    return _knowledge_artifact_import_result_with_gate_notes(
+        KnowledgeArtifactImportResult(
+            status="imported",
+            imported_count=len(saved_signals),
+            skipped_count=import_result.skipped_count,
+            learning_signals=saved_signals,
+        )
+    )
+
+
+def _approval_allows_knowledge_artifact_import(
+    repository: DatabaseRepository,
+    approval: ApprovalRecord | None,
+    *,
+    program_id: str,
+    artifact: dict[str, Any],
+) -> bool:
+    if approval is None:
+        return False
+    if approval.status != "approved":
+        return False
+    if not approval_record_is_active(approval):
+        return False
+    if approval.validation_mode != "v4_advisory_knowledge_import":
+        return False
+    if approval.plan_digest != _knowledge_artifact_plan_digest(artifact):
+        return False
+    if approval.program_id is not None:
+        return approval.program_id == program_id
+    if approval.run_id is None:
+        return False
+    run = repository.get_pipeline_run(approval.run_id)
+    return run is not None and run.program_id == program_id
+
+
+def _knowledge_artifact_entry_count(artifact: dict[str, Any]) -> int:
+    entries = artifact.get("entries")
+    return len(entries) if isinstance(entries, list) else 0
+
+
+def _knowledge_artifact_plan_digest(artifact: dict[str, Any]) -> str:
+    encoded = json.dumps(artifact, sort_keys=True, separators=(",", ":"))
+    return f"knowledge_artifact:{sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _knowledge_artifact_signal_with_provenance(
+    signal: LearningSignal,
+    *,
+    approval_id: str | None,
+    artifact_digest: str,
+) -> LearningSignal:
+    provenance_refs = [
+        ref
+        for ref in (
+            "v4_advisory_knowledge",
+            f"approval:{approval_id}" if approval_id else None,
+            artifact_digest,
+        )
+        if ref
+    ]
+    target_relationships = list(signal.target_relationships)
+    for ref in provenance_refs:
+        if ref not in target_relationships:
+            target_relationships.append(ref)
+    return signal.model_copy(update={"target_relationships": target_relationships})
+
+
+def _knowledge_artifact_import_result_with_gate_notes(
+    result: KnowledgeArtifactImportResult,
+) -> KnowledgeArtifactImportResult:
+    safety_notes = list(result.safety_notes)
+    for note in (
+        "durable_approval_required",
+        "approval_artifact_digest_bound",
+    ):
+        if note not in safety_notes:
+            safety_notes.append(note)
+    return result.model_copy(update={"safety_notes": safety_notes})
+
+
 @app.get("/mythos/brain/lessons", response_model=list[MythosLesson])
 def list_mythos_brain_lessons(
     program_id: str | None = None,
@@ -2026,6 +2217,72 @@ def evaluate_scope_guard(
         )
 
     return evaluate_validation_request(request.rule, request.request)
+
+
+@app.post("/mythos/source-audit/scans", response_model=SourceAuditScanResponse)
+def run_mythos_source_audit_scan(
+    request: SourceAuditScanRequest,
+    session: Session = Depends(get_session),
+) -> SourceAuditScanResponse:
+    repository = DatabaseRepository(session)
+    if request.program_id is not None:
+        _program_or_404_in_scope(repository, request.program_id)
+    try:
+        result = run_source_audit(
+            request.repo_path,
+            request.scope_path,
+            patch_diff_metadata=request.patch_diff_metadata,
+        )
+    except SourceAuditBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    record = save_source_audit_pipeline_run(
+        repository=repository,
+        result=result,
+        policy_text=(
+            request.policy_text
+            if request.policy_text is not None
+            else _read_source_audit_policy_text(request.scope_path)
+        ),
+        program_id=request.program_id,
+    )
+    preview = build_report_preview_response(record)
+    artifact = record.payload.get("artifact") if isinstance(record.payload, dict) else {}
+    artifact_id = artifact.get("artifact_id") if isinstance(artifact, dict) else ""
+    safety_notes = record.payload.get("safety_notes") if isinstance(record.payload, dict) else []
+    safety_gate_summary = (
+        record.payload.get("safety_gate_summary")
+        if isinstance(record.payload, dict)
+        else {}
+    )
+    timeline_stage_summary = (
+        record.payload.get("timeline_stage_summary")
+        if isinstance(record.payload, dict)
+        else []
+    )
+    audit_gate_summary = (
+        record.payload.get("audit_gate_summary")
+        if isinstance(record.payload, dict)
+        else {}
+    )
+    return SourceAuditScanResponse(
+        run_id=record.id,
+        artifact_id=safe_preview_text(artifact_id),
+        report_title=safe_preview_text(record.report_title or preview.title),
+        scope_status=safe_preview_text(record.scope_status),
+        hypothesis_count=record.hypothesis_count,
+        submission_blocked=preview.submission_blocked,
+        safety_notes=safe_string_list(safety_notes),
+        safety_gate_summary=(
+            safety_gate_summary if isinstance(safety_gate_summary, dict) else {}
+        ),
+        audit_gate_summary=(
+            audit_gate_summary if isinstance(audit_gate_summary, dict) else {}
+        ),
+        timeline_stage_summary=(
+            timeline_stage_summary if isinstance(timeline_stage_summary, list) else []
+        ),
+    )
 
 
 @app.post("/mythos/pipeline/dry-run", response_model=MythosPipelineDryRunResponse)
@@ -6241,13 +6498,9 @@ def _closed_loop_summary(
         "brain_memory_status": brain_memory_status,
         "memory_lessons": [_closed_loop_memory_lesson(lesson) for lesson in memory_lessons],
         "blocked_reasons": blocked_reasons,
-        "safety_notes": [
-            "no_live_requests",
-            "test_accounts_only",
-            "human_review_required",
-            "candidate_not_validated",
-        ],
-        "steps": _closed_loop_steps(
+        "safety_notes": _closed_loop_safety_notes(record),
+        "steps": _closed_loop_steps_for_record(
+            record=record,
             manual_observation_count=len(manual_observations),
             reviewed_claim_count=len(claim_review_decisions),
             finding_candidate_count=finding_candidate_count,
@@ -6262,6 +6515,23 @@ def _closed_loop_summary(
     if reasoning_context is not None:
         summary["reasoning_context"] = reasoning_context
     return summary
+
+
+def _closed_loop_safety_notes(record: PipelineRunRecord) -> list[str]:
+    if record.payload.get("artifact_kind") == "source_audit":
+        return [
+            "source_audit_hypotheses_only",
+            "local_files_only",
+            "no_live_requests",
+            "human_review_required",
+            "submission_blocked",
+        ]
+    return [
+        "no_live_requests",
+        "test_accounts_only",
+        "human_review_required",
+        "candidate_not_validated",
+    ]
 
 
 def _closed_loop_reasoning_context(usage_records: list[dict]) -> dict | None:
@@ -6305,6 +6575,84 @@ def _closed_loop_status(
     if manual_observation_count:
         return "manual_observation_recorded"
     return "not_started"
+
+
+def _closed_loop_steps_for_record(
+    *,
+    record: PipelineRunRecord,
+    manual_observation_count: int,
+    reviewed_claim_count: int,
+    finding_candidate_count: int,
+    validation_feedback_count: int,
+    validation_feedback_review_count: int,
+    learning_signal_count: int,
+    lesson_count: int,
+    brain_memory_status: str,
+    blocked_reasons: list[str],
+) -> list[dict]:
+    steps = _closed_loop_steps(
+        manual_observation_count=manual_observation_count,
+        reviewed_claim_count=reviewed_claim_count,
+        finding_candidate_count=finding_candidate_count,
+        validation_feedback_count=validation_feedback_count,
+        validation_feedback_review_count=validation_feedback_review_count,
+        learning_signal_count=learning_signal_count,
+        lesson_count=lesson_count,
+        brain_memory_status=brain_memory_status,
+        blocked_reasons=blocked_reasons,
+    )
+    if record.payload.get("artifact_kind") != "source_audit":
+        return steps
+
+    source_steps = [
+        {
+            "key": "source_audit_review",
+            "label": "Source Audit Review",
+            "status": "waiting" if manual_observation_count == 0 else "complete",
+            "reason": (
+                "Sanitized local evidence has been attached for review."
+                if manual_observation_count
+                else "Source audit hypotheses need sanitized local evidence."
+            ),
+            "safety_gate": "local_files_only",
+            "next_allowed_action": (
+                "Review the attached sanitized evidence in the report preview."
+                if manual_observation_count
+                else "Open the validation workspace and attach sanitized local evidence."
+            ),
+        },
+        {
+            "key": "report_preview",
+            "label": "Report Preview",
+            "status": "waiting" if reviewed_claim_count == 0 else "complete",
+            "reason": (
+                "A human claim review decision is recorded for the report preview."
+                if reviewed_claim_count
+                else "Report preview is submission-blocked until human claim review."
+            ),
+            "safety_gate": "submission_blocked",
+            "next_allowed_action": (
+                "Review promotion readiness while keeping submission manual."
+                if reviewed_claim_count
+                else "Review the submission-blocked report preview before claim review."
+            ),
+        },
+    ]
+    return source_steps + [
+        _source_audit_closed_loop_step(step)
+        if step.get("key") == "finding_candidate"
+        else step
+        for step in steps
+    ]
+
+
+def _source_audit_closed_loop_step(step: dict) -> dict:
+    source_step = dict(step)
+    if source_step.get("status") == "waiting":
+        source_step["next_allowed_action"] = (
+            "Wait for sanitized evidence and human claim review before promotion."
+        )
+    return source_step
 
 
 def _closed_loop_steps(
@@ -6781,6 +7129,21 @@ def _pipeline_run_summary(
         validation_gate=payload.get("validation_gate"),
         hunter_intelligence=payload.get("hunter_intelligence"),
         evidence_support_summary=_evidence_support_summary(record),
+        safety_gate_summary=(
+            payload.get("safety_gate_summary")
+            if isinstance(payload.get("safety_gate_summary"), dict)
+            else {}
+        ),
+        audit_gate_summary=(
+            payload.get("audit_gate_summary")
+            if isinstance(payload.get("audit_gate_summary"), dict)
+            else {}
+        ),
+        timeline_stage_summary=(
+            payload.get("timeline_stage_summary")
+            if isinstance(payload.get("timeline_stage_summary"), list)
+            else []
+        ),
         closed_loop_summary=(
             _closed_loop_summary(record, repository)
             if repository is not None
@@ -6826,3 +7189,10 @@ def _count_evidence_items(payload: dict) -> int:
 
 def _safe_string_list(value: object) -> list[str]:
     return safe_string_list(value)
+
+
+def _read_source_audit_policy_text(scope_path: str) -> str:
+    try:
+        return Path(scope_path).read_text(encoding="utf-8-sig")
+    except OSError:
+        return "source audit scope policy unavailable"

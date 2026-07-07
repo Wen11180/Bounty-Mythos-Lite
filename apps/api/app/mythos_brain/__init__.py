@@ -11,6 +11,12 @@ LearningSeverityDelta = Literal["up", "down", "same"]
 LearningEvidenceQuality = Literal["strong", "adequate", "weak"]
 LessonScopeType = Literal["program", "platform", "global"]
 LessonRecommendation = Literal["boost", "penalize", "evidence_needed", "duplicate_watch"]
+KnowledgeArtifactImportStatus = Literal[
+    "imported",
+    "blocked_pending_human_review",
+    "blocked_invalid_artifact",
+    "blocked_invalid_approval",
+]
 
 
 class LearningSignal(BaseModel):
@@ -26,6 +32,21 @@ class LearningSignal(BaseModel):
     triager_feedback: str | None = Field(default=None, max_length=1000)
     target_relationships: list[str] = Field(default_factory=list)
     created_at: str | None = None
+
+
+class KnowledgeArtifactImportResult(BaseModel):
+    status: KnowledgeArtifactImportStatus
+    imported_count: int = 0
+    skipped_count: int = 0
+    learning_signals: list[LearningSignal] = Field(default_factory=list)
+    safety_notes: list[str] = Field(
+        default_factory=lambda: [
+            "advisory_memory_only",
+            "human_review_required",
+            "no_execution_permission",
+            "metadata_only_no_raw_secret_or_user_data",
+        ]
+    )
 
 
 class AttackSurfaceAction(BaseModel):
@@ -261,6 +282,61 @@ def build_learning_signal_from_outcome(
             if target_relationships is not None
             else _surface_target_relationships(run, signal_surface_key)
         ),
+    )
+
+
+def build_learning_signals_from_knowledge_artifact(
+    *,
+    program_id: str,
+    artifact: dict[str, Any],
+    human_review_approved: bool,
+    reviewer: str | None = None,
+) -> KnowledgeArtifactImportResult:
+    entries = artifact.get("entries")
+    if (
+        artifact.get("artifact_type") != "v4_advisory_knowledge"
+        or artifact.get("storage_policy") != "metadata_only_no_raw_secret_or_user_data"
+        or not isinstance(entries, list)
+    ):
+        return KnowledgeArtifactImportResult(
+            status="blocked_invalid_artifact",
+            skipped_count=len(entries) if isinstance(entries, list) else 0,
+        )
+
+    if not human_review_approved:
+        return KnowledgeArtifactImportResult(
+            status="blocked_pending_human_review",
+            skipped_count=len(entries),
+        )
+
+    signals: list[LearningSignal] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        source_ref = _safe_memory_text(entry.get("source_ref"), "unknown")
+        topic = _safe_memory_text(entry.get("topic"), "unknown")
+        signals.append(
+            LearningSignal(
+                program_id=program_id,
+                playbook_id=f"v4_{topic}",
+                outcome="informative",
+                surface_key=f"{topic}:{source_ref}",
+                notes="Human-reviewed V4 advisory knowledge candidate.",
+                evidence_quality="weak",
+                triager_feedback=(
+                    "reviewed_advisory_memory"
+                    if reviewer
+                    else None
+                ),
+                target_relationships=["v4_advisory_knowledge"],
+            )
+        )
+
+    return KnowledgeArtifactImportResult(
+        status="imported",
+        imported_count=len(signals),
+        skipped_count=len(entries) - len(signals),
+        learning_signals=signals,
     )
 
 
@@ -1054,17 +1130,40 @@ def _bounded_score(value: float) -> int:
     return max(0, min(100, round(value)))
 
 
+def _safe_memory_text(value: Any, default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    normalized = value.strip()
+    lowered = normalized.lower()
+    secret_markers = (
+        "authorization:",
+        "bearer ",
+        "cookie:",
+        "set-cookie:",
+        "x-api-key:",
+        "api_key",
+        "access_token",
+        "secret",
+        "token",
+    )
+    if not normalized or any(marker in lowered for marker in secret_markers):
+        return default
+    return normalized[:120]
+
+
 __all__ = [
     "AttackSurfaceAction",
     "AttackSurfaceMemory",
     "AttackSurfaceRelationship",
     "HighValueSurface",
+    "KnowledgeArtifactImportResult",
     "LearningSignal",
     "LearningSeverityDelta",
     "LearningEvidenceQuality",
     "LearningSummary",
     "MythosLesson",
     "ProgramIntelligenceProfile",
+    "build_learning_signals_from_knowledge_artifact",
     "build_learning_signal_from_outcome",
     "build_mythos_lessons",
     "build_program_intelligence",

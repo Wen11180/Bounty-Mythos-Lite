@@ -44,6 +44,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
 
     const claimId = formText(formData, "claim_id");
     const observation = formText(formData, "observation");
+    const observationType = formText(formData, "observation_type") || "request_response_diff";
     const observer = formText(formData, "observer") || "lead_reviewer";
     const evidenceRefs = formList(formData, "evidence_refs");
     const safetyNotes = formData.getAll("safety_notes").map((value) => String(value));
@@ -58,7 +59,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
         claim_id: claimId,
         evidence_refs: evidenceRefs,
         observation,
-        observation_type: "manual_observation",
+        observation_type: observationType,
         observer,
         safety_notes: safetyNotes,
       },
@@ -68,8 +69,8 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
         evidence_refs: evidenceRefs,
         execution_allowed: false,
         observation,
-        observation_id: `manual_observation_${claimId}`,
-        observation_type: "manual_observation",
+        observation_id: `${observationType}_${claimId}`,
+        observation_type: observationType,
         observer,
         redaction_status: "redacted",
         report_chain_blocked: true,
@@ -257,6 +258,17 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                           <input name="safety_notes" type="hidden" value="test_accounts_only" />
                           <input name="safety_notes" type="hidden" value="no_real_user_data" />
                           <input name="safety_notes" type="hidden" value="human_review_required" />
+                          <label className="grid gap-1">
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Observation type</span>
+                            <select
+                              className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
+                              name="observation_type"
+                              defaultValue={requiredTypes[0] ?? "request_response_diff"}
+                            >
+                              <option value="request_response_diff">Request response diff</option>
+                              <option value="role_matrix_observation">Role matrix observation</option>
+                            </select>
+                          </label>
                           <label className="grid gap-1">
                             <span className="text-xs font-semibold uppercase text-[var(--muted)]">Observer</span>
                             <input

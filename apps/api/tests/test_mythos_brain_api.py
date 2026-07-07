@@ -1,10 +1,14 @@
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+import json
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
-from app.db_models import LearningSignalRecord
+from app.db_models import LearningSignalRecord, ProgramRecord
 from app.main import app
 from app.repository import DatabaseRepository, seed_sample_data
 
@@ -28,6 +32,28 @@ def override_session():
             yield session
 
     return _override_get_session
+
+
+def _knowledge_artifact() -> dict:
+    return {
+        "artifact_type": "v4_advisory_knowledge",
+        "status": "requires_human_review",
+        "storage_policy": "metadata_only_no_raw_secret_or_user_data",
+        "entries": [
+            {
+                "source_ref": "H-001",
+                "topic": "authorization",
+                "retained_fields": ["variant_search_pattern"],
+                "review_required": True,
+                "confidence": "low",
+            }
+        ],
+    }
+
+
+def _knowledge_artifact_plan_digest(artifact: dict) -> str:
+    encoded = json.dumps(artifact, sort_keys=True, separators=(",", ":"))
+    return f"knowledge_artifact:{sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def test_learning_signal_repository_persists_program_feedback():
@@ -346,6 +372,433 @@ def test_mythos_brain_api_builds_profile_from_runs_and_learning_signals():
         updated_profile = updated_profile_response.json()
         assert updated_profile["learning_summary"]["accepted_count"] == 2
         assert updated_profile["learning_summary"]["duplicate_count"] == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_requires_human_review_before_persisting():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        artifact = {
+            "artifact_type": "v4_advisory_knowledge",
+            "status": "requires_human_review",
+            "storage_policy": "metadata_only_no_raw_secret_or_user_data",
+            "entries": [
+                {
+                    "source_ref": "H-001",
+                    "topic": "authorization",
+                    "retained_fields": ["variant_search_pattern"],
+                    "review_required": True,
+                    "confidence": "low",
+                }
+            ],
+        }
+
+        blocked_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": artifact,
+                "human_review_approved": False,
+            },
+        )
+
+        assert blocked_response.status_code == 200
+        blocked = blocked_response.json()
+        assert blocked["status"] == "blocked_pending_human_review"
+        assert blocked["learning_signals"] == []
+        assert blocked["skipped_count"] == 1
+        assert client.get("/mythos/brain/programs/program_example").json()[
+            "recent_learning_signals"
+        ] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_persists_reviewed_advisory_signal_once():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        artifact = {
+            "artifact_type": "v4_advisory_knowledge",
+            "status": "requires_human_review",
+            "storage_policy": "metadata_only_no_raw_secret_or_user_data",
+            "entries": [
+                {
+                    "source_ref": "H-001",
+                    "topic": "authorization",
+                    "retained_fields": ["variant_search_pattern", "Authorization: Bearer token"],
+                    "review_required": True,
+                    "confidence": "low",
+                }
+            ],
+        }
+        approval_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "validation_mode": "v4_advisory_knowledge_import",
+                "plan_digest": _knowledge_artifact_plan_digest(artifact),
+                "requester": "lead_reviewer",
+                "reason": "Review sanitized V4 knowledge artifact.",
+            },
+        )
+        assert approval_response.status_code == 200
+        approval_id = approval_response.json()["id"]
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for advisory memory import only.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        approved_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": artifact,
+                "approval_id": approval_id,
+                "human_review_approved": True,
+                "reviewer": "lead_reviewer",
+            },
+        )
+        repeated_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": artifact,
+                "approval_id": approval_id,
+                "human_review_approved": True,
+                "reviewer": "lead_reviewer",
+            },
+        )
+
+        assert approved_response.status_code == 200
+        approved = approved_response.json()
+        repeated = repeated_response.json()
+        assert approved["status"] == "imported"
+        assert approved["imported_count"] == 1
+        assert approved["learning_signals"][0]["outcome"] == "informative"
+        assert approved["learning_signals"][0]["evidence_quality"] == "weak"
+        artifact_digest = _knowledge_artifact_plan_digest(artifact)
+        assert approved["learning_signals"][0]["target_relationships"] == [
+            "v4_advisory_knowledge",
+            f"approval:{approval_id}",
+            artifact_digest,
+        ]
+        assert "durable_approval_required" in approved["safety_notes"]
+        assert "approval_artifact_digest_bound" in approved["safety_notes"]
+        assert "no_execution_permission" in approved["safety_notes"]
+        assert repeated["learning_signals"][0]["id"] == approved["learning_signals"][0]["id"]
+        profile = client.get("/mythos/brain/programs/program_example").json()
+        assert len(profile["recent_learning_signals"]) == 1
+        assert profile["recent_learning_signals"][0]["target_relationships"] == [
+            "v4_advisory_knowledge",
+            f"approval:{approval_id}",
+            artifact_digest,
+        ]
+        assert "Authorization" not in str(profile["recent_learning_signals"])
+        assert "Bearer" not in str(profile["recent_learning_signals"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_rejects_request_level_human_review_without_approval_record():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        import_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": _knowledge_artifact(),
+                "human_review_approved": True,
+                "reviewer": "lead_reviewer",
+            },
+        )
+
+        assert import_response.status_code == 200
+        blocked = import_response.json()
+        assert blocked["status"] == "blocked_invalid_approval"
+        assert blocked["learning_signals"] == []
+        assert blocked["skipped_count"] == 1
+        assert "durable_approval_required" in blocked["safety_notes"]
+        assert "approval_artifact_digest_bound" in blocked["safety_notes"]
+        assert "no_execution_permission" in blocked["safety_notes"]
+        assert client.get("/mythos/brain/programs/program_example").json()[
+            "recent_learning_signals"
+        ] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_imports_with_approved_approval_record():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        artifact = _knowledge_artifact()
+        approval_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "validation_mode": "v4_advisory_knowledge_import",
+                "plan_digest": _knowledge_artifact_plan_digest(artifact),
+                "requester": "lead_reviewer",
+                "reason": "Review sanitized V4 knowledge artifact.",
+            },
+        )
+        assert approval_response.status_code == 200
+        approval_id = approval_response.json()["id"]
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for advisory memory import only.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        import_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": artifact,
+                "approval_id": approval_id,
+                "human_review_approved": False,
+            },
+        )
+
+        assert import_response.status_code == 200
+        imported = import_response.json()
+        assert imported["status"] == "imported"
+        assert imported["imported_count"] == 1
+        assert imported["learning_signals"][0]["outcome"] == "informative"
+        assert imported["learning_signals"][0]["target_relationships"] == [
+            "v4_advisory_knowledge",
+            f"approval:{approval_id}",
+            _knowledge_artifact_plan_digest(artifact),
+        ]
+        profile = client.get("/mythos/brain/programs/program_example").json()
+        assert len(profile["recent_learning_signals"]) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_rejects_approval_with_mismatched_plan_digest():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        artifact = _knowledge_artifact()
+        approval_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "validation_mode": "v4_advisory_knowledge_import",
+                "plan_digest": "knowledge_artifact:mismatched",
+                "requester": "lead_reviewer",
+                "reason": "Review a different sanitized V4 knowledge artifact.",
+            },
+        )
+        assert approval_response.status_code == 200
+        approval_id = approval_response.json()["id"]
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for a different artifact only.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        import_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": artifact,
+                "approval_id": approval_id,
+                "human_review_approved": True,
+            },
+        )
+
+        assert import_response.status_code == 200
+        blocked = import_response.json()
+        assert blocked["status"] == "blocked_invalid_approval"
+        assert blocked["learning_signals"] == []
+        assert blocked["skipped_count"] == 1
+        assert "durable_approval_required" in blocked["safety_notes"]
+        assert "approval_artifact_digest_bound" in blocked["safety_notes"]
+        assert client.get("/mythos/brain/programs/program_example").json()[
+            "recent_learning_signals"
+        ] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_rejects_denied_approval_record():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        approval_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "validation_mode": "v4_advisory_knowledge_import",
+                "plan_digest": "knowledge_artifact_sha256_1",
+                "requester": "lead_reviewer",
+                "reason": "Review sanitized V4 knowledge artifact.",
+            },
+        )
+        assert approval_response.status_code == 200
+        approval_id = approval_response.json()["id"]
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "denied",
+                "actor": "lead_reviewer",
+                "reason": "Denied until provenance is clearer.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        import_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": _knowledge_artifact(),
+                "approval_id": approval_id,
+                "human_review_approved": True,
+            },
+        )
+
+        assert import_response.status_code == 200
+        blocked = import_response.json()
+        assert blocked["status"] == "blocked_invalid_approval"
+        assert blocked["learning_signals"] == []
+        assert client.get("/mythos/brain/programs/program_example").json()[
+            "recent_learning_signals"
+        ] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_rejects_expired_approval_record():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        approval_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "validation_mode": "v4_advisory_knowledge_import",
+                "plan_digest": "knowledge_artifact_sha256_1",
+                "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+                "requester": "lead_reviewer",
+                "reason": "Expired review window.",
+            },
+        )
+        assert approval_response.status_code == 200
+
+        import_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": _knowledge_artifact(),
+                "approval_id": approval_response.json()["id"],
+                "human_review_approved": True,
+            },
+        )
+
+        assert import_response.status_code == 200
+        blocked = import_response.json()
+        assert blocked["status"] == "blocked_invalid_approval"
+        assert blocked["learning_signals"] == []
+        assert client.get("/mythos/brain/programs/program_example").json()[
+            "recent_learning_signals"
+        ] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mythos_brain_knowledge_artifact_api_rejects_cross_program_approval_record():
+    testing_session = sessionmaker(
+        bind=create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        ),
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    Base.metadata.create_all(bind=testing_session.kw["bind"])
+    with testing_session() as session:
+        seed_sample_data(session)
+        session.add(
+            ProgramRecord(
+                id="program_other",
+                name="Other Program",
+                platform="VDP",
+                bounty_range="No bounty",
+                scope_status="in_scope",
+                automation="limited",
+                testing_accounts="configured",
+                api_docs="imported",
+                public_code="available",
+                duplicate_risk="low",
+                priority="B",
+            )
+        )
+        session.commit()
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        approval_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "program_id": "program_other",
+                "asset": "other.example.com",
+                "validation_mode": "v4_advisory_knowledge_import",
+                "plan_digest": "knowledge_artifact_sha256_1",
+                "requester": "lead_reviewer",
+                "reason": "Review other program artifact.",
+            },
+        )
+        assert approval_response.status_code == 200
+        approval_id = approval_response.json()["id"]
+        decision_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for the other program only.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        import_response = client.post(
+            "/mythos/brain/knowledge-artifacts",
+            json={
+                "program_id": "program_example",
+                "artifact": _knowledge_artifact(),
+                "approval_id": approval_id,
+                "human_review_approved": True,
+            },
+        )
+
+        assert import_response.status_code == 200
+        blocked = import_response.json()
+        assert blocked["status"] == "blocked_invalid_approval"
+        assert blocked["learning_signals"] == []
+        assert client.get("/mythos/brain/programs/program_example").json()[
+            "recent_learning_signals"
+        ] == []
     finally:
         app.dependency_overrides.clear()
 

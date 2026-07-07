@@ -10,6 +10,7 @@ ROUTE_DECORATOR_PATTERN = re.compile(
 )
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MODEL_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
+DEPENDENCY_CALL_PATTERN = re.compile(r"\bDepends\(\s*([A-Za-z_][A-Za-z0-9_]*)")
 AUTHZ_NAME_MARKERS = (
     "authorize",
     "authz",
@@ -85,15 +86,16 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
         mapped_file_count += 1
         facts.extend(_map_file(source_path=source_path, content=content))
 
+    facts = _dedupe_handler_authz_facts(_dedupe_facts(facts))
     return CodebaseMapResult(
-        facts=_dedupe_facts(facts),
+        facts=_dedupe_facts([*facts, *_authorization_gap_candidates(facts)]),
         file_count=mapped_file_count,
     )
 
 
 def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     facts: list[CodebaseFactCandidate] = []
-    pending_route: tuple[str, str, int] | None = None
+    pending_route: tuple[str, str, int, list[tuple[str, int]]] | None = None
     function_stack: list[tuple[str, int]] = []
 
     for line_number, line in enumerate(content.splitlines(), start=1):
@@ -103,6 +105,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 route_match.group(1).upper(),
                 route_match.group(2),
                 line_number,
+                [(call_name, line_number) for call_name in _dependency_authz_calls(line)],
             )
             continue
 
@@ -118,23 +121,44 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         if function_match is not None:
             function_stack.append((function_match.group(1), _indent_width(line)))
         if function_match is not None and pending_route is not None:
-            method, route_path, decorator_line = pending_route
+            method, route_path, decorator_line, decorator_authz_calls = pending_route
+            handler_name = function_match.group(1)
             facts.append(
                 CodebaseFactCandidate(
                     fact_type="route_handler",
                     source_path=source_path,
-                    symbol_name=function_match.group(1),
+                    symbol_name=handler_name,
                     route_method=method,
                     route_path=route_path,
                     authz_hint=None,
                     sensitivity_label="low",
                     payload={
-                        "handler": function_match.group(1),
+                        "handler": handler_name,
                         "line": decorator_line,
                         "mapping_mode": "static_code_snippet_analysis",
                     },
                 )
             )
+            for call_name, authz_line in [
+                *decorator_authz_calls,
+                *[(call_name, line_number) for call_name in _dependency_authz_calls(line)],
+            ]:
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="authz_check",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=_authz_hint(call_name),
+                        sensitivity_label="low",
+                        payload={
+                            "handler": handler_name,
+                            "line": authz_line,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
             pending_route = None
 
         model_match = MODEL_PATTERN.match(line)
@@ -158,6 +182,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         if function_match is not None or model_match is not None or line.strip().startswith("@"):
             continue
 
+        current_function = _current_function(function_stack)
         for call_name in _called_names(line):
             if _is_authz_call(call_name):
                 facts.append(
@@ -170,7 +195,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         authz_hint=_authz_hint(call_name),
                         sensitivity_label="low",
                         payload={
-                            "handler": _current_function(function_stack),
+                            "handler": current_function,
                             "line": line_number,
                             "mapping_mode": "static_code_snippet_analysis",
                         },
@@ -187,14 +212,31 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         authz_hint=None,
                         sensitivity_label="low",
                         payload={
-                            "handler": _current_function(function_stack),
+                            "handler": current_function,
+                            "line": line_number,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
+            if _is_service_call(call_name) and current_function is not None:
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="service_call",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=None,
+                        sensitivity_label="low",
+                        payload={
+                            "caller": current_function,
                             "line": line_number,
                             "mapping_mode": "static_code_snippet_analysis",
                         },
                     )
                 )
 
-    return [*facts, *_authorization_gap_candidates(facts)]
+    return facts
 
 
 def _current_function(function_stack: list[tuple[str, int]]) -> str | None:
@@ -220,12 +262,31 @@ def _authorization_gap_candidates(
         )
         if has_authz:
             continue
+        service_calls = [
+            fact.symbol_name
+            for fact in facts
+            if fact.fact_type == "service_call"
+            and isinstance(fact.payload, dict)
+            and fact.payload.get("caller") == handler
+            and isinstance(fact.symbol_name, str)
+        ]
+        has_service_authz = any(
+            fact.fact_type == "authz_check"
+            and isinstance(fact.payload, dict)
+            and fact.payload.get("handler") in service_calls
+            for fact in facts
+        )
+        if has_service_authz:
+            continue
         sink_count = sum(
             1
             for fact in facts
             if fact.fact_type == "sensitive_sink"
             and isinstance(fact.payload, dict)
-            and fact.payload.get("handler") == handler
+            and (
+                fact.payload.get("handler") == handler
+                or fact.payload.get("handler") in service_calls
+            )
         )
         if sink_count == 0:
             continue
@@ -281,6 +342,14 @@ def _called_names(line: str) -> list[str]:
     return calls
 
 
+def _dependency_authz_calls(line: str) -> list[str]:
+    return [
+        call_name
+        for call_name in DEPENDENCY_CALL_PATTERN.findall(line)
+        if _is_authz_call(call_name)
+    ]
+
+
 def _is_model_base(base_list: str) -> bool:
     return any(
         base.strip().endswith(marker)
@@ -309,6 +378,10 @@ def _is_sensitive_sink(call_name: str) -> bool:
     return call_name.lower() in SENSITIVE_SINK_NAMES
 
 
+def _is_service_call(call_name: str) -> bool:
+    return not _is_authz_call(call_name) and not _is_sensitive_sink(call_name)
+
+
 def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandidate]:
     seen: set[tuple[object, ...]] = set()
     deduped: list[CodebaseFactCandidate] = []
@@ -326,6 +399,39 @@ def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandid
         seen.add(key)
         deduped.append(fact)
     return deduped
+
+
+def _dedupe_handler_authz_facts(
+    facts: list[CodebaseFactCandidate],
+) -> list[CodebaseFactCandidate]:
+    deduped: list[CodebaseFactCandidate] = []
+    authz_index_by_handler: dict[tuple[str, str], int] = {}
+    for fact in facts:
+        handler = fact.payload.get("handler") if isinstance(fact.payload, dict) else None
+        if fact.fact_type != "authz_check" or not isinstance(handler, str):
+            deduped.append(fact)
+            continue
+        key = (fact.source_path, handler)
+        existing_index = authz_index_by_handler.get(key)
+        if existing_index is None:
+            authz_index_by_handler[key] = len(deduped)
+            deduped.append(fact)
+            continue
+        if _authz_hint_priority(fact.authz_hint) > _authz_hint_priority(
+            deduped[existing_index].authz_hint
+        ):
+            deduped[existing_index] = fact
+    return deduped
+
+
+def _authz_hint_priority(authz_hint: str | None) -> int:
+    if authz_hint == "owner_or_admin_check":
+        return 4
+    if authz_hint == "permission_check":
+        return 3
+    if authz_hint == "role_check":
+        return 2
+    return 1
 
 
 def _count_facts(facts: list[CodebaseFactCandidate], fact_type: str) -> int:

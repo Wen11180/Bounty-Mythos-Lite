@@ -36,6 +36,12 @@ function run(overrides: Partial<PipelineRunSummary>): PipelineRunSummary {
       rejectionRiskScore: 20,
     },
     memory: null,
+    refutationSummary: {
+      parked: 0,
+      refuted: 0,
+      total: 0,
+      unverified: 0,
+    },
     validationGate: {
       approval: "Human approval required.",
       evidenceCount: 0,
@@ -126,6 +132,35 @@ test("toPipelineRunSummary maps run-list evidence support summary for radar use"
   const scopeStage = summary.stages.find((stage) => stage.label === "Scope Guard");
   assert.match(scopeStage?.detail ?? "", /reviewed for low-risk planning/);
   assert.doesNotMatch(scopeStage?.detail ?? "", /cleared for low-risk planning/);
+});
+
+test("toPipelineRunSummary counts source audit refutation review states", () => {
+  const summary = toPipelineRunSummary({
+    asset: "api.example.com",
+    blocked_count: 0,
+    created_at: "2026-07-05T00:00:00Z",
+    evidence_count: 0,
+    hypothesis_count: 4,
+    id: "run_refutation_counts",
+    payload: {
+      hypotheses: [
+        { hypothesis: "authorization gap", refutation_status: "unverified" },
+        { hypothesis: "low-risk static finding", refutation_status: "parked" },
+        { hypothesis: "false positive", refutation_status: "refuted" },
+        { hypothesis: "legacy hypothesis without status" },
+      ],
+    },
+    policy_text_hash: "hash",
+    report_title: null,
+    scope_status: "in_scope",
+  });
+
+  assert.deepEqual(summary.refutationSummary, {
+    parked: 1,
+    refuted: 1,
+    total: 4,
+    unverified: 2,
+  });
 });
 
 test("toPipelineRunSummary suppresses identity and token-shaped display text", () => {
@@ -456,7 +491,35 @@ test("deriveIntelligenceRadar exposes top research value and safe next action", 
   assert.equal(radar.memoryReadyRuns, 1);
   assert.equal(radar.reusableLessonCount, 3);
   assert.equal(radar.reportableMomentum, 1);
+  assert.equal(radar.unverifiedHypothesisCount, 0);
   assert.equal(radar.topSignal?.reportDistance, "1 gate to report review");
+});
+
+test("deriveIntelligenceRadar summarizes refutation review pressure", () => {
+  const radar = deriveIntelligenceRadar([
+    run({
+      runId: "unverified",
+      refutationSummary: {
+        parked: 1,
+        refuted: 0,
+        total: 3,
+        unverified: 2,
+      },
+    }),
+    run({
+      runId: "refuted",
+      refutationSummary: {
+        parked: 0,
+        refuted: 1,
+        total: 1,
+        unverified: 0,
+      },
+    }),
+  ]);
+
+  assert.equal(radar.unverifiedHypothesisCount, 2);
+  assert.equal(radar.parkedHypothesisCount, 1);
+  assert.equal(radar.refutedHypothesisCount, 1);
 });
 
 test("dashboard radar keeps unsafe requirements visible beside memory lessons", async () => {
@@ -468,9 +531,13 @@ test("dashboard radar keeps unsafe requirements visible beside memory lessons", 
   assert.match(page, /value=\{intelligenceRadar\.reusableLessonCount\}/);
   assert.match(page, /label="Unsafe requirements"/);
   assert.match(page, /value=\{intelligenceRadar\.unsafeOrRedactedRequirementCount\}/);
+  assert.match(page, /label="Unverified hypotheses"/);
+  assert.match(page, /value=\{intelligenceRadar\.unverifiedHypothesisCount\}/);
+  assert.match(page, /Refutation review needed/);
   assert.match(page, /Review gate still required/);
   assert.doesNotMatch(page, /Approval or review still required/);
   assert.doesNotMatch(page, /Kept out of report chain/);
+  assert.doesNotMatch(page, /executeValidation|approveValidation|submitReport/);
 });
 
 test("dashboard redacts legacy finding and brain display fields", async () => {
@@ -583,6 +650,8 @@ test("dashboard navigation uses Mythos review workspace labels", async () => {
   assert.match(page, /Report Readiness/);
   assert.match(page, /Mythos Brain/);
   assert.match(page, /Scope Guard/);
+  assert.match(page, /Source Audit/);
+  assert.match(page, /href: "\/source-audit"/);
   assert.match(page, /resolveNavigationHref/);
   assert.match(page, /activeCampaignId/);
   assert.match(page, /if \(!activeCampaignId\) \{\s*return "\/campaigns";\s*\}/);
@@ -607,6 +676,29 @@ test("dashboard navigation uses Mythos review workspace labels", async () => {
   assert.doesNotMatch(page, /label: "Submissions"/);
   assert.doesNotMatch(page, /label: "Knowledge Base"/);
   assert.doesNotMatch(page, /label: "Settings \/ Policy Guard"/);
+});
+
+test("source audit page starts only the local human-gated audit flow", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/source-audit/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /runSourceAuditScan/);
+  assert.match(page, /sourceAuditScanAction/);
+  assert.match(page, /name="repo_path"/);
+  assert.match(page, /name="scope_path"/);
+  assert.match(page, /name="policy_text"/);
+  assert.match(page, /\/runs\/\$\{encodeURIComponent\(result\.run_id\)\}/);
+  assert.match(page, /local_files_only/);
+  assert.match(page, /no_live_requests/);
+  assert.match(page, /no_auto_submission/);
+  assert.match(page, /human_review_required/);
+  assert.match(page, /Scope Guard/);
+  assert.match(page, /submission_blocked/);
+  assert.doesNotMatch(
+    page,
+    /executeValidation|approveValidation|submitReport|createFindingCandidate|recordManualObservation|recordClaimReviewDecision/,
+  );
 });
 
 test("run detail labels fallback research audits as demo data", async () => {
@@ -656,6 +748,23 @@ test("run detail shows read-only exploit-chain reasoning summaries", async () =>
   assert.match(page, /Primitive\(s\)/);
   assert.match(page, /Precondition\(s\)/);
   assert.match(page, /Refutation question\(s\)/);
+  assert.doesNotMatch(page, /executeValidation|approveValidation|submitReport/);
+});
+
+test("run detail exposes source audit hypothesis refutation review state", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /sourceAuditHypotheses/);
+  assert.match(page, /Source Audit Hypotheses/);
+  assert.match(page, /Refutation status/);
+  assert.match(page, /Priority score/);
+  assert.match(page, /ranking_reasons/);
+  assert.match(page, /Ranking reasons/);
+  assert.match(page, /false_positive_checks/);
+  assert.match(page, /False positive checks/);
+  assert.match(page, /Evidence needed/);
   assert.doesNotMatch(page, /executeValidation|approveValidation|submitReport/);
 });
 
@@ -733,6 +842,44 @@ test("report preview can promote reviewed claims to finding candidates", async (
   assert.doesNotMatch(page, />Blockers</);
   assert.match(page, /Promotion waits for a live, human-reviewed observed claim/);
   assert.match(page, /submission_blocked/);
+});
+
+test("report preview summarizes source audit refutation review state", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /sourceAuditHypotheses/);
+  assert.match(page, /Refutation Review/);
+  assert.match(page, /refutation_status/);
+  assert.match(page, /priority_score/);
+  assert.match(page, /ranking_reasons/);
+  assert.match(page, /Ranking reasons/);
+  assert.match(page, /false_positive_checks/);
+  assert.match(page, /False positive checks/);
+  assert.match(page, /Evidence needed/);
+  assert.doesNotMatch(page, /approveValidation|executeValidation|submitReport/);
+});
+
+test("report preview can record human claim review decisions", async () => {
+  const page = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
+  );
+
+  assert.match(page, /recordClaimReviewDecision/);
+  assert.match(page, /recordClaimReviewDecisionAction/);
+  assert.match(page, /name="claim_id"/);
+  assert.match(page, /name="decision"/);
+  assert.match(page, /name="reviewer"/);
+  assert.match(page, /name="rationale"/);
+  assert.match(page, /name="evidence_refs"/);
+  assert.match(page, /confirmed_observed_fact/);
+  assert.match(page, /needs_evidence/);
+  assert.match(page, /refuted/);
+  assert.match(page, /not_reportable/);
+  assert.match(page, /Record Claim Review/);
+  assert.match(page, /Submission remains manual/);
+  assert.doesNotMatch(page, /approveValidation|executeValidation|submitReport/);
 });
 
 test("report preview labels blocked promotion query flags as review gates", async () => {
@@ -861,10 +1008,15 @@ test("validation workspace can record safe manual observations", async () => {
   assert.match(page, /recordManualObservation/);
   assert.match(page, /recordManualObservationAction/);
   assert.match(page, /name="claim_id"/);
+  assert.match(page, /name="observation_type"/);
   assert.match(page, /name="observation"/);
   assert.match(page, /name="evidence_refs"/);
+  assert.match(page, /request_response_diff/);
+  assert.match(page, /role_matrix_observation/);
+  assert.match(page, /formText\(formData, "observation_type"\)/);
   assert.match(page, /test_accounts_only/);
   assert.match(page, /no_real_user_data/);
+  assert.doesNotMatch(page, /observation_type: "manual_observation"/);
 });
 
 test("validation workspace explains redacted-only evidence gaps", async () => {
@@ -938,4 +1090,15 @@ test("artifact detail describes report-chain state as review readiness", async (
   assert.doesNotMatch(page, /Eligible for report chain/);
   assert.doesNotMatch(page, /Blocked for report chain/);
   assert.doesNotMatch(page, /\? "Allowed" : "Blocked"/);
+});
+
+test("web API types carry source audit hypothesis refutation metadata", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("./api.ts", import.meta.url), "utf8"),
+  );
+
+  assert.match(source, /export type PipelineHypothesis = \{[\s\S]*refutation_status\?: string/);
+  assert.match(source, /export type PipelineHypothesis = \{[\s\S]*false_positive_checks\?: string\[\]/);
+  assert.match(source, /export type PipelineHypothesis = \{[\s\S]*priority_score\?: number/);
+  assert.match(source, /export type PipelineHypothesis = \{[\s\S]*ranking_reasons\?: string\[\]/);
 });
