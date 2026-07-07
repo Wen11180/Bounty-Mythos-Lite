@@ -1087,6 +1087,65 @@ class FileRepository:
     assert "authorization_gap_candidate" not in fact_types
 
 
+def test_map_authorized_code_files_follows_chained_same_class_field_alias_to_repository_owner_filter():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from app.services.files import FileExportService
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    service = FileExportService()
+    return service.export_file_for_user(file_id, current_user)
+""",
+                },
+                {
+                    "path": "apps/api/services/files.py",
+                    "content": """
+from app.repositories.files import FileRepository
+
+class FileExportService:
+    def __init__(self):
+        repository = FileRepository()
+        self.loader = repository.load_for_user
+        self.safe_loader = self.loader
+
+    def export_file_for_user(self, file_id: str, current_user):
+        file = self.safe_loader(file_id, current_user)
+        return send_file(file.path)
+""",
+                },
+                {
+                    "path": "apps/api/repositories/files.py",
+                    "content": """
+class FileRepository:
+    def load_for_user(self, file_id: str, current_user):
+        return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    service_calls = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "service_call"
+    ]
+
+    assert "export_file_for_user" in service_calls
+    assert "load_for_user" in service_calls
+    assert "safe_loader" not in service_calls
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
 def test_map_authorized_code_files_preserves_tab_indented_handler_scope():
     result = map_authorized_code_files(
         {

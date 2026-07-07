@@ -32,6 +32,10 @@ SELF_CALL_ALIAS_PATTERN = re.compile(
     r"^\s*self\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"[A-Za-z_][A-Za-z0-9_.]*\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
+SELF_NAME_ALIAS_PATTERN = re.compile(
+    r"^\s*self\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"self\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
 LOCAL_NAME_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
@@ -446,6 +450,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         if current_class is not None and field_alias is not None:
             alias_name, call_name = field_alias
             class_call_aliases.setdefault(current_class, {})[alias_name] = call_name
+        chained_field_alias = _self_name_alias(line)
+        if current_class is not None and chained_field_alias is not None:
+            alias_name, existing_alias = chained_field_alias
+            class_aliases = class_call_aliases.setdefault(current_class, {})
+            if existing_alias in class_aliases:
+                class_aliases[alias_name] = class_aliases[existing_alias]
         chained_alias = _local_name_alias(line)
         if current_function is not None and chained_alias is not None:
             alias_name, existing_alias = chained_alias
@@ -678,6 +688,13 @@ def _local_call_alias(line: str) -> tuple[str, str] | None:
 
 def _self_call_alias(line: str) -> tuple[str, str] | None:
     match = SELF_CALL_ALIAS_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _self_name_alias(line: str) -> tuple[str, str] | None:
+    match = SELF_NAME_ALIAS_PATTERN.match(line)
     if match is None:
         return None
     return match.group(1), match.group(2)
