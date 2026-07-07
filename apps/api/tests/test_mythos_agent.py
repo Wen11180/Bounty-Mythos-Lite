@@ -7,7 +7,14 @@ from sqlalchemy.pool import StaticPool
 
 from app.cli import main as cli_main
 from app.db import Base
-from app.mythos_agent import AgentGoal, get_agent_gates, get_agent_status, run_agent_goal
+from app.mythos_agent import (
+    AgentGoal,
+    get_agent_gates,
+    get_agent_next,
+    get_agent_status,
+    record_agent_review_note,
+    run_agent_goal,
+)
 from app.repository import DatabaseRepository, seed_sample_data
 
 
@@ -302,6 +309,189 @@ def test_agent_gates_lists_reviewable_approval_and_validation_details(tmp_path):
         session.close()
 
 
+def test_agent_review_note_records_human_note_without_approving_gate(tmp_path):
+    repo, scope = write_authorized_repo(tmp_path)
+    repository, session = build_repository()
+    try:
+        result = run_agent_goal(
+            AgentGoal(
+                goal="Run a bounded safe research loop",
+                repo_path=repo,
+                scope_path=scope,
+                max_steps=6,
+            ),
+            repository=repository,
+        )
+        gates = get_agent_gates(campaign_id=result.campaign_id, repository=repository)
+        gate_ref = f"approval:{gates.approvals[0]['id']}"
+
+        note = record_agent_review_note(
+            campaign_id=result.campaign_id,
+            gate_ref=gate_ref,
+            reviewer="lead_reviewer",
+            decision="needs_evidence",
+            note="Need sanitized role matrix before approval.",
+            repository=repository,
+        )
+
+        stages = repository.list_campaign_pipeline_stages(result.campaign_id)
+        approvals = repository.list_campaign_approval_records(result.campaign_id)
+        validation_runs = repository.list_campaign_validation_runs(result.campaign_id)
+        assert note.status == "recorded"
+        assert note.execution_allowed is False
+        assert note.approval_allowed is False
+        assert note.stage_id in {stage.id for stage in stages}
+        assert any(
+            stage.stage_key == "agent_gate_review_note"
+            and stage.input_refs == [gate_ref]
+            and stage.safety_gate_state == "human_review_recorded"
+            and stage.payload["decision"] == "needs_evidence"
+            and stage.payload["execution_allowed"] is False
+            and stage.payload["approval_allowed"] is False
+            for stage in stages
+        )
+        assert all(approval.status == "pending" for approval in approvals)
+        assert all(run.allowed_to_execute is False for run in validation_runs)
+    finally:
+        session.close()
+
+
+def test_agent_gates_summarizes_existing_review_notes(tmp_path):
+    repo, scope = write_authorized_repo(tmp_path)
+    repository, session = build_repository()
+    try:
+        result = run_agent_goal(
+            AgentGoal(
+                goal="Run a bounded safe research loop",
+                repo_path=repo,
+                scope_path=scope,
+                max_steps=6,
+            ),
+            repository=repository,
+        )
+        gates = get_agent_gates(campaign_id=result.campaign_id, repository=repository)
+        gate_ref = f"approval:{gates.approvals[0]['id']}"
+        record_agent_review_note(
+            campaign_id=result.campaign_id,
+            gate_ref=gate_ref,
+            reviewer="lead_reviewer",
+            decision="needs_evidence",
+            note="Need sanitized role matrix before approval.",
+            repository=repository,
+        )
+        second_note = record_agent_review_note(
+            campaign_id=result.campaign_id,
+            gate_ref=gate_ref,
+            reviewer="security_owner",
+            decision="ready_for_approval_review",
+            note="Sanitized evidence is attached.",
+            repository=repository,
+        )
+
+        updated_gates = get_agent_gates(campaign_id=result.campaign_id, repository=repository)
+
+        approval = updated_gates.approvals[0]
+        assert approval["review_note_count"] == 2
+        assert approval["latest_review_note"] == {
+            "stage_id": second_note.stage_id,
+            "reviewer": "security_owner",
+            "decision": "ready_for_approval_review",
+        }
+        assert "Sanitized evidence is attached." not in json.dumps(updated_gates.to_dict())
+        approvals = repository.list_campaign_approval_records(result.campaign_id)
+        validation_runs = repository.list_campaign_validation_runs(result.campaign_id)
+        assert all(approval_record.status == "pending" for approval_record in approvals)
+        assert all(run.allowed_to_execute is False for run in validation_runs)
+    finally:
+        session.close()
+
+
+def test_agent_next_recommends_review_note_for_unreviewed_gate(tmp_path):
+    repo, scope = write_authorized_repo(tmp_path)
+    repository, session = build_repository()
+    try:
+        result = run_agent_goal(
+            AgentGoal(
+                goal="Run a bounded safe research loop",
+                repo_path=repo,
+                scope_path=scope,
+                max_steps=6,
+            ),
+            repository=repository,
+        )
+        gates = get_agent_gates(campaign_id=result.campaign_id, repository=repository)
+        approval_id = gates.approvals[0]["id"]
+
+        next_step = get_agent_next(
+            campaign_id=result.campaign_id,
+            repository=repository,
+            goal=result.goal,
+            repo_path=result.repo_path,
+            scope_path=result.scope_path,
+        )
+
+        assert next_step.status == "awaiting_human_review"
+        assert next_step.execution_allowed is False
+        assert next_step.approval_allowed is False
+        assert next_step.actions[0]["action"] == "inspect_gates"
+        assert next_step.actions[1] == {
+            "action": "write_review_note",
+            "gate_ref": f"approval:{approval_id}",
+            "reason": "gate_has_no_review_note",
+        }
+        approvals = repository.list_campaign_approval_records(result.campaign_id)
+        validation_runs = repository.list_campaign_validation_runs(result.campaign_id)
+        assert all(approval.status == "pending" for approval in approvals)
+        assert all(run.allowed_to_execute is False for run in validation_runs)
+    finally:
+        session.close()
+
+
+def test_agent_next_recommends_evidence_review_after_gate_note(tmp_path):
+    repo, scope = write_authorized_repo(tmp_path)
+    repository, session = build_repository()
+    try:
+        result = run_agent_goal(
+            AgentGoal(
+                goal="Run a bounded safe research loop",
+                repo_path=repo,
+                scope_path=scope,
+                max_steps=6,
+            ),
+            repository=repository,
+        )
+        gates = get_agent_gates(campaign_id=result.campaign_id, repository=repository)
+        gate_ref = f"approval:{gates.approvals[0]['id']}"
+        record_agent_review_note(
+            campaign_id=result.campaign_id,
+            gate_ref=gate_ref,
+            reviewer="lead_reviewer",
+            decision="needs_evidence",
+            note="Need sanitized role matrix before approval.",
+            repository=repository,
+        )
+
+        next_step = get_agent_next(
+            campaign_id=result.campaign_id,
+            repository=repository,
+            goal=result.goal,
+            repo_path=result.repo_path,
+            scope_path=result.scope_path,
+        )
+
+        assert next_step.actions[0]["action"] == "inspect_gates"
+        assert next_step.actions[1] == {
+            "action": "collect_redacted_evidence",
+            "gate_ref": gate_ref,
+            "reason": "latest_review_decision_needs_evidence",
+        }
+        assert "Need sanitized role matrix before approval." not in json.dumps(
+            next_step.to_dict()
+        )
+    finally:
+        session.close()
+
+
 def test_cli_agent_gates_reads_receipt_and_prints_gate_ids(tmp_path, capsys):
     repo, scope = write_authorized_repo(tmp_path)
     database_path = tmp_path / "agent.sqlite"
@@ -343,3 +533,191 @@ def test_cli_agent_gates_reads_receipt_and_prints_gate_ids(tmp_path, capsys):
     assert "validation_run_" in captured.out
     assert "two_account_authorization_check" in captured.out
     assert "execution_allowed: false" in captured.out
+
+
+def test_cli_agent_review_note_records_note_from_receipt(tmp_path, capsys):
+    repo, scope = write_authorized_repo(tmp_path)
+    database_path = tmp_path / "agent.sqlite"
+    receipt_path = tmp_path / "agent-receipt.json"
+
+    cli_main(
+        [
+            "agent",
+            "--repo",
+            str(repo),
+            "--scope",
+            str(scope),
+            "--goal",
+            "Run a bounded safe research loop",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--max-steps",
+            "6",
+            "--receipt-output",
+            str(receipt_path),
+        ]
+    )
+    capsys.readouterr()
+    gates_exit_code = cli_main(
+        [
+            "agent-gates",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+        ]
+    )
+    gates_output = capsys.readouterr().out
+    approval_id = next(
+        line.split("id: ", 1)[1].split(";", 1)[0]
+        for line in gates_output.splitlines()
+        if "approval_" in line
+    )
+
+    exit_code = cli_main(
+        [
+            "agent-review-note",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+            "--gate-ref",
+            f"approval:{approval_id}",
+            "--reviewer",
+            "lead_reviewer",
+            "--decision",
+            "needs_evidence",
+            "--note",
+            "Need sanitized role matrix before approval.",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert gates_exit_code == 0
+    assert exit_code == 0
+    assert "mythos agent review note" in captured.out
+    assert "status: recorded" in captured.out
+    assert f"gate_ref: approval:{approval_id}" in captured.out
+    assert "execution_allowed: false" in captured.out
+    assert "approval_allowed: false" in captured.out
+
+
+def test_cli_agent_gates_shows_review_note_summary_without_note_body(tmp_path, capsys):
+    repo, scope = write_authorized_repo(tmp_path)
+    database_path = tmp_path / "agent.sqlite"
+    receipt_path = tmp_path / "agent-receipt.json"
+
+    cli_main(
+        [
+            "agent",
+            "--repo",
+            str(repo),
+            "--scope",
+            str(scope),
+            "--goal",
+            "Run a bounded safe research loop",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--max-steps",
+            "6",
+            "--receipt-output",
+            str(receipt_path),
+        ]
+    )
+    capsys.readouterr()
+    cli_main(
+        [
+            "agent-gates",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+        ]
+    )
+    gates_output = capsys.readouterr().out
+    approval_id = next(
+        line.split("id: ", 1)[1].split(";", 1)[0]
+        for line in gates_output.splitlines()
+        if "approval_" in line
+    )
+    cli_main(
+        [
+            "agent-review-note",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+            "--gate-ref",
+            f"approval:{approval_id}",
+            "--reviewer",
+            "lead_reviewer",
+            "--decision",
+            "needs_evidence",
+            "--note",
+            "Need sanitized role matrix before approval.",
+        ]
+    )
+    capsys.readouterr()
+
+    exit_code = cli_main(
+        [
+            "agent-gates",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "review_note_count: 1" in captured.out
+    assert "latest_review_decision: needs_evidence" in captured.out
+    assert "latest_review_reviewer: lead_reviewer" in captured.out
+    assert "Need sanitized role matrix before approval." not in captured.out
+
+
+def test_cli_agent_next_reads_receipt_and_prints_recommendations(tmp_path, capsys):
+    repo, scope = write_authorized_repo(tmp_path)
+    database_path = tmp_path / "agent.sqlite"
+    receipt_path = tmp_path / "agent-receipt.json"
+
+    cli_main(
+        [
+            "agent",
+            "--repo",
+            str(repo),
+            "--scope",
+            str(scope),
+            "--goal",
+            "Run a bounded safe research loop",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--max-steps",
+            "6",
+            "--receipt-output",
+            str(receipt_path),
+        ]
+    )
+    capsys.readouterr()
+
+    exit_code = cli_main(
+        [
+            "agent-next",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "mythos agent next" in captured.out
+    assert "status: awaiting_human_review" in captured.out
+    assert "execution_allowed: false" in captured.out
+    assert "approval_allowed: false" in captured.out
+    assert "recommended_actions:" in captured.out
+    assert "inspect_gates" in captured.out
+    assert "write_review_note" in captured.out
+    assert "approval_" in captured.out

@@ -135,24 +135,34 @@ class AgentGates:
         if not self.approvals:
             lines.append("- none")
         for approval in self.approvals:
+            latest_review_note = approval.get("latest_review_note") or {}
             lines.append(
                 "- "
                 f"id: {approval['id']}; "
                 f"status: {approval['status']}; "
                 f"validation_mode: {approval['validation_mode']}; "
-                f"plan_digest: {approval['plan_digest']}"
+                f"plan_digest: {approval['plan_digest']}; "
+                f"review_note_count: {approval.get('review_note_count', 0)}; "
+                f"latest_review_decision: {latest_review_note.get('decision', 'none')}; "
+                f"latest_review_reviewer: {latest_review_note.get('reviewer', 'none')}; "
+                f"latest_review_stage_id: {latest_review_note.get('stage_id', 'none')}"
             )
         lines.append("validation_runs:")
         if not self.validation_runs:
             lines.append("- none")
         for run in self.validation_runs:
+            latest_review_note = run.get("latest_review_note") or {}
             lines.append(
                 "- "
                 f"id: {run['id']}; "
                 f"status: {run['status']}; "
                 f"target_ref: {run['target_ref']}; "
                 f"plan_digest: {run['plan_digest']}; "
-                f"execution_allowed: {str(run['execution_allowed']).lower()}"
+                f"execution_allowed: {str(run['execution_allowed']).lower()}; "
+                f"review_note_count: {run.get('review_note_count', 0)}; "
+                f"latest_review_decision: {latest_review_note.get('decision', 'none')}; "
+                f"latest_review_reviewer: {latest_review_note.get('reviewer', 'none')}; "
+                f"latest_review_stage_id: {latest_review_note.get('stage_id', 'none')}"
             )
         return "\n".join(lines)
 
@@ -162,6 +172,88 @@ class AgentGates:
             "approvals": self.approvals,
             "validation_runs": self.validation_runs,
             "execution_allowed": self.execution_allowed,
+        }
+
+
+@dataclass(frozen=True)
+class AgentReviewNote:
+    status: str
+    campaign_id: str | None
+    gate_ref: str
+    reviewer: str
+    decision: str
+    note: str
+    stage_id: str | None = None
+    stop_reasons: list[str] = field(default_factory=list)
+    execution_allowed: bool = False
+    approval_allowed: bool = False
+
+    def to_text(self) -> str:
+        return "\n".join(
+            [
+                "mythos agent review note",
+                f"status: {self.status}",
+                f"campaign_id: {self.campaign_id or 'none'}",
+                f"gate_ref: {self.gate_ref}",
+                f"stage_id: {self.stage_id or 'none'}",
+                f"reviewer: {self.reviewer}",
+                f"decision: {self.decision}",
+                f"stop_reasons: {', '.join(self.stop_reasons) if self.stop_reasons else 'none'}",
+                f"execution_allowed: {str(self.execution_allowed).lower()}",
+                f"approval_allowed: {str(self.approval_allowed).lower()}",
+            ]
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "campaign_id": self.campaign_id,
+            "gate_ref": self.gate_ref,
+            "reviewer": self.reviewer,
+            "decision": self.decision,
+            "note": self.note,
+            "stage_id": self.stage_id,
+            "stop_reasons": self.stop_reasons,
+            "execution_allowed": self.execution_allowed,
+            "approval_allowed": self.approval_allowed,
+        }
+
+
+@dataclass(frozen=True)
+class AgentNext:
+    status: str
+    campaign_id: str | None
+    actions: list[dict]
+    execution_allowed: bool = False
+    approval_allowed: bool = False
+
+    def to_text(self) -> str:
+        lines = [
+            "mythos agent next",
+            f"status: {self.status}",
+            f"campaign_id: {self.campaign_id or 'none'}",
+            f"execution_allowed: {str(self.execution_allowed).lower()}",
+            f"approval_allowed: {str(self.approval_allowed).lower()}",
+            "recommended_actions:",
+        ]
+        if not self.actions:
+            lines.append("- none")
+        for action in self.actions:
+            lines.append(
+                "- "
+                f"{action['action']}: "
+                f"gate_ref={action.get('gate_ref', 'none')}; "
+                f"reason={action.get('reason', 'none')}"
+            )
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "campaign_id": self.campaign_id,
+            "actions": self.actions,
+            "execution_allowed": self.execution_allowed,
+            "approval_allowed": self.approval_allowed,
         }
 
 
@@ -312,6 +404,10 @@ def get_agent_gates(
     if campaign_id is None or repository.get_campaign(campaign_id) is None:
         return AgentGates(campaign_id=campaign_id, approvals=[], validation_runs=[])
 
+    review_notes = _gate_review_note_summaries(
+        campaign_id=campaign_id,
+        repository=repository,
+    )
     approvals = [
         {
             "id": approval.id,
@@ -322,6 +418,10 @@ def get_agent_gates(
             "validation_mode": approval.validation_mode,
             "plan_digest": approval.plan_digest,
             "safety_gate_state": approval.safety_gate_state,
+            **review_notes.get(
+                f"approval:{approval.id}",
+                {"review_note_count": 0, "latest_review_note": None},
+            ),
         }
         for approval in repository.list_campaign_approval_records(campaign_id)
         if approval.status in {"pending", "requested"}
@@ -336,6 +436,10 @@ def get_agent_gates(
             "approval_required": run.approval_required,
             "execution_allowed": run.allowed_to_execute,
             "safety_gate_state": run.safety_gate_state,
+            **review_notes.get(
+                f"validation_run:{run.id}",
+                {"review_note_count": 0, "latest_review_note": None},
+            ),
         }
         for run in repository.list_campaign_validation_runs(campaign_id)
         if run.approval_required and run.allowed_to_execute is False
@@ -344,6 +448,102 @@ def get_agent_gates(
         campaign_id=campaign_id,
         approvals=approvals,
         validation_runs=validation_runs,
+    )
+
+
+def get_agent_next(
+    *,
+    campaign_id: str | None,
+    repository: DatabaseRepository,
+    goal: str,
+    repo_path: str,
+    scope_path: str,
+) -> AgentNext:
+    status = get_agent_status(
+        campaign_id=campaign_id,
+        repository=repository,
+        goal=goal,
+        repo_path=repo_path,
+        scope_path=scope_path,
+    )
+    if campaign_id is None or status.status == "blocked":
+        return AgentNext(
+            status=status.status,
+            campaign_id=campaign_id,
+            actions=[
+                {
+                    "action": "start_agent",
+                    "reason": "campaign_not_ready",
+                }
+            ],
+        )
+
+    gates = get_agent_gates(campaign_id=campaign_id, repository=repository)
+    actions = _agent_next_actions(gates)
+    return AgentNext(
+        status=status.status,
+        campaign_id=campaign_id,
+        actions=actions,
+    )
+
+
+def record_agent_review_note(
+    *,
+    campaign_id: str | None,
+    gate_ref: str,
+    reviewer: str,
+    decision: str,
+    note: str,
+    repository: DatabaseRepository,
+) -> AgentReviewNote:
+    if campaign_id is None or repository.get_campaign(campaign_id) is None:
+        return AgentReviewNote(
+            status="blocked",
+            campaign_id=campaign_id,
+            gate_ref=gate_ref,
+            reviewer=reviewer,
+            decision=decision,
+            note=note,
+            stop_reasons=["campaign_not_found"],
+        )
+    if not _gate_ref_exists(campaign_id=campaign_id, gate_ref=gate_ref, repository=repository):
+        return AgentReviewNote(
+            status="blocked",
+            campaign_id=campaign_id,
+            gate_ref=gate_ref,
+            reviewer=reviewer,
+            decision=decision,
+            note=note,
+            stop_reasons=["gate_not_found"],
+        )
+
+    stage = repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign_id,
+        task_id=None,
+        stage_key="agent_gate_review_note",
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign_id)),
+        status="recorded",
+        input_refs=[gate_ref],
+        output_refs=[],
+        safety_gate_state="human_review_recorded",
+        stop_reason=None,
+        payload={
+            "reviewer": reviewer,
+            "decision": decision,
+            "note": note,
+            "execution_allowed": False,
+            "approval_allowed": False,
+        },
+    )
+    return AgentReviewNote(
+        status="recorded",
+        campaign_id=campaign_id,
+        gate_ref=gate_ref,
+        reviewer=reviewer,
+        decision=decision,
+        note=note,
+        stage_id=stage.id,
     )
 
 
@@ -429,3 +629,90 @@ def _status_next_actions(
     if pending_approval_count:
         return ["review_approval_queue"]
     return []
+
+
+def _gate_ref_exists(
+    *,
+    campaign_id: str,
+    gate_ref: str,
+    repository: DatabaseRepository,
+) -> bool:
+    if gate_ref.startswith("approval:"):
+        approval_id = gate_ref.removeprefix("approval:")
+        return any(
+            approval.id == approval_id
+            for approval in repository.list_campaign_approval_records(campaign_id)
+        )
+    if gate_ref.startswith("validation_run:"):
+        validation_run_id = gate_ref.removeprefix("validation_run:")
+        return any(
+            run.id == validation_run_id
+            for run in repository.list_campaign_validation_runs(campaign_id)
+        )
+    return False
+
+
+def _gate_review_note_summaries(
+    *,
+    campaign_id: str,
+    repository: DatabaseRepository,
+) -> dict[str, dict]:
+    summaries: dict[str, dict] = {}
+    for stage in repository.list_campaign_pipeline_stages(campaign_id):
+        if stage.stage_key != "agent_gate_review_note":
+            continue
+        if not stage.input_refs:
+            continue
+        gate_ref = stage.input_refs[0]
+        payload = stage.payload if isinstance(stage.payload, dict) else {}
+        summary = summaries.setdefault(
+            gate_ref,
+            {"review_note_count": 0, "latest_review_note": None},
+        )
+        summary["review_note_count"] += 1
+        summary["latest_review_note"] = {
+            "stage_id": stage.id,
+            "reviewer": payload.get("reviewer", "unknown"),
+            "decision": payload.get("decision", "unknown"),
+        }
+    return summaries
+
+
+def _agent_next_actions(gates: AgentGates) -> list[dict]:
+    if not gates.approvals and not gates.validation_runs:
+        return [{"action": "continue_agent", "reason": "no_open_gates"}]
+
+    actions = [{"action": "inspect_gates", "reason": "human_review_required"}]
+    for gate in [*gates.approvals, *gates.validation_runs]:
+        gate_ref = _gate_ref_for_gate(gate)
+        if gate.get("review_note_count", 0) == 0:
+            actions.append(
+                {
+                    "action": "write_review_note",
+                    "gate_ref": gate_ref,
+                    "reason": "gate_has_no_review_note",
+                }
+            )
+            return actions
+        latest_note = gate.get("latest_review_note") or {}
+        latest_decision = latest_note.get("decision")
+        if latest_decision == "needs_evidence":
+            actions.append(
+                {
+                    "action": "collect_redacted_evidence",
+                    "gate_ref": gate_ref,
+                    "reason": "latest_review_decision_needs_evidence",
+                }
+            )
+            return actions
+    actions.append({"action": "continue_human_review", "reason": "review_notes_recorded"})
+    return actions
+
+
+def _gate_ref_for_gate(gate: dict) -> str:
+    gate_id = str(gate.get("id", ""))
+    if gate_id.startswith("approval_"):
+        return f"approval:{gate_id}"
+    if gate_id.startswith("validation_run_"):
+        return f"validation_run:{gate_id}"
+    return gate_id

@@ -10,7 +10,14 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import create_tables
 from app.deep_research import build_knowledge_artifact
-from app.mythos_agent import AgentGoal, get_agent_gates, get_agent_status, run_agent_goal
+from app.mythos_agent import (
+    AgentGoal,
+    get_agent_gates,
+    get_agent_next,
+    get_agent_status,
+    record_agent_review_note,
+    run_agent_goal,
+)
 from app.mythos_chat import run_terminal_chat
 from app.repository import DatabaseRepository
 from app.source_audit import (
@@ -52,10 +59,22 @@ def main(argv: list[str] | None = None) -> int:
     status.add_argument("--database-url", required=True)
     status.add_argument("--campaign-id")
     status.add_argument("--resume-from")
+    next_step = subparsers.add_parser("agent-next")
+    next_step.add_argument("--database-url", required=True)
+    next_step.add_argument("--campaign-id")
+    next_step.add_argument("--resume-from")
     gates = subparsers.add_parser("agent-gates")
     gates.add_argument("--database-url", required=True)
     gates.add_argument("--campaign-id")
     gates.add_argument("--resume-from")
+    review_note = subparsers.add_parser("agent-review-note")
+    review_note.add_argument("--database-url", required=True)
+    review_note.add_argument("--campaign-id")
+    review_note.add_argument("--resume-from")
+    review_note.add_argument("--gate-ref", required=True)
+    review_note.add_argument("--reviewer", required=True)
+    review_note.add_argument("--decision", required=True)
+    review_note.add_argument("--note", required=True)
 
     args = parser.parse_args(argv)
     if args.command == "chat":
@@ -64,8 +83,12 @@ def main(argv: list[str] | None = None) -> int:
         return run_agent_command(args)
     if args.command == "agent-status":
         return run_agent_status_command(args)
+    if args.command == "agent-next":
+        return run_agent_next_command(args)
     if args.command == "agent-gates":
         return run_agent_gates_command(args)
+    if args.command == "agent-review-note":
+        return run_agent_review_note_command(args)
     if args.command != "scan":
         parser.error("unsupported command")
     if args.pipeline_run_output and not args.pipeline_db:
@@ -150,6 +173,43 @@ def run_agent_gates_command(args) -> int:
         )
     print(gates.to_text())
     return 0
+
+
+def run_agent_next_command(args) -> int:
+    resume = _read_agent_resume(args.resume_from)
+    campaign_id = args.campaign_id or resume.get("campaign_id")
+    engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
+    create_tables(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session:
+        next_step = get_agent_next(
+            campaign_id=campaign_id,
+            repository=DatabaseRepository(session),
+            goal=str(resume.get("goal", "")),
+            repo_path=str(resume.get("repo_path", "")),
+            scope_path=str(resume.get("scope_path", "")),
+        )
+    print(next_step.to_text())
+    return 0
+
+
+def run_agent_review_note_command(args) -> int:
+    resume = _read_agent_resume(args.resume_from)
+    campaign_id = args.campaign_id or resume.get("campaign_id")
+    engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
+    create_tables(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session:
+        review_note = record_agent_review_note(
+            campaign_id=campaign_id,
+            gate_ref=args.gate_ref,
+            reviewer=args.reviewer,
+            decision=args.decision,
+            note=args.note,
+            repository=DatabaseRepository(session),
+        )
+    print(review_note.to_text())
+    return 0 if review_note.status == "recorded" else 2
 
 
 def run_agent_status_command(args) -> int:
