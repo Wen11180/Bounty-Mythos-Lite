@@ -64,6 +64,27 @@ test("candidate cards expose review rationale and ranking reasons", () => {
   assert.equal(card.status, "needs_evidence");
 });
 
+test("candidate cards expose safe validation plan and safety blockers", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-004",
+      vuln_type: "authorization",
+      risk: "high",
+      safe_validation_plan: ["Use only local test accounts.", "Require human approval."],
+      safety_blockers: ["execute_live_validation", "submit_report"],
+      validation_mode: "two_account_authorization_check",
+      safe_verification: true,
+    },
+  ]);
+
+  assert.equal(card.validationMode, "two_account_authorization_check");
+  assert.deepEqual(card.safeValidationPlan, [
+    "Use only local test accounts.",
+    "Require human approval.",
+  ]);
+  assert.deepEqual(card.safetyBlockers, ["execute_live_validation", "submit_report"]);
+});
+
 test("candidate cards keep unsafe candidates visibly blocked", () => {
   const [card] = toStudioCandidateCards([
     {
@@ -166,4 +187,15 @@ test("studio workbench surfaces candidate rationale and ranking reasons", async 
 
   assert.match(workbench, /candidate\.reason/);
   assert.match(workbench, /Ranking reasons/);
+});
+
+test("studio workbench surfaces validation plan and safety blockers", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /Safe validation plan/);
+  assert.match(workbench, /Safety blockers/);
+  assert.match(workbench, /candidate\.validationMode/);
 });

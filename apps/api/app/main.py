@@ -2442,12 +2442,39 @@ def _studio_candidate_from_hypothesis(
             hypothesis.get("false_positive_checks", [])
         ),
         "ranking_reasons": safe_preview_lines(hypothesis.get("ranking_reasons", [])),
+        "validation_mode": safe_preview_text(hypothesis.get("validation_mode", "manual_review")),
+        "safe_validation_plan": _studio_safe_validation_plan(hypothesis),
+        "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+        ],
         "safe_verification": hypothesis.get("validation_mode") != "blocked",
         "priority_score": hypothesis.get("priority_score", 0),
         "source_facts": safe_source_facts
         + _studio_matching_surface_facts(hypothesis, imported_surface_facts or []),
         "submission_blocked": True,
     }
+
+
+def _studio_safe_validation_plan(hypothesis: dict) -> list[str]:
+    validation_mode = safe_preview_text(hypothesis.get("validation_mode", "manual_review"))
+    if validation_mode == "two_account_authorization_check":
+        return [
+            "Prepare two authorized test accounts in a local or explicitly approved test environment.",
+            "Confirm the target object belongs to account A before any access comparison.",
+            "Have a human reviewer approve any non-destructive role or ownership check before execution.",
+        ]
+    if validation_mode == "blocked":
+        return [
+            "Do not execute validation for this candidate.",
+            "Review scope, policy, and redaction requirements before changing the candidate state.",
+        ]
+    return [
+        "Review the linked code path and imported artifact context locally.",
+        "Attach sanitized observations before promoting any claim.",
+        "Keep report submission blocked until human evidence review is complete.",
+    ]
 
 
 def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:

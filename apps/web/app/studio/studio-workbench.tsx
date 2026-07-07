@@ -327,12 +327,15 @@ export function StudioWorkbench() {
                   <StatusRow label="Endpoint" value={candidate.affectedEndpoint} />
                   <StatusRow label="Code path" value={candidate.affectedCodePath} />
                   <StatusRow label="Priority" value={String(candidate.priorityScore)} />
+                  <StatusRow label="Validation mode" value={candidate.validationMode} />
                 </dl>
                 <div className="mt-4">
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">Reason</p>
                   <p className="mt-2 text-[var(--muted)]">{candidate.reason}</p>
                 </div>
                 <ListBlock title="Ranking reasons" items={candidate.rankingReasons} />
+                <ListBlock title="Safe validation plan" items={candidate.safeValidationPlan} />
+                <ListBlock title="Safety blockers" items={candidate.safetyBlockers} />
                 <ListBlock title="Evidence needed" items={candidate.evidenceNeeds} />
                 <ListBlock title="False-positive checks" items={candidate.refutationQuestions} />
               </article>

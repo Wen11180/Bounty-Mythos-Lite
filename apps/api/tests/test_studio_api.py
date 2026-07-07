@@ -136,6 +136,17 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["hypothesis_id"].startswith("H-")
         assert candidates[0]["safe_verification"] is True
         assert candidates[0]["ranking_reasons"]
+        assert candidates[0]["validation_mode"] == "two_account_authorization_check"
+        assert candidates[0]["safe_validation_plan"] == [
+            "Prepare two authorized test accounts in a local or explicitly approved test environment.",
+            "Confirm the target object belongs to account A before any access comparison.",
+            "Have a human reviewer approve any non-destructive role or ownership check before execution.",
+        ]
+        assert candidates[0]["safety_blockers"] == [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+        ]
         assert "send_file(file_id)" not in str(candidates)
 
         export_response = client.post(

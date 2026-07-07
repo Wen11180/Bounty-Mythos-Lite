@@ -33,8 +33,11 @@ export type StudioCandidateInput = {
   evidence_needed?: string[];
   false_positive_checks?: string[];
   ranking_reasons?: string[];
+  safe_validation_plan?: string[];
   safe_verification?: boolean;
+  safety_blockers?: string[];
   priority_score?: number;
+  validation_mode?: string;
   source_facts?: Array<{
     advisory_only?: string;
     artifact_kind?: string;
@@ -58,7 +61,10 @@ export type StudioCandidateCard = {
   refutationQuestions: string[];
   rankingReasons: string[];
   reason: string;
+  safeValidationPlan: string[];
+  safetyBlockers: string[];
   priorityScore: number;
+  validationMode: string;
 };
 
 export function toStudioWorkspaceSummary(
@@ -93,7 +99,10 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       refutationQuestions: candidate.false_positive_checks ?? [],
       rankingReasons: candidate.ranking_reasons ?? [],
       reason: safeText(candidate.reason, "Review rationale unavailable."),
+      safeValidationPlan: candidate.safe_validation_plan ?? [],
+      safetyBlockers: candidate.safety_blockers ?? [],
       priorityScore: candidate.priority_score ?? 0,
+      validationMode: safeText(candidate.validation_mode, "manual_review"),
     };
   });
 }
