@@ -1017,7 +1017,10 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
         return f"{relation_membership_field}_id"
     if normalized_field == value_field and normalized_field in AUTHZ_BOUNDARY_FIELDS:
         return normalized_field
-    if value_field == f"{normalized_field}s" and normalized_field in AUTHZ_BOUNDARY_FIELDS:
+    if (
+        normalized_field in AUTHZ_BOUNDARY_FIELDS
+        and _boundary_collection_matches(normalized_field, value_field)
+    ):
         return normalized_field
     return None
 
@@ -1033,7 +1036,7 @@ def _authz_boundary_membership_field(field_name: str, values: str) -> str | None
         ):
             return None
         return f"{relation_field}_id"
-    if values_field == f"{normalized_field}s":
+    if _boundary_collection_matches(normalized_field, values_field):
         return normalized_field
     return None
 
@@ -1090,6 +1093,13 @@ def _canonical_boundary_field(field_name: str) -> str:
     if field_name in {"org_id", "organization_id"}:
         return "organization_id"
     return field_name
+
+
+def _boundary_collection_matches(field_name: str, values_field: str) -> bool:
+    singular = values_field.removesuffix("s")
+    if not singular.endswith("_id"):
+        return False
+    return _canonical_boundary_field(singular) == _canonical_boundary_field(field_name)
 
 
 def _is_principal_id_identifier(identifier: str) -> bool:
