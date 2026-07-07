@@ -250,6 +250,32 @@ test("studio workbench shows artifact readiness before research", async () => {
   assert.match(workbench, /disabled=\{!researchReadiness\.canStart\}/);
 });
 
+test("studio workbench guides the first local research run", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /Local research setup/);
+  assert.match(workbench, /currentWizardStep/);
+  assert.match(workbench, /wizardSteps/);
+  assert.match(workbench, /Workspace selected/);
+  assert.match(workbench, /Authorized materials/);
+  assert.match(workbench, /Readiness check/);
+  assert.match(workbench, /Candidate review/);
+  assert.match(workbench, /submission-blocked report draft/);
+  assert.match(workbench, /Import authorized materials/);
+  assert.match(workbench, /Start local research/);
+  assert.match(workbench, /Next safe action/);
+  assert.match(workbench, /wizardPrimaryAction/);
+  assert.match(workbench, /Export submission-blocked draft/);
+  assert.match(workbench, /handleCreateWorkspace/);
+  assert.match(workbench, /handleImportArtifacts/);
+  assert.match(workbench, /handleStartResearch/);
+  assert.match(workbench, /handleExportReport/);
+  assert.doesNotMatch(workbench, /Submit report/);
+});
+
 test("studio workbench can use the desktop path picker bridge", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),

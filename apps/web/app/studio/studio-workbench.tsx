@@ -74,6 +74,46 @@ export function StudioWorkbench() {
     () => toStudioResearchReadiness(workspacePath, manifest),
     [manifest, workspacePath],
   );
+  const currentWizardStep = useMemo(() => {
+    if (candidates.length > 0 || reportExport) {
+      return "candidate_review";
+    }
+    if (researchReadiness.canStart) {
+      return "readiness_check";
+    }
+    if (workspacePath) {
+      return "authorized_materials";
+    }
+    return "workspace";
+  }, [candidates.length, reportExport, researchReadiness.canStart, workspacePath]);
+  const wizardSteps = useMemo(
+    () => [
+      {
+        id: "workspace",
+        label: "Workspace",
+        detail: workspacePath ? "Workspace selected" : "Create or open a local workspace",
+      },
+      {
+        id: "authorized_materials",
+        label: "Authorized materials",
+        detail: workspacePath ? "Import authorized materials" : "Select a workspace first",
+      },
+      {
+        id: "readiness_check",
+        label: "Readiness check",
+        detail: researchReadiness.canStart ? "Start local research" : researchReadiness.reason,
+      },
+      {
+        id: "candidate_review",
+        label: "Candidate review",
+        detail:
+          candidates.length > 0
+            ? "Review candidates and export a submission-blocked report draft"
+            : "Review candidates after research completes",
+      },
+    ],
+    [candidates.length, researchReadiness.canStart, researchReadiness.reason, workspacePath],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -245,6 +285,39 @@ export function StudioWorkbench() {
     setLog((entries) => [{ message, tone }, ...entries].slice(0, 6));
   }
 
+  const wizardPrimaryAction =
+    currentWizardStep === "workspace"
+      ? {
+          busy: busy === "open" || busy === "workspace",
+          disabled: false,
+          icon: <FolderPlus size={16} aria-hidden="true" />,
+          label: workspacePath.trim() ? "Open workspace" : "Create workspace",
+          onClick: workspacePath.trim() ? handleOpenWorkspace : handleCreateWorkspace,
+        }
+      : currentWizardStep === "authorized_materials"
+        ? {
+            busy: busy === "import",
+            disabled: !workspacePath,
+            icon: <Upload size={16} aria-hidden="true" />,
+            label: "Import authorized materials",
+            onClick: handleImportArtifacts,
+          }
+        : currentWizardStep === "readiness_check"
+          ? {
+              busy: busy === "research",
+              disabled: !researchReadiness.canStart,
+              icon: <Play size={16} aria-hidden="true" />,
+              label: "Start local research",
+              onClick: handleStartResearch,
+            }
+          : {
+              busy: busy === "export",
+              disabled: !latestRunId,
+              icon: <FileDown size={16} aria-hidden="true" />,
+              label: "Export submission-blocked draft",
+              onClick: handleExportReport,
+            };
+
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
       <header className="border-b border-[var(--line)] pb-5">
@@ -256,6 +329,35 @@ export function StudioWorkbench() {
           Authorized research workspace
         </h1>
       </header>
+
+      <section className="mt-6 border border-[var(--line)] bg-white">
+        <SectionHeader title="Local research setup" />
+        <div className="grid gap-3 p-5 text-sm md:grid-cols-4">
+          {wizardSteps.map((step, index) => (
+            <div
+              className={`border border-[var(--line)] p-3 ${
+                step.id === currentWizardStep ? "bg-[var(--background)]" : "bg-white"
+              }`}
+              key={step.id}
+            >
+              <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                {index + 1}. {step.label}
+              </p>
+              <p className="mt-2 font-semibold">{step.detail}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] p-5 text-sm">
+          <p className="font-semibold">Next safe action</p>
+          <ActionButton
+            busy={wizardPrimaryAction.busy}
+            disabled={wizardPrimaryAction.disabled}
+            icon={wizardPrimaryAction.icon}
+            label={wizardPrimaryAction.label}
+            onClick={wizardPrimaryAction.onClick}
+          />
+        </div>
+      </section>
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_360px]">
         <section className="border border-[var(--line)] bg-white">
