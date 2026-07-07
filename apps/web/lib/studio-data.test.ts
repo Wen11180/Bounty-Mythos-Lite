@@ -58,10 +58,33 @@ test("candidate cards keep unsafe candidates visibly blocked", () => {
 
 test("studio page exposes the four studio regions", async () => {
   const page = await fs.readFile(new URL("../app/studio/page.tsx", import.meta.url), "utf8");
+  const workbench = await fs
+    .readFile(new URL("../app/studio/studio-workbench.tsx", import.meta.url), "utf8")
+    .catch(() => "");
+  const studioSource = `${page}\n${workbench}`;
 
-  assert.match(page, /Workspaces/);
-  assert.match(page, /Conversation/);
-  assert.match(page, /Candidate Board/);
-  assert.match(page, /Safety and Run Log/);
-  assert.match(page, /submission-blocked/);
+  assert.match(studioSource, /Workspaces/);
+  assert.match(studioSource, /Conversation/);
+  assert.match(studioSource, /Candidate Board/);
+  assert.match(studioSource, /Safety and Run Log/);
+  assert.match(studioSource, /submission-blocked/);
+});
+
+test("studio page mounts the interactive local workbench", async () => {
+  const page = await fs.readFile(new URL("../app/studio/page.tsx", import.meta.url), "utf8");
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(page, /StudioWorkbench/);
+  assert.match(workbench, /"use client"/);
+  assert.match(workbench, /createStudioWorkspace/);
+  assert.match(workbench, /importStudioWorkspaceArtifact/);
+  assert.match(workbench, /runStudioWorkspaceResearch/);
+  assert.match(workbench, /listStudioWorkspaceCandidates/);
+  assert.match(workbench, /exportStudioWorkspaceReport/);
+  assert.match(workbench, /Create workspace/);
+  assert.match(workbench, /Start research/);
+  assert.match(workbench, /Export report preview/);
 });
