@@ -16,6 +16,13 @@ STRING_LITERAL_PATTERN = re.compile(r"[\"']([^\"']+)[\"']")
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MODEL_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
 DEPENDENCY_CALL_PATTERN = re.compile(r"\b(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)")
+DEPENDENCY_ALIAS_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
+IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(.+)$")
+IMPORT_ALIAS_ITEM_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
 AUTHZ_NAME_MARKERS = (
     "authorize",
     "authz",
@@ -91,7 +98,9 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
         mapped_file_count += 1
         facts.extend(_map_file(source_path=source_path, content=content))
 
-    facts = _dedupe_handler_authz_facts(_dedupe_facts(facts))
+    facts = _dedupe_handler_authz_facts(
+        _dedupe_facts(_resolve_dependency_wrapper_authz(facts))
+    )
     return CodebaseMapResult(
         facts=_dedupe_facts([*facts, *_authorization_gap_candidates(facts)]),
         file_count=mapped_file_count,
@@ -104,6 +113,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     pending_route_decorator: tuple[str, int, list[str], list[tuple[str, int]]] | None = None
     pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
+    dependency_aliases: dict[str, str] = {}
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         if pending_route_decorator is not None:
@@ -111,9 +121,23 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             decorator_lines = [*decorator_lines, line]
             authz_calls = [
                 *authz_calls,
-                *[(call_name, line_number) for call_name in _dependency_authz_calls(line)],
+                *_dependency_authz_refs(
+                    line,
+                    line_number,
+                    dependency_aliases,
+                ),
             ]
             if _route_decorator_closed(line):
+                authz_calls = _dedupe_refs(
+                    [
+                        *authz_calls,
+                        *_dependency_authz_refs_from_lines(
+                            decorator_lines,
+                            decorator_line,
+                            dependency_aliases,
+                        ),
+                    ]
+                )
                 route_path = _route_path_from_decorator_lines(decorator_lines)
                 if route_path is not None:
                     pending_route = (
@@ -138,7 +162,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 route_match.group(1).upper(),
                 route_match.group(2),
                 line_number,
-                [(call_name, line_number) for call_name in _dependency_authz_calls(line)],
+                _dependency_authz_refs(line, line_number, dependency_aliases),
             )
             continue
         route_start_match = ROUTE_DECORATOR_START_PATTERN.search(line)
@@ -147,7 +171,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 route_start_match.group(1).upper(),
                 line_number,
                 [line],
-                [(call_name, line_number) for call_name in _dependency_authz_calls(line)],
+                _dependency_authz_refs(line, line_number, dependency_aliases),
             )
             continue
 
@@ -159,9 +183,65 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 if function_indent < indent
             ]
 
+        imported_aliases = _imported_authz_aliases(line)
+        if imported_aliases and not function_stack:
+            for alias_name, call_name in imported_aliases:
+                dependency_aliases[alias_name] = call_name
+            continue
+
+        alias = _dependency_alias(line)
+        if alias is not None and not function_stack:
+            alias_name, call_name = alias
+            dependency_aliases[alias_name] = call_name
+            continue
+
         function_match = FUNCTION_PATTERN.match(line)
         if function_match is not None:
             function_stack.append((function_match.group(1), _indent_width(line)))
+        if function_match is not None and pending_route is None:
+            function_name = function_match.group(1)
+            for call_name, authz_line in _dependency_authz_refs(
+                line,
+                line_number,
+                dependency_aliases,
+            ):
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="authz_check",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=_authz_hint(call_name),
+                        sensitivity_label="low",
+                        payload={
+                            "handler": function_name,
+                            "line": authz_line,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
+            for call_name, dependency_line in _dependency_wrapper_refs(
+                line,
+                line_number,
+                dependency_aliases,
+            ):
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="dependency_call",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=None,
+                        sensitivity_label="low",
+                        payload={
+                            "caller": function_name,
+                            "line": dependency_line,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
         if function_match is not None and pending_route is not None:
             method, route_path, decorator_line, decorator_authz_calls = pending_route
             handler_name = function_match.group(1)
@@ -183,7 +263,11 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             )
             for call_name, authz_line in [
                 *decorator_authz_calls,
-                *[(call_name, line_number) for call_name in _dependency_authz_calls(line)],
+                *_dependency_authz_refs(
+                    line,
+                    line_number,
+                    dependency_aliases,
+                ),
             ]:
                 facts.append(
                     CodebaseFactCandidate(
@@ -201,13 +285,38 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         },
                     )
                 )
+            for call_name, dependency_line in _dependency_wrapper_refs(
+                line,
+                line_number,
+                dependency_aliases,
+            ):
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="dependency_call",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=None,
+                        sensitivity_label="low",
+                        payload={
+                            "caller": handler_name,
+                            "line": dependency_line,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
             if not _function_signature_closed(line):
                 pending_signature_authz = (handler_name, _indent_width(line))
             pending_route = None
 
         if function_match is None and pending_signature_authz is not None:
             handler_name, function_indent = pending_signature_authz
-            for call_name in _dependency_authz_calls(line):
+            for call_name, authz_line in _dependency_authz_refs(
+                line,
+                line_number,
+                dependency_aliases,
+            ):
                 facts.append(
                     CodebaseFactCandidate(
                         fact_type="authz_check",
@@ -219,7 +328,28 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         sensitivity_label="low",
                         payload={
                             "handler": handler_name,
-                            "line": line_number,
+                            "line": authz_line,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
+            for call_name, dependency_line in _dependency_wrapper_refs(
+                line,
+                line_number,
+                dependency_aliases,
+            ):
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="dependency_call",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=None,
+                        sensitivity_label="low",
+                        payload={
+                            "caller": handler_name,
+                            "line": dependency_line,
                             "mapping_mode": "static_code_snippet_analysis",
                         },
                     )
@@ -419,6 +549,166 @@ def _dependency_authz_calls(line: str) -> list[str]:
         for call_name in DEPENDENCY_CALL_PATTERN.findall(line)
         if _is_authz_call(call_name)
     ]
+
+
+def _dependency_authz_refs(
+    line: str,
+    line_number: int,
+    dependency_aliases: dict[str, str],
+) -> list[tuple[str, int]]:
+    refs = [(call_name, line_number) for call_name in _dependency_authz_calls(line)]
+    refs.extend(
+        (call_name, line_number)
+        for alias_name, call_name in dependency_aliases.items()
+        if _line_references_name(line, alias_name)
+    )
+    return refs
+
+
+def _dependency_authz_refs_from_lines(
+    lines: list[str],
+    start_line: int,
+    dependency_aliases: dict[str, str],
+) -> list[tuple[str, int]]:
+    block = "\n".join(lines)
+    refs = [
+        (match.group(1), start_line + block.count("\n", 0, match.start(1)))
+        for match in DEPENDENCY_CALL_PATTERN.finditer(block)
+        if _is_authz_call(match.group(1))
+    ]
+    refs.extend(
+        (call_name, start_line + line_index)
+        for line_index, line in enumerate(lines)
+        for alias_name, call_name in dependency_aliases.items()
+        if _line_references_name(line, alias_name)
+    )
+    return refs
+
+
+def _dependency_wrapper_refs(
+    line: str,
+    line_number: int,
+    dependency_aliases: dict[str, str],
+) -> list[tuple[str, int]]:
+    authz_names = {call_name for call_name, _ in _dependency_authz_refs(
+        line,
+        line_number,
+        dependency_aliases,
+    )}
+    return [
+        (call_name, line_number)
+        for call_name in _dependency_calls(line)
+        if call_name not in authz_names
+    ]
+
+
+def _dependency_calls(line: str) -> list[str]:
+    return DEPENDENCY_CALL_PATTERN.findall(line)
+
+
+def _dependency_alias(line: str) -> tuple[str, str] | None:
+    match = DEPENDENCY_ALIAS_PATTERN.match(line)
+    if match is None:
+        return None
+    alias_name = match.group(1)
+    call_name = match.group(2)
+    if not _is_authz_call(call_name):
+        return None
+    return alias_name, call_name
+
+
+def _imported_authz_aliases(line: str) -> list[tuple[str, str]]:
+    match = IMPORT_AUTHZ_ALIAS_PATTERN.match(line)
+    if match is None:
+        return []
+    aliases: list[tuple[str, str]] = []
+    for item in match.group(1).split(","):
+        item_match = IMPORT_ALIAS_ITEM_PATTERN.match(item)
+        if item_match is None:
+            continue
+        call_name = item_match.group(1)
+        alias_name = item_match.group(2)
+        if _is_authz_call(call_name):
+            aliases.append((alias_name, call_name))
+    return aliases
+
+
+def _line_references_name(line: str, name: str) -> bool:
+    return re.search(rf"\b{re.escape(name)}\b", line) is not None
+
+
+def _dedupe_refs(refs: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    seen: set[tuple[str, int]] = set()
+    deduped: list[tuple[str, int]] = []
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        deduped.append(ref)
+    return deduped
+
+
+def _resolve_dependency_wrapper_authz(
+    facts: list[CodebaseFactCandidate],
+) -> list[CodebaseFactCandidate]:
+    resolved = list(facts)
+    wrapper_authz: dict[str, CodebaseFactCandidate] = {}
+    seen_authz: set[tuple[str, str, str | None]] = set()
+    dependency_calls = [
+        fact
+        for fact in facts
+        if fact.fact_type == "dependency_call" and isinstance(fact.payload, dict)
+    ]
+    for fact in facts:
+        if fact.fact_type != "authz_check" or not isinstance(fact.payload, dict):
+            continue
+        handler = fact.payload.get("handler")
+        if not isinstance(handler, str):
+            continue
+        seen_authz.add((fact.source_path, handler, fact.symbol_name))
+        existing = wrapper_authz.get(handler)
+        if existing is None or _authz_hint_priority(
+            fact.authz_hint
+        ) > _authz_hint_priority(existing.authz_hint):
+            wrapper_authz[handler] = fact
+
+    changed = True
+    while changed:
+        changed = False
+        for fact in dependency_calls:
+            caller = fact.payload.get("caller")
+            wrapper = fact.symbol_name
+            if not isinstance(caller, str) or not isinstance(wrapper, str):
+                continue
+            authz = wrapper_authz.get(wrapper)
+            if authz is None:
+                continue
+            seen_key = (fact.source_path, caller, authz.symbol_name)
+            if seen_key in seen_authz:
+                continue
+            derived = CodebaseFactCandidate(
+                fact_type="authz_check",
+                source_path=fact.source_path,
+                symbol_name=authz.symbol_name,
+                route_method=None,
+                route_path=None,
+                authz_hint=authz.authz_hint,
+                sensitivity_label="low",
+                payload={
+                    "handler": caller,
+                    "line": fact.payload.get("line"),
+                    "mapping_mode": "static_code_snippet_analysis",
+                },
+            )
+            resolved.append(derived)
+            seen_authz.add(seen_key)
+            existing = wrapper_authz.get(caller)
+            if existing is None or _authz_hint_priority(
+                derived.authz_hint
+            ) > _authz_hint_priority(existing.authz_hint):
+                wrapper_authz[caller] = derived
+            changed = True
+    return resolved
 
 
 def _function_signature_closed(line: str) -> bool:
