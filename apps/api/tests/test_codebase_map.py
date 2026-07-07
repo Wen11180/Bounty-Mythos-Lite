@@ -262,6 +262,43 @@ def export_file(file_id: str, current_user):
     }
 
 
+def test_map_authorized_code_files_treats_org_relation_alias_boundary_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    file = File.objects.filter(id=file_id, org=current_user.organization).get()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "org_id_filter"
+    assert authz.authz_hint == "ownership_boundary_check"
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 8,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
 def test_map_authorized_code_files_treats_account_relation_membership_boundary_as_authz_check():
     result = map_authorized_code_files(
         {
@@ -408,6 +445,46 @@ def export_invoice(invoice_id: str, current_user):
     assert authz.authz_hint == "ownership_boundary_check"
     assert authz.payload == {
         "handler": "export_invoice",
+        "line": 10,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
+def test_map_authorized_code_files_treats_relation_membership_method_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    file = db.query(File).filter(
+        File.id == file_id,
+        File.account.in_(current_user.accounts),
+    ).one()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "account_id_filter"
+    assert authz.authz_hint == "ownership_boundary_check"
+    assert authz.payload == {
+        "handler": "export_file",
         "line": 10,
         "mapping_mode": "static_code_snippet_analysis",
     }

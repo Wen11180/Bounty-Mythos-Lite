@@ -9,9 +9,12 @@ import {
   createFindingCandidate,
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
+  exportStudioWorkspaceReport,
+  listStudioWorkspaceCandidates,
   materializeResearchQueueTask,
   recordClaimReviewDecision,
   recordManualObservation,
+  runStudioWorkspaceResearch,
   reviewValidationFeedbackForFindingPromotion,
   runSourceAuditScan,
   SourceAuditScanError,
@@ -220,6 +223,112 @@ test("studio workspace API helpers pass only local paths and manifest metadata",
     assert.doesNotMatch(
       JSON.stringify(calls),
       /Authorization\s*[:=]|Bearer|secret-token|cookie|raw_policy/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio research API helpers keep reports submission-blocked", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ body, url });
+
+    if (url.endsWith("/mythos/studio/workspaces/runs")) {
+      return new Response(
+        JSON.stringify({
+          candidate_count: 1,
+          manifest: { runs: [{ run_id: "pipeline_run_1", report_path: null }] },
+          report_title: "Source audit: target",
+          run_id: "pipeline_run_1",
+          safety_notes: ["no_live_requests", "no_auto_submission"],
+          submission_blocked: true,
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    if (url.includes("/mythos/studio/workspaces/candidates")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              evidence_needed: ["sanitized local evidence"],
+              false_positive_checks: ["middleware may enforce ownership"],
+              hypothesis_id: "H-001",
+              location: "GET /files/{file_id}/export",
+              risk: "high",
+              safe_verification: true,
+              submission_blocked: true,
+              vuln_type: "authorization",
+            },
+          ],
+          run_id: "pipeline_run_1",
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    if (url.endsWith("/mythos/studio/workspaces/reports/export")) {
+      return new Response(
+        JSON.stringify({
+          manifest: {
+            runs: [
+              {
+                report_path: "C:/workspaces/acme-api/reports/pipeline_run_1-report-preview.json",
+                run_id: "pipeline_run_1",
+              },
+            ],
+          },
+          report: { submission_blocked: true, title: "Source audit: target" },
+          report_submission_allowed: false,
+          run_id: "pipeline_run_1",
+          submission_blocked: true,
+          title: "Source audit: target",
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    return new Response(JSON.stringify({ detail: "unexpected request" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 500,
+    });
+  };
+
+  try {
+    const run = await runStudioWorkspaceResearch(
+      { workspace_path: "C:/workspaces/acme-api" },
+      null,
+    );
+    assert.equal(run?.submission_blocked, true);
+
+    const candidates = await listStudioWorkspaceCandidates(
+      "C:/workspaces/acme-api",
+      "pipeline_run_1",
+      { candidates: [], run_id: null },
+    );
+    assert.equal(candidates.candidates[0]?.submission_blocked, true);
+
+    const exported = await exportStudioWorkspaceReport(
+      { run_id: "pipeline_run_1", workspace_path: "C:/workspaces/acme-api" },
+      null,
+    );
+    assert.equal(exported?.report_submission_allowed, false);
+    assert.equal(exported?.submission_blocked, true);
+
+    assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+      "/mythos/studio/workspaces/runs",
+      "/mythos/studio/workspaces/candidates",
+      "/mythos/studio/workspaces/reports/export",
+    ]);
+    assert.doesNotMatch(
+      JSON.stringify(calls),
+      /Authorization\s*[:=]|Bearer|secret-token|cookie|send_file\(file_id\)|submitReport/i,
     );
   } finally {
     globalThis.fetch = originalFetch;

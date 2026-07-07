@@ -915,6 +915,43 @@ Expected: blocked action names appear only as safety labels or false flags. No c
 
 ---
 
+## Task 7: Studio Research Run API
+
+**Files:**
+- Modify: `apps/api/app/studio_workspace.py`
+- Modify: `apps/api/app/main.py`
+- Modify: `apps/api/tests/test_studio_api.py`
+- Modify: `apps/web/lib/api.ts`
+- Modify: `apps/web/lib/api.test.ts`
+
+- [x] **Step 1: Add Studio research run and export regression coverage**
+
+`apps/api/tests/test_studio_api.py` covers creating a workspace, importing `scope` and `code` artifact references, running local source audit through `/mythos/studio/workspaces/runs`, listing top candidates through `/mythos/studio/workspaces/candidates`, and exporting a submission-blocked report preview through `/mythos/studio/workspaces/reports/export`.
+
+- [x] **Step 2: Implement local-only Studio research endpoints**
+
+`apps/api/app/main.py` now reuses `run_source_audit`, `save_source_audit_pipeline_run`, and report-preview generation instead of adding a parallel research pipeline. `apps/api/app/studio_workspace.py` records run receipts and writes redacted report-preview JSON under the workspace `reports` directory.
+
+- [x] **Step 3: Add frontend Studio API helpers**
+
+`apps/web/lib/api.ts` exposes `runStudioWorkspaceResearch`, `listStudioWorkspaceCandidates`, and `exportStudioWorkspaceReport`. `apps/web/lib/api.test.ts` verifies those helpers post only local workspace/run metadata and keep report export submission-blocked.
+
+- [x] **Step 4: Run focused verification**
+
+Run:
+
+```powershell
+cd apps/api
+python -m pytest tests/test_studio_workspace.py tests/test_studio_api.py -q
+
+cd ../web
+npm test -- lib/api.test.ts lib/studio-data.test.ts
+```
+
+Expected: Studio backend and frontend API tests pass.
+
+---
+
 ## Self-Review
 
 - Spec coverage: This plan implements the local workspace, artifact intake, candidate view, conversation-first Studio surface, safety log, report-oriented output path, and desktop launcher required by the Mythos Studio design.

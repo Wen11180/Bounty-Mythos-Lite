@@ -96,6 +96,8 @@ from app.studio_workspace import (
     create_workspace,
     import_workspace_artifact,
     load_workspace_manifest,
+    record_workspace_report_export,
+    record_workspace_run,
 )
 from app.worker.tasks import dispatch_agent_task
 from pydantic import BaseModel, Field
@@ -168,6 +170,15 @@ class StudioArtifactImportRequest(BaseModel):
     workspace_path: str = Field(min_length=1)
     kind: str = Field(min_length=1, max_length=50)
     source_path: str = Field(min_length=1)
+
+
+class StudioWorkspaceRunRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+
+
+class StudioReportExportRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
 
 
 class ArtifactResponse(BaseModel):
@@ -2263,6 +2274,151 @@ def import_mythos_studio_workspace_artifact(
         request.workspace_path,
         StudioArtifactImport(kind=request.kind, source_path=request.source_path),
     )
+
+
+@app.post("/mythos/studio/workspaces/runs")
+def run_mythos_studio_workspace_research(
+    request: StudioWorkspaceRunRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    manifest = load_workspace_manifest(request.workspace_path)
+    scope_path = _studio_artifact_path(manifest, "scope")
+    repo_path = _studio_artifact_path(manifest, "code")
+    if scope_path is None or repo_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="studio_scope_and_code_required",
+        )
+
+    repository = DatabaseRepository(session)
+    try:
+        result = run_source_audit(repo_path, scope_path)
+    except SourceAuditBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    record = save_source_audit_pipeline_run(
+        repository=repository,
+        result=result,
+        policy_text=_read_source_audit_policy_text(scope_path),
+    )
+    preview = build_report_preview_response(record)
+    updated_manifest = record_workspace_run(
+        request.workspace_path,
+        run_id=record.id,
+        status="submission_blocked" if preview.submission_blocked else "ready_for_review",
+        report_path=None,
+        candidate_count=record.hypothesis_count,
+    )
+    return {
+        "run_id": record.id,
+        "candidate_count": record.hypothesis_count,
+        "submission_blocked": preview.submission_blocked,
+        "report_title": safe_preview_text(record.report_title or preview.title),
+        "safety_notes": safe_string_list(
+            record.payload.get("safety_notes", [])
+            if isinstance(record.payload, dict)
+            else []
+        ),
+        "manifest": updated_manifest,
+    }
+
+
+@app.get("/mythos/studio/workspaces/candidates")
+def list_mythos_studio_workspace_candidates(
+    workspace_path: str,
+    run_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    manifest = load_workspace_manifest(workspace_path)
+    selected_run_id = run_id or _latest_studio_run_id(manifest)
+    if selected_run_id is None:
+        return {"run_id": None, "candidates": []}
+    record = DatabaseRepository(session).get_pipeline_run(selected_run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    payload = record.payload if isinstance(record.payload, dict) else {}
+    candidates = [
+        _studio_candidate_from_hypothesis(item)
+        for item in payload.get("hypotheses", [])[:5]
+        if isinstance(item, dict)
+    ]
+    return {"run_id": selected_run_id, "candidates": candidates}
+
+
+@app.post("/mythos/studio/workspaces/reports/export")
+def export_mythos_studio_workspace_report(
+    request: StudioReportExportRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    manifest = load_workspace_manifest(request.workspace_path)
+    if request.run_id not in {
+        run.get("run_id") for run in manifest.get("runs", []) if isinstance(run, dict)
+    }:
+        raise HTTPException(status_code=404, detail="workspace_run_not_found")
+    record = DatabaseRepository(session).get_pipeline_run(request.run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    preview = _build_report_preview_response_or_404(record)
+    report = preview.model_dump(mode="json")
+    updated_manifest = record_workspace_report_export(
+        request.workspace_path,
+        run_id=request.run_id,
+        report=report,
+    )
+    return {
+        "run_id": request.run_id,
+        "title": preview.title,
+        "submission_blocked": preview.submission_blocked,
+        "report_submission_allowed": False,
+        "report": report,
+        "manifest": updated_manifest,
+    }
+
+
+def _studio_artifact_path(manifest: dict, kind: str) -> str | None:
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return None
+    for artifact in reversed(artifacts):
+        if not isinstance(artifact, dict) or artifact.get("kind") != kind:
+            continue
+        source_path = artifact.get("source_path")
+        if isinstance(source_path, str) and source_path:
+            return source_path
+    return None
+
+
+def _latest_studio_run_id(manifest: dict) -> str | None:
+    runs = manifest.get("runs", [])
+    if not isinstance(runs, list):
+        return None
+    for run in reversed(runs):
+        if not isinstance(run, dict):
+            continue
+        run_id = run.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+    return None
+
+
+def _studio_candidate_from_hypothesis(hypothesis: dict) -> dict:
+    return {
+        "hypothesis_id": safe_preview_text(hypothesis.get("hypothesis_id", "")),
+        "vuln_type": safe_preview_text(hypothesis.get("vuln_type", "candidate")),
+        "risk": safe_preview_text(
+            hypothesis.get("risk", hypothesis.get("risk_level", "medium"))
+        ),
+        "location": safe_preview_text(hypothesis.get("location", "")),
+        "reason": safe_preview_text(hypothesis.get("hypothesis", "")),
+        "evidence_needed": safe_preview_lines(hypothesis.get("evidence_needed", [])),
+        "false_positive_checks": safe_preview_lines(
+            hypothesis.get("false_positive_checks", [])
+        ),
+        "safe_verification": hypothesis.get("validation_mode") != "blocked",
+        "priority_score": hypothesis.get("priority_score", 0),
+        "source_facts": hypothesis.get("source_facts", []),
+        "submission_blocked": True,
+    }
 
 
 @app.post("/mythos/source-audit/scans", response_model=SourceAuditScanResponse)

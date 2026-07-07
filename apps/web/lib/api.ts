@@ -9,7 +9,7 @@ import type {
   CampaignTask,
   CampaignValidationRun,
 } from "./campaigns-data";
-import type { StudioWorkspaceManifest } from "./studio-data";
+import type { StudioCandidateInput, StudioWorkspaceManifest } from "./studio-data";
 
 const API_BASE_URL =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -524,6 +524,38 @@ export type StudioArtifactImportRequest = {
   workspace_path: string;
   kind: string;
   source_path: string;
+};
+
+export type StudioWorkspaceRunRequest = {
+  workspace_path: string;
+};
+
+export type StudioWorkspaceRunResponse = {
+  run_id: string;
+  candidate_count: number;
+  submission_blocked: boolean;
+  report_title: string;
+  safety_notes: string[];
+  manifest: StudioWorkspaceManifest;
+};
+
+export type StudioWorkspaceCandidatesResponse = {
+  run_id: string | null;
+  candidates: StudioCandidateInput[];
+};
+
+export type StudioReportExportRequest = {
+  workspace_path: string;
+  run_id: string;
+};
+
+export type StudioReportExportResponse = {
+  run_id: string;
+  title: string;
+  submission_blocked: boolean;
+  report_submission_allowed: false;
+  report: Record<string, unknown>;
+  manifest: StudioWorkspaceManifest;
 };
 
 export type ArtifactRecord = {
@@ -1079,6 +1111,32 @@ export function importStudioWorkspaceArtifact(
   fallback: StudioWorkspaceManifest | null,
 ): Promise<StudioWorkspaceManifest | null> {
   return apiPost("/mythos/studio/workspaces/imports", request, fallback);
+}
+
+export function runStudioWorkspaceResearch(
+  request: StudioWorkspaceRunRequest,
+  fallback: StudioWorkspaceRunResponse | null,
+): Promise<StudioWorkspaceRunResponse | null> {
+  return apiPost("/mythos/studio/workspaces/runs", request, fallback);
+}
+
+export function listStudioWorkspaceCandidates(
+  workspacePath: string,
+  runId: string | null,
+  fallback: StudioWorkspaceCandidatesResponse,
+): Promise<StudioWorkspaceCandidatesResponse> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  return apiGet(`/mythos/studio/workspaces/candidates?${query}`, fallback);
+}
+
+export function exportStudioWorkspaceReport(
+  request: StudioReportExportRequest,
+  fallback: StudioReportExportResponse | null,
+): Promise<StudioReportExportResponse | null> {
+  return apiPost("/mythos/studio/workspaces/reports/export", request, fallback);
 }
 
 async function runSourceAuditScanRequest(

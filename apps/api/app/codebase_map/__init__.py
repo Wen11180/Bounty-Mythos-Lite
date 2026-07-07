@@ -981,7 +981,7 @@ def _authz_boundary_field(left: str, right: str) -> str | None:
     if (
         left_relation is not None
         and right_relation is not None
-        and left_relation == right_relation
+        and _same_relation_boundary(left_relation, right_relation)
     ):
         return f"{left_relation}_id"
     if left_field not in AUTHZ_BOUNDARY_FIELDS and right_field not in AUTHZ_BOUNDARY_FIELDS:
@@ -1001,12 +1001,12 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     if normalized_field in {"owner_id", "user_id"} and _is_principal_id_identifier(value):
         return normalized_field
     relation_field = _relation_boundary_field(field_name)
-    if relation_field is not None and value_field == relation_field:
+    if relation_field is not None and _same_relation_boundary(relation_field, value_field):
         return f"{relation_field}_id"
     relation_membership_field = _relation_membership_boundary_field(field_name)
     if (
         relation_membership_field is not None
-        and value_field == f"{relation_membership_field}s"
+        and _relation_collection_matches(relation_membership_field, value_field)
     ):
         return f"{relation_membership_field}_id"
     if normalized_field == value_field and normalized_field in AUTHZ_BOUNDARY_FIELDS:
@@ -1020,7 +1020,13 @@ def _authz_boundary_membership_field(field_name: str, values: str) -> str | None
     normalized_field = _identifier_leaf(field_name)
     values_field = _identifier_leaf(values)
     if normalized_field not in AUTHZ_BOUNDARY_FIELDS:
-        return None
+        relation_field = _relation_boundary_field(normalized_field)
+        if relation_field is None or not _relation_collection_matches(
+            relation_field,
+            values_field,
+        ):
+            return None
+        return f"{relation_field}_id"
     if values_field == f"{normalized_field}s":
         return normalized_field
     return None
@@ -1056,6 +1062,22 @@ def _relation_membership_boundary_field(field_name: str) -> str | None:
     if relation in {"owner", "user", "tenant", "account", "org", "organization"}:
         return relation
     return None
+
+
+def _same_relation_boundary(left: str, right: str) -> bool:
+    return _canonical_relation_boundary(left) == _canonical_relation_boundary(right)
+
+
+def _relation_collection_matches(relation: str, values_field: str) -> bool:
+    canonical_relation = _canonical_relation_boundary(relation)
+    canonical_values = _canonical_relation_boundary(values_field.removesuffix("s"))
+    return canonical_values == canonical_relation
+
+
+def _canonical_relation_boundary(field_name: str) -> str:
+    if field_name in {"org", "organization"}:
+        return "organization"
+    return field_name
 
 
 def _is_principal_id_identifier(identifier: str) -> bool:
