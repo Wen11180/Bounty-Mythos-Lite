@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.cli import main as cli_main
 from app.db import Base
-from app.mythos_agent import AgentGoal, run_agent_goal
+from app.mythos_agent import AgentGoal, get_agent_gates, get_agent_status, run_agent_goal
 from app.repository import DatabaseRepository, seed_sample_data
 
 
@@ -66,6 +66,9 @@ def test_agent_runner_creates_campaign_and_stops_at_human_review_gate(tmp_path):
         assert "execution_allowed: false" in result.to_text()
         receipt = result.to_dict()
         assert receipt["status"] == "awaiting_human_review"
+        assert receipt["goal"] == "Run a bounded safe research loop"
+        assert receipt["repo_path"] == str(repo.resolve())
+        assert receipt["scope_path"] == str(scope.resolve())
         assert receipt["next_actions"] == ["review_validation_queue"]
         assert receipt["execution_allowed"] is False
         assert "send_file(file_id)" not in json.dumps(receipt)
@@ -140,3 +143,203 @@ def test_cli_agent_runs_bounded_loop_with_sqlite_database(tmp_path, capsys):
     assert "execution_allowed: false" in captured.out
     assert receipt["status"] == "awaiting_human_review"
     assert receipt["next_actions"] == ["review_validation_queue"]
+
+
+def test_cli_agent_resumes_from_receipt_without_creating_new_campaign(tmp_path, capsys):
+    repo, scope = write_authorized_repo(tmp_path)
+    database_path = tmp_path / "agent.sqlite"
+    receipt_path = tmp_path / "agent-receipt.json"
+    resumed_receipt_path = tmp_path / "agent-resumed-receipt.json"
+
+    first_exit_code = cli_main(
+        [
+            "agent",
+            "--repo",
+            str(repo),
+            "--scope",
+            str(scope),
+            "--goal",
+            "Run a bounded safe research loop",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--max-steps",
+            "6",
+            "--receipt-output",
+            str(receipt_path),
+        ]
+    )
+    capsys.readouterr()
+    first_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    second_exit_code = cli_main(
+        [
+            "agent",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+            "--receipt-output",
+            str(resumed_receipt_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    resumed_receipt = json.loads(resumed_receipt_path.read_text(encoding="utf-8"))
+    assert first_exit_code == 0
+    assert second_exit_code == 0
+    assert resumed_receipt["campaign_id"] == first_receipt["campaign_id"]
+    assert resumed_receipt["status"] == "awaiting_human_review"
+    assert resumed_receipt["next_actions"] == ["review_validation_queue"]
+    assert "create_campaign" not in captured.out
+
+
+def test_agent_status_summarizes_human_gates_from_campaign_state(tmp_path):
+    repo, scope = write_authorized_repo(tmp_path)
+    repository, session = build_repository()
+    try:
+        result = run_agent_goal(
+            AgentGoal(
+                goal="Run a bounded safe research loop",
+                repo_path=repo,
+                scope_path=scope,
+                max_steps=6,
+            ),
+            repository=repository,
+        )
+
+        status = get_agent_status(
+            campaign_id=result.campaign_id,
+            repository=repository,
+            goal=result.goal,
+            repo_path=result.repo_path,
+            scope_path=result.scope_path,
+        )
+
+        assert status.status == "awaiting_human_review"
+        assert status.pending_approval_count == 1
+        assert status.awaiting_validation_count == 1
+        assert status.next_actions == ["review_validation_queue"]
+        assert status.execution_allowed is False
+        assert status.to_dict()["pending_approval_count"] == 1
+    finally:
+        session.close()
+
+
+def test_cli_agent_status_reads_receipt_without_running_new_steps(tmp_path, capsys):
+    repo, scope = write_authorized_repo(tmp_path)
+    database_path = tmp_path / "agent.sqlite"
+    receipt_path = tmp_path / "agent-receipt.json"
+
+    cli_main(
+        [
+            "agent",
+            "--repo",
+            str(repo),
+            "--scope",
+            str(scope),
+            "--goal",
+            "Run a bounded safe research loop",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--max-steps",
+            "6",
+            "--receipt-output",
+            str(receipt_path),
+        ]
+    )
+    capsys.readouterr()
+
+    exit_code = cli_main(
+        [
+            "agent-status",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "mythos agent status" in captured.out
+    assert "status: awaiting_human_review" in captured.out
+    assert "pending_approval_count: 1" in captured.out
+    assert "awaiting_validation_count: 1" in captured.out
+    assert "next_actions: review_validation_queue" in captured.out
+    assert "create_campaign" not in captured.out
+
+
+def test_agent_gates_lists_reviewable_approval_and_validation_details(tmp_path):
+    repo, scope = write_authorized_repo(tmp_path)
+    repository, session = build_repository()
+    try:
+        result = run_agent_goal(
+            AgentGoal(
+                goal="Run a bounded safe research loop",
+                repo_path=repo,
+                scope_path=scope,
+                max_steps=6,
+            ),
+            repository=repository,
+        )
+
+        gates = get_agent_gates(campaign_id=result.campaign_id, repository=repository)
+
+        assert len(gates.approvals) == 1
+        assert len(gates.validation_runs) == 1
+        approval = gates.approvals[0]
+        validation_run = gates.validation_runs[0]
+        assert approval["id"].startswith("approval_")
+        assert approval["status"] == "pending"
+        assert approval["validation_mode"] == "two_account_authorization_check"
+        assert approval["plan_digest"] == validation_run["plan_digest"]
+        assert validation_run["id"].startswith("validation_run_")
+        assert validation_run["status"] == "awaiting_approval"
+        assert validation_run["target_ref"]
+        assert validation_run["execution_allowed"] is False
+        assert gates.to_dict()["execution_allowed"] is False
+    finally:
+        session.close()
+
+
+def test_cli_agent_gates_reads_receipt_and_prints_gate_ids(tmp_path, capsys):
+    repo, scope = write_authorized_repo(tmp_path)
+    database_path = tmp_path / "agent.sqlite"
+    receipt_path = tmp_path / "agent-receipt.json"
+
+    cli_main(
+        [
+            "agent",
+            "--repo",
+            str(repo),
+            "--scope",
+            str(scope),
+            "--goal",
+            "Run a bounded safe research loop",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--max-steps",
+            "6",
+            "--receipt-output",
+            str(receipt_path),
+        ]
+    )
+    capsys.readouterr()
+
+    exit_code = cli_main(
+        [
+            "agent-gates",
+            "--database-url",
+            f"sqlite:///{database_path.as_posix()}",
+            "--resume-from",
+            str(receipt_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "mythos agent gates" in captured.out
+    assert "approval_" in captured.out
+    assert "validation_run_" in captured.out
+    assert "two_account_authorization_check" in captured.out
+    assert "execution_allowed: false" in captured.out

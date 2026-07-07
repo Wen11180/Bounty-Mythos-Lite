@@ -8,9 +8,14 @@ ROUTE_DECORATOR_PATTERN = re.compile(
     r"@\w+\.(get|post|put|patch|delete)\(\s*[\"']([^\"']+)[\"']",
     re.IGNORECASE,
 )
+ROUTE_DECORATOR_START_PATTERN = re.compile(
+    r"@\w+\.(get|post|put|patch|delete)\(",
+    re.IGNORECASE,
+)
+STRING_LITERAL_PATTERN = re.compile(r"[\"']([^\"']+)[\"']")
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MODEL_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
-DEPENDENCY_CALL_PATTERN = re.compile(r"\bDepends\(\s*([A-Za-z_][A-Za-z0-9_]*)")
+DEPENDENCY_CALL_PATTERN = re.compile(r"\b(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)")
 AUTHZ_NAME_MARKERS = (
     "authorize",
     "authz",
@@ -96,15 +101,52 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
 def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     facts: list[CodebaseFactCandidate] = []
     pending_route: tuple[str, str, int, list[tuple[str, int]]] | None = None
+    pending_route_decorator: tuple[str, int, list[str], list[tuple[str, int]]] | None = None
+    pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
 
     for line_number, line in enumerate(content.splitlines(), start=1):
+        if pending_route_decorator is not None:
+            method, decorator_line, decorator_lines, authz_calls = pending_route_decorator
+            decorator_lines = [*decorator_lines, line]
+            authz_calls = [
+                *authz_calls,
+                *[(call_name, line_number) for call_name in _dependency_authz_calls(line)],
+            ]
+            if _route_decorator_closed(line):
+                route_path = _route_path_from_decorator_lines(decorator_lines)
+                if route_path is not None:
+                    pending_route = (
+                        method,
+                        route_path,
+                        decorator_line,
+                        authz_calls,
+                    )
+                pending_route_decorator = None
+            else:
+                pending_route_decorator = (
+                    method,
+                    decorator_line,
+                    decorator_lines,
+                    authz_calls,
+                )
+            continue
+
         route_match = ROUTE_DECORATOR_PATTERN.search(line)
         if route_match is not None:
             pending_route = (
                 route_match.group(1).upper(),
                 route_match.group(2),
                 line_number,
+                [(call_name, line_number) for call_name in _dependency_authz_calls(line)],
+            )
+            continue
+        route_start_match = ROUTE_DECORATOR_START_PATTERN.search(line)
+        if route_start_match is not None:
+            pending_route_decorator = (
+                route_start_match.group(1).upper(),
+                line_number,
+                [line],
                 [(call_name, line_number) for call_name in _dependency_authz_calls(line)],
             )
             continue
@@ -159,7 +201,31 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         },
                     )
                 )
+            if not _function_signature_closed(line):
+                pending_signature_authz = (handler_name, _indent_width(line))
             pending_route = None
+
+        if function_match is None and pending_signature_authz is not None:
+            handler_name, function_indent = pending_signature_authz
+            for call_name in _dependency_authz_calls(line):
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="authz_check",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=_authz_hint(call_name),
+                        sensitivity_label="low",
+                        payload={
+                            "handler": handler_name,
+                            "line": line_number,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
+            if _function_signature_closed(line):
+                pending_signature_authz = None
 
         model_match = MODEL_PATTERN.match(line)
         if model_match is not None and _is_model_base(model_match.group(2)):
@@ -179,7 +245,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 )
             )
 
-        if function_match is not None or model_match is not None or line.strip().startswith("@"):
+        if (
+            function_match is not None
+            or model_match is not None
+            or pending_signature_authz is not None
+            or line.strip().startswith("@")
+        ):
             continue
 
         current_function = _current_function(function_stack)
@@ -348,6 +419,22 @@ def _dependency_authz_calls(line: str) -> list[str]:
         for call_name in DEPENDENCY_CALL_PATTERN.findall(line)
         if _is_authz_call(call_name)
     ]
+
+
+def _function_signature_closed(line: str) -> bool:
+    return line.rstrip().endswith(":")
+
+
+def _route_decorator_closed(line: str) -> bool:
+    return line.strip().startswith(")")
+
+
+def _route_path_from_decorator_lines(lines: list[str]) -> str | None:
+    for line in lines:
+        match = STRING_LITERAL_PATTERN.search(line)
+        if match is not None:
+            return match.group(1)
+    return None
 
 
 def _is_model_base(base_list: str) -> bool:

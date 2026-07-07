@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import create_tables
 from app.deep_research import build_knowledge_artifact
-from app.mythos_agent import AgentGoal, run_agent_goal
+from app.mythos_agent import AgentGoal, get_agent_gates, get_agent_status, run_agent_goal
 from app.mythos_chat import run_terminal_chat
 from app.repository import DatabaseRepository
 from app.source_audit import (
@@ -40,18 +40,32 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--pipeline-run-output")
     subparsers.add_parser("chat")
     agent = subparsers.add_parser("agent")
-    agent.add_argument("--repo", required=True)
-    agent.add_argument("--scope", required=True)
-    agent.add_argument("--goal", required=True)
+    agent.add_argument("--repo")
+    agent.add_argument("--scope")
+    agent.add_argument("--goal")
     agent.add_argument("--database-url", required=True)
     agent.add_argument("--campaign-id")
     agent.add_argument("--max-steps", type=int, default=6)
+    agent.add_argument("--receipt-output")
+    agent.add_argument("--resume-from")
+    status = subparsers.add_parser("agent-status")
+    status.add_argument("--database-url", required=True)
+    status.add_argument("--campaign-id")
+    status.add_argument("--resume-from")
+    gates = subparsers.add_parser("agent-gates")
+    gates.add_argument("--database-url", required=True)
+    gates.add_argument("--campaign-id")
+    gates.add_argument("--resume-from")
 
     args = parser.parse_args(argv)
     if args.command == "chat":
         return run_terminal_chat()
     if args.command == "agent":
         return run_agent_command(args)
+    if args.command == "agent-status":
+        return run_agent_status_command(args)
+    if args.command == "agent-gates":
+        return run_agent_gates_command(args)
     if args.command != "scan":
         parser.error("unsupported command")
     if args.pipeline_run_output and not args.pipeline_db:
@@ -123,23 +137,76 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def run_agent_gates_command(args) -> int:
+    resume = _read_agent_resume(args.resume_from)
+    campaign_id = args.campaign_id or resume.get("campaign_id")
+    engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
+    create_tables(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session:
+        gates = get_agent_gates(
+            campaign_id=campaign_id,
+            repository=DatabaseRepository(session),
+        )
+    print(gates.to_text())
+    return 0
+
+
+def run_agent_status_command(args) -> int:
+    resume = _read_agent_resume(args.resume_from)
+    campaign_id = args.campaign_id or resume.get("campaign_id")
+    engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
+    create_tables(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session:
+        status = get_agent_status(
+            campaign_id=campaign_id,
+            repository=DatabaseRepository(session),
+            goal=str(resume.get("goal", "")),
+            repo_path=str(resume.get("repo_path", "")),
+            scope_path=str(resume.get("scope_path", "")),
+        )
+    print(status.to_text())
+    return 0
+
+
 def run_agent_command(args) -> int:
+    resume = _read_agent_resume(args.resume_from)
+    repo = args.repo or resume.get("repo_path")
+    scope = args.scope or resume.get("scope_path")
+    goal = args.goal or resume.get("goal")
+    campaign_id = args.campaign_id or resume.get("campaign_id")
+    if not repo or not scope or not goal:
+        raise SystemExit("--repo, --scope, and --goal are required unless --resume-from supplies them")
+
     engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
     create_tables(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with SessionLocal() as session:
         result = run_agent_goal(
             AgentGoal(
-                goal=args.goal,
-                repo_path=Path(args.repo),
-                scope_path=Path(args.scope),
-                campaign_id=args.campaign_id,
+                goal=goal,
+                repo_path=Path(repo),
+                scope_path=Path(scope),
+                campaign_id=campaign_id,
                 max_steps=args.max_steps,
             ),
             repository=DatabaseRepository(session),
         )
+    if args.receipt_output:
+        Path(args.receipt_output).write_text(
+            json.dumps(result.to_dict(), indent=2),
+            encoding="utf-8",
+        )
     print(result.to_text())
     return 0
+
+
+def _read_agent_resume(path: str | None) -> dict:
+    if path is None:
+        return {}
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return data if isinstance(data, dict) else {}
 
 
 def persist_source_audit_pipeline_run(*, database_url: str, scope_path: str, result):
