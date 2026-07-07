@@ -84,6 +84,7 @@ def test_build_evidence_bundle_redacts_cookie_bearer_and_token_keys():
                 "type": "request_response_diff",
                 "content": {
                     "bearer_only": "Bearer live-token-123456789",
+                    "gateway_header": "X-API-Key: live-token-123456789",
                     "headers": {"Cookie": "session=live-cookie-123456789"},
                     "access_token": "live-token-123456789",
                 },
@@ -93,6 +94,7 @@ def test_build_evidence_bundle_redacts_cookie_bearer_and_token_keys():
 
     assert bundle.items[0].content == {
         "bearer_only": "[REDACTED]",
+        "gateway_header": "[REDACTED]",
         "headers": {"Cookie": "[REDACTED]"},
         "access_token": "[REDACTED]",
     }

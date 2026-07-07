@@ -13,7 +13,8 @@ import {
   toCampaignFindingCandidateGateSummary,
   toCampaignPromotionBlockReviewSummaries,
   toCampaignResearchFeedbackEvidenceSummaries,
-  toCampaignValidationRunSummaries,
+  toCampaignValidationEvidenceQualitySummary,
+  toCampaignValidationEvidenceReviewSummaries,
 } from "@/lib/campaigns-data";
 
 type PageProps = {
@@ -42,11 +43,11 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
     await Promise.all(tasks.map((task) => getCampaignResearchTaskReview(campaignId, task.id, null)))
   ).filter((review): review is NonNullable<typeof review> => review !== null);
   const claims = toCampaignEvidenceReviewSummaries(previews);
-  const validationEvidence = toCampaignValidationRunSummaries(validationRuns).filter(
-    (run) => run.evidenceRefCount > 0 || run.safetyGateState.startsWith("Manual "),
-  );
+  const validationEvidence = toCampaignValidationEvidenceReviewSummaries(validationRuns, pipelineStages);
+  const validationEvidenceQuality = toCampaignValidationEvidenceQualitySummary(validationEvidence);
   const researchFeedbackEvidence = toCampaignResearchFeedbackEvidenceSummaries(researchReviews);
   const promotionBlockReviews = toCampaignPromotionBlockReviewSummaries(researchFeedbackEvidence);
+  const manualResultRecordedLabel = "Manual result recorded";
   const findingCandidateGate = toCampaignFindingCandidateGateSummary(
     previews,
     researchFeedbackEvidence,
@@ -80,10 +81,15 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
         <Metric label="Validation evidence" value={validationEvidence.length} />
         <Metric label="Research feedback" value={researchFeedbackEvidence.length} />
         <Metric label="Promotion blocks" value={findingCandidateGate.promotionAuditBlockedCount} />
+        <Metric label="Clean reviews" value={validationEvidenceQuality.cleanReviewCount} />
+        <Metric label="Redacted reviews" value={validationEvidenceQuality.redactedReviewCount} />
+        <Metric label="Unsafe refs" value={validationEvidenceQuality.unsafeEvidenceRefCount} />
+        <Metric label="Strong evidence" value={validationEvidenceQuality.strongEvidenceCount} />
+        <Metric label="Promotion gated" value={validationEvidenceQuality.gatedPromotionReviewCount} />
       </section>
 
       <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
-        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
+        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px_150px_150px]">
           <div className="min-w-0">
             <p className="font-semibold">Blocked Promotion Review</p>
             <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
@@ -96,10 +102,26 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
             value={String(findingCandidateGate.promotionAuditBlockedCount)}
           />
           <Field
-            label="Latest reason"
-            value={findingCandidateGate.promotionAuditLatestReason ?? "No promotion block recorded"}
+            label="Promotion reviews"
+            value={String(findingCandidateGate.promotionAuditCreatedCount)}
           />
-          <Field label="Next action" value={findingCandidateGate.nextAllowedAction} />
+          <Field
+            label="Provenance refs"
+            value={String(findingCandidateGate.promotionAuditProvenanceRefCount)}
+          />
+          <Field
+            label="Review evidence"
+            value={String(findingCandidateGate.promotionAuditReviewEvidenceRefCount)}
+          />
+          <Field
+            label="Latest reason"
+            value={
+              findingCandidateGate.status === "blocked_by_research_feedback"
+                ? "Research feedback blocks promotion"
+                : findingCandidateGate.promotionAuditLatestReason ?? "No promotion block recorded"
+            }
+          />
+          <Field label="Next review action" value={findingCandidateGate.nextAllowedAction} />
         </div>
       </section>
 
@@ -108,12 +130,12 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
           <span>Promotion Block Review Queue</span>
           <span>Validation audit</span>
           <span>Gate reason</span>
-          <span>Evidence</span>
+          <span>Evidence refs</span>
         </div>
         {promotionBlockReviews.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No blocked promotion review items ready.
+            No blocked promotion review items queued.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -130,10 +152,17 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                     {item.reviewTitle}
                   </Link>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Task" value={item.taskId} />
+                    <Field label="Review item" value={item.taskId} />
                     <Field label="Plan" value={item.planId} />
-                    <Field label="Approval" value={item.approvalId} />
+                    <Field label="Review gate" value={item.approvalId} />
+                    <Field label="Feedback stage" value={item.feedbackStageId} />
                   </dl>
+                  <Link
+                    href={`/campaigns/${encodeURIComponent(campaignId)}/feedback-reviews/${encodeURIComponent(item.feedbackStageId)}`}
+                    className="mt-3 inline-flex min-h-9 items-center rounded-md border border-[var(--line)] px-3 text-xs font-semibold text-[var(--accent-strong)]"
+                  >
+                    Review promotion gate
+                  </Link>
                 </div>
                 <Field label="Validation audit" value={item.validationRunId} />
                 <div className="grid content-start gap-2">
@@ -154,13 +183,13 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
           <span>Claim</span>
           <span>Review</span>
-          <span>Evidence</span>
+          <span>Evidence refs</span>
           <span>Report chain</span>
         </div>
         {claims.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No report claims ready for evidence review.
+            No report claims queued for evidence review.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -194,7 +223,9 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                   <Field label="Redaction" value={claim.redactionStatus} />
                 </dl>
                 <div className="grid content-start gap-2">
-                  <GateText value={claim.reportChainEligible ? "Eligible" : "Blocked"} />
+                  <GateText
+                    value={claim.reportChainEligible ? "Report chain evidence present" : "Report chain review required"}
+                  />
                   <p className="text-xs text-[var(--muted)]">{claim.readinessLevel}</p>
                   <p className="text-xs font-semibold tabular-nums text-[var(--muted)]">
                     Quality {claim.qualityScore}/100
@@ -217,41 +248,66 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
           <span>Validation Evidence</span>
           <span>Status</span>
-          <span>Preflight decision</span>
-          <span>Evidence</span>
+          <span>Report chain</span>
+          <span>Evidence refs</span>
         </div>
         {validationEvidence.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No validation evidence ready for review.
+            No validation evidence queued for review.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
             {validationEvidence.map((run) => (
               <article
-                key={run.id}
+                key={run.validationRunId}
                 className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]"
               >
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{run.validationMode}</p>
                   <p className="mt-2 break-words text-[var(--muted)]">{run.summary}</p>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Validation audit" value={run.id} />
+                    <Field label="Validation audit" value={run.validationRunId} />
                     <Field label="Target" value={run.targetRef} />
-                    <Field label="Task" value={run.taskId ?? "No task"} />
-                    <Field label="Approval" value={run.approvalId ?? "No approval"} />
+                    <Field label="Review item" value={run.reviewItem || "No review item"} />
+                    <Field label="Review gate" value={run.reviewGate || "No review gate"} />
                   </dl>
+                  {run.manualValidationReview ? (
+                    <div className="mt-3 grid gap-1 text-xs font-semibold text-[var(--muted)]">
+                      <p>
+                        Quality review · Score: {run.manualValidationReview.qualityScore}/100 ·
+                        Redaction: {run.manualValidationReview.redactionStatus} · Promotion review:{" "}
+                        {run.manualValidationReview.promotionReviewState}
+                      </p>
+                      <p>
+                        Evidence quality: {run.manualValidationReview.evidenceQuality} · Safe refs:{" "}
+                        {run.manualValidationReview.safeEvidenceRefCount} · Unsafe refs:{" "}
+                        {run.manualValidationReview.unsafeEvidenceRefCount}
+                      </p>
+                      {run.manualValidationReview.qualityReasons.length > 0 ? (
+                        <p className="break-words">
+                          Reasons: {run.manualValidationReview.qualityReasons.join(", ")}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="grid content-start gap-2">
                   <StatusText value={run.status} />
+                  <p className="text-xs text-[var(--muted)]">{run.candidateEvidenceState}</p>
                   <p className="text-xs text-[var(--muted)]">
-                    {run.approvalRequired ? "Approval required" : "No approval required"}
-                  </p>
-                  <p className="text-xs text-[var(--muted)]">
-                    {run.preflightPassed ? "Preflight active" : run.executionState}
+                    {run.preflightState === manualResultRecordedLabel
+                      ? manualResultRecordedLabel
+                      : run.preflightState}
                   </p>
                 </div>
-                <GateText value={run.safetyGateState} />
+                <div className="grid content-start gap-2">
+                  <GateText value={run.reportChainState} />
+                  <p className="text-xs text-[var(--muted)]">
+                    {run.reviewGate === "No review gate" ? "Review gate required" : "Review gate recorded"}
+                  </p>
+                  <p className="break-words text-xs text-[var(--muted)]">{run.nextReviewAction}</p>
+                </div>
                 <dl className="grid content-start gap-2 text-xs text-[var(--muted)]">
                   <Field label="Evidence refs" value={String(run.evidenceRefCount)} />
                   <Field label="Plan" value={run.planDigest ?? "No plan digest"} />
@@ -267,12 +323,12 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
           <span>Research Feedback Evidence</span>
           <span>Status</span>
           <span>Promotion gate</span>
-          <span>Evidence</span>
+          <span>Evidence refs</span>
         </div>
         {researchFeedbackEvidence.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No research validation feedback ready for review.
+            No research validation feedback queued for review.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -284,9 +340,10 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{feedback.reviewTitle}</p>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Task" value={feedback.taskId} />
+                    <Field label="Review item" value={feedback.taskId} />
                     <Field label="Plan" value={feedback.planId} />
-                    <Field label="Approval" value={feedback.approvalId} />
+                    <Field label="Review gate" value={feedback.approvalId} />
+                    <Field label="Feedback stage" value={feedback.feedbackStageId} />
                     <Field label="Validation audit" value={feedback.validationRunId} />
                     <Field label="Provenance refs" value={String(feedback.promotionProvenanceRefCount)} />
                   </dl>
@@ -301,12 +358,18 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                 <div className="grid content-start gap-2">
                   <GateText value={feedback.promotionGate || "Manual review required"} />
                   <p className="text-xs text-[var(--muted)]">
-                    {feedback.findingPromotionAllowed ? "Promotion ready" : "Promotion blocked"}
+                    {feedback.findingPromotionAllowed ? "Promotion review requires manual decision" : "Promotion review blocked"}
                   </p>
                   <p className="break-words text-xs text-[var(--muted)]">
                     {feedback.promotionGateReason}
                   </p>
                   <p className="break-words text-xs text-[var(--muted)]">{feedback.safetyGate}</p>
+                  <Link
+                    href={`/campaigns/${encodeURIComponent(campaignId)}/feedback-reviews/${encodeURIComponent(feedback.feedbackStageId)}`}
+                    className="inline-flex min-h-9 items-center justify-self-start rounded-md border border-[var(--line)] px-3 text-xs font-semibold text-[var(--accent-strong)]"
+                  >
+                    Review promotion gate
+                  </Link>
                 </div>
                 <span className="font-semibold tabular-nums">{feedback.evidenceRefCount}</span>
               </article>

@@ -15,7 +15,7 @@
   "scope_status": "in_scope",
   "policy_status": "allowed",
   "broken_invariant": "用户不能访问其他用户的私有文件",
-  "validation_status": "safely_validated",
+  "validation_status": "validation_observed",
   "refutation_status": "passed",
   "duplicate_likelihood": "medium",
   "submission_recommendation": "human_review_required",
@@ -24,13 +24,13 @@
 }
 ```
 
-Hunter Operating Loop 可以从已审查的 claim ledger 生成 `finding_candidate_*`。这类记录只代表候选沉淀：`validation_status` 仍应停留在人工验证前的状态，`submission_recommendation` 只能是 hunter operating action，不能等同于 report ready。
+Hunter Operating Loop 可以从已审查的 claim ledger 生成 `finding_candidate_*`。这类记录只代表候选沉淀：`validation_status` 只能描述已观察到的、已脱敏的、非破坏性验证状态，`submission_recommendation` 只能是 hunter operating action，不能等同于 report ready。
 
 如果接入静态分析结果，建议支持 SARIF，用于统一承接 CodeQL、Semgrep 等工具输出。
 
 ## Report Builder
 
-报告生成器输出的是可人工复核后提交给 HackerOne/Bugcrowd 的报告草稿，而不是泛泛的漏洞描述。
+报告生成器输出的是 submission-blocked 的 HackerOne/Bugcrowd 风格报告草稿，而不是泛泛的漏洞描述，也不是自动提交入口。
 
 报告结构：
 

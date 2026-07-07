@@ -339,6 +339,301 @@ def export_file(file_id: str):
         session.close()
 
 
+def test_run_agent_task_generates_multiple_hypotheses_from_multiple_code_routes():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Multi route hypothesis campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+
+@router.post("/teams/{team_id}/invites")
+def create_team_invite(team_id: str):
+    require_role(team_id, "owner")
+    return update_role(team_id)
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate multi-route code-backed hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={"authorization": "Bearer secret-token"},
+        )
+
+        run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        assert result["status"] == "completed"
+        assert len(pipeline_runs) == 1
+
+        payload = pipeline_runs[0].payload
+        hypotheses = payload["hypotheses"]
+        assessments = payload["hypothesis_assessments"]
+        hunt_queue = payload["autonomous_hunt_queue"]
+
+        assert pipeline_runs[0].hypothesis_count == 2
+        assert [item["hypothesis"] for item in hypotheses] == [
+            "Review GET /files/{file_id}/export for object authorization boundary drift.",
+            "Review POST /teams/{team_id}/invites for object authorization boundary drift.",
+        ]
+        assert [item["candidate_id"] for item in assessments] == [
+            "codebase_fact_hypothesis_1",
+            "codebase_fact_hypothesis_2",
+        ]
+        assert [item["hypothesis_index"] for item in assessments] == [0, 1]
+        assert payload["target_model"]["objects"] == ["file", "team"]
+        assert payload["target_model"]["sensitive_actions"] == [
+            "GET /files/{file_id}/export",
+            "POST /teams/{team_id}/invites",
+        ]
+        assert payload["target_model"]["source_fact_refs"] == [
+            "codebase_fact:route_handler:/files/{file_id}/export",
+            "codebase_fact:authz_check:owner_or_admin_check",
+            "codebase_fact:sensitive_sink:send_file",
+            "codebase_fact:route_handler:/teams/{team_id}/invites",
+            "codebase_fact:authz_check:role_check",
+            "codebase_fact:sensitive_sink:update_role",
+        ]
+        assert assessments[0]["exploit_chain"]["primitives"] == [
+            "GET /files/{file_id}/export",
+            "owner_or_admin_check",
+            "send_file",
+        ]
+        assert assessments[1]["exploit_chain"]["primitives"] == [
+            "POST /teams/{team_id}/invites",
+            "role_check",
+            "update_role",
+        ]
+        assert all(item["validation_plan"]["human_approval_required"] is True for item in assessments)
+        assert all(item["candidate_status"] == "needs_human_review" for item in assessments)
+        assert [item["hunter_assessment"] for item in assessments] == [
+            {
+                "duplicate_risk_score": 25,
+                "evidence_focus": [
+                    "two_test_accounts",
+                    "same_object_id_cross_account_diff",
+                    "request_response_diff",
+                ],
+                "hunter_priority_score": 68,
+                "hypothesis": "Review GET /files/{file_id}/export for object authorization boundary drift.",
+                "impact_score": 78,
+                "next_action": "Prepare human-approved, test-account-only validation.",
+                "playbook_id": "bola_idor",
+                "playbook_label": "BOLA / IDOR object boundary",
+                "policy_risk_score": 35,
+                "reasons": [
+                    "codebase_route_candidate",
+                    "sensitive_sink_present",
+                    "human_approval_required",
+                ],
+                "recommendation": "needs_human_review",
+                "rejection_risk_score": 30,
+                "safety_notes": [
+                    "advisory_only",
+                    "scope_guard_required",
+                    "human_review_required",
+                    "no_live_requests",
+                ],
+            },
+            {
+                "duplicate_risk_score": 20,
+                "evidence_focus": [
+                    "role_matrix_snapshot",
+                    "member_vs_admin_request_diff",
+                    "permission_denial_expected_result",
+                ],
+                "hunter_priority_score": 72,
+                "hypothesis": "Review POST /teams/{team_id}/invites for object authorization boundary drift.",
+                "impact_score": 82,
+                "next_action": "Prepare human-approved, test-account-only validation.",
+                "playbook_id": "role_boundary",
+                "playbook_label": "Role boundary / privilege escalation",
+                "policy_risk_score": 35,
+                "reasons": [
+                    "codebase_route_candidate",
+                    "sensitive_sink_present",
+                    "human_approval_required",
+                ],
+                "recommendation": "needs_human_review",
+                "rejection_risk_score": 30,
+                "safety_notes": [
+                    "advisory_only",
+                    "scope_guard_required",
+                    "human_review_required",
+                    "no_live_requests",
+                ],
+            },
+        ]
+        assert hunt_queue == [
+            {
+                "blocked_actions": [
+                    "execute_live_validation",
+                    "touch_real_user_data",
+                    "submit_report",
+                    "bypass_scope_guard",
+                ],
+                "candidate_id": "codebase_fact_hypothesis_2",
+                "human_approval_required": True,
+                "next_action": "review_validation_plan",
+                "playbook_id": "role_boundary",
+                "priority_score": 72,
+                "queue_id": "hunt_queue_codebase_fact_hypothesis_2",
+                "safety_notes": [
+                    "scope_guard_required",
+                    "non_destructive_validation_only",
+                    "human_review_required",
+                ],
+                "status": "awaiting_human_approval",
+            },
+            {
+                "blocked_actions": [
+                    "execute_live_validation",
+                    "touch_real_user_data",
+                    "submit_report",
+                    "bypass_scope_guard",
+                ],
+                "candidate_id": "codebase_fact_hypothesis_1",
+                "human_approval_required": True,
+                "next_action": "review_validation_plan",
+                "playbook_id": "bola_idor",
+                "priority_score": 68,
+                "queue_id": "hunt_queue_codebase_fact_hypothesis_1",
+                "safety_notes": [
+                    "scope_guard_required",
+                    "non_destructive_validation_only",
+                    "human_review_required",
+                ],
+                "status": "awaiting_human_approval",
+            },
+        ]
+        assert "secret-token" not in str(payload)
+        assert "Bearer" not in str(payload)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_applies_program_lessons_to_code_hunt_queue():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Lesson-aware code hunt campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        for index in range(2):
+            repository.save_learning_signal(
+                program_id="program_example",
+                playbook_id="bola_idor",
+                outcome="accepted",
+                surface_key="file_id:export",
+                notes=f"Accepted safe fixture {index}; Authorization: Bearer secret-token",
+                evidence_quality="strong",
+            )
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+
+@router.post("/teams/{team_id}/invites")
+def create_team_invite(team_id: str):
+    require_role(team_id, "owner")
+    return update_role(team_id)
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate lesson-aware hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        run_agent_task(map_task.id, repository=repository)
+        run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_run = repository.list_pipeline_runs()[0]
+        payload = pipeline_run.payload
+        assessments = payload["hypothesis_assessments"]
+        file_assessment = assessments[0]["hunter_assessment"]
+        role_assessment = assessments[1]["hunter_assessment"]
+
+        assert file_assessment["playbook_id"] == "bola_idor"
+        assert file_assessment["hunter_priority_score"] == 76
+        assert "lesson:applied:boost" in file_assessment["reasons"]
+        assert "lesson:boost:accepted_strong_evidence" in file_assessment["reasons"]
+        assert "advisory_memory_only" in file_assessment["safety_notes"]
+        assert role_assessment["hunter_priority_score"] == 72
+        assert payload["autonomous_hunt_queue"][0]["candidate_id"] == "codebase_fact_hypothesis_1"
+        assert payload["autonomous_hunt_queue"][0]["priority_score"] == 76
+        assert payload["autonomous_hunt_queue"][0]["status"] == "awaiting_human_approval"
+        assert payload["autonomous_hunt_queue"][0]["human_approval_required"] is True
+        assert "secret-token" not in str(payload)
+        assert "Bearer" not in str(payload)
+    finally:
+        session.close()
+
+
 def test_run_agent_task_does_not_borrow_hypothesis_facts_from_unrelated_files():
     repository, session = build_repository()
     try:
@@ -665,6 +960,86 @@ def export_file(file_id: str):
         session.close()
 
 
+def test_run_agent_task_does_not_attach_post_handler_module_calls_to_route_hypotheses():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Code fact post handler module scope campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return {"file_id": file_id}
+
+authorize_owner_or_admin("startup-check")
+send_file("startup-check")
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate post-handler module-scope-safe hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        payload = pipeline_runs[0].payload
+        assessment = payload["hypothesis_assessments"][0]
+
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert payload["hypotheses"][0]["source_facts"] == [
+            {
+                "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "fact_type": "route_handler",
+                "route_method": "GET",
+                "route_path": "/files/{file_id}/export",
+                "source_path": "apps/api/routes/files.py",
+                "symbol_name": "export_file",
+            }
+        ]
+        assert payload["target_model"]["source_fact_refs"] == [
+            "codebase_fact:route_handler:/files/{file_id}/export"
+        ]
+        assert assessment["exploit_chain"]["primitives"] == ["GET /files/{file_id}/export"]
+    finally:
+        session.close()
+
+
 def test_run_agent_task_plans_validation_against_codebase_fact_target():
     repository, session = build_repository()
     try:
@@ -747,6 +1122,190 @@ def export_file(file_id: str):
         assert approval.asset == "authorized/service"
         assert approval.plan_digest == validation_run.plan_digest
         assert "session=secret" not in str(validation_runs + approvals)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_prioritizes_authorization_gap_candidate_without_execution():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Authorization gap hypothesis campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate code-backed hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={"authorization": "Bearer secret-token"},
+        )
+
+        map_result = run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        facts = repository.list_campaign_codebase_facts(campaign.id)
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+
+        assert map_result["status"] == "completed"
+        assert result["status"] == "completed"
+        assert {fact.fact_type for fact in facts} == {
+            "authorization_gap_candidate",
+            "route_handler",
+            "sensitive_sink",
+        }
+        assert len(pipeline_runs) == 1
+
+        payload = pipeline_runs[0].payload
+        assessment = payload["hypothesis_assessments"][0]
+        hunt_queue = payload["autonomous_hunt_queue"][0]
+
+        assert assessment["candidate_status"] == "needs_human_review"
+        assert assessment["validation_plan"]["human_approval_required"] is True
+        assert {
+            fact["fact_type"] for fact in assessment["hypothesis"]["source_facts"]
+        } == {
+            "authorization_gap_candidate",
+            "route_handler",
+            "sensitive_sink",
+        }
+        assert "missing_handler_authz_check" in assessment["exploit_chain"]["primitives"]
+        assert hunt_queue["status"] == "awaiting_human_approval"
+        assert hunt_queue["human_approval_required"] is True
+        assert hunt_queue["blocked_actions"] == [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "bypass_scope_guard",
+        ]
+        assert "secret-token" not in str(facts + pipeline_runs)
+        assert "Bearer" not in str(facts + pipeline_runs)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_boosts_authorization_gap_candidate_over_mapped_authz_route():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Authorization gap triage campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return send_file(file_id)
+
+@router.post("/teams/{team_id}/invites")
+def create_team_invite(team_id: str):
+    require_role(team_id, "owner")
+    return update_role(team_id)
+""",
+                    }
+                ],
+                "authorization": "Bearer secret-token",
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate gap-aware hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        run_agent_task(map_task.id, repository=repository)
+        result = run_agent_task(hypothesis_task.id, repository=repository)
+
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
+        assert result["status"] == "completed"
+        assert len(pipeline_runs) == 1
+
+        payload = pipeline_runs[0].payload
+        assessments = payload["hypothesis_assessments"]
+        file_assessment = assessments[0]
+        role_assessment = assessments[1]
+        file_hunter = file_assessment["hunter_assessment"]
+        role_hunter = role_assessment["hunter_assessment"]
+
+        assert "authorization_gap_candidate" in {
+            fact["fact_type"] for fact in file_assessment["hypothesis"]["source_facts"]
+        }
+        assert "authorization_gap_candidate" not in {
+            fact["fact_type"] for fact in role_assessment["hypothesis"]["source_facts"]
+        }
+        assert "authorization_gap_candidate" in file_hunter["reasons"]
+        assert file_hunter["hunter_priority_score"] > role_hunter["hunter_priority_score"]
+        assert payload["autonomous_hunt_queue"][0]["candidate_id"] == file_assessment["candidate_id"]
+        assert payload["autonomous_hunt_queue"][0]["status"] == "awaiting_human_approval"
+        assert payload["autonomous_hunt_queue"][0]["human_approval_required"] is True
+        assert file_assessment["refutation"]["questions"][0] == (
+            "Can same-handler authorization evidence refute the missing access-control check candidate?"
+        )
+        assert file_assessment["validation_plan"]["human_approval_required"] is True
+        assert "secret-token" not in str(payload)
+        assert "Bearer" not in str(payload)
     finally:
         session.close()
 

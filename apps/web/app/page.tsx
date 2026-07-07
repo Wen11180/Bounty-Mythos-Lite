@@ -6,18 +6,15 @@ import {
   Bot,
   ClipboardCheck,
   Database,
-  FileSearch,
   FileText,
   Gauge,
   GitBranch,
   Home,
-  Layers,
-  ListChecks,
   Lock,
   Settings,
   ShieldCheck,
   Target,
-  Upload,
+  type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -43,23 +40,24 @@ import {
   resolvePipelineRunRows,
   type PipelineRunSummary,
 } from "@/lib/pipeline-runs-data";
+import { formatLabel, safeDisplay } from "@/lib/workbench-display";
 import type { Finding, PolicyStatus, ValidationStatus } from "@/lib/api";
 
-const navigation = [
-  { label: "Dashboard", icon: Home },
+type NavigationItem =
+  | { label: string; icon: LucideIcon; href: string; campaignPath?: never }
+  | { label: string; icon: LucideIcon; campaignPath: string; href?: never };
+
+const navigation: NavigationItem[] = [
+  { label: "Dashboard", icon: Home, href: "/" },
   { label: "Campaigns", icon: ShieldCheck, href: "/campaigns" },
-  { label: "Program Scope", icon: Target },
-  { label: "Target Map", icon: Layers },
+  { label: "Program Scope", icon: Target, campaignPath: "" },
   { label: "Artifact Repository", icon: Database, href: "/artifacts" },
-  { label: "Attack Surface Map", icon: GitBranch },
-  { label: "Invariant Review", icon: ListChecks },
-  { label: "Hypothesis Board", icon: Bot },
-  { label: "Approval Review", icon: ClipboardCheck },
-  { label: "Finding Candidates", icon: FileSearch },
-  { label: "Report Readiness", icon: FileText },
-  { label: "Manual Submission Gate", icon: Upload },
-  { label: "Mythos Brain", icon: BookOpen },
-  { label: "Scope Guard", icon: Settings },
+  { label: "Attack Surface Map", icon: GitBranch, campaignPath: "attack-surface-map" },
+  { label: "Hypothesis Board", icon: Bot, campaignPath: "hypothesis-board" },
+  { label: "Review Gate", icon: ClipboardCheck, campaignPath: "validation-queue" },
+  { label: "Report Readiness", icon: FileText, campaignPath: "report-drafts" },
+  { label: "Mythos Brain", icon: BookOpen, campaignPath: "brain" },
+  { label: "Scope Guard", icon: Settings, campaignPath: "validation-runs" },
 ];
 
 const kpis = [
@@ -83,12 +81,7 @@ const reportReadyStatuses: ValidationStatus[] = [
 ];
 
 function titleCase(value: string): string {
-  return value
-    .replace(/:/g, ": ")
-    .split(/[\s_]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+  return formatLabel(value);
 }
 
 function formatGuard(finding: Finding): string {
@@ -166,6 +159,22 @@ function countNeedsReview(findings: Finding[]): number {
   ).length;
 }
 
+function resolveNavigationHref(
+  item: (typeof navigation)[number],
+  activeCampaignId: string | null,
+): string {
+  if (item.href !== undefined) {
+    return item.href;
+  }
+
+  if (!activeCampaignId) {
+    return "/campaigns";
+  }
+
+  const campaignRoot = `/campaigns/${encodeURIComponent(activeCampaignId)}`;
+  return item.campaignPath ? `${campaignRoot}/${item.campaignPath}` : campaignRoot;
+}
+
 export default async function Dashboard() {
   const [programs, findings, reports, pipelineRuns] = await Promise.all([
     getPrograms(fallbackPrograms),
@@ -174,6 +183,7 @@ export default async function Dashboard() {
     getPipelineRuns([]),
   ]);
   const activeProgramId = programs[0]?.id ?? fallbackMythosBrainProfile.program_id;
+  const activeCampaignId: string | null = null;
   const fallbackBrainProfile = {
     ...fallbackMythosBrainProfile,
     program_id: activeProgramId,
@@ -237,7 +247,7 @@ export default async function Dashboard() {
         <nav className="grid gap-1">
           {navigation.map((item) => (
             <Link
-              href={item.href ?? "#"}
+              href={resolveNavigationHref(item, activeCampaignId)}
               key={item.label}
               className="flex min-h-10 items-center gap-3 rounded-md px-3 text-sm font-medium text-[#303433] hover:bg-white"
               title={item.label}
@@ -365,7 +375,7 @@ export default async function Dashboard() {
                   <RadarMetric
                     label="Human gates"
                     value={intelligenceRadar.humanGatePressure}
-                    detail="Approval or review still required"
+                    detail="Review gate still required"
                   />
                   <RadarMetric
                     label="Report momentum"
@@ -380,7 +390,7 @@ export default async function Dashboard() {
                   <RadarMetric
                     label="Unsafe requirements"
                     value={intelligenceRadar.unsafeOrRedactedRequirementCount}
-                    detail="Kept out of report chain"
+                    detail="Review gate still required"
                     warn={intelligenceRadar.unsafeOrRedactedRequirementCount > 0}
                   />
                 </div>
@@ -458,7 +468,7 @@ export default async function Dashboard() {
                           <p className="mt-1 font-semibold text-[var(--warning)]">{run.blockedCount}</p>
                         </div>
                         <div>
-                          <p className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence</p>
+                          <p className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence refs</p>
                           <p className="mt-1 font-semibold">{run.evidenceCount}</p>
                         </div>
                       </div>
@@ -478,7 +488,7 @@ export default async function Dashboard() {
                           </WorkbenchLink>
                         ) : null}
                         <WorkbenchLink href={`/validation-workspace/${encodeURIComponent(run.runId)}`}>
-                          Validate
+                          Review validation
                         </WorkbenchLink>
                         <WorkbenchLink href={`/reports/${encodeURIComponent(run.runId)}`}>
                           Report
@@ -655,7 +665,7 @@ export default async function Dashboard() {
                 {findings.map((finding) => (
                   <article key={finding.id} className="grid gap-4 p-5 lg:grid-cols-[1fr_140px_120px_120px] lg:items-center">
                     <div>
-                      <h4 className="font-semibold">{finding.title}</h4>
+                      <h4 className="font-semibold">{safeDisplay(finding.title)}</h4>
                       <p className="mt-2 text-sm text-[var(--muted)]">{formatGuard(finding)}</p>
                       {finding.operating_reasons.length > 0 ? (
                         <ul className="mt-3 flex flex-wrap gap-1.5">
@@ -690,7 +700,7 @@ export default async function Dashboard() {
                     <h3 className="text-lg font-semibold">Mythos Brain</h3>
                   </div>
                   <p className="mt-1 break-words text-sm text-[var(--muted)]">
-                    {brainProfile.program_name}
+                    {safeDisplay(brainProfile.program_name)}
                   </p>
                 </div>
                 <p className="shrink-0 text-3xl font-semibold tabular-nums">
@@ -745,27 +755,32 @@ export default async function Dashboard() {
                   High-value surfaces
                 </p>
                 <div className="mt-3 grid gap-3">
-                  {topBrainSurfaces.map((surface) => (
-                    <div
-                      key={surface.surface_key}
-                      className="min-w-0 rounded-md border border-[var(--line)] bg-[#f7f7f4] p-3"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <p className="break-words font-semibold">{surface.surface_key}</p>
-                        <p className="shrink-0 font-semibold tabular-nums">{surface.score}</p>
-                      </div>
-                      <p className="mt-2 break-words text-sm text-[var(--muted)]">
-                        {surface.paths[0] ?? titleCase(surface.action)}
-                      </p>
-                      {lessonAdjustedSurfaces.some(
-                        (adjustment) => adjustment.surface_key === surface.surface_key,
-                      ) ? (
-                        <p className="mt-2 text-xs font-semibold uppercase text-[var(--accent-strong)]">
-                          Lesson adjusted
+                  {topBrainSurfaces.map((surface) => {
+                    const displaySurfaceKey = safeDisplay(surface.surface_key);
+                    const isLessonAdjusted = lessonAdjustedSurfaces.some(
+                      (adjustment) => safeDisplay(adjustment.surface_key) === displaySurfaceKey,
+                    );
+
+                    return (
+                      <div
+                        key={displaySurfaceKey}
+                        className="min-w-0 rounded-md border border-[var(--line)] bg-[#f7f7f4] p-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <p className="break-words font-semibold">{displaySurfaceKey}</p>
+                          <p className="shrink-0 font-semibold tabular-nums">{surface.score}</p>
+                        </div>
+                        <p className="mt-2 break-words text-sm text-[var(--muted)]">
+                          {safeDisplay(surface.paths[0] ?? titleCase(surface.action))}
                         </p>
-                      ) : null}
-                    </div>
-                  ))}
+                        {isLessonAdjusted ? (
+                          <p className="mt-2 text-xs font-semibold uppercase text-[var(--accent-strong)]">
+                            Lesson adjusted
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                   {topBrainSurfaces.length === 0 ? (
                     <p className="text-sm text-[var(--muted)]">No surfaces learned yet.</p>
                   ) : null}
@@ -784,7 +799,7 @@ export default async function Dashboard() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <p className="break-words font-semibold">
-                          {titleCase(lesson.recommendation)} - {lesson.surface_pattern}
+                          {titleCase(lesson.recommendation)} - {safeDisplay(lesson.surface_pattern)}
                         </p>
                         <p className="shrink-0 font-semibold tabular-nums">
                           {lesson.score_delta > 0 ? "+" : ""}
@@ -836,14 +851,16 @@ export default async function Dashboard() {
                 <div className="mt-3 grid gap-2 text-sm">
                   {recentLearningSignals.map((signal) => (
                     <div
-                      key={signal.id ?? `${signal.playbook_id}-${signal.surface_key}`}
+                      key={safeDisplay(
+                        signal.id ?? `${safeDisplay(signal.playbook_id)}-${safeDisplay(signal.surface_key)}`,
+                      )}
                       className="grid gap-1"
                     >
                       <p className="break-words font-semibold">
-                        {titleCase(signal.outcome)} - {signal.playbook_id}
+                        {titleCase(signal.outcome)} - {safeDisplay(signal.playbook_id)}
                       </p>
                       <p className="break-words text-[var(--muted)]">
-                        {signal.surface_key ?? "program-level signal"}
+                        {safeDisplay(signal.surface_key ?? "program-level signal")}
                       </p>
                     </div>
                   ))}
@@ -864,7 +881,7 @@ export default async function Dashboard() {
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-semibold">Scope Guard decision</span>
                     <span className={scopeGuardDecision.allowed ? "text-[var(--accent-strong)]" : "text-[var(--danger)]"}>
-                      {scopeGuardDecision.allowed ? "Scope Guard clear" : "Scope Guard blocked"}
+                      {scopeGuardDecision.allowed ? "Scope Guard reviewed" : "Scope Guard blocked"}
                     </span>
                   </div>
                   <p className="mt-2 text-[var(--muted)]">{titleCase(scopeGuardDecision.reason)}</p>

@@ -79,17 +79,18 @@ def build_target_model(openapi: dict) -> TargetModel:
         if not isinstance(path_item, dict):
             continue
 
-        path_provenance_ref = _path_provenance_ref(path)
-        path_edge = openapi_path_edge(path, fact_type="object")
+        safe_path = _safe_path(path)
+        path_provenance_ref = _path_provenance_ref(safe_path)
+        path_edge = openapi_path_edge(safe_path, fact_type="object")
         path_object_names = _find_path_object_names_in_order(path)
         for object_name in path_object_names:
             object_provenance.setdefault(object_name, [])
             _append_unique(object_provenance[object_name], path_provenance_ref)
             object_edges.setdefault(object_name, [])
             _append_unique_edge(object_edges[object_name], path_edge)
-        relationship_edge = openapi_path_edge(path, fact_type="object_relationship")
+        relationship_edge = openapi_path_edge(safe_path, fact_type="object_relationship")
         for parent_object, child_object in zip(path_object_names, path_object_names[1:]):
-            relationship_key = (parent_object, child_object, path)
+            relationship_key = (parent_object, child_object, safe_path)
             if relationship_key in relationship_keys:
                 continue
             relationship_keys.add(relationship_key)
@@ -97,7 +98,7 @@ def build_target_model(openapi: dict) -> TargetModel:
                 ObjectRelationship(
                     parent_object=parent_object,
                     child_object=child_object,
-                    path=path,
+                    path=safe_path,
                     provenance_refs=[path_provenance_ref],
                     provenance_edges=[relationship_edge],
                 )
@@ -109,32 +110,33 @@ def build_target_model(openapi: dict) -> TargetModel:
 
             roles = _extract_roles(operation)
             role_names.update(roles)
-            operation_provenance_ref = _operation_provenance_ref(path, method)
-            endpoint_edge = openapi_operation_edge(path, method, fact_type="endpoint")
+            operation_provenance_ref = _operation_provenance_ref(safe_path, method)
+            endpoint_edge = openapi_operation_edge(safe_path, method, fact_type="endpoint")
+            operation_id = _safe_operation_id(operation.get("operationId"))
 
             endpoint = Endpoint(
                 method=method.upper(),
-                path=path,
-                operation_id=operation.get("operationId"),
+                path=safe_path,
+                operation_id=operation_id,
                 roles=roles,
                 provenance_refs=[operation_provenance_ref],
                 provenance_edges=[endpoint_edge],
             )
             endpoints.append(endpoint)
 
-            action = _detect_action(method, path, operation)
+            action = _detect_action(method, safe_path, operation)
             if action:
                 sensitive_actions.append(
                     SensitiveAction(
                         action=action,
                         method=endpoint.method,
-                        path=path,
+                        path=safe_path,
                         operation_id=endpoint.operation_id,
                         roles=roles,
                         provenance_refs=[operation_provenance_ref],
                         provenance_edges=[
                             openapi_operation_edge(
-                                path,
+                                safe_path,
                                 method,
                                 fact_type="sensitive_action",
                             )
@@ -142,7 +144,7 @@ def build_target_model(openapi: dict) -> TargetModel:
                     )
                 )
 
-            object_edge = openapi_operation_edge(path, method, fact_type="object")
+            object_edge = openapi_operation_edge(safe_path, method, fact_type="object")
             for object_name in _find_object_names(operation):
                 object_provenance.setdefault(object_name, [])
                 object_edges.setdefault(object_name, [])
@@ -206,7 +208,7 @@ def _collect_object_provenance(
     names: dict[str, list[str]],
     path: list[str],
 ) -> None:
-    provenance_ref = ".".join(path)
+    provenance_ref = ".".join(_safe_provenance_component(part) for part in path)
 
     if isinstance(value, dict):
         for key, nested_value in value.items():
@@ -246,11 +248,13 @@ def _extract_roles(operation: dict) -> list[str]:
 
 
 def _role_tokens(value: str) -> set[str]:
+    if _is_secret_like(value):
+        return set()
     return {token for token in re.split(r"[^a-zA-Z]+", value.lower()) if token in ROLE_NAMES}
 
 
 def _detect_action(method: str, path: str, operation: dict) -> str | None:
-    text = f"{path} {operation.get('operationId', '')}".lower()
+    text = f"{path} {_safe_operation_id(operation.get('operationId')) or ''}".lower()
     for action in SPECIAL_ACTIONS:
         if action in text:
             return action
@@ -264,6 +268,48 @@ def _detect_action(method: str, path: str, operation: dict) -> str | None:
         return "delete"
 
     return None
+
+
+def _safe_operation_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return "[REDACTED]" if _is_secret_like(text) else text
+
+
+def _safe_path(value: Any) -> str:
+    text = str(value)
+    segments = text.split("/")
+    safe_segments = [
+        "[REDACTED]" if _is_secret_like(segment) else segment
+        for segment in segments
+    ]
+    return "/".join(safe_segments)
+
+
+def _safe_provenance_component(value: str) -> str:
+    return _safe_path(value)
+
+
+def _is_secret_like(value: str) -> bool:
+    lowered = value.lower()
+    secret_markers = (
+        "authorization:",
+        "api-key:",
+        "bearer ",
+        "cookie:",
+        "set-cookie:",
+        "api_key",
+        "apikey",
+        "password",
+        "credential",
+        "session=",
+        "secret",
+        "token",
+        "sk-",
+        "x-api-key:",
+    )
+    return any(marker in lowered for marker in secret_markers)
 
 
 def _path_provenance_ref(path: str) -> str:

@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowLeft, FlaskConical, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { getCampaignControlCenter, getPipelineRun } from "@/lib/api";
-import { toCampaignHypothesisBoardSummaries } from "@/lib/campaigns-data";
+import { toCampaignControlSummary, toCampaignHypothesisBoardSummaries } from "@/lib/campaigns-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string }>;
@@ -20,7 +20,15 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
   const runs = (
     await Promise.all(runIds.map((runId) => getPipelineRun(runId, null)))
   ).filter((run): run is NonNullable<typeof run> => run !== null);
-  const candidates = toCampaignHypothesisBoardSummaries(runs, controlCenter?.research_review_plans ?? []);
+  const researchQueueSuggestions = controlCenter
+    ? toCampaignControlSummary(controlCenter).researchQueueSuggestions
+    : [];
+  const candidates = toCampaignHypothesisBoardSummaries(
+    runs,
+    controlCenter?.research_review_plans ?? [],
+    researchQueueSuggestions,
+    campaignId,
+  );
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -112,6 +120,71 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
                         <li key={`${candidate.runId}-${candidate.candidateId}-${reason}`}>{reason}</li>
                       ))}
                     </ul>
+                  ) : null}
+                  {candidate.priorityReasons.length > 0 ? (
+                    <PreviewList label="Priority rationale" values={candidate.priorityReasons} />
+                  ) : null}
+                  <div className="mt-3 grid gap-3 text-xs text-[var(--muted)] sm:grid-cols-3">
+                    <PreviewList label="Triage signals" values={candidate.triageSignals} />
+                    <PreviewList label="Evidence focus" values={candidate.evidenceFocus} />
+                    <PreviewList label="Source facts" values={candidate.sourceFactTypes} />
+                  </div>
+                  {candidate.researchQueueHandoff ? (
+                    <div className="mt-4 grid gap-3 border border-[var(--line)] p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                            Review queue handoff
+                          </p>
+                          <p className="mt-1 break-words font-semibold">
+                            {candidate.researchQueueHandoff.title}
+                          </p>
+                        </div>
+                        <Link
+                          href={candidate.researchQueueHandoff.reviewHref}
+                          className="inline-flex min-h-9 items-center rounded-md border border-[var(--line)] px-3 text-xs font-semibold"
+                        >
+                          Review queue
+                        </Link>
+                      </div>
+                      <dl className="grid gap-2 text-xs text-[var(--muted)] sm:grid-cols-2">
+                        <Field
+                          label="Review gate"
+                          value={candidate.researchQueueHandoff.safetyGate}
+                        />
+                        <Field
+                          label="Human review"
+                          value={
+                            candidate.researchQueueHandoff.humanApprovalRequired
+                              ? "Required"
+                              : "Review only"
+                          }
+                        />
+                        <Field
+                          label="Action gate"
+                          value={
+                            candidate.researchQueueHandoff.executionAllowed
+                              ? "Review required"
+                              : "Review only"
+                          }
+                        />
+                        <Field
+                          label="Blocked actions"
+                          value={String(candidate.researchQueueHandoff.blockedActionCount)}
+                        />
+                        <Field
+                          label="Refutation questions"
+                          value={String(candidate.researchQueueHandoff.refutationQuestionCount)}
+                        />
+                        <Field
+                          label="Validation steps"
+                          value={String(candidate.researchQueueHandoff.validationStepCount)}
+                        />
+                      </dl>
+                      <p className="break-words text-xs text-[var(--muted)]">
+                        {candidate.researchQueueHandoff.nextAllowedAction}
+                      </p>
+                    </div>
                   ) : null}
                 </div>
                 <div className="grid content-start gap-2">

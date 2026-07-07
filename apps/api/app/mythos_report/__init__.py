@@ -117,11 +117,7 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
     provenance_edges_by_claim_type = claim_provenance_edges_by_type(record)
     report_chain_blocked_refs = artifact_report_chain_blocked_refs(payload)
     manual_evidence_refs_by_claim = manual_observation_evidence_refs_by_claim(payload)
-    evidence_refs = [
-        safe_preview_text(item.get("type", "evidence_item"))
-        for item in evidence_items
-        if isinstance(item, dict)
-    ]
+    evidence_refs = safe_evidence_bundle_refs(evidence_items)
     supported_observation_refs = unique_preview_refs(
         safe_preview_lines([
             *REPORT_SAFE_REVIEW_EVIDENCE_REFS,
@@ -593,6 +589,9 @@ def claim_ledger_entries(
                 supported_evidence_refs=supported_review_refs,
             ):
                 review_decision = None
+            review_evidence_refs = []
+            if review_decision is not None:
+                review_evidence_refs = review_decision.evidence_refs
             safe_text = safe_preview_text(line)
             safe_evidence_refs = unique_preview_refs(
                 safe_preview_lines([*group_evidence_refs, *manual_evidence_refs])
@@ -649,9 +648,7 @@ def claim_ledger_entries(
                         review_decision.rationale if review_decision is not None else None
                     ),
                     reviewed_at=review_decision.reviewed_at if review_decision is not None else None,
-                    review_evidence_refs=(
-                        review_decision.evidence_refs if review_decision is not None else []
-                    ),
+                    review_evidence_refs=review_evidence_refs,
                 )
             )
 
@@ -863,6 +860,7 @@ def safe_preview_text(value: object) -> str:
     lowered = text.lower()
     secret_markers = (
         "authorization:",
+        "api-key:",
         "bearer ",
         "cookie:",
         "set-cookie:",
@@ -875,6 +873,7 @@ def safe_preview_text(value: object) -> str:
         "secret",
         "token",
         "sk-",
+        "x-api-key:",
         "real user data",
         "customer data",
         "production user",
@@ -902,6 +901,21 @@ def unique_preview_refs(values: list[str]) -> list[str]:
 
 def safe_report_refs(values: list[str]) -> list[str]:
     return [value for value in values if value != "[REDACTED]"]
+
+
+def safe_evidence_bundle_refs(evidence_items: object) -> list[str]:
+    if not isinstance(evidence_items, list):
+        return []
+    refs: list[str] = []
+    for item in evidence_items:
+        if not isinstance(item, dict):
+            continue
+        ref = safe_preview_text(item.get("type", "evidence_item"))
+        if ref not in REPORT_SAFE_REVIEW_EVIDENCE_REFS:
+            continue
+        if ref not in refs:
+            refs.append(ref)
+    return refs
 
 
 def review_evidence_refs_are_report_safe(values: list[str]) -> bool:

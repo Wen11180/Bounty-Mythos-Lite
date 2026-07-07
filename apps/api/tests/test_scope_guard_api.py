@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
+from app.db_models import ProgramRecord
 from app.main import app
 from app.repository import DatabaseRepository, seed_sample_data
 
@@ -53,7 +54,6 @@ def create_approved_record(*, asset: str, validation_mode: str, plan_digest: str
     create_response = client.post(
         "/mythos/approval-records",
         json={
-            "run_id": "pipeline_run_1",
             "program_id": "program_example",
             "asset": asset,
             "validation_mode": validation_mode,
@@ -215,6 +215,496 @@ def test_scope_guard_api_rejects_cross_campaign_approval_when_bound():
 
         assert response.status_code == 200
         assert response.json() == {"allowed": False, "reason": "approval_record_required"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_does_not_reuse_campaign_bound_approval_without_campaign_context():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Campaign-bound approval",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve this campaign only.",
+            requested_action="two_account_authorization_check",
+            asset="api.example.com",
+            validation_mode="two_account_authorization_check",
+            plan_digest="campaign_bound_context_plan_digest",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for the bound campaign only.",
+        )
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "rule": validation_rule(),
+                "request": approved_validation_request(
+                    plan_digest="campaign_bound_context_plan_digest"
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "allowed": False,
+            "reason": "approval_record_required",
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_blocks_approved_validation_when_campaign_is_out_of_scope():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Out-of-scope scope guard campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve campaign validation before scope changed.",
+            requested_action="two_account_authorization_check",
+            asset="api.example.com",
+            validation_mode="two_account_authorization_check",
+            plan_digest="stale_scope_plan_digest",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved while campaign was in scope.",
+        )
+        campaign.scope_status = "out_of_scope"
+        session.add(campaign)
+        session.commit()
+        campaign_id = campaign.id
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "campaign_id": campaign_id,
+                "rule": validation_rule(),
+                "request": approved_validation_request(
+                    plan_digest="stale_scope_plan_digest"
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"allowed": False, "reason": "scope_not_in_scope"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_blocks_run_bound_approval_when_campaign_is_out_of_scope():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        run = repository.save_pipeline_run(
+            program_id="program_example",
+            asset="api.example.com",
+            policy_text="Testing allowed.",
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title="Run-bound approval",
+            payload={"report_draft": {"title": "Run-bound approval"}},
+        )
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Run-bound stale approval campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed.",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.save_pipeline_stage(
+            pipeline_run_id=run.id,
+            campaign_id=campaign.id,
+            task_id=None,
+            stage_key="campaign_report_preview",
+            stage_order=0,
+            status="preview_ready",
+            input_refs=[f"pipeline_run:{run.id}"],
+            output_refs=[],
+            safety_gate_state="manual_review_required",
+            stop_reason=None,
+            payload={"raw_payload_processed": False},
+        )
+        approval = repository.create_approval_record(
+            run_id=run.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve run validation before scope changed.",
+            requested_action="two_account_authorization_check",
+            asset="api.example.com",
+            validation_mode="two_account_authorization_check",
+            plan_digest="run_stale_scope_plan_digest",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved while run campaign was in scope.",
+        )
+        campaign.scope_status = "out_of_scope"
+        session.add(campaign)
+        session.commit()
+        run_id = run.id
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "run_id": run_id,
+                "rule": validation_rule(),
+                "request": approved_validation_request(
+                    plan_digest="run_stale_scope_plan_digest"
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"allowed": False, "reason": "scope_not_in_scope"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_blocks_run_bound_approval_when_pipeline_run_is_out_of_scope():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        run = repository.save_pipeline_run(
+            program_id="program_example",
+            asset="api.example.com",
+            policy_text="Testing is no longer allowed.",
+            scope_status="out_of_scope",
+            hypothesis_count=1,
+            blocked_count=1,
+            report_title="Out-of-scope run-bound approval",
+            payload={"report_draft": {"title": "Out-of-scope run-bound approval"}},
+        )
+        approval = repository.create_approval_record(
+            run_id=run.id,
+            program_id=run.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approval record was created before scope changed.",
+            requested_action="two_account_authorization_check",
+            asset="api.example.com",
+            validation_mode="two_account_authorization_check",
+            plan_digest="run_self_scope_plan_digest",
+            autonomy_level="level_2_test_account_validation",
+            safety_gate_state="awaiting_approval",
+        )
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved while run appeared usable.",
+        )
+        run_id = run.id
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "run_id": run_id,
+                "rule": validation_rule(),
+                "request": approved_validation_request(
+                    plan_digest="run_self_scope_plan_digest"
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"allowed": False, "reason": "scope_not_in_scope"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_does_not_reuse_run_bound_approval_without_run_context():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        run = repository.save_pipeline_run(
+            program_id="program_example",
+            asset="api.example.com",
+            policy_text="Testing allowed.",
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title="Run-bound approval",
+            payload={"report_draft": {"title": "Run-bound approval"}},
+        )
+        approval = repository.create_approval_record(
+            run_id=run.id,
+            program_id=run.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve this run only.",
+            requested_action="two_account_authorization_check",
+            asset="api.example.com",
+            validation_mode="two_account_authorization_check",
+            plan_digest="run_bound_context_plan_digest",
+            autonomy_level="level_2_test_account_validation",
+            safety_gate_state="awaiting_approval",
+        )
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for the bound run only.",
+        )
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "rule": validation_rule(),
+                "request": approved_validation_request(
+                    plan_digest="run_bound_context_plan_digest"
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "allowed": False,
+            "reason": "approval_record_required",
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_blocks_no_approval_validation_when_pipeline_run_is_out_of_scope():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        run = repository.save_pipeline_run(
+            program_id="program_example",
+            asset="api.example.com",
+            policy_text="Testing is no longer allowed.",
+            scope_status="out_of_scope",
+            hypothesis_count=1,
+            blocked_count=1,
+            report_title="Out-of-scope no approval validation",
+            payload={"report_draft": {"title": "Out-of-scope no approval validation"}},
+        )
+        run_id = run.id
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "run_id": run_id,
+                "rule": {
+                    **validation_rule(),
+                    "human_approval_required": False,
+                },
+                "request": {
+                    **approved_validation_request(plan_digest="local_plan_digest"),
+                    "human_approved": False,
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"allowed": False, "reason": "scope_not_in_scope"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_rejects_missing_pipeline_run_context():
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "run_id": "pipeline_run_missing",
+                "rule": {
+                    **validation_rule(),
+                    "human_approval_required": False,
+                },
+                "request": {
+                    **approved_validation_request(plan_digest="local_plan_digest"),
+                    "human_approved": False,
+                },
+            },
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Pipeline run not found"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scope_guard_api_blocks_approved_validation_when_program_is_out_of_scope():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/approval-records",
+            json={
+                "program_id": "program_example",
+                "asset": "api.example.com",
+                "validation_mode": "two_account_authorization_check",
+                "plan_digest": "program_scope_plan_digest",
+                "requester": "lead_reviewer",
+                "reason": "Approve scoped validation before program scope changed.",
+            },
+        )
+        assert create_response.status_code == 200
+        approval_id = create_response.json()["id"]
+
+        decision_response = client.post(
+            f"/mythos/approval-records/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved while program was in scope.",
+            },
+        )
+        assert decision_response.status_code == 200
+
+        with testing_session() as session:
+            program = session.get(ProgramRecord, "program_example")
+            program.scope_status = "out_of_scope"
+            session.add(program)
+            session.commit()
+
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "rule": validation_rule(),
+                "request": approved_validation_request(
+                    plan_digest="program_scope_plan_digest"
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"allowed": False, "reason": "scope_not_in_scope"}
     finally:
         app.dependency_overrides.clear()
 

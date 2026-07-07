@@ -118,7 +118,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
         <GateMetric
           label="Preflight gate"
           value={workspace.allowed_to_execute === true}
-          trueLabel="Preflight clear"
+          trueLabel="Preflight reviewed"
           falseLabel="Preflight blocked"
         />
         <GateMetric label="Test accounts only" value={workspace.test_accounts_only !== false} />
@@ -187,7 +187,10 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                           {safeDisplay(task.claim_text)}
                         </p>
                         <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                          <Field label="Promotion" value={task.promotion_eligible ? "Eligible" : "Blocked"} />
+                          <Field
+                            label="Promotion gate"
+                            value={task.promotion_eligible ? "Review ready" : "Review required"}
+                          />
                           <Field label="Review" value={task.review_status} />
                           <Field label="Readiness" value={task.readiness_level} />
                           <Field label="Quality" value={`${task.quality_score}/100`} />
@@ -205,7 +208,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                           />
                           <Field
                             label="Preflight status"
-                            value={task.execution_allowed ? "Preflight clear" : "Preflight blocked"}
+                            value={task.execution_allowed ? "Preflight reviewed" : "Preflight blocked"}
                           />
                           <Field
                             label="Required observation"
@@ -324,7 +327,10 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                             label="Observation boundary"
                             value={observation.execution_allowed ? "Preflight reviewed" : "Review only"}
                           />
-                          <Field label="Report chain" value={observation.report_chain_blocked ? "Blocked" : "Open"} />
+                          <Field
+                            label="Report chain gate"
+                            value={observation.report_chain_blocked ? "Review required" : "Review ready"}
+                          />
                           <Field label="Created" value={observation.created_at} />
                           <Field
                             label="Evidence"
@@ -358,14 +364,14 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
               <Field label="Refutation" value={workspace.refutation_status} />
               <Field label="Gate status" value={gate?.status} />
               <Field label="Gate reason" value={gate?.reason} />
-              <Field label="Human approval" value={gate?.human_approved ? "Approved" : "Required"} />
+              <Field label="Human review gate" value={gate?.human_approved ? "Review captured" : "Review required"} />
             </dl>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Lock} title="Blocked Reasons" />
+            <SectionHeader icon={Lock} title="Review Requirements" />
             {blockedReasons.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No active blocking reasons.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No active review requirements.</p>
             ) : (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {blockedReasons.map((reason) => (

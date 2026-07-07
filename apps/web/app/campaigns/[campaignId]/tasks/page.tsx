@@ -42,7 +42,7 @@ export default async function CampaignTasksPage({ params }: PageProps) {
       ) : (
         <section className="mt-5 border border-[var(--line)] bg-white">
           <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_120px_120px]">
-            <span>Task</span>
+            <span>Review item</span>
             <span>Status</span>
             <span>Agent</span>
             <span>Input refs</span>
@@ -62,7 +62,7 @@ export default async function CampaignTasksPage({ params }: PageProps) {
                     {task.title}
                   </Link>
                   <dl className="mt-2 grid gap-1 text-xs text-[var(--muted)]">
-                    <Field label="Task" value={task.id} />
+                    <Field label="Review item" value={task.id} />
                     <Field label="Type" value={task.taskType} />
                     <Field label="Created" value={task.createdAt} />
                   </dl>

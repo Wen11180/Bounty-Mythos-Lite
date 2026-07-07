@@ -56,8 +56,8 @@ export default async function CampaignAgentRunsPage({ params }: PageProps) {
           <span>Agent</span>
           <span>Status</span>
           <span>Scope Guard decision</span>
-          <span>Inputs</span>
-          <span>Outputs</span>
+          <span>Input refs</span>
+          <span>Output refs</span>
         </div>
         {summaries.length === 0 ? (
           <p className="p-5 text-sm text-[var(--muted)]">No agent audits ready.</p>

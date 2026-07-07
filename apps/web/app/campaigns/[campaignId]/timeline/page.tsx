@@ -17,8 +17,16 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
   const researchValidationFeedbackCount = timeline.filter(
     (stage) => stage.isResearchValidationFeedback,
   ).length;
+  const validationFeedbackReviewCount = timeline.filter(
+    (stage) => stage.isValidationFeedbackReview,
+  ).length;
   const findingPromotionBlockedCount = timeline.filter(
     (stage) => stage.isFindingPromotionBlocked,
+  ).length;
+  const findingPromotionCount = timeline.filter((stage) => stage.isFindingPromotion).length;
+  const researchPlanCount = timeline.filter((stage) => stage.isResearchPlan).length;
+  const refutationDecisionCount = timeline.filter(
+    (stage) => stage.isResearchRefutationDecision,
   ).length;
   const learningOutcomeCount = timeline.filter((stage) => stage.isLearningOutcome).length;
   const cycleReviewCount = timeline.filter((stage) => stage.isCycleReview).length;
@@ -44,7 +52,7 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
         </p>
       </header>
 
-      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-8">
+      <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-12">
         <Metric label="Stages" value={timeline.length} />
         <Metric
           label="Blocked"
@@ -52,7 +60,11 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
         />
         <Metric label="Manual results" value={manualValidationResultCount} />
         <Metric label="Research feedback" value={researchValidationFeedbackCount} />
+        <Metric label="Feedback reviews" value={validationFeedbackReviewCount} />
+        <Metric label="Promotion reviews" value={findingPromotionCount} />
         <Metric label="Promotion blocks" value={findingPromotionBlockedCount} />
+        <Metric label="Research plans" value={researchPlanCount} />
+        <Metric label="Refutation decisions" value={refutationDecisionCount} />
         <Metric label="Learning outcomes" value={learningOutcomeCount} />
         <Metric label="Cycle reviews" value={cycleReviewCount} />
         <Metric
@@ -67,8 +79,8 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
           <span>Stage</span>
           <span>Status</span>
           <span>Review gate</span>
-          <span>Inputs</span>
-          <span>Outputs</span>
+          <span>Input refs</span>
+          <span>Output refs</span>
         </div>
         {timeline.length === 0 ? (
           <p className="p-5 text-sm text-[var(--muted)]">No review timeline ready.</p>
@@ -91,6 +103,93 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
                       <Clock size={15} aria-hidden="true" />
                       {stage.stopReason}
                     </p>
+                  ) : null}
+                  {stage.isFindingPromotion ? (
+                    <div className="mt-2 grid gap-1 text-xs font-semibold text-[var(--muted)]">
+                      <p>
+                        Provenance refs: {stage.promotionProvenanceRefCount ?? 0} · Review evidence:{" "}
+                        {stage.reviewEvidenceRefCount ?? 0}
+                      </p>
+                      {stage.llmAuditPromptHash ? (
+                        <p className="break-words">
+                          LLM audit · Prompt hash only · Hunter action:{" "}
+                          {stage.hunterOperatingAction ?? "Review required"} · Mode:{" "}
+                          {stage.llmAuditMode ?? "Audit only"} · Hash: {stage.llmAuditPromptHash}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {stage.manualValidationReview ? (
+                    <div className="mt-2 grid gap-1 text-xs font-semibold text-[var(--muted)]">
+                      <p>
+                        Quality review · Score: {stage.manualValidationReview.qualityScore}/100 ·
+                        Redaction: {stage.manualValidationReview.redactionStatus} · Promotion review:{" "}
+                        {stage.manualValidationReview.promotionReviewReady ? "ready" : "gated"}
+                      </p>
+                      <p>
+                        Evidence quality: {stage.manualValidationReview.evidenceQuality} · Safe refs:{" "}
+                        {stage.manualValidationReview.safeEvidenceRefCount} · Unsafe refs:{" "}
+                        {stage.manualValidationReview.unsafeEvidenceRefCount}
+                      </p>
+                      {stage.manualValidationReview.qualityReasons.length > 0 ? (
+                        <p className="break-words">
+                          Reasons: {stage.manualValidationReview.qualityReasons.join(", ")}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {stage.isResearchQueueMaterialized ? (
+                    <p className="mt-2 text-xs font-semibold text-[var(--muted)]">
+                      Research review queued · Refutation questions: {stage.refutationQuestionCount ?? 0} · Validation steps:{" "}
+                      {stage.validationStepCount ?? 0} · Blocked actions:{" "}
+                      {stage.blockedActionCount ?? 0}
+                      {stage.candidateStatus ? ` · ${stage.candidateStatus}` : ""}
+                    </p>
+                  ) : null}
+                  {stage.isResearchPlan ? (
+                    <p className="mt-2 text-xs font-semibold text-[var(--muted)]">
+                      Research plan drafted · Refutation questions:{" "}
+                      {stage.refutationQuestionCount ?? 0} · Evidence steps:{" "}
+                      {stage.evidenceStepCount ?? 0} · Blocked actions:{" "}
+                      {stage.blockedActionCount ?? 0}
+                    </p>
+                  ) : null}
+                  {stage.isResearchPlan || stage.isResearchRefutationDecision ? (
+                    <p className="mt-2 text-xs font-semibold text-[var(--muted)]">
+                      Candidate context · Triage signals: {stage.triageSignalCount ?? 0} ·
+                      Evidence focus: {stage.evidenceFocusCount ?? 0} · Source facts:{" "}
+                      {stage.sourceFactTypeCount ?? 0} · Priority reasons:{" "}
+                      {stage.priorityReasonCount ?? 0} ·{" "}
+                      {stage.hasAuthorizationGapCandidate
+                        ? "Access-control gap candidate"
+                        : "No access-control gap candidate"}
+                    </p>
+                  ) : null}
+                  {stage.isResearchRefutationDecision ? (
+                    <p className="mt-2 text-xs font-semibold text-[var(--muted)]">
+                      Refutation decision · Answers: {stage.refutationAnswerCount ?? 0} ·
+                      Review gate: {stage.approvalCreated ? "recorded" : "pending"} · Validation:{" "}
+                      {stage.validationRunCreated ? "queued" : "not queued"}
+                      {stage.decision ? ` · ${stage.decision}` : ""}
+                    </p>
+                  ) : null}
+                  {stage.isValidationFeedbackReview ? (
+                    <p className="mt-2 text-xs font-semibold text-[var(--muted)]">
+                      Validation feedback review · Finding confirmation gate:{" "}
+                      {stage.findingConfirmationAllowed ? "reviewed" : "gated"} · Report
+                      submission gate: {stage.reportSubmissionAllowed ? "reviewed" : "gated"} ·
+                      Validation gate: {stage.validationAllowed ? "reviewed" : "gated"} · Execution gate:{" "}
+                      {stage.executionAllowed ? "reviewed" : "gated"}
+                      {stage.decision ? ` · decision: ${stage.decision}` : ""}
+                    </p>
+                  ) : null}
+                  {stage.isCycleReview && stage.status !== "Completed" ? (
+                    <Link
+                      href={`/campaigns/${encodeURIComponent(campaignId)}/cycle-reviews/${encodeURIComponent(stage.id)}`}
+                      className="mt-2 inline-flex min-h-9 items-center rounded-md border border-[var(--line)] bg-white px-3 text-xs font-semibold text-[var(--accent-strong)]"
+                    >
+                      Complete cycle review
+                    </Link>
                   ) : null}
                 </div>
                 <StatusText value={stage.status} />

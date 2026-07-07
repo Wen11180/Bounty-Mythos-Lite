@@ -2,7 +2,13 @@ from hashlib import sha256
 
 from app.codebase_map import CodebaseMapResult, map_authorized_code_files
 from app.db import get_session_factory, initialize_database
-from app.db_models import CampaignRecord, CampaignTaskRecord, CodebaseFactRecord
+from app.db_models import (
+    CampaignRecord,
+    CampaignTaskRecord,
+    CodebaseFactRecord,
+    LearningSignalRecord,
+)
+from app.mythos_brain import LearningSignal, MythosLesson, build_mythos_lessons
 from app.repository import DatabaseRepository
 from app.worker.celery_app import celery_app
 
@@ -258,6 +264,7 @@ def _materialize_read_only_artifacts(
                 campaign=campaign,
                 task=task,
                 codebase_facts=codebase_facts,
+                learning_signals=repository.list_learning_signals(campaign.program_id),
             )
             if codebase_facts
             else _fallback_hypothesis_payload(campaign=campaign, task=task)
@@ -371,8 +378,14 @@ def _validation_target_from_codebase_facts(
 
     authz = _related_fact(codebase_facts, route, "authz_check")
     sink = _related_fact(codebase_facts, route, "sensitive_sink")
+    authz_gap = _related_fact(codebase_facts, route, "authorization_gap_candidate")
     route_label = _route_label(route)
-    source_facts = _hypothesis_source_facts(route=route, authz=authz, sink=sink)
+    source_facts = _hypothesis_source_facts(
+        route=route,
+        authz=authz,
+        sink=sink,
+        authz_gap=authz_gap,
+    )
     return {
         "target_ref": f"codebase_fact:route_handler:{route.route_path}",
         "summary": (
@@ -466,17 +479,120 @@ def _codebase_fact_hypothesis_payload(
     campaign: CampaignRecord,
     task: CampaignTaskRecord,
     codebase_facts: list[CodebaseFactRecord],
+    learning_signals: list[LearningSignalRecord] | None = None,
 ) -> dict:
-    route = _first_fact(codebase_facts, "route_handler")
-    if route is None:
+    routes = sorted(
+        (fact for fact in codebase_facts if fact.fact_type == "route_handler"),
+        key=lambda fact: (
+            fact.source_path,
+            fact.route_method or "",
+            fact.route_path or "",
+            fact.symbol_name,
+        ),
+    )
+    if not routes:
         return _fallback_hypothesis_payload(campaign=campaign, task=task)
 
+    hypotheses: list[dict] = []
+    assessments: list[dict] = []
+    object_names: list[str] = []
+    sensitive_actions: list[str] = []
+    source_fact_refs: list[str] = []
+    lessons = _worker_mythos_lessons(learning_signals or [])
+
+    for index, route in enumerate(routes, start=1):
+        candidate = _codebase_route_hypothesis(
+            codebase_facts=codebase_facts,
+            route=route,
+            index=index,
+            lessons=lessons,
+        )
+        hypotheses.append(candidate["hypothesis"])
+        assessments.append(candidate["assessment"])
+        _append_unique(object_names, candidate["object_name"])
+        _append_unique(sensitive_actions, candidate["route_label"])
+        for fact_ref in candidate["source_fact_refs"]:
+            _append_unique(source_fact_refs, fact_ref)
+
+    return {
+        "campaign_id": campaign.id,
+        "source_task_id": task.id,
+        "target_model": {
+            "objects": object_names,
+            "roles": ["user", "owner"],
+            "sensitive_actions": sensitive_actions,
+            "source_fact_refs": source_fact_refs,
+        },
+        "hypotheses": hypotheses,
+        "hypothesis_assessments": assessments,
+        "autonomous_hunt_queue": _worker_autonomous_hunt_queue(assessments),
+        "timeline": [
+            {
+                "name": "hypothesis_generation",
+                "status": "completed",
+                "summary": (
+                    f"Worker generated {len(hypotheses)} advisory hypothesis candidate(s) "
+                    "from mapped codebase facts."
+                ),
+                "safety_notes": [
+                    "no_live_requests",
+                    "codebase_facts_are_not_confirmed_findings",
+                    "human_review_required",
+                ],
+            }
+        ],
+    }
+
+
+def _worker_autonomous_hunt_queue(assessments: list[dict]) -> list[dict]:
+    queue = []
+    for assessment in assessments:
+        hunter_assessment = assessment.get("hunter_assessment", {})
+        queue.append(
+            {
+                "queue_id": f"hunt_queue_{assessment['candidate_id']}",
+                "candidate_id": assessment["candidate_id"],
+                "playbook_id": hunter_assessment.get(
+                    "playbook_id",
+                    "codebase_authorization_boundary",
+                ),
+                "priority_score": hunter_assessment.get("hunter_priority_score", 65),
+                "status": "awaiting_human_approval",
+                "next_action": "review_validation_plan",
+                "human_approval_required": True,
+                "blocked_actions": [
+                    "execute_live_validation",
+                    "touch_real_user_data",
+                    "submit_report",
+                    "bypass_scope_guard",
+                ],
+                "safety_notes": [
+                    "scope_guard_required",
+                    "non_destructive_validation_only",
+                    "human_review_required",
+                ],
+            }
+        )
+    return sorted(queue, key=lambda item: item["priority_score"], reverse=True)
+
+
+def _codebase_route_hypothesis(
+    *,
+    codebase_facts: list[CodebaseFactRecord],
+    route: CodebaseFactRecord,
+    index: int,
+    lessons: list[MythosLesson] | None = None,
+) -> dict:
     authz = _related_fact(codebase_facts, route, "authz_check")
     sink = _related_fact(codebase_facts, route, "sensitive_sink")
+    authz_gap = _related_fact(codebase_facts, route, "authorization_gap_candidate")
     route_label = _route_label(route)
-    source_facts = _hypothesis_source_facts(route=route, authz=authz, sink=sink)
-    source_fact_refs = [fact["fact_ref"] for fact in source_facts]
-    object_name = _object_from_route(route.route_path)
+    source_facts = _hypothesis_source_facts(
+        route=route,
+        authz=authz,
+        sink=sink,
+        authz_gap=authz_gap,
+    )
     hypothesis = {
         "hypothesis": f"Review {route_label} for object authorization boundary drift.",
         "vuln_type": "authorization_boundary",
@@ -494,73 +610,300 @@ def _codebase_fact_hypothesis_payload(
     primitives = [route_label]
     if authz is not None and authz.authz_hint:
         primitives.append(authz.authz_hint)
+    if authz_gap is not None and authz_gap.authz_hint:
+        primitives.append(authz_gap.authz_hint)
     if sink is not None and sink.symbol_name:
         primitives.append(sink.symbol_name)
-
+    hunter_assessment = _worker_hunter_assessment(
+        route_label=route_label,
+        hypothesis=hypothesis["hypothesis"],
+        primitives=primitives,
+        authz_gap_present=authz_gap is not None,
+        sink_present=sink is not None,
+    )
+    _apply_worker_lessons(
+        hunter_assessment,
+        lessons or [],
+        surface_key=_worker_route_surface_key(route),
+    )
     return {
-        "campaign_id": campaign.id,
-        "source_task_id": task.id,
-        "target_model": {
-            "objects": [object_name],
-            "roles": ["user", "owner"],
-            "sensitive_actions": [route_label],
-            "source_fact_refs": source_fact_refs,
-        },
-        "hypotheses": [hypothesis],
-        "hypothesis_assessments": [
-            {
-                "candidate_id": "codebase_fact_hypothesis_1",
-                "hypothesis_index": 0,
-                "hypothesis": hypothesis,
-                "candidate_status": "needs_human_review",
-                "refutation": {
-                    "status": "needs_human_review",
-                    "reasons": ["codebase_fact_candidate_not_validated"],
-                    "questions": [
-                        "Does the mapped authorization check actually enforce the route object's owner boundary?",
-                        "Can redacted test-account evidence refute cross-object access before validation?",
-                    ],
-                    "human_review_required": True,
-                },
-                "exploit_chain": {
-                    "primitives": primitives,
-                    "preconditions": [
-                        "authorized code facts only",
-                        "authorized test accounts only",
-                        "human approval before validation",
-                    ],
-                    "impact": "Potential object-level authorization impact if the mapped route and sink can be reached across ownership boundaries.",
-                    "confidence": 0.45,
-                    "safety_notes": [
-                        "non_executable_chain_summary",
-                        "no_payloads_or_requests",
-                        "human_review_required",
-                    ],
-                },
-                "validation_plan": {
-                    "status": "approval_required",
-                    "methods": ["manual_review", "two_account_authorization_check"],
-                    "steps": [
-                        "Review mapped route, authz hint, and sensitive sink provenance.",
-                        "Use test accounts only after approval to compare authorized and unauthorized object access.",
-                    ],
-                    "human_approval_required": True,
-                },
-            }
-        ],
-        "timeline": [
-            {
-                "name": "hypothesis_generation",
-                "status": "completed",
-                "summary": "Worker generated one advisory hypothesis from mapped codebase facts.",
+        "assessment": {
+            "candidate_id": f"codebase_fact_hypothesis_{index}",
+            "hypothesis_index": index - 1,
+            "hypothesis": hypothesis,
+            "candidate_status": "needs_human_review",
+            "refutation": {
+                "status": "needs_human_review",
+                "reasons": ["codebase_fact_candidate_not_validated"],
+                "questions": _worker_refutation_questions(authz_gap_present=authz_gap is not None),
+                "human_review_required": True,
+            },
+            "exploit_chain": {
+                "primitives": primitives,
+                "preconditions": [
+                    "authorized code facts only",
+                    "authorized test accounts only",
+                    "human approval before validation",
+                ],
+                "impact": "Potential object-level authorization impact if the mapped route and sink can be reached across ownership boundaries.",
+                "confidence": 0.45,
                 "safety_notes": [
-                    "no_live_requests",
-                    "codebase_facts_are_not_confirmed_findings",
+                    "non_executable_chain_summary",
+                    "no_payloads_or_requests",
                     "human_review_required",
                 ],
-            }
-        ],
+            },
+            "validation_plan": {
+                "status": "approval_required",
+                "methods": ["manual_review", "two_account_authorization_check"],
+                "steps": [
+                    "Review mapped route, authz hint, and sensitive sink provenance.",
+                    "Use test accounts only after approval to compare authorized and unauthorized object access.",
+                ],
+                "human_approval_required": True,
+            },
+            "hunter_assessment": hunter_assessment,
+        },
+        "hypothesis": hypothesis,
+        "object_name": _object_from_route(route.route_path),
+        "route_label": route_label,
+        "source_fact_refs": [fact["fact_ref"] for fact in source_facts],
     }
+
+
+def _worker_hunter_assessment(
+    *,
+    route_label: str,
+    hypothesis: str,
+    primitives: list[str],
+    authz_gap_present: bool,
+    sink_present: bool,
+) -> dict:
+    signals = " ".join([route_label, *primitives]).lower()
+    reasons = ["codebase_route_candidate"]
+    if authz_gap_present:
+        reasons.append("authorization_gap_candidate")
+    if sink_present:
+        reasons.append("sensitive_sink_present")
+    reasons.append("human_approval_required")
+
+    if any(signal in signals for signal in ["team", "invite", "role_check", "update_role"]):
+        assessment = {
+            "playbook_id": "role_boundary",
+            "playbook_label": "Role boundary / privilege escalation",
+            "hunter_priority_score": 72,
+            "impact_score": 82,
+            "duplicate_risk_score": 20,
+            "policy_risk_score": 35,
+            "rejection_risk_score": 30,
+            "recommendation": "needs_human_review",
+            "next_action": "Prepare human-approved, test-account-only validation.",
+            "reasons": reasons,
+            "evidence_focus": [
+                "role_matrix_snapshot",
+                "member_vs_admin_request_diff",
+                "permission_denial_expected_result",
+            ],
+            "safety_notes": [
+                "advisory_only",
+                "scope_guard_required",
+                "human_review_required",
+                "no_live_requests",
+            ],
+            "hypothesis": hypothesis,
+        }
+        _boost_authorization_gap_candidate(assessment, authz_gap_present=authz_gap_present)
+        return assessment
+
+    if any(signal in signals for signal in ["file", "export", "download", "send_file"]):
+        assessment = {
+            "playbook_id": "bola_idor",
+            "playbook_label": "BOLA / IDOR object boundary",
+            "hunter_priority_score": 68,
+            "impact_score": 78,
+            "duplicate_risk_score": 25,
+            "policy_risk_score": 35,
+            "rejection_risk_score": 30,
+            "recommendation": "needs_human_review",
+            "next_action": "Prepare human-approved, test-account-only validation.",
+            "reasons": reasons,
+            "evidence_focus": [
+                "two_test_accounts",
+                "same_object_id_cross_account_diff",
+                "request_response_diff",
+            ],
+            "safety_notes": [
+                "advisory_only",
+                "scope_guard_required",
+                "human_review_required",
+                "no_live_requests",
+            ],
+            "hypothesis": hypothesis,
+        }
+        _boost_authorization_gap_candidate(assessment, authz_gap_present=authz_gap_present)
+        return assessment
+
+    assessment = {
+        "playbook_id": "codebase_authorization_boundary",
+        "playbook_label": "Codebase authorization boundary",
+        "hunter_priority_score": 65,
+        "impact_score": 75,
+        "duplicate_risk_score": 25,
+        "policy_risk_score": 35,
+        "rejection_risk_score": 30,
+        "recommendation": "needs_human_review",
+        "next_action": "Prepare human-approved, test-account-only validation.",
+        "reasons": reasons,
+        "evidence_focus": [
+            "provenance_review",
+            "scope_guard_review",
+            "minimal_safe_reproduction_plan",
+        ],
+        "safety_notes": [
+            "advisory_only",
+            "scope_guard_required",
+            "human_review_required",
+            "no_live_requests",
+        ],
+        "hypothesis": hypothesis,
+    }
+    _boost_authorization_gap_candidate(assessment, authz_gap_present=authz_gap_present)
+    return assessment
+
+
+def _worker_refutation_questions(*, authz_gap_present: bool) -> list[str]:
+    questions = [
+        "Does the mapped authorization check actually enforce the route object's owner boundary?",
+        "Can redacted test-account evidence refute cross-object access before validation?",
+    ]
+    if not authz_gap_present:
+        return questions
+    return [
+        "Can same-handler authorization evidence refute the missing access-control check candidate?",
+        *questions,
+    ]
+
+
+def _boost_authorization_gap_candidate(
+    assessment: dict,
+    *,
+    authz_gap_present: bool,
+) -> None:
+    if not authz_gap_present:
+        return
+
+    assessment["hunter_priority_score"] = min(100, assessment["hunter_priority_score"] + 8)
+    _append_unique(assessment["evidence_focus"], "same_handler_authz_evidence")
+    _append_unique(assessment["evidence_focus"], "missing_check_refutation_trace")
+
+
+def _worker_mythos_lessons(signals: list[LearningSignalRecord]) -> list[MythosLesson]:
+    if not signals:
+        return []
+    return build_mythos_lessons(
+        [
+            LearningSignal(
+                id=signal.id,
+                program_id=signal.program_id,
+                playbook_id=signal.playbook_id,
+                outcome=signal.outcome,
+                surface_key=signal.surface_key,
+                notes="",
+                bounty_amount=signal.bounty_amount,
+                severity_delta=signal.severity_delta,
+                evidence_quality=signal.evidence_quality,
+                triager_feedback=None,
+                target_relationships=(
+                    signal.target_relationships
+                    if isinstance(signal.target_relationships, list)
+                    else []
+                ),
+                created_at=signal.created_at.isoformat() if signal.created_at else None,
+            )
+            for signal in signals
+        ]
+    )
+
+
+def _apply_worker_lessons(
+    hunter_assessment: dict,
+    lessons: list[MythosLesson],
+    *,
+    surface_key: str | None,
+) -> None:
+    if not surface_key:
+        return
+
+    for lesson in lessons:
+        if lesson.playbook_id != hunter_assessment["playbook_id"]:
+            continue
+        if lesson.surface_pattern != surface_key:
+            continue
+        bounded_delta = max(-10, min(10, lesson.score_delta))
+        if lesson.recommendation == "boost":
+            hunter_assessment["hunter_priority_score"] = min(
+                100,
+                hunter_assessment["hunter_priority_score"] + bounded_delta,
+            )
+            _append_unique(hunter_assessment["reasons"], "lesson:applied:boost")
+        elif lesson.recommendation == "duplicate_watch":
+            hunter_assessment["duplicate_risk_score"] = min(
+                100,
+                hunter_assessment["duplicate_risk_score"] + abs(bounded_delta),
+            )
+            hunter_assessment["hunter_priority_score"] = max(
+                0,
+                hunter_assessment["hunter_priority_score"] - round(abs(bounded_delta) * 0.5),
+            )
+            _append_unique(hunter_assessment["reasons"], "lesson:applied:duplicate_watch")
+        elif lesson.recommendation in {"penalize", "evidence_needed"}:
+            hunter_assessment["hunter_priority_score"] = max(
+                0,
+                hunter_assessment["hunter_priority_score"] + bounded_delta,
+            )
+            _append_unique(
+                hunter_assessment["reasons"],
+                f"lesson:applied:{lesson.recommendation}",
+            )
+
+        for reason in lesson.reasons:
+            _append_unique(hunter_assessment["reasons"], reason)
+        for note in lesson.safety_notes:
+            _append_unique(hunter_assessment["safety_notes"], note)
+
+
+def _worker_route_surface_key(route: CodebaseFactRecord) -> str | None:
+    if not route.route_path:
+        return None
+    segments = [segment for segment in route.route_path.strip("/").split("/") if segment]
+    for index, segment in enumerate(segments):
+        if segment.startswith("{") and segment.endswith("}"):
+            object_key = segment.strip("{}")
+            action = next(
+                (
+                    candidate
+                    for candidate in segments[index + 1 :]
+                    if not (candidate.startswith("{") and candidate.endswith("}"))
+                ),
+                None,
+            )
+            return f"{object_key}:{action or _worker_method_action(route.route_method)}"
+    return None
+
+
+def _worker_method_action(method: str | None) -> str:
+    return {
+        "GET": "read",
+        "POST": "write",
+        "PUT": "write",
+        "PATCH": "write",
+        "DELETE": "delete",
+    }.get((method or "GET").upper(), "review")
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
 
 
 def _first_fact(
@@ -595,7 +938,15 @@ def _same_handler_or_legacy_fact(
     if not route_handler:
         return True
     fact_handler = fact.payload.get("handler") if isinstance(fact.payload, dict) else None
+    if _has_static_mapper_scope(fact):
+        return fact_handler == route_handler
     return fact_handler in {None, route_handler}
+
+
+def _has_static_mapper_scope(fact: CodebaseFactRecord) -> bool:
+    if not isinstance(fact.payload, dict):
+        return False
+    return fact.payload.get("mapping_mode") == "static_code_snippet_analysis"
 
 
 def _route_label(route: CodebaseFactRecord) -> str:
@@ -609,10 +960,13 @@ def _hypothesis_source_facts(
     route: CodebaseFactRecord,
     authz: CodebaseFactRecord | None,
     sink: CodebaseFactRecord | None,
+    authz_gap: CodebaseFactRecord | None = None,
 ) -> list[dict]:
     facts = [_route_source_fact(route)]
     if authz is not None:
         facts.append(_authz_source_fact(authz))
+    if authz_gap is not None:
+        facts.append(_authz_gap_source_fact(authz_gap))
     if sink is not None:
         facts.append(_sink_source_fact(sink))
     return facts
@@ -643,6 +997,18 @@ def _sink_source_fact(fact: CodebaseFactRecord) -> dict:
     return {
         "fact_ref": f"codebase_fact:sensitive_sink:{fact.symbol_name}",
         "fact_type": fact.fact_type,
+        "source_path": fact.source_path,
+        "symbol_name": fact.symbol_name,
+    }
+
+
+def _authz_gap_source_fact(fact: CodebaseFactRecord) -> dict:
+    return {
+        "fact_ref": f"codebase_fact:authorization_gap_candidate:{fact.route_path}",
+        "authz_hint": fact.authz_hint,
+        "fact_type": fact.fact_type,
+        "route_method": fact.route_method,
+        "route_path": fact.route_path,
         "source_path": fact.source_path,
         "symbol_name": fact.symbol_name,
     }

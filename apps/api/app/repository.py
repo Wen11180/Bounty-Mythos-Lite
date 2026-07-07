@@ -1,11 +1,13 @@
 from datetime import UTC, datetime
 from hashlib import sha256
+import json
 import re
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db_models import (
@@ -68,6 +70,12 @@ _REPORT_SAFE_REVIEW_EVIDENCE_REFS = {
     "sanitized_role_matrix",
     "screenshot_ref",
 }
+_REQUEST_TRACE_EVIDENCE_REFS = {
+    "request_response_diff",
+    "sanitized_cross_account_diff",
+    "sanitized_request_response",
+}
+_CORROBORATING_EVIDENCE_REFS = _REPORT_SAFE_REVIEW_EVIDENCE_REFS - _REQUEST_TRACE_EVIDENCE_REFS
 
 
 class DatabaseRepository:
@@ -324,10 +332,24 @@ class DatabaseRepository:
             existing_usage_records = []
 
         updated_usage_records = list(existing_usage_records)
+        usage_identities = {
+            _artifact_usage_identity(record)
+            for record in updated_usage_records
+            if isinstance(record, dict)
+        }
         for usage_record in usage_records:
             safe_usage_record = _safe_display_value(usage_record)
+            usage_identity = (
+                _artifact_usage_identity(safe_usage_record)
+                if isinstance(safe_usage_record, dict)
+                else None
+            )
+            if usage_identity is not None and usage_identity in usage_identities:
+                continue
             if safe_usage_record not in updated_usage_records:
                 updated_usage_records.append(safe_usage_record)
+                if usage_identity is not None:
+                    usage_identities.add(usage_identity)
 
         provenance["usage_records"] = updated_usage_records
         record.provenance = provenance
@@ -357,7 +379,7 @@ class DatabaseRepository:
             hypothesis_count=hypothesis_count,
             blocked_count=blocked_count,
             report_title=report_title,
-            payload=_without_policy_text(payload),
+            payload=_initial_pipeline_payload(payload),
         )
         self.session.add(record)
         self.session.commit()
@@ -753,6 +775,8 @@ class DatabaseRepository:
             return None
         if record.status in APPROVAL_TERMINAL_STATUSES:
             return None
+        if record.status == decision and record.decided_at is not None:
+            return None
         if decision == "approved" and not approval_record_is_active(record):
             return None
         record.status = _safe_display_value(decision)
@@ -766,6 +790,8 @@ class DatabaseRepository:
         return record
 
     def _sync_validation_runs_for_approval_decision(self, approval: ApprovalRecord) -> None:
+        if approval.campaign_id is None:
+            return
         if approval.validation_mode is None or approval.plan_digest is None:
             return
         if approval.asset is None:
@@ -781,10 +807,11 @@ class DatabaseRepository:
                 | (ValidationRunRecord.approval_id == approval.id)
             )
         )
-        if approval.campaign_id is not None:
-            query = query.where(ValidationRunRecord.campaign_id == approval.campaign_id)
+        query = query.where(ValidationRunRecord.campaign_id == approval.campaign_id)
         if approval.task_id is not None:
             query = query.where(ValidationRunRecord.task_id == approval.task_id)
+        else:
+            query = query.where(ValidationRunRecord.task_id.is_(None))
 
         validation_budget = _payload_int(approval.payload, "validation_budget")
         reserved_count = self._approval_validation_budget_used(approval.id)
@@ -922,10 +949,16 @@ class DatabaseRepository:
         )
         if campaign_id is not None:
             query = query.where(ApprovalRecord.campaign_id == _safe_display_value(campaign_id))
+        else:
+            query = query.where(ApprovalRecord.campaign_id.is_(None))
         if task_id is not None:
             query = query.where(ApprovalRecord.task_id == _safe_display_value(task_id))
+        else:
+            query = query.where(ApprovalRecord.task_id.is_(None))
         if run_id is not None:
             query = query.where(ApprovalRecord.run_id == _safe_display_value(run_id))
+        else:
+            query = query.where(ApprovalRecord.run_id.is_(None))
         now = datetime.now(UTC)
         records = self.session.scalars(
             query.order_by(
@@ -957,6 +990,17 @@ class DatabaseRepository:
         stop_reason: str | None,
         payload: dict | None = None,
     ) -> PipelineStageRecord:
+        safe_payload = _safe_display_value(payload or {})
+        existing = _existing_pipeline_stage_for_idempotency_key(
+            self.session,
+            pipeline_run_id=pipeline_run_id,
+            campaign_id=campaign_id,
+            task_id=task_id,
+            stage_key=stage_key,
+            payload=safe_payload,
+        )
+        if existing is not None:
+            return existing
         record = PipelineStageRecord(
             id=f"pipeline_stage_{uuid4().hex}",
             pipeline_run_id=pipeline_run_id,
@@ -969,7 +1013,7 @@ class DatabaseRepository:
             output_refs=_safe_display_value(output_refs or []),
             safety_gate_state=_safe_display_value(safety_gate_state),
             stop_reason=_safe_display_value(stop_reason),
-            payload=_safe_display_value(payload or {}),
+            payload=safe_payload,
         )
         self.session.add(record)
         self.session.commit()
@@ -1164,6 +1208,18 @@ class DatabaseRepository:
         summary: str,
         payload: dict | None = None,
     ) -> ValidationRunRecord:
+        safe_payload = _safe_display_value(payload or {})
+        existing = _existing_validation_run_for_idempotency_key(
+            self.session,
+            campaign_id=campaign_id,
+            task_id=task_id,
+            validation_mode=validation_mode,
+            target_ref=target_ref,
+            plan_digest=plan_digest,
+            payload=safe_payload,
+        )
+        if existing is not None:
+            return existing
         gated_without_approval = approval_required and approval_id is None
         gated_status = "awaiting_approval" if gated_without_approval else _safe_display_value(status)
         gated_allowed_to_execute = _validation_initial_allowed_to_execute(
@@ -1187,7 +1243,7 @@ class DatabaseRepository:
             allowed_to_execute=gated_allowed_to_execute and not gated_without_approval,
             evidence_ref_count=max(0, evidence_ref_count),
             summary=_safe_display_value(summary),
-            payload=_safe_display_value(payload or {}),
+            payload=safe_payload,
         )
         self.session.add(record)
         self.session.commit()
@@ -1216,6 +1272,8 @@ class DatabaseRepository:
     ) -> ValidationRunRecord | None:
         record = self.get_validation_run(validation_run_id)
         if record is None:
+            return None
+        if record.status in _VALIDATION_MANUAL_RESULT_STATUSES:
             return None
         if allowed and record.status not in {"ready", "preflight_passed"}:
             allowed = False
@@ -1259,6 +1317,12 @@ class DatabaseRepository:
         safe_outcome = _safe_display_value(outcome)
         safe_evidence_refs = _safe_display_value(evidence_refs)
         safe_evidence_ref_count = _safe_evidence_ref_count(safe_evidence_refs)
+        validation_result_review = _validation_result_review(
+            outcome=safe_outcome,
+            summary=summary,
+            evidence_refs=safe_evidence_refs,
+            safe_evidence_ref_count=safe_evidence_ref_count,
+        )
         record.status = _validation_result_status(
             safe_outcome,
             safe_evidence_ref_count=safe_evidence_ref_count,
@@ -1282,6 +1346,7 @@ class DatabaseRepository:
             "recorded_at": record.finished_at.isoformat(),
             "execution_started": False,
         })
+        payload["validation_result_review"] = validation_result_review
         record.payload = payload
         self.session.add(record)
         self.session.commit()
@@ -1301,9 +1366,35 @@ class DatabaseRepository:
         evidence_quality: str | None = None,
         triager_feedback: str | None = None,
         target_relationships: list[str] | None = None,
+        reuse_identical: bool = True,
     ) -> LearningSignalRecord:
+        identity_hash = (
+            _learning_signal_identity_hash(
+                program_id=program_id,
+                playbook_id=playbook_id,
+                outcome=outcome,
+                surface_key=surface_key,
+                notes=notes,
+                bounty_amount=bounty_amount,
+                severity_delta=severity_delta,
+                evidence_quality=evidence_quality,
+                triager_feedback=triager_feedback,
+                target_relationships=target_relationships or [],
+            )
+            if reuse_identical
+            else None
+        )
+        if identity_hash is not None:
+            existing = self.session.scalar(
+                select(LearningSignalRecord).where(
+                    LearningSignalRecord.identity_hash == identity_hash
+                )
+            )
+            if existing is not None:
+                return existing
         record = LearningSignalRecord(
             id=f"learning_signal_{uuid4().hex}",
+            identity_hash=identity_hash,
             program_id=program_id,
             playbook_id=playbook_id,
             outcome=outcome,
@@ -1316,7 +1407,20 @@ class DatabaseRepository:
             target_relationships=_safe_display_value(target_relationships or []),
         )
         self.session.add(record)
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            if identity_hash is None:
+                raise
+            existing = self.session.scalar(
+                select(LearningSignalRecord).where(
+                    LearningSignalRecord.identity_hash == identity_hash
+                )
+            )
+            if existing is None:
+                raise
+            return existing
         self.session.refresh(record)
         return record
 
@@ -1399,6 +1503,108 @@ def _artifact_matches_usage_filter(
             continue
         return True
     return False
+
+
+def _artifact_usage_identity(usage_record: dict) -> tuple[str, str, str, str] | None:
+    usage_type = usage_record.get("usage_type")
+    run_id = usage_record.get("run_id")
+    if not isinstance(usage_type, str) or not isinstance(run_id, str):
+        return None
+
+    ref = usage_record.get("ref")
+    if isinstance(ref, str):
+        return (usage_type, run_id, "ref", ref)
+
+    for field in (
+        "learning_signal_id",
+        "finding_id",
+        "candidate_id",
+        "claim_id",
+        "observation_id",
+        "validation_run_id",
+    ):
+        value = usage_record.get(field)
+        if isinstance(value, str):
+            return (usage_type, run_id, field, value)
+    return None
+
+
+def _existing_pipeline_stage_for_idempotency_key(
+    session: Session,
+    *,
+    pipeline_run_id: str | None,
+    campaign_id: str | None,
+    task_id: str | None,
+    stage_key: str,
+    payload: dict,
+) -> PipelineStageRecord | None:
+    idempotency_key = payload.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or idempotency_key == REDACTED:
+        return None
+
+    query = (
+        select(PipelineStageRecord)
+        .where(PipelineStageRecord.stage_key == _safe_display_value(stage_key))
+        .where(PipelineStageRecord.payload["idempotency_key"].as_string() == idempotency_key)
+    )
+    if pipeline_run_id is None:
+        query = query.where(PipelineStageRecord.pipeline_run_id.is_(None))
+    else:
+        query = query.where(PipelineStageRecord.pipeline_run_id == pipeline_run_id)
+    if campaign_id is None:
+        query = query.where(PipelineStageRecord.campaign_id.is_(None))
+    else:
+        query = query.where(PipelineStageRecord.campaign_id == campaign_id)
+    if task_id is None:
+        query = query.where(PipelineStageRecord.task_id.is_(None))
+    else:
+        query = query.where(PipelineStageRecord.task_id == task_id)
+
+    return session.scalars(
+        query.order_by(
+            PipelineStageRecord.stage_order,
+            PipelineStageRecord.created_at,
+            PipelineStageRecord.id,
+        )
+    ).first()
+
+
+def _existing_validation_run_for_idempotency_key(
+    session: Session,
+    *,
+    campaign_id: str,
+    task_id: str | None,
+    validation_mode: str,
+    target_ref: str,
+    plan_digest: str | None,
+    payload: dict,
+) -> ValidationRunRecord | None:
+    idempotency_key = payload.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or idempotency_key == REDACTED:
+        return None
+
+    query = (
+        select(ValidationRunRecord)
+        .where(ValidationRunRecord.campaign_id == campaign_id)
+        .where(ValidationRunRecord.validation_mode == _safe_display_value(validation_mode))
+        .where(ValidationRunRecord.target_ref == _safe_source_path(target_ref))
+        .where(ValidationRunRecord.payload["idempotency_key"].as_string() == idempotency_key)
+    )
+    if task_id is None:
+        query = query.where(ValidationRunRecord.task_id.is_(None))
+    else:
+        query = query.where(ValidationRunRecord.task_id == task_id)
+    if plan_digest is None:
+        query = query.where(ValidationRunRecord.plan_digest.is_(None))
+    else:
+        query = query.where(ValidationRunRecord.plan_digest == _safe_display_value(plan_digest))
+
+    return session.scalars(
+        query.order_by(
+            ValidationRunRecord.created_at,
+            ValidationRunRecord.id,
+        )
+    ).first()
 
 
 def _artifact_matches_safety_filter(
@@ -1595,6 +1801,17 @@ def _without_policy_text(value):
     return _safe_display_value(value)
 
 
+def _initial_pipeline_payload(payload: dict) -> dict:
+    safe_payload = _without_policy_text(payload)
+    if not isinstance(safe_payload, dict):
+        return {}
+    return {
+        key: value
+        for key, value in safe_payload.items()
+        if key not in {"manual_observations", "claim_review_decisions"}
+    }
+
+
 def _safe_source_path(value: str) -> str:
     path = value.split("?", 1)[0].split("#", 1)[0]
     return _safe_display_value(path)
@@ -1677,7 +1894,11 @@ def _evidence_bundle_refs(payload: dict) -> set[str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        refs.update(_safe_evidence_refs([item.get("type", "")]))
+        refs.update(
+            ref
+            for ref in _safe_evidence_refs([item.get("type", "")])
+            if ref in _REPORT_SAFE_REVIEW_EVIDENCE_REFS
+        )
     return refs
 
 
@@ -1685,6 +1906,7 @@ def _manual_observation_refs_for_claim(payload: dict, claim_id: str) -> set[str]
     observations = payload.get("manual_observations", []) if isinstance(payload, dict) else []
     if not claim_id or not isinstance(observations, list):
         return set()
+    supported_refs = _supported_manual_observation_refs(payload)
     refs: set[str] = set()
     for observation in observations:
         if not isinstance(observation, dict):
@@ -1693,7 +1915,11 @@ def _manual_observation_refs_for_claim(payload: dict, claim_id: str) -> set[str]
             continue
         if _safe_display_value(observation.get("claim_id", "")) != claim_id:
             continue
-        refs.update(_safe_evidence_refs(observation.get("evidence_refs", [])))
+        refs.update(
+            ref
+            for ref in _safe_evidence_refs(observation.get("evidence_refs", []))
+            if ref in supported_refs
+        )
     return refs
 
 
@@ -1733,12 +1959,63 @@ def _safe_display_value(value: Any) -> Any:
         return tuple(_safe_display_value(item) for item in value)
     if isinstance(value, dict):
         return {
-            key: REDACTED
+            _safe_display_key(key): REDACTED
             if _is_secret_key(str(key))
             else _safe_display_value(nested_value)
             for key, nested_value in value.items()
         }
     return value
+
+
+def _safe_display_key(value: Any) -> Any:
+    if isinstance(value, str) and (
+        _is_secret_like(value) or _contains_real_user_data_risk(value)
+    ):
+        return REDACTED
+    return value
+
+
+def _learning_signal_identity_hash(
+    *,
+    program_id: str,
+    playbook_id: str,
+    outcome: str,
+    surface_key: str | None,
+    notes: str,
+    bounty_amount: int | None,
+    severity_delta: str | None,
+    evidence_quality: str | None,
+    triager_feedback: str | None,
+    target_relationships: list[str],
+) -> str | None:
+    safe_values = {
+        "program_id": program_id,
+        "playbook_id": playbook_id,
+        "outcome": outcome,
+        "surface_key": _safe_display_value(surface_key),
+        "notes": _safe_display_value(notes),
+        "bounty_amount": bounty_amount,
+        "severity_delta": _safe_display_value(severity_delta),
+        "evidence_quality": _safe_display_value(evidence_quality),
+        "triager_feedback": _safe_display_value(triager_feedback),
+        "target_relationships": _safe_display_value(target_relationships),
+    }
+    original_values = {
+        "program_id": program_id,
+        "playbook_id": playbook_id,
+        "outcome": outcome,
+        "surface_key": surface_key,
+        "notes": notes,
+        "bounty_amount": bounty_amount,
+        "severity_delta": severity_delta,
+        "evidence_quality": evidence_quality,
+        "triager_feedback": triager_feedback,
+        "target_relationships": target_relationships,
+    }
+    if safe_values != original_values:
+        return None
+    encoded = json.dumps(safe_values, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _is_secret_key(value: str) -> bool:
@@ -1762,6 +2039,7 @@ def _is_secret_like(value: str) -> bool:
     normalized = value.lower()
     secret_markers = (
         "authorization:",
+        "api-key:",
         "api_key=",
         "bearer ",
         "cookie:",
@@ -1770,6 +2048,7 @@ def _is_secret_like(value: str) -> bool:
         "session=",
         "sk-",
         "token=",
+        "x-api-key:",
     )
     return (
         any(marker in normalized for marker in secret_markers)
@@ -1781,7 +2060,133 @@ def _is_secret_like(value: str) -> bool:
 def _safe_evidence_ref_count(evidence_refs: Any) -> int:
     if not isinstance(evidence_refs, list):
         return 0
-    return sum(1 for evidence_ref in evidence_refs if evidence_ref != REDACTED)
+    return len(
+        {
+            evidence_ref
+            for evidence_ref in evidence_refs
+            if _is_report_safe_evidence_ref(evidence_ref)
+        }
+    )
+
+
+def _is_report_safe_evidence_ref(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and value != REDACTED
+        and value in _REPORT_SAFE_REVIEW_EVIDENCE_REFS
+    )
+
+
+def _contains_redacted_value(value: Any) -> bool:
+    if value == REDACTED:
+        return True
+    if isinstance(value, (list, tuple)):
+        return any(_contains_redacted_value(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_redacted_value(item) for item in value.values())
+    return False
+
+
+def _has_diverse_safe_evidence_refs(evidence_refs: Any) -> bool:
+    if not isinstance(evidence_refs, list):
+        return False
+    safe_refs = {
+        evidence_ref
+        for evidence_ref in evidence_refs
+        if _is_report_safe_evidence_ref(evidence_ref)
+    }
+    return bool(
+        safe_refs & _REQUEST_TRACE_EVIDENCE_REFS
+        and safe_refs & _CORROBORATING_EVIDENCE_REFS
+    )
+
+
+def _validation_result_review(
+    *,
+    outcome: str,
+    summary: str,
+    evidence_refs: Any,
+    safe_evidence_ref_count: int,
+) -> dict:
+    evidence_ref_list = evidence_refs if isinstance(evidence_refs, list) else []
+    unsafe_evidence_ref_count = sum(
+        1
+        for ref in evidence_ref_list
+        if not _is_report_safe_evidence_ref(ref)
+    )
+    redaction_required = (
+        _safe_display_value(summary) == REDACTED
+        or _contains_redacted_value(evidence_ref_list)
+    )
+    unsupported_evidence_ref_present = unsafe_evidence_ref_count > 0
+    diverse_safe_evidence_refs = _has_diverse_safe_evidence_refs(evidence_ref_list)
+
+    quality_score = 0
+    quality_reasons = ["manual_result_recorded"]
+    if outcome == "observed":
+        quality_score += 25
+    elif outcome == "refuted":
+        quality_score += 15
+        quality_reasons.append("claim_refuted")
+    else:
+        quality_reasons.append("needs_more_evidence")
+
+    if safe_evidence_ref_count > 0:
+        quality_score += min(40, safe_evidence_ref_count * 20)
+        quality_reasons.append("has_report_safe_evidence")
+    else:
+        quality_reasons.append("missing_report_safe_evidence")
+
+    if redaction_required:
+        quality_reasons.append("sensitive_material_redacted")
+        quality_reasons.append("promotion_blocked_by_redaction_review")
+    else:
+        quality_score += 15
+        quality_reasons.append("clean_redaction_review")
+    if unsupported_evidence_ref_present:
+        quality_reasons.append("unsupported_evidence_refs")
+        quality_reasons.append("promotion_blocked_by_unsupported_evidence")
+
+    if (
+        outcome == "observed"
+        and safe_evidence_ref_count >= 3
+        and diverse_safe_evidence_refs
+        and not redaction_required
+        and not unsupported_evidence_ref_present
+    ):
+        evidence_quality = "strong"
+    elif outcome == "observed" and safe_evidence_ref_count > 0:
+        evidence_quality = "adequate"
+    else:
+        evidence_quality = "weak"
+
+    promotion_review_ready = (
+        outcome == "observed"
+        and evidence_quality == "strong"
+        and not redaction_required
+        and not unsupported_evidence_ref_present
+    )
+    if (
+        outcome == "observed"
+        and safe_evidence_ref_count > 0
+        and not promotion_review_ready
+        and not redaction_required
+        and not unsupported_evidence_ref_present
+    ):
+        quality_reasons.append("promotion_blocked_by_insufficient_evidence")
+        if safe_evidence_ref_count >= 3 and not diverse_safe_evidence_refs:
+            quality_reasons.append("promotion_blocked_by_low_evidence_diversity")
+
+    return {
+        "source_type": "manual_safe_observation",
+        "redaction_status": "redacted" if redaction_required else "clean",
+        "evidence_quality": evidence_quality,
+        "quality_score": min(100, quality_score),
+        "promotion_review_ready": promotion_review_ready,
+        "quality_reasons": quality_reasons,
+        "safe_evidence_ref_count": safe_evidence_ref_count,
+        "unsafe_evidence_ref_count": max(0, unsafe_evidence_ref_count),
+    }
 
 
 def _validation_result_status(outcome: str, *, safe_evidence_ref_count: int) -> str:

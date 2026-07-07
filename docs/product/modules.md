@@ -1,16 +1,17 @@
 # 产品模块
 
-## Dashboard
+## Campaign Control Center
 
-首页展示工作质量和风险控制，不展示“扫到多少漏洞”。
+首页是自主研究 campaign 的操作台，展示工作质量、风险控制、预算消耗和下一步动作，不展示“扫到多少漏洞”。
 
 今日任务指标：
 
-- 已解析项目数
+- 活跃 campaign 数
 - 高价值候选数
-- 可提交报告数
+- 需要证据/审批/反证的候选数
 - 需要人工确认数
 - Policy 风险拦截数
+- 被 Scope Guard 或 preflight 阻断的动作数
 
 核心 KPI：
 
@@ -22,9 +23,9 @@
 
 最终主指标是 `accepted bounty / human hour`。
 
-## Program Center
+## Campaign Intake / Program Center
 
-每个赏金项目生成一张项目卡：
+每个赏金项目先生成 program 记录，再在明确授权边界内启动 research campaign：
 
 - 项目名称
 - 平台：HackerOne、Bugcrowd、自建 VDP 等
@@ -33,11 +34,11 @@
 - 自动化允许程度
 - 测试账号配置状态
 - API 文档导入状态
-- 公开代码状态
+- 授权 artifact / 本地代码快照状态
 - 历史重复率
 - 推荐优先级
 
-系统第一步必须读取项目 policy。平台规则和项目方规则可能同时生效，因此 policy 需要转换成机器可执行限制。
+系统第一步必须读取项目 policy。平台规则和项目方规则可能同时生效，因此 policy 需要转换成机器可执行限制。没有 scope、授权 artifact、测试账号或人工审批记录时，campaign 只能停留在只读建模和假设阶段。
 
 ## Scope Guard
 
@@ -86,11 +87,14 @@ Scope Guard 是产品的刹车系统，负责拦截：
 3. Postman Collection
 4. HAR 浏览器流量
 5. 前端 JS bundle
-6. 公开 GitHub/GitLab 代码
-7. 移动端公开资源
-8. 帮助中心/开发者文档
-9. 历史公开漏洞报告
-10. 平台评级标准
+6. 用户提供或明确授权的本地代码仓库/代码快照
+7. 用户提供或明确授权的移动端资源
+8. 用户提供或明确授权的帮助中心/开发者文档
+9. 用户提供或明确授权的历史公开漏洞报告
+10. 用户提供或明确授权的静态扫描/SARIF 输出
+11. 平台评级标准
+
+Artifact Ingestion 不能自动抓取公共目标、公共仓库或第三方报告。所有输入都必须带有来源、授权说明、敏感度、redaction 状态和 provenance ref。
 
 统一输出结构：
 
@@ -166,7 +170,7 @@ Scope Guard 是产品的刹车系统，负责拦截：
 }
 ```
 
-候选目标不是数量，而是少量、高置信、高影响、能复现、能提交。
+候选目标不是数量，而是少量、高置信、高影响、可形成低风险验证计划，并满足报告草稿前置条件。candidate 不代表漏洞已验证或报告可提交。
 
 ## Mythos Brain
 
@@ -201,15 +205,15 @@ Hunter Operating Loop 把 run、claim quality、hunter assessment、LLM audit �
 1. Policy Agent：解析项目规则
 2. Scope Guard Agent：拦截越界行为
 3. ROI Agent：判断哪个项目值得做
-4. Recon Agent：整理授权范围内资料
+4. Recon Agent：整理 campaign 内已授权资料，不主动抓取公网目标
 5. API Modeling Agent：建 endpoint / object / role 模型
 6. Business Invariant Agent：生成业务安全不变量
-7. Code Audit Agent：审公开代码和补丁 diff
+7. Code Audit Agent：审授权本地代码、代码快照和补丁 diff
 8. Hypothesis Agent：生成漏洞假设
 9. Validation Planner Agent：设计低风险验证计划
 10. Refutation Agent：专门证明这是误报
 11. Evidence Agent：整理证据
-12. Report Agent：生成赏金报告
+12. Report Agent：生成 submission-blocked 报告草稿，不能提交报告
 
 关键角色是 Refutation Agent。它需要持续追问：
 
@@ -225,7 +229,7 @@ Hunter Operating Loop 把 run、claim quality、hunter assessment、LLM audit �
 
 ## Validation Layer
 
-验证层只能做：
+验证层只能在 Scope Guard、approval record、preflight 和人工操作门禁允许时做：
 
 - 双账号权限对比
 - 多角色权限矩阵
@@ -233,7 +237,7 @@ Hunter Operating Loop 把 run、claim quality、hunter assessment、LLM audit �
 - 单元测试回归测试
 - 非破坏性业务流程验证
 - 请求响应差异分析
-- 证据截图和日志留存
+- 脱敏后的证据截图和日志候选留存
 - Claim Quality 评分：只根据已脱敏 evidence、provenance、人审决定和 gate 状态解释 claim readiness
 
 验证层不能做：
@@ -247,3 +251,7 @@ Hunter Operating Loop 把 run、claim quality、hunter assessment、LLM audit �
 - 自动提交报告
 - 未经确认的破坏性利用
 - 用 claim quality 分数绕过人工审核或提交门
+- 用全局/program-only approval 解锁 campaign-bound validation run
+- 重放已记录的 manual result 来绕过新的 scope 或 approval 状态
+
+所有验证必须绑定 campaign approval，只能使用授权账号和脱敏 evidence。截图、日志和请求响应差异只能作为候选证据，晋升为 report evidence 需要人工确认。

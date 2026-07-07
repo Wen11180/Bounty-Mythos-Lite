@@ -139,7 +139,10 @@ export default async function CampaignBrainPage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Learning Review" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Ready" value={learningReview.reviewReady ? "Yes" : "No"} />
+              <Field
+                label="Review readiness"
+                value={learningReview.reviewReady ? "Review ready" : "Review queued"}
+              />
               <Field label="Safe next action" value={learningReview.safeNextAction} />
               <Field label="Linked audits" value={String(learningReview.linkedRunCount)} />
               <Field label="Recent signals" value={String(learningReview.recentSignalCount)} />
@@ -152,7 +155,10 @@ export default async function CampaignBrainPage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Safety Boundary" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Advisory only" value={advisoryOnly ? "Yes" : "No"} />
+              <Field
+                label="Advisory only"
+                value={advisoryOnly ? "Advisory memory only" : "Review gate active"}
+              />
               <Field
                 label="Review boundary"
                 value={summary.executionAllowed ? "Scope Guard reviewed" : "Brain advisory memory"}

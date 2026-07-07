@@ -100,12 +100,12 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
               <Field label="Sensitivity" value={formatLabel(artifact.sensitivity_label)} />
               <Field label="Redaction" value={formatLabel(artifact.redaction_status)} />
               <Field
-                label="Report-chain eligibility"
+                label="Report-chain review readiness"
                 value={
                   artifact.report_chain_allowed === true
-                    ? "Eligible for report chain"
+                    ? "Report chain review ready"
                     : artifact.report_chain_allowed === false
-                      ? "Blocked for report chain"
+                      ? "Report chain review required"
                       : "Unknown"
                 }
               />

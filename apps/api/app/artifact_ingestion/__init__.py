@@ -18,7 +18,12 @@ class NormalizedArtifact(BaseModel):
 
 
 def normalize_openapi(openapi: dict) -> dict:
-    return {"paths": openapi.get("paths", {})}
+    paths: dict = {}
+    for path, path_item in openapi.get("paths", {}).items():
+        clean_path = _clean_path(str(path))
+        if clean_path and isinstance(path_item, dict):
+            paths.setdefault(clean_path, {}).update(path_item)
+    return {"paths": paths}
 
 
 def normalize_postman(collection: dict) -> dict:
@@ -192,7 +197,7 @@ def _path_from_source_uri(uri: str) -> str | None:
 
 def _clean_path(value: str) -> str | None:
     parsed = urlparse(value)
-    path = parsed.path if parsed.scheme or parsed.netloc else value
+    path = parsed.path if parsed.path else value.split("?", 1)[0].split("#", 1)[0]
     path = path.strip().rstrip(".:)")
     if not path.startswith("/"):
         return None

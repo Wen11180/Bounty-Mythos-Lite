@@ -54,7 +54,7 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
         <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="max-w-4xl text-3xl font-semibold leading-tight text-balance">
-              Authorized Research Materials
+              Research Artifact Review
             </h1>
             <p className="mt-2 text-pretty text-[var(--muted)]">
               Inspect normalized artifacts, provenance, duplicate import history, and derived facts.
@@ -107,7 +107,7 @@ export default async function ArtifactRepositoryPage({ searchParams }: PageProps
           <Fingerprint size={19} className="text-[var(--accent)]" aria-hidden="true" />
         </div>
         {artifacts.length === 0 ? (
-          <p className="p-5 text-sm text-[var(--muted)]">No artifacts available.</p>
+          <p className="p-5 text-sm text-[var(--muted)]">No artifacts ready for review.</p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
             {artifacts.map((artifact) => {
@@ -184,9 +184,9 @@ function artifactSafety(artifact: ArtifactRecord) {
     redactionStatus: safeDisplay(artifact.redaction_status, "unknown"),
     reportChainAllowed:
       artifact.report_chain_allowed === true
-        ? "report chain allowed"
+        ? "Report chain review ready"
         : artifact.report_chain_allowed === false
-          ? "report chain blocked"
+          ? "Report chain review required"
           : "unknown",
   };
 }

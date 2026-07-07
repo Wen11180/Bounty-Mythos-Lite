@@ -39,7 +39,7 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
           Campaign target-model facts: endpoints, objects, roles, relationships, and sensitive
-          actions extracted from authorized audit sources.
+          actions extracted from audited review sources.
         </p>
       </header>
 
@@ -124,7 +124,7 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Safety Boundary" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Review boundary" value="Not available from this read-only view" />
+              <Field label="Review boundary" value="Audit facts only; execution gates stay outside this view" />
               <Field label="Fact status" value="Target model facts, not confirmed findings" />
               <Field label="Raw payloads" value="Not displayed" />
             </dl>

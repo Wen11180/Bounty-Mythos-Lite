@@ -22,12 +22,20 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         column["name"]
         for column in inspector.get_columns("learning_signals")
     }
+    learning_indexes = inspector.get_indexes("learning_signals")
     approval_columns = {
         column["name"]
         for column in inspector.get_columns("approval_records")
     }
 
     assert "target_relationships" in learning_columns
+    assert "identity_hash" in learning_columns
+    assert any(
+        index["name"] == "uq_learning_signals_identity_hash"
+        and index["column_names"] == ["identity_hash"]
+        and index.get("unique")
+        for index in learning_indexes
+    )
     assert "expires_at" in approval_columns
     assert {
         "campaigns",

@@ -501,15 +501,17 @@ Every page must visibly distinguish:
 
 ## Current Implementation Status
 
-Implemented foundation:
+Implemented foundation in the current repository:
 
 - FastAPI backend.
-- Next.js dashboard/workbench UI.
+- Next.js campaign/workbench UI.
 - SQLAlchemy models and Alembic migrations.
-- Program, artifact, finding, report, LLM run, pipeline run, and learning signal persistence.
+- Program, campaign, campaign task, artifact, finding, report, approval record, validation run, LLM run, pipeline run, pipeline stage, codebase map, feedback review, cycle review, and learning signal persistence.
 - Dry-run Mythos pipeline.
+- Campaign orchestrator foundation with task decomposition, stage records, approval gates, and stop reasons.
 - Artifact repository with filters and provenance usage records.
 - Validation workspace model.
+- Validation queue and validation run records with approval/preflight/manual-result gates.
 - Evidence bundle model.
 - Report preview and claim ledger.
 - Hunter Intelligence scoring.
@@ -517,66 +519,57 @@ Implemented foundation:
 - Finding candidate promotion.
 - LLM provider registry and dry-run audit.
 - Celery worker scaffold.
+- Campaign Control Center pages for campaigns, agent runs, tasks, maps, hypotheses, validation queues, validation runs, evidence review, report drafts, timeline, and Brain.
 
-Known gaps:
+Remaining gaps:
 
-- No campaign orchestrator.
-- No campaign data model.
-- No durable agent run records.
-- No autonomous task planner.
-- No codebase map engine.
-- No scanner run persistence.
-- No exploit-chain reasoner.
-- No validation harness beyond safe plans and manual observations.
-- No normalized pipeline stage table.
-- No approval record model.
-- No production authentication or workspace isolation.
-- No structured LLM workflows wired into the research loop.
-- No UI for campaign control, agent runs, codebase maps, or validation execution queues.
+- The orchestrator is still a safe campaign skeleton, not a fully autonomous long-running research crew.
+- Agent execution is recorded and surfaced, but specialist agents are not yet fully wired to independent tool workflows.
+- Codebase maps exist as a product surface and persistence layer, but extraction depth still needs route/handler/authz/sink enrichment.
+- Scanner run persistence and SARIF-to-target-model merge are incomplete.
+- Exploit-chain reasoning is not yet a first-class workflow with primitive extraction, preconditions, and refutation questions.
+- Validation remains deliberately constrained to plans, approval records, preflight state, and manual observations; no autonomous live validation harness should be added without stronger gates.
+- Structured LLM workflows need tighter schemas, replayability, and campaign-stage wiring.
+- Production authentication, tenant/workspace isolation, and secret management remain required before multi-user or hosted use.
 
 ## Build Priorities
 
-### P0: Autonomous System Foundation
+### P0: Gate-Correct Campaign Foundation
 
-1. Stabilize git/worktree and CI baseline.
-2. Add campaign data model.
-3. Add campaign task model.
-4. Add agent run model.
-5. Add campaign orchestrator skeleton.
-6. Make Scope Guard the single runtime gate.
-7. Harden evidence and artifact safety blockers.
-8. Add approval records.
+1. Keep Scope Guard as the single runtime gate for campaigns, tasks, validation plans, validation runs, evidence promotion, and report drafts.
+2. Harden campaign orchestration around durable stage state, stop reasons, budgets, and resumability.
+3. Ensure approval records, preflight checks, and manual validation observations cannot unlock unrelated runs or stale out-of-scope campaigns.
+4. Keep report drafts submission-blocked until human review records are present.
+5. Add production authentication, workspace isolation, and secret handling before hosted deployment.
 
 ### P1: Autonomous Research Loop
 
-1. Add artifact import API for authorized materials.
-2. Add codebase map engine.
-3. Add scanner run persistence for local/static tools and SARIF.
-4. Add target model merging across artifacts, code maps, and scanner facts.
-5. Add hypothesis/refutation loop over multiple candidates.
-6. Add exploit-chain reasoning output schema.
-7. Add validation harness records and allowed local validation modes.
+1. Improve artifact import for authorized materials with stronger provenance, sensitivity, and report-chain eligibility.
+2. Deepen the codebase map engine for routes, handlers, models, authz checks, sensitive sinks, and source-to-route links.
+3. Add scanner run persistence for authorized local/static tools and SARIF.
+4. Merge target models across artifacts, code maps, scanner facts, and manual notes.
+5. Run hypothesis/refutation loops over multiple candidates with duplicate and policy-risk scoring.
+6. Add exploit-chain reasoning output schemas.
+7. Expand validation harness records for allowed local and explicitly approved test-account validation modes.
 
 ### P2: Reportable Finding Loop
 
-1. Add evidence review workflow.
-2. Add claim review workflow.
-3. Add finding candidate lifecycle.
-4. Add report draft generation by platform style.
-5. Add learning outcome intake from submitted reports.
-6. Add Mythos Brain lesson application with safety-gate suppression.
+1. Tighten evidence review around redaction, provenance, claim coverage, and report-chain blockers.
+2. Tighten claim review so unverified model/scanner claims cannot become report text without evidence.
+3. Mature finding candidate lifecycle states from candidate to reviewed report draft.
+4. Add platform-style report draft generation behind manual review gates.
+5. Add learning outcome intake from manually submitted reports.
+6. Apply Mythos Brain lessons only as advisory ranking and explanation signals.
 
 ### P3: Operator Console
 
-1. Campaign Control Center.
-2. Agent Runs page.
-3. Codebase Map page.
-4. Attack Surface Map page.
-5. Hypothesis Board.
-6. Validation Queue.
-7. Evidence Review.
-8. Report Drafts.
-9. Brain page.
+1. Keep Campaign Control Center as the primary operator surface.
+2. Improve Agent Runs with inputs, output refs, safety gate state, and stop reasons.
+3. Improve Codebase Map and Attack Surface Map with provenance and authorization boundaries.
+4. Improve Hypothesis Board with refutation state, duplicate risk, policy risk, and evidence gaps.
+5. Improve Validation Queue and Validation Runs with read-only next actions and no execution bypass.
+6. Improve Evidence Review and Report Drafts with submission-blocked defaults.
+7. Improve Brain page while keeping learning advisory only.
 
 ## Out Of Scope
 

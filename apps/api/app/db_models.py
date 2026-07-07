@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -375,8 +375,12 @@ class ValidationRunRecord(Base):
 
 class LearningSignalRecord(Base):
     __tablename__ = "learning_signals"
+    __table_args__ = (
+        Index("uq_learning_signals_identity_hash", "identity_hash", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    identity_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
     program_id: Mapped[str] = mapped_column(ForeignKey("programs.id"), nullable=False)
     playbook_id: Mapped[str] = mapped_column(String(100), nullable=False)
     outcome: Mapped[str] = mapped_column(String(50), nullable=False)

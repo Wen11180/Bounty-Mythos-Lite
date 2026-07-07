@@ -42,7 +42,8 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-5">
         <Metric label="Maps" value={view.mapCount} />
         <Metric label="Routes" value={view.routeCount} />
-        <Metric label="Authz checks" value={view.authzCheckCount} />
+        <Metric label="Access-control checks" value={view.authzCheckCount} />
+        <Metric label="Authorization gap candidates" value={view.authorizationGapCandidateCount} />
         <Metric label="Sensitive sinks" value={view.sensitiveSinkCount} />
         <Metric label="Scanner candidates" value={view.candidateCount} />
       </section>
@@ -100,7 +101,7 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
                       </dl>
                     </div>
                     <StatusText value={fact.sensitivityLabel} />
-                    <StatusText value={fact.authzHint ?? "No authz hint"} />
+                    <StatusText value={fact.authzHint ?? "No access-control hint"} />
                   </div>
                 ))}
               </div>
@@ -112,7 +113,7 @@ export default async function CampaignCodebaseMapPage({ params }: PageProps) {
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader icon={ShieldCheck} title="Safety Boundary" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Scanner permission" value="Not available from this read-only view" />
+              <Field label="Scanner boundary" value="Scanner controls stay outside this audit view" />
               <Field label="Raw stdout" value="Not displayed" />
               <Field label="Findings" value="Candidates only" />
               <Field label="Scanner audits" value={String(view.scannerRunCount)} />

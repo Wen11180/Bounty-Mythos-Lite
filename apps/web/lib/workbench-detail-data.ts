@@ -11,64 +11,10 @@ import {
   type PipelineRunSummary,
   type PipelineRunStageSummary,
 } from "./pipeline-runs-data";
+export { formatLabel, safeDisplay, safeRecordEntries, safeStringList } from "./workbench-display";
+import { safeDisplay } from "./workbench-display";
 
 const FALLBACK_DATE = "2026-07-03T00:00:00.000Z";
-const REDACTED = "[REDACTED]";
-
-export function safeDisplay(value: unknown, fallback = "Unavailable"): string {
-  const text = typeof value === "string" ? value.trim() : String(value ?? "").trim();
-
-  if (!text) {
-    return fallback;
-  }
-
-  const lowered = text.toLowerCase();
-  const secretMarkers = [
-    "authorization:",
-    "bearer ",
-    "cookie:",
-    "set-cookie:",
-    "policy_text",
-    "secret",
-    "token",
-    "sk-",
-  ];
-
-  if (secretMarkers.some((marker) => lowered.includes(marker))) {
-    return REDACTED;
-  }
-
-  return text;
-}
-
-export function formatLabel(value: unknown, fallback = "Unknown"): string {
-  return safeDisplay(value, fallback)
-    .replace(/:/g, ": ")
-    .replace(/[_-]+/g, " ")
-    .split(" ")
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
-export function safeStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.map((item) => safeDisplay(item)).filter((item) => item !== "Unavailable");
-}
-
-export function safeRecordEntries(record: Record<string, unknown> | undefined): [string, string][] {
-  if (!record) {
-    return [];
-  }
-
-  return Object.entries(record).map(([key, value]) => [
-    formatLabel(key),
-    safeDisplay(typeof value === "string" ? value : JSON.stringify(value)),
-  ]);
-}
 
 export function findFallbackRunSummary(runId: string): PipelineRunSummary | null {
   return fallbackPipelineRuns.find((run) => run.runId === runId) ?? null;
@@ -155,7 +101,7 @@ export function fallbackRunDetail(runId: string): PipelineRunDetail | null {
             status: "waiting",
             reason: "No finding candidate created yet.",
             safety_gate: "candidate_not_validated",
-            next_allowed_action: "Create a candidate from an eligible reviewed observed claim.",
+            next_allowed_action: "Create a candidate from a review-ready observed claim.",
           },
           {
             key: "learning_signal",

@@ -1,9 +1,10 @@
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
+from app.db_models import LearningSignalRecord
 from app.main import app
 from app.repository import DatabaseRepository, seed_sample_data
 
@@ -124,6 +125,143 @@ def test_learning_signal_repository_persists_target_relationships_safely():
         session.close()
 
 
+def test_learning_signal_repository_reuses_identical_safe_signal():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    try:
+        repository = DatabaseRepository(session)
+
+        first = repository.save_learning_signal(
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            notes="Accepted BOLA report; bounty paid.",
+        )
+        repeated = repository.save_learning_signal(
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            notes="Accepted BOLA report; bounty paid.",
+        )
+        changed = repository.save_learning_signal(
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            notes="Accepted BOLA report from a second safe review.",
+        )
+        signals = repository.list_learning_signals("program_example")
+
+        assert repeated.id == first.id
+        assert changed.id != first.id
+        assert {signal.id for signal in signals} == {first.id, changed.id}
+    finally:
+        session.close()
+
+
+def test_learning_signal_repository_does_not_merge_secret_bearing_signals():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    try:
+        repository = DatabaseRepository(session)
+
+        first = repository.save_learning_signal(
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            notes="Authorization: Bearer first-live-token",
+        )
+        second = repository.save_learning_signal(
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            notes="Authorization: Bearer second-live-token",
+        )
+        signals = repository.list_learning_signals("program_example")
+
+        assert first.notes == "[REDACTED]"
+        assert second.notes == "[REDACTED]"
+        assert second.id != first.id
+        assert {signal.id for signal in signals} == {first.id, second.id}
+    finally:
+        session.close()
+
+
+def test_learning_signal_repository_reuses_signal_inserted_during_unique_race(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'learning-race.db'}")
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    session = testing_session()
+    inserted = False
+
+    def insert_duplicate_before_flush(flushing_session, _flush_context, _instances):
+        nonlocal inserted
+        if inserted:
+            return
+        pending = next(
+            (
+                record
+                for record in flushing_session.new
+                if isinstance(record, LearningSignalRecord) and record.identity_hash
+            ),
+            None,
+        )
+        if pending is None:
+            return
+        inserted = True
+        with testing_session() as racing_session:
+            racing_session.add(
+                LearningSignalRecord(
+                    id="learning_signal_race_winner",
+                    identity_hash=pending.identity_hash,
+                    program_id=pending.program_id,
+                    playbook_id=pending.playbook_id,
+                    outcome=pending.outcome,
+                    surface_key=pending.surface_key,
+                    notes=pending.notes,
+                    bounty_amount=pending.bounty_amount,
+                    severity_delta=pending.severity_delta,
+                    evidence_quality=pending.evidence_quality,
+                    triager_feedback=pending.triager_feedback,
+                    target_relationships=pending.target_relationships,
+                )
+            )
+            racing_session.commit()
+
+    event.listen(session, "before_flush", insert_duplicate_before_flush)
+    try:
+        repository = DatabaseRepository(session)
+
+        saved = repository.save_learning_signal(
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="file_id:export",
+            notes="Accepted BOLA report; bounty paid.",
+        )
+        signals = repository.list_learning_signals("program_example")
+
+        assert saved.id == "learning_signal_race_winner"
+        assert [signal.id for signal in signals] == ["learning_signal_race_winner"]
+    finally:
+        event.remove(session, "before_flush", insert_duplicate_before_flush)
+        session.close()
+
+
 def test_mythos_brain_api_builds_profile_from_runs_and_learning_signals():
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -144,21 +282,29 @@ def test_mythos_brain_api_builds_profile_from_runs_and_learning_signals():
         )
         assert dry_run_response.status_code == 200
 
+        learning_signal_payload = {
+            "program_id": "program_example",
+            "playbook_id": "bola_idor",
+            "outcome": "accepted",
+            "surface_key": "file_id:export",
+            "notes": "Accepted BOLA report; bounty paid.",
+        }
         signal_response = client.post(
             "/mythos/brain/learning-signals",
-            json={
-                "program_id": "program_example",
-                "playbook_id": "bola_idor",
-                "outcome": "accepted",
-                "surface_key": "file_id:export",
-                "notes": "Accepted BOLA report; bounty paid.",
-            },
+            json=learning_signal_payload,
         )
         assert signal_response.status_code == 200
         signal = signal_response.json()
         assert signal["id"].startswith("learning_signal_")
         assert signal["program_id"] == "program_example"
         assert signal["created_at"]
+
+        repeated_signal_response = client.post(
+            "/mythos/brain/learning-signals",
+            json=learning_signal_payload,
+        )
+        assert repeated_signal_response.status_code == 200
+        assert repeated_signal_response.json() == signal
 
         profile_response = client.get("/mythos/brain/programs/program_example")
         assert profile_response.status_code == 200
@@ -171,7 +317,35 @@ def test_mythos_brain_api_builds_profile_from_runs_and_learning_signals():
         assert profile["high_value_surfaces"][0]["surface_key"] == "file_id:export"
         assert profile["learning_summary"]["accepted_count"] == 1
         assert profile["recent_learning_signals"][0]["outcome"] == "accepted"
+        assert profile["recent_learning_signals"][0]["id"] == signal["id"]
         assert "no_live_requests" in profile["safety_notes"]
+
+        changed_notes_payload = {
+            **learning_signal_payload,
+            "notes": "Accepted BOLA report from a second safe review.",
+        }
+        changed_notes_response = client.post(
+            "/mythos/brain/learning-signals",
+            json=changed_notes_payload,
+        )
+        assert changed_notes_response.status_code == 200
+        assert changed_notes_response.json()["id"] != signal["id"]
+
+        changed_outcome_response = client.post(
+            "/mythos/brain/learning-signals",
+            json={**learning_signal_payload, "outcome": "duplicate"},
+        )
+        assert changed_outcome_response.status_code == 200
+        assert changed_outcome_response.json()["id"] not in {
+            signal["id"],
+            changed_notes_response.json()["id"],
+        }
+
+        updated_profile_response = client.get("/mythos/brain/programs/program_example")
+        assert updated_profile_response.status_code == 200
+        updated_profile = updated_profile_response.json()
+        assert updated_profile["learning_summary"]["accepted_count"] == 2
+        assert updated_profile["learning_summary"]["duplicate_count"] == 1
     finally:
         app.dependency_overrides.clear()
 

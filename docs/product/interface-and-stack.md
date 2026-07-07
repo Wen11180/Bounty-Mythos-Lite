@@ -4,32 +4,34 @@
 
 左侧菜单：
 
-- Dashboard
-- Programs
-- Assets
-- API Model
-- Business Flows
-- Hypotheses
-- Validation Plans
-- Findings
-- Reports
-- Submissions
-- Knowledge Base
-- Settings / Policy Guard
+- Campaigns
+- Campaign Control Center
+- Agent Runs
+- Tasks
+- Attack Surface Map
+- Codebase Map
+- Hypothesis Board
+- Validation Queue
+- Validation Runs / Audit
+- Evidence Review
+- Finding Candidates
+- Report Drafts
+- Mythos Brain
+- Settings / Scope Guard
 
-## Finding 页面
+## Finding Candidate / Report Draft 页面
 
 示例 finding：
 
 - 标题：普通用户可访问其他用户私有文件 metadata
-- 状态：Report Ready
+- 状态：Draft Review Blocked
 - 严重性：High
 - 置信度：86%
-- Scope：通过
-- Policy：通过
-- 验证方式：双账号非破坏性验证
+- Scope Gate：通过，带 campaign scope snapshot 和审计记录
+- Policy Gate：通过，但仍需人审记录
+- 验证方式：双账号非破坏性验证，需绑定 campaign approval、preflight 和 manual observation
 - Duplicate 风险：中
-- 推荐：人工复核后提交
+- 推荐：补齐证据审查和报告草稿审查；系统不得自动提交
 
 破坏的不变量：
 
@@ -49,6 +51,13 @@
 - 使用测试账号
 - 未触碰真实用户数据
 
+页面必须清楚区分：
+
+- finding candidate：值得继续跟进的结构化候选，不等于已确认漏洞。
+- observed claim：有证据支持的观察，不等于最终报告主张。
+- report draft：人工复核材料，默认 submission blocked。
+- manual submission record：人工在平台提交后的记录，不是系统自动提交。
+
 ## 技术栈边界
 
 当前推荐技术栈保持为现有 scaffold 方向，不新增技术栈。
@@ -57,7 +66,7 @@
 
 - Next.js
 - Tailwind
-- Dashboard + Report Editor
+- Campaign Control Center + Report Draft Review
 
 后端：
 
@@ -91,6 +100,7 @@ API 分析：
 - Playwright，仅限测试账号和低风险流程
 - Docker sandbox
 - 本地 unit test / regression test
+- 手动 validation observation 和 redaction review
 
 模型：
 
@@ -104,4 +114,3 @@ API 分析：
 - Secret manager
 - 全量审计日志
 - 人工审批队列
-

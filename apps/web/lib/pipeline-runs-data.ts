@@ -146,9 +146,22 @@ function safeText(value: string | null | undefined, fallback: string): string {
     return fallback;
   }
 
+  if (containsSensitiveIdentityText(text)) {
+    return fallback;
+  }
+
   return stripUrlQuery(text)
     .replace(/\b(policy_text|secret|token)\b\s*[:=]\s*[^,;\s]+/gi, "$1=[redacted]")
     .replace(/\b(policy_text|secret|token)\b/gi, "[redacted]");
+}
+
+function containsSensitiveIdentityText(value: string): boolean {
+  return (
+    /\b(api[_-]?key|password|credential)\b/i.test(value)
+    || /\b(real user data|customer data|production user|live user|personal data|pii)\b/i.test(value)
+    || /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(value)
+    || /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(value)
+  );
 }
 
 function readableStageLabel(value: string): string {
@@ -307,14 +320,14 @@ function buildDefaultStages(seed: RunSeed): PipelineRunStageSummary[] {
         : seed.blockedCount > 0
           ? `${seed.blockedCount} checks held before active validation.`
           : scopeComplete
-            ? `${seed.asset} cleared for low-risk planning.`
+            ? `${seed.asset} reviewed for low-risk planning.`
             : "Scope needs review before validation.",
       evidenceCount: 0,
     },
     {
       label: "Hypothesis engine",
       status: seed.hypothesisCount > 0 ? "complete" : "queued",
-      detail: `${seed.hypothesisCount} hypotheses generated from allowed artifacts.`,
+      detail: `${seed.hypothesisCount} hypotheses generated from scoped artifacts.`,
       evidenceCount: 0,
     },
     {
@@ -323,7 +336,7 @@ function buildDefaultStages(seed: RunSeed): PipelineRunStageSummary[] {
       detail:
         scopeBlocked || seed.blockedCount > 0
           ? "Unsafe actions remain queued for human review."
-          : "Human approval required before live target validation.",
+          : "Human review required before live target validation.",
       evidenceCount: 0,
     },
     {
@@ -350,7 +363,7 @@ function buildDefaultArtifact(seed: RunSeed): ArtifactProvenanceSummary {
 function buildDefaultGate(seed: RunSeed): ValidationGateSummary {
   if (seed.scopeStatus === "out_of_scope" || seed.blockedCount > 0) {
     return {
-      label: seed.scopeStatus === "out_of_scope" ? "Out-of-scope gate blocked" : "Approval gate blocked",
+      label: seed.scopeStatus === "out_of_scope" ? "Out-of-scope gate blocked" : "Review gate blocked",
       status: "blocked",
       approval:
         seed.scopeStatus === "out_of_scope"
@@ -362,7 +375,7 @@ function buildDefaultGate(seed: RunSeed): ValidationGateSummary {
 
   if (seed.evidenceCount > 0) {
     return {
-      label: "Low-risk validation approved",
+      label: "Low-risk validation reviewed",
       status: "approved",
       approval: "Evidence captured under a scoped validation plan.",
       evidenceCount: seed.evidenceCount,
@@ -370,9 +383,9 @@ function buildDefaultGate(seed: RunSeed): ValidationGateSummary {
   }
 
   return {
-    label: "Awaiting approval gate",
+    label: "Awaiting review gate",
     status: "waiting_human",
-    approval: "Needs human approval and evidence before report drafting.",
+    approval: "Needs human review and evidence before report drafting.",
     evidenceCount: seed.evidenceCount,
   };
 }
@@ -445,10 +458,10 @@ function resolveValidationGate(run: PipelineRun, seed: RunSeed): ValidationGateS
     label: safeText(gate.label ?? gate.decision ?? gate.status, fallbackGate.label),
     status: normalizeGateStatus(gate.status ?? gate.decision, fallbackGate.status),
     approval: gate.approved_by
-      ? `Approved by ${safeText(gate.approved_by, "reviewer")}`
+      ? `Reviewed by ${safeText(gate.approved_by, "reviewer")}`
       : safeText(
           gate.summary,
-          gate.approval_required ? "Waiting for human approval." : fallbackGate.approval,
+          gate.approval_required ? "Waiting for human review." : fallbackGate.approval,
         ),
     evidenceCount: numberOrFallback(gate.evidence_count, seed.evidenceCount),
   };
@@ -464,7 +477,7 @@ function buildDefaultHunter(seed: RunSeed): HunterPrioritySummary {
     impactScore: seed.hypothesisCount > 0 ? 75 : 0,
     rejectionRiskScore: blocked ? 55 : 25,
     nextAction: blocked
-      ? "Resolve Scope Guard or approval blockers before validation."
+      ? "Resolve Scope Guard or review blockers before validation."
       : "Collect minimal safe evidence under human review.",
   };
 }
@@ -674,7 +687,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       {
         label: "Validation gate",
         status: "blocked",
-        detail: "One live-user data path held for manual approval.",
+        detail: "One live-user data path held for human review.",
         evidenceCount: 0,
       },
       {
@@ -692,9 +705,9 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       evidenceCount: 4,
     },
     validationGate: {
-      label: "Low-risk path approved",
+      label: "Low-risk path reviewed",
       status: "approved",
-      approval: "Human reviewer approved metadata-only validation.",
+      approval: "Human reviewer captured metadata-only validation evidence.",
       evidenceCount: 4,
     },
     hunter: {
@@ -703,7 +716,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       priorityScore: 68,
       impactScore: 85,
       rejectionRiskScore: 30,
-      nextAction: "Prepare human-approved, test-account-only validation.",
+      nextAction: "Prepare test-account-only validation for human review.",
     },
     evidenceSupportSummary: null,
     memory: null,
@@ -737,7 +750,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       {
         label: "Validation gate",
         status: "blocked",
-        detail: "State-changing validation is blocked until approval.",
+        detail: "State-changing validation is blocked until review.",
         evidenceCount: 0,
       },
       {
@@ -755,9 +768,9 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       evidenceCount: 1,
     },
     validationGate: {
-      label: "Approval required",
+      label: "Review gate required",
       status: "blocked",
-      approval: "Two mutation checks are waiting for human approval.",
+      approval: "Two mutation checks are waiting for human review.",
       evidenceCount: 1,
     },
     hunter: {
@@ -788,7 +801,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       {
         label: "Scope Guard",
         status: "needs_review",
-        detail: "Admin-only surface requires explicit program approval.",
+        detail: "Admin-only surface requires explicit program authorization.",
         evidenceCount: 0,
       },
       {
@@ -800,7 +813,7 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       {
         label: "Validation gate",
         status: "blocked",
-        detail: "No live validation before approval and test data setup.",
+        detail: "No live validation before review and test data setup.",
         evidenceCount: 0,
       },
       {
@@ -818,9 +831,9 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
       evidenceCount: 0,
     },
     validationGate: {
-      label: "Awaiting human approval",
+      label: "Awaiting human review",
       status: "waiting_human",
-      approval: "Needs test fixture and scoped approval before validation.",
+      approval: "Needs test fixture and scoped review before validation.",
       evidenceCount: 0,
     },
     hunter: {

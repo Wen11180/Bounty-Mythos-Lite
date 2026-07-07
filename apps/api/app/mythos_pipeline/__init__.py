@@ -133,6 +133,18 @@ class HypothesisLifecycleAssessment(BaseModel):
     candidate_status: str
 
 
+class AutonomousHuntQueueItem(BaseModel):
+    queue_id: str
+    candidate_id: str
+    playbook_id: str
+    priority_score: int
+    status: str
+    next_action: str
+    human_approval_required: bool
+    blocked_actions: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+
+
 class MythosPipelineDryRunResponse(BaseModel):
     run_id: str | None = None
     program_id: str | None = None
@@ -151,6 +163,7 @@ class MythosPipelineDryRunResponse(BaseModel):
     validation_workspace: ValidationWorkspace | None = None
     validation_gate: PipelineValidationGate | None = None
     hunter_intelligence: HunterIntelligence | None = None
+    autonomous_hunt_queue: list[AutonomousHuntQueueItem] = Field(default_factory=list)
 
 
 def build_mythos_pipeline_dry_run(
@@ -189,6 +202,7 @@ def build_mythos_pipeline_dry_run(
     )
     validation_gate = build_validation_gate(validation_workspace, evidence_bundle)
     hunter_intelligence = build_hunter_intelligence(hypothesis_assessments)
+    autonomous_hunt_queue = build_autonomous_hunt_queue(hypothesis_assessments)
     timeline = build_pipeline_timeline(
         request=request,
         artifact_kind=artifact_kind,
@@ -221,6 +235,7 @@ def build_mythos_pipeline_dry_run(
         validation_workspace=validation_workspace,
         validation_gate=validation_gate,
         hunter_intelligence=hunter_intelligence,
+        autonomous_hunt_queue=autonomous_hunt_queue,
     )
     payload = response.model_dump(mode="json", exclude={"run_id"})
     return response, payload, openapi_like
@@ -402,6 +417,75 @@ def top_hunter_recommendation(assessments: list[HunterAssessment]) -> str:
         if any(assessment.recommendation == recommendation for assessment in assessments):
             return recommendation
     return assessments[0].recommendation
+
+
+def build_autonomous_hunt_queue(
+    assessments: list[HypothesisLifecycleAssessment],
+) -> list[AutonomousHuntQueueItem]:
+    sorted_assessments = sorted(
+        assessments,
+        key=lambda item: (
+            item.hunter_assessment.hunter_priority_score
+            if item.hunter_assessment is not None
+            else 0,
+            -item.hypothesis_index,
+        ),
+        reverse=True,
+    )
+    queue: list[AutonomousHuntQueueItem] = []
+    for assessment in sorted_assessments:
+        if not _scope_decision_allows_queueing(assessment.scope_decision):
+            continue
+        hunter_assessment = assessment.hunter_assessment
+        priority_score = (
+            hunter_assessment.hunter_priority_score
+            if hunter_assessment is not None
+            else 0
+        )
+        playbook_id = (
+            hunter_assessment.playbook_id
+            if hunter_assessment is not None
+            else "unknown_playbook"
+        )
+        human_approval_required = (
+            assessment.validation_plan.human_approval_required
+            or assessment.scope_decision.reason == "human_approval_required"
+        )
+        queue.append(
+            AutonomousHuntQueueItem(
+                queue_id=f"hunt_queue_{assessment.candidate_id}",
+                candidate_id=assessment.candidate_id,
+                playbook_id=playbook_id,
+                priority_score=priority_score,
+                status=(
+                    "awaiting_human_approval"
+                    if human_approval_required
+                    else assessment.candidate_status
+                ),
+                next_action=(
+                    "review_validation_plan"
+                    if human_approval_required
+                    else "review_refutation"
+                ),
+                human_approval_required=human_approval_required,
+                blocked_actions=[
+                    "execute_live_validation",
+                    "touch_real_user_data",
+                    "submit_report",
+                    "bypass_scope_guard",
+                ],
+                safety_notes=[
+                    "scope_guard_required",
+                    "non_destructive_validation_only",
+                    "human_review_required",
+                ],
+            )
+        )
+    return queue
+
+
+def _scope_decision_allows_queueing(scope_decision: ScopeGuardDecision) -> bool:
+    return scope_decision.allowed or scope_decision.reason == "human_approval_required"
 
 
 def candidate_status(

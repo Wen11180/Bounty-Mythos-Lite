@@ -32,14 +32,14 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Validation audit summaries with approval gates, preflight state, target refs, and
+          Validation audit summaries with human review gates, preflight state, target refs, and
           evidence counts. Raw validation payloads are not displayed here.
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Validation audits" value={summaries.length} />
-        <Metric label="Awaiting approval" value={summaries.filter((run) => run.approvalRequired).length} />
+        <Metric label="Awaiting review gate" value={summaries.filter((run) => run.approvalRequired).length} />
         <Metric label="Preflight passed" value={summaries.filter((run) => run.preflightPassed).length} />
         <Metric label="Evidence refs" value={summaries.reduce((total, run) => total + run.evidenceRefCount, 0)} />
       </section>
@@ -52,7 +52,7 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
               Preflight summary
             </p>
             <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">
-              Approval is not validation start permission. Scope Guard preflight and validation start
+              Human review gates are not validation start gates. Scope Guard preflight and validation start
               audit events are tracked separately.
             </p>
           </div>
@@ -61,19 +61,20 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
           </span>
         </div>
         <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
-          <SummaryField label="Approval required" value={preflightSummary.approvalRequiredCount} />
-          <SummaryField label="Preflight ready" value={preflightSummary.allowedByPreflightCount} />
+          <SummaryField label="Review gate required" value={preflightSummary.approvalRequiredCount} />
+          <SummaryField label="Preflight reviewed" value={preflightSummary.allowedByPreflightCount} />
           <SummaryField label="Preflight blocked" value={preflightSummary.preflightBlockedCount} />
           <SummaryField label="Validation started" value={preflightSummary.executionStartedCount} />
         </dl>
       </section>
 
       <section className="border border-[var(--line)] bg-white">
-        <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_170px_120px]">
+        <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_140px_160px_120px_minmax(180px,0.8fr)]">
           <span>Validation</span>
-          <span>Status</span>
+          <span>Attention</span>
           <span>Preflight decision</span>
-          <span>Evidence</span>
+          <span>Evidence refs</span>
+          <span>Next action</span>
         </div>
         {summaries.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
@@ -85,24 +86,25 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
             {summaries.map((run) => (
               <article
                 key={run.id}
-                className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[minmax(0,1fr)_150px_170px_120px]"
+                className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[minmax(0,1fr)_140px_160px_120px_minmax(180px,0.8fr)]"
               >
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{run.validationMode}</p>
                   <p className="mt-2 break-words text-[var(--muted)]">{run.summary}</p>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Run" value={run.id} />
+                    <Field label="Validation audit" value={run.id} />
                     <Field label="Target" value={run.targetRef} />
-                    <Field label="Task" value={run.taskId ?? "No task"} />
-                    <Field label="Approval" value={run.approvalId ?? "No approval"} />
+                    <Field label="Review item" value={run.taskId ?? "No review item"} />
+                    <Field label="Review gate" value={run.approvalId ?? "No review gate"} />
                     <Field label="Plan" value={run.planDigest ?? "No plan digest"} />
                     <Field label="Created" value={run.createdAt} />
                   </dl>
                 </div>
                 <div className="grid content-start gap-2">
-                  <StatusText value={run.status} />
+                  <StatusText value={run.attentionState} />
+                  <p className="text-xs text-[var(--muted)]">{run.status}</p>
                   <p className="text-xs text-[var(--muted)]">
-                    {run.approvalRequired ? "Approval required" : "No approval required"}
+                    {run.approvalRequired ? "Review gate required" : "No review gate required"}
                   </p>
                   <p className="text-xs text-[var(--muted)]">{run.executionState}</p>
                   <p className="text-xs text-[var(--muted)]">
@@ -111,6 +113,17 @@ export default async function CampaignValidationRunsPage({ params }: PageProps) 
                 </div>
                 <GateText value={run.safetyGateState} />
                 <span className="font-semibold tabular-nums">{run.evidenceRefCount}</span>
+                <div className="grid content-start gap-2">
+                  <p className="break-words text-[var(--muted)]">{run.nextAction}</p>
+                  {run.preflightPassed && !run.executionStarted ? (
+                    <Link
+                      href={`/campaigns/${encodeURIComponent(campaignId)}/validation-runs/${encodeURIComponent(run.id)}`}
+                      className="inline-flex min-h-9 items-center justify-center rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
+                    >
+                      Review manual observation
+                    </Link>
+                  ) : null}
+                </div>
               </article>
             ))}
           </div>

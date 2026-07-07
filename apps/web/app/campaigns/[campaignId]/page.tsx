@@ -1,7 +1,8 @@
+import { revalidatePath } from "next/cache";
 import { AlertTriangle, ArrowLeft, ClipboardCheck, Gauge, ShieldCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { getCampaignControlCenter } from "@/lib/api";
+import { getCampaignControlCenter, materializeResearchQueueTask } from "@/lib/api";
 import { toCampaignControlSummary } from "@/lib/campaigns-data";
 
 type PageProps = {
@@ -31,8 +32,40 @@ export default async function CampaignDetailPage({ params }: PageProps) {
   }
 
   const summary = toCampaignControlSummary(controlCenter);
-  const runtimeGateState = summary.executionAllowed ? "Scope Guard clear" : "Scope Guard blocked";
+  const runtimeGateState = summary.executionAllowed ? "Scope Guard reviewed" : "Scope Guard blocked";
   const safeNextAction = summary.safeNextAction;
+
+  async function queueResearchReviewAction(formData: FormData) {
+    "use server";
+
+    const queueKey = formData.get("queue_key");
+    if (typeof queueKey !== "string" || queueKey.trim() === "") {
+      return;
+    }
+
+    await materializeResearchQueueTask(
+      campaignId,
+      {
+        queue_key: queueKey,
+        requester: "operator",
+        reason: "Queue review item from control center.",
+      },
+      {
+        agent_type: "human_research_reviewer",
+        campaign_id: campaignId,
+        created_at: "",
+        id: "fallback_research_queue_review",
+        input_refs: [],
+        output_refs: [],
+        status: "fallback",
+        task_type: "research_queue_review",
+        title: "Research review item",
+      },
+    );
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/tasks`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/timeline`);
+  }
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -71,7 +104,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
-                label="Approval Review"
+                label="Review Gate"
               />
               <AuditLink
                 href={`/campaigns/${encodeURIComponent(campaignId)}/validation-runs`}
@@ -108,7 +141,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
             )}
             {summary.blockedReasons.length > 0 ? (
               <div className="mt-3 border-t border-[var(--line)] pt-3">
-                <p className="text-xs font-semibold uppercase text-[var(--muted)]">Action blockers</p>
+                <p className="text-xs font-semibold uppercase text-[var(--muted)]">Review requirements</p>
                 <ul className="mt-2 grid gap-1 text-xs leading-5 text-[var(--muted)]">
                   {summary.blockedReasons.map((reason) => (
                     <li key={reason}>{reason}</li>
@@ -116,7 +149,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                 </ul>
               </div>
             ) : null}
-            {summary.promotionReviewBlockedCount > 0 ? (
+            {summary.promotionReviewBlockedCount > 0 || summary.promotionReviewLatestReason ? (
               <div className="mt-3 border-t border-[var(--line)] pt-3">
                 <p className="text-xs font-semibold uppercase text-[var(--muted)]">Promotion review</p>
                 <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
@@ -177,7 +210,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
           />
           <ReadinessLink
             href={`/campaigns/${encodeURIComponent(campaignId)}/validation-queue`}
-            label="Approval review"
+            label="Review gate"
             value={summary.pendingApprovalCount}
           />
           <ReadinessLink
@@ -212,7 +245,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
           />
           <ReadinessLink
             href={`/campaigns/${encodeURIComponent(campaignId)}/timeline`}
-            label="Blocked stages"
+            label="Review holds"
             value={summary.blockedStageCount}
           />
         </div>
@@ -251,10 +284,39 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                   <Field label="Surface" value={suggestion.surfaceKey ?? "No surface"} />
                   <Field label="Review gate" value={suggestion.safetyGate} />
                   <Field label="Action gate" value="Review only" />
+                  <Field
+                    label="Candidate"
+                    value={suggestion.candidateStatus ?? "Memory review"}
+                  />
+                  <Field
+                    label="Human gate"
+                    value={suggestion.humanApprovalRequired ? "Human review required" : "Review only"}
+                  />
+                  <Field
+                    label="Refutation questions"
+                    value={String(suggestion.refutationQuestionCount)}
+                  />
+                  <Field
+                    label="Validation steps"
+                    value={String(suggestion.validationStepCount)}
+                  />
+                  <Field
+                    label="Blocked actions"
+                    value={String(suggestion.blockedActionCount)}
+                  />
                 </dl>
                 <p className="text-pretty text-[var(--muted)]">
                   {suggestion.nextAllowedAction}
                 </p>
+                <form action={queueResearchReviewAction}>
+                  <input type="hidden" name="queue_key" value={suggestion.queueKey} />
+                  <button
+                    type="submit"
+                    className="inline-flex min-h-10 items-center rounded-md border border-[var(--line)] px-3 text-sm font-semibold text-[var(--accent-strong)]"
+                  >
+                    Queue review item
+                  </button>
+                </form>
               </article>
             ))}
           </div>
@@ -266,8 +328,8 @@ export default async function CampaignDetailPage({ params }: PageProps) {
         <Metric label="Scope" value={summary.scopeStatus} />
         <Metric label="Review items" value={summary.taskCount} />
         <Metric label="Agent audits" value={summary.agentRunCount} />
-        <Metric label="Pending approvals" value={summary.pendingApprovalCount} />
-        <Metric label="Blocked stages" value={summary.blockedStageCount} />
+        <Metric label="Pending review gates" value={summary.pendingApprovalCount} />
+        <Metric label="Review holds" value={summary.blockedStageCount} />
         <Metric label="Validation evidence" value={summary.validationEvidenceCount} />
         <Metric label="Evidence gaps" value={summary.validationEvidenceGapCount} />
       </section>
@@ -285,7 +347,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ClipboardCheck} title="Action blockers" />
+            <SectionHeader icon={ClipboardCheck} title="Review requirements" />
             {summary.blockedReasons.length > 0 ? (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {summary.blockedReasons.map((reason) => (
@@ -293,7 +355,7 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                 ))}
               </ul>
             ) : (
-              <p className="p-5 text-sm text-[var(--muted)]">No active action blockers.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">No active review requirements.</p>
             )}
           </section>
         </aside>

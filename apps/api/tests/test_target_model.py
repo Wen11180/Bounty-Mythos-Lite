@@ -80,6 +80,32 @@ def test_build_target_model_extracts_endpoints_objects_and_roles():
     assert target_model.roles == ["admin"]
 
 
+def test_build_target_model_ignores_secret_like_role_sources():
+    openapi = {
+        "paths": {
+            "/orgs/{org_id}/users/{user_id}": {
+                "get": {
+                    "operationId": "readUser",
+                    "tags": ["admin_token=sk-proj-derived-secret"],
+                    "security": [
+                        {
+                            "BearerAuth": [
+                                "user_token=Authorization: Bearer derived-live-token",
+                                "org:member",
+                            ]
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+    target_model = build_target_model(openapi)
+
+    assert target_model.endpoints[0].roles == ["member"]
+    assert target_model.roles == ["member"]
+
+
 def test_build_target_model_labels_sensitive_actions():
     openapi = {
         "paths": {

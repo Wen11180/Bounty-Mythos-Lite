@@ -82,7 +82,7 @@ export default async function RunDetailPage({ params }: PageProps) {
               </ActionLink>
             ) : null}
             <ActionLink href={`/validation-workspace/${encodeURIComponent(run.id)}`} icon={ClipboardCheck}>
-              Validation
+              Review validation
             </ActionLink>
             <ActionLink href={`/reports/${encodeURIComponent(run.id)}`} icon={FileText}>
               Report
@@ -98,8 +98,8 @@ export default async function RunDetailPage({ params }: PageProps) {
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
         <Metric label="Hypotheses" value={summary.hypothesisCount} />
-        <Metric label="Blocked" value={summary.blockedCount} />
-        <Metric label="Evidence" value={summary.evidenceCount} />
+        <Metric label="Review holds" value={summary.blockedCount} />
+        <Metric label="Evidence refs" value={summary.evidenceCount} />
         <Metric label="Scope" value={formatLabel(run.scope_status)} />
         <Metric label="Gate" value={formatLabel(summary.validationGate.status)} />
         <Metric label="Loop" value={formatLabel(closedLoop?.status ?? "not_started")} />
@@ -227,38 +227,46 @@ export default async function RunDetailPage({ params }: PageProps) {
                     {stage.agentBoundary ? (
                       <div className="grid gap-2 border-t border-[var(--line)] pt-2 text-xs">
                         <p className="font-semibold uppercase text-[var(--muted)]">
-                          Agent Boundary
+                          Agent Review Boundary
                         </p>
                         <dl className="grid gap-2 sm:grid-cols-2">
                           <Field label="Role" value={stage.agentBoundary.role} />
                           <Field
-                            label="Human review"
-                            value={stage.agentBoundary.requiresHumanReview ? "Required" : "Not required"}
+                            label="Human review gate"
+                            value={stage.agentBoundary.requiresHumanReview ? "Required" : "Review only"}
                           />
                         </dl>
                         {stage.agentBoundary.allowedActions.length > 0 ? (
-                          <ul className="flex flex-wrap gap-1.5">
-                            {stage.agentBoundary.allowedActions.map((action) => (
-                              <li
-                                key={`${summary.runId}-${stage.label}-allow-${action}`}
-                                className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold text-[var(--accent-strong)]"
-                              >
-                                {formatLabel(action)}
-                              </li>
-                            ))}
-                          </ul>
+                          <div className="grid gap-1">
+                            <p className="font-semibold uppercase text-[var(--muted)]">
+                              Scoped review actions
+                            </p>
+                            <ul className="flex flex-wrap gap-1.5">
+                              {stage.agentBoundary.allowedActions.map((action) => (
+                                <li
+                                  key={`${summary.runId}-${stage.label}-allow-${action}`}
+                                  className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold text-[var(--accent-strong)]"
+                                >
+                                  {formatLabel(action)}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
                         ) : null}
                         {stage.agentBoundary.blockedActions.length > 0 ? (
-                          <ul className="flex flex-wrap gap-1.5">
-                            {stage.agentBoundary.blockedActions.map((action) => (
-                              <li
-                                key={`${summary.runId}-${stage.label}-block-${action}`}
-                                className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold text-[var(--warning)]"
-                              >
-                                {formatLabel(action)}
-                              </li>
-                            ))}
-                          </ul>
+                          <div className="grid gap-1">
+                            <p className="font-semibold uppercase text-[var(--muted)]">Blocked actions</p>
+                            <ul className="flex flex-wrap gap-1.5">
+                              {stage.agentBoundary.blockedActions.map((action) => (
+                                <li
+                                  key={`${summary.runId}-${stage.label}-block-${action}`}
+                                  className="rounded-sm border border-[var(--line)] px-2 py-0.5 font-semibold text-[var(--warning)]"
+                                >
+                                  {formatLabel(action)}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
                         ) : null}
                       </div>
                     ) : null}
@@ -359,7 +367,7 @@ export default async function RunDetailPage({ params }: PageProps) {
                       </p>
                       <dl className="grid gap-2 border-t border-[var(--line)] pt-2">
                         <Field label="Gate" value={step.safety_gate} />
-                        <Field label="Next" value={step.next_allowed_action} />
+                        <Field label="Next review action" value={step.next_allowed_action} />
                       </dl>
                     </li>
                   ))}
@@ -415,7 +423,7 @@ export default async function RunDetailPage({ params }: PageProps) {
               ) : null}
               {closedLoopBlockedReasons.length > 0 ? (
                 <div className="border-t border-[var(--line)] pt-3">
-                  <p className="font-semibold">Blocked</p>
+                  <p className="font-semibold">Review requirements</p>
                   <ul className="mt-2 grid gap-1 text-[var(--muted)]">
                     {closedLoopBlockedReasons.map((reason) => (
                       <li key={`closed-loop-blocked-${reason}`}>{formatLabel(reason)}</li>
@@ -483,7 +491,7 @@ export default async function RunDetailPage({ params }: PageProps) {
 
           {refutationReasons.length > 0 ? (
             <section className="border border-[var(--line)] bg-white">
-              <SectionHeader icon={ClipboardCheck} title="Blocked Reasons" />
+              <SectionHeader icon={ClipboardCheck} title="Review Requirements" />
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {refutationReasons.map((reason) => (
                   <li key={reason}>{formatLabel(reason)}</li>

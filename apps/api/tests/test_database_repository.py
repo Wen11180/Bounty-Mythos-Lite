@@ -457,6 +457,52 @@ def test_repository_does_not_confirm_claim_without_refs_from_plain_manual_observ
         session.close()
 
 
+def test_repository_does_not_confirm_claim_without_refs_from_unsupported_impact_observation():
+    session, _ = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        run = repository.save_pipeline_run(
+            program_id="program_example",
+            asset="api.example.com",
+            policy_text="Testing allowed",
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title="Draft report",
+            payload={
+                "manual_observations": [
+                    {
+                        "observation_id": "manual_observation_forged_impact",
+                        "claim_id": "claim_observed_fact_1",
+                        "observation_type": "request_response_diff",
+                        "evidence_refs": ["unsupported_screenshot_ref"],
+                    },
+                ],
+            },
+        )
+
+        updated = repository.append_claim_review_decision(
+            run_id=run.id,
+            decision={
+                "claim_id": "claim_observed_fact_1",
+                "decision": "confirmed_observed_fact",
+                "reviewer": "lead_reviewer",
+                "rationale": "Trying to confirm from unsupported impact evidence.",
+                "evidence_refs": [],
+                "reviewed_at": datetime.now(UTC).isoformat(),
+            },
+            claim_type="observed_fact",
+            evidence_refs_supported=True,
+        )
+        stored = repository.get_pipeline_run(run.id)
+
+        assert updated is None
+        assert stored is not None
+        assert stored.payload.get("claim_review_decisions") is None
+    finally:
+        session.close()
+
+
 def test_repository_does_not_append_manual_observation_without_claim_context():
     session, _ = build_session()
     try:
@@ -597,7 +643,12 @@ def test_repository_persists_campaign_core_records_with_safety_redaction():
             target_classes=["idor"],
             allowed_tools=["static_analyzer"],
             created_by="operator@example.com",
-            payload={"authorization": "Bearer secret-token", "notes": "local only"},
+            payload={
+                "authorization": "Bearer secret-token",
+                "Authorization: Bearer key-secret": "header name was pasted as key",
+                "customer@example.com": "fixture reviewer",
+                "notes": "local only",
+            },
         )
         budget = repository.upsert_campaign_budget(
             campaign_id=campaign.id,
@@ -654,6 +705,8 @@ def test_repository_persists_campaign_core_records_with_safety_redaction():
 
         assert campaign.policy_text_hash
         assert campaign.payload["authorization"] == "[REDACTED]"
+        assert "key-secret" not in str(campaign.payload)
+        assert "customer@example.com" not in str(campaign.payload)
         assert campaign.created_by == "[REDACTED]"
         assert budget.status == "active"
         assert task.payload["cookie"] == "[REDACTED]"
@@ -688,6 +741,89 @@ def test_repository_stores_campaign_default_asset_without_query_secret():
 
         assert campaign.default_asset == "api.example.com/path"
         assert "session=secret" not in str(campaign.default_asset)
+    finally:
+        session.close()
+
+
+def test_repository_reuses_pipeline_stage_with_same_idempotency_key():
+    session, _ = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Stage idempotency campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="research_queue_review",
+            agent_type="human_research_reviewer",
+            title="Review candidate",
+        )
+
+        first = repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=campaign.id,
+            task_id=task.id,
+            stage_key="research_task_review_plan",
+            stage_order=1,
+            status="auto_drafted",
+            input_refs=[f"campaign:{campaign.id}"],
+            output_refs=["research_plan:plan_1"],
+            safety_gate_state="advisory_plan_only",
+            stop_reason=None,
+            payload={
+                "idempotency_key": "research_plan:plan_1",
+                "summary": "first safe summary",
+            },
+        )
+        repeated = repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=campaign.id,
+            task_id=task.id,
+            stage_key="research_task_review_plan",
+            stage_order=99,
+            status="completed",
+            input_refs=[f"campaign:{campaign.id}", "Authorization: Bearer secret-token"],
+            output_refs=["research_plan:plan_1", "extra"],
+            safety_gate_state="changed",
+            stop_reason="changed",
+            payload={
+                "idempotency_key": "research_plan:plan_1",
+                "summary": "second payload should not overwrite",
+            },
+        )
+        different = repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=campaign.id,
+            task_id=task.id,
+            stage_key="research_task_review_plan",
+            stage_order=2,
+            status="auto_drafted",
+            input_refs=[f"campaign:{campaign.id}"],
+            output_refs=["research_plan:plan_2"],
+            safety_gate_state="advisory_plan_only",
+            stop_reason=None,
+            payload={"idempotency_key": "research_plan:plan_2"},
+        )
+        stages = repository.list_campaign_pipeline_stages(campaign.id)
+
+        assert repeated.id == first.id
+        assert repeated.status == "auto_drafted"
+        assert repeated.stage_order == 1
+        assert repeated.output_refs == ["research_plan:plan_1"]
+        assert repeated.payload == {
+            "idempotency_key": "research_plan:plan_1",
+            "summary": "first safe summary",
+        }
+        assert different.id != first.id
+        assert [stage.id for stage in stages] == [first.id, different.id]
+        assert "secret-token" not in str(stages)
+        assert "Authorization" not in str(stages)
     finally:
         session.close()
 
@@ -1009,6 +1145,93 @@ def test_repository_does_not_create_approval_required_ready_run_as_executable():
         session.close()
 
 
+def test_repository_reuses_validation_run_with_same_idempotency_key():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Validation idempotency campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+
+        first = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="validation_idempotency_plan",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="First validation gate",
+            payload={"idempotency_key": "validation:plan_1"},
+        )
+        repeated = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id="approval_should_not_overwrite",
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="validation_idempotency_plan",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=3,
+            summary="Replay should not overwrite",
+            payload={
+                "idempotency_key": "validation:plan_1",
+                "authorization": "Bearer secret-token",
+            },
+        )
+        different = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="validation_idempotency_plan",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Second validation gate",
+            payload={"idempotency_key": "validation:plan_2"},
+        )
+        runs = repository.list_campaign_validation_runs(campaign.id)
+
+        assert repeated.id == first.id
+        assert repeated.status == "awaiting_approval"
+        assert repeated.approval_id is None
+        assert repeated.allowed_to_execute is False
+        assert repeated.evidence_ref_count == 0
+        assert repeated.summary == "First validation gate"
+        assert repeated.payload == {"idempotency_key": "validation:plan_1"}
+        assert different.id != first.id
+        assert {run.id for run in runs} == {first.id, different.id}
+        assert "secret-token" not in str(runs)
+        assert "Authorization" not in str(runs)
+    finally:
+        session.close()
+
+
 def test_repository_preflight_cannot_reopen_blocked_validation_run():
     session, _ = build_session()
     try:
@@ -1146,6 +1369,106 @@ def test_repository_repeated_approval_preserves_preflight_passed_validation_run(
         session.close()
 
 
+def test_repository_replayed_approved_decision_does_not_rewrite_audit_or_resync_runs():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Repository approved replay campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve test-account validation.",
+            requested_action="two_account_authorization_check",
+            asset=campaign.default_asset,
+            validation_mode="two_account_authorization_check",
+            plan_digest="repository_approval_replay_plan",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        first_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="repository_approval_replay_plan",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Awaiting approval",
+            payload={},
+        )
+
+        approved = repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for preflight.",
+        )
+        original_decided_by = approved.decided_by
+        original_decision_reason = approved.decision_reason
+        original_decided_at = approved.decided_at
+        late_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="repository_approval_replay_plan",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Late run must not be unlocked by replay",
+            payload={},
+        )
+
+        replayed = repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="replay_actor",
+            reason="Trying to replay approval.",
+        )
+
+        stored_approval = repository.session.get(type(approval), approval.id)
+        stored_first_run = repository.session.get(type(first_run), first_run.id)
+        stored_late_run = repository.session.get(type(late_run), late_run.id)
+        assert replayed is None
+        assert stored_approval.status == "approved"
+        assert stored_approval.decided_by == original_decided_by
+        assert stored_approval.decision_reason == original_decision_reason
+        assert stored_approval.decided_at == original_decided_at
+        assert stored_first_run.approval_id == approval.id
+        assert stored_first_run.status == "ready"
+        assert stored_late_run.approval_id is None
+        assert stored_late_run.status == "awaiting_approval"
+        assert stored_late_run.allowed_to_execute is False
+    finally:
+        session.close()
+
+
 def test_repository_approval_decision_does_not_grant_execution_before_preflight():
     session, _ = build_session()
     try:
@@ -1208,6 +1531,71 @@ def test_repository_approval_decision_does_not_grant_execution_before_preflight(
         assert run.approval_id == approval.id
         assert run.status == "ready"
         assert run.safety_gate_state == "approved_validation_record"
+        assert run.allowed_to_execute is False
+    finally:
+        session.close()
+
+
+def test_repository_global_approval_decision_does_not_sync_campaign_bound_validation_run():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Scoped validation run campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+        approval = repository.create_approval_record(
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve only unscoped validation records.",
+            requested_action="two_account_authorization_check",
+            asset=campaign.default_asset,
+            validation_mode="two_account_authorization_check",
+            plan_digest="global_approval_must_not_sync_scoped_run",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="global_approval_must_not_sync_scoped_run",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Awaiting campaign-bound approval",
+            payload={},
+        )
+
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved globally, not for this campaign task.",
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        assert run.approval_id is None
+        assert run.status == "awaiting_approval"
+        assert run.safety_gate_state == "awaiting_approval"
         assert run.allowed_to_execute is False
     finally:
         session.close()
@@ -1511,6 +1899,78 @@ def test_repository_manual_result_requires_active_preflight_permission():
         session.close()
 
 
+def test_repository_preflight_after_manual_result_does_not_mutate_audit_state():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Repository preflight after manual result campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation gate",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="repository_preflight_after_manual_result",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Preflight passed",
+            payload={
+                "scope_guard_preflight": {
+                    "allowed": True,
+                    "reason": "human_controlled_preflight",
+                },
+            },
+        )
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="lead_reviewer",
+            summary="Observed redacted evidence.",
+            evidence_refs=["sanitized_request_response"],
+        )
+        run = repository.session.get(type(validation_run), validation_run.id)
+        original_status = run.status
+        original_safety_gate_state = run.safety_gate_state
+        original_allowed_to_execute = run.allowed_to_execute
+        original_finished_at = run.finished_at
+        original_payload = dict(run.payload)
+
+        updated = repository.record_validation_run_preflight(
+            validation_run.id,
+            allowed=True,
+            reason="late_preflight_replay",
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        assert updated is None
+        assert run.status == original_status
+        assert run.safety_gate_state == original_safety_gate_state
+        assert run.allowed_to_execute == original_allowed_to_execute
+        assert run.finished_at == original_finished_at
+        assert run.payload == original_payload
+    finally:
+        session.close()
+
+
 def test_repository_revoked_approval_preserves_manual_validation_result_audit_state():
     session, _ = build_session()
     try:
@@ -1683,6 +2143,447 @@ def test_repository_redacted_only_manual_validation_result_stays_needs_evidence(
         assert run.evidence_ref_count == 0
         assert "secret-token" not in str(run.payload)
         assert "session=secret" not in str(run.payload)
+    finally:
+        session.close()
+
+
+def test_repository_manual_validation_result_records_sanitized_quality_review():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Manual result quality review campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="report_chain_review",
+            agent_type="report_agent",
+            title="Review validation result normalization",
+            input_refs=[f"campaign:{campaign.id}"],
+        )
+        approval = repository.create_approval_record(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            program_id=campaign.program_id,
+            approval_type="validation_batch",
+            actor="operator",
+            reason="Approve local fixture validation.",
+            requested_action="two_account_authorization_check",
+            asset=campaign.default_asset,
+            validation_mode="two_account_authorization_check",
+            plan_digest="plan_digest_manual_result_quality_review",
+            autonomy_level=campaign.autonomy_level,
+            safety_gate_state="awaiting_approval",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            approval_id=None,
+            validation_mode="two_account_authorization_check",
+            target_ref=f"campaign:{campaign.id}",
+            status="planned",
+            safety_gate_state="awaiting_approval",
+            plan_digest="plan_digest_manual_result_quality_review",
+            approval_required=True,
+            allowed_to_execute=False,
+            evidence_ref_count=0,
+            summary="Awaiting approval",
+            payload={},
+        )
+
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for local fixture validation.",
+        )
+        repository.record_validation_run_preflight(
+            validation_run.id,
+            allowed=True,
+            reason="approved_validation_record",
+        )
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="lead_reviewer",
+            summary="Observed fixture diff only. Authorization: Bearer secret-token",
+            evidence_refs=[
+                "sanitized_request_response",
+                "local_code_reference",
+                "contains real_user_data from customer@example.com",
+            ],
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        review = run.payload["validation_result_review"]
+        assert review == {
+            "source_type": "manual_safe_observation",
+            "redaction_status": "redacted",
+            "evidence_quality": "adequate",
+            "quality_score": 65,
+            "promotion_review_ready": False,
+            "quality_reasons": [
+                "manual_result_recorded",
+                "has_report_safe_evidence",
+                "sensitive_material_redacted",
+                "promotion_blocked_by_redaction_review",
+                "unsupported_evidence_refs",
+                "promotion_blocked_by_unsupported_evidence",
+            ],
+            "safe_evidence_ref_count": 2,
+            "unsafe_evidence_ref_count": 1,
+        }
+        assert "secret-token" not in str(run.payload)
+        assert "customer@example.com" not in str(run.payload)
+    finally:
+        session.close()
+
+
+def test_repository_manual_validation_result_scores_clean_fixture_evidence_without_execution():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Clean fixture evidence campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Local fixture validation allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            approval_id=None,
+            validation_mode="fixture_replay",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="fixture_replay_plan",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Ready for local fixture observation",
+            payload={},
+        )
+
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="fixture_reviewer",
+            summary="Observed fixture replay with sanitized request and role matrix refs.",
+            evidence_refs=[
+                "sanitized_request_response",
+                "local_code_reference",
+                "role_matrix_snapshot",
+            ],
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        assert run.status == "evidence_recorded"
+        assert run.allowed_to_execute is False
+        assert run.payload["manual_result"]["execution_started"] is False
+        assert run.payload["validation_result_review"] == {
+            "source_type": "manual_safe_observation",
+            "redaction_status": "clean",
+            "evidence_quality": "strong",
+            "quality_score": 80,
+            "promotion_review_ready": True,
+            "quality_reasons": [
+                "manual_result_recorded",
+                "has_report_safe_evidence",
+                "clean_redaction_review",
+            ],
+            "safe_evidence_ref_count": 3,
+            "unsafe_evidence_ref_count": 0,
+        }
+    finally:
+        session.close()
+
+
+def test_repository_manual_validation_result_requires_strong_evidence_for_promotion_review():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Thin fixture evidence campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Local fixture validation allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            approval_id=None,
+            validation_mode="fixture_replay",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="fixture_replay_plan",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Ready for local fixture observation",
+            payload={},
+        )
+
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="fixture_reviewer",
+            summary="Observed fixture replay with one sanitized request ref.",
+            evidence_refs=["sanitized_request_response"],
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        review = run.payload["validation_result_review"]
+        assert run.status == "evidence_recorded"
+        assert run.allowed_to_execute is False
+        assert review["redaction_status"] == "clean"
+        assert review["evidence_quality"] == "adequate"
+        assert review["promotion_review_ready"] is False
+        assert "promotion_blocked_by_insufficient_evidence" in review["quality_reasons"]
+        assert review["safe_evidence_ref_count"] == 1
+        assert review["unsafe_evidence_ref_count"] == 0
+    finally:
+        session.close()
+
+
+def test_repository_manual_validation_result_does_not_score_duplicate_safe_refs_as_strong():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Duplicate fixture evidence campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Local fixture validation allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            approval_id=None,
+            validation_mode="fixture_replay",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="fixture_replay_plan",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Ready for local fixture observation",
+            payload={},
+        )
+
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="fixture_reviewer",
+            summary="Observed fixture replay with repeated sanitized request refs.",
+            evidence_refs=[
+                "sanitized_request_response",
+                "sanitized_request_response",
+                "sanitized_request_response",
+            ],
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        review = run.payload["validation_result_review"]
+        assert run.status == "evidence_recorded"
+        assert run.evidence_ref_count == 1
+        assert review["evidence_quality"] == "adequate"
+        assert review["promotion_review_ready"] is False
+        assert "promotion_blocked_by_insufficient_evidence" in review["quality_reasons"]
+        assert review["safe_evidence_ref_count"] == 1
+        assert review["unsafe_evidence_ref_count"] == 0
+    finally:
+        session.close()
+
+
+def test_repository_manual_validation_result_requires_diverse_safe_refs_for_promotion_review():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Single evidence category campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Local fixture validation allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            approval_id=None,
+            validation_mode="fixture_replay",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="fixture_replay_plan",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Ready for local fixture observation",
+            payload={},
+        )
+
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="fixture_reviewer",
+            summary="Observed fixture replay with only request trace style refs.",
+            evidence_refs=[
+                "sanitized_request_response",
+                "request_response_diff",
+                "sanitized_cross_account_diff",
+            ],
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        review = run.payload["validation_result_review"]
+        assert run.status == "evidence_recorded"
+        assert run.evidence_ref_count == 3
+        assert review["evidence_quality"] == "adequate"
+        assert review["promotion_review_ready"] is False
+        assert "promotion_blocked_by_insufficient_evidence" in review["quality_reasons"]
+        assert "promotion_blocked_by_low_evidence_diversity" in review["quality_reasons"]
+        assert review["safe_evidence_ref_count"] == 3
+        assert review["unsafe_evidence_ref_count"] == 0
+    finally:
+        session.close()
+
+
+def test_repository_manual_validation_result_treats_non_string_refs_as_unsupported():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Malformed evidence refs campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Local fixture validation allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            approval_id=None,
+            validation_mode="fixture_replay",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="fixture_replay_plan",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Ready for local fixture observation",
+            payload={},
+        )
+
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="fixture_reviewer",
+            summary="Observed fixture replay with malformed evidence refs.",
+            evidence_refs=[
+                "sanitized_request_response",
+                {"type": "local_code_reference", "Authorization": "Bearer fixture-secret"},
+                123,
+                None,
+            ],
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        review = run.payload["validation_result_review"]
+        assert run.status == "evidence_recorded"
+        assert run.evidence_ref_count == 1
+        assert review["redaction_status"] == "redacted"
+        assert review["evidence_quality"] == "adequate"
+        assert review["promotion_review_ready"] is False
+        assert "sensitive_material_redacted" in review["quality_reasons"]
+        assert "promotion_blocked_by_redaction_review" in review["quality_reasons"]
+        assert "unsupported_evidence_refs" in review["quality_reasons"]
+        assert "promotion_blocked_by_unsupported_evidence" in review["quality_reasons"]
+        assert review["safe_evidence_ref_count"] == 1
+        assert review["unsafe_evidence_ref_count"] == 3
+        assert "fixture-secret" not in str(run.payload)
+    finally:
+        session.close()
+
+
+def test_repository_manual_validation_result_redacts_x_api_key_header():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="API key header redaction campaign",
+            autonomy_level="level_1_local_validation",
+            scope_status="in_scope",
+            policy_text="Local fixture validation allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        validation_run = repository.save_validation_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            approval_id=None,
+            validation_mode="fixture_replay",
+            target_ref=f"campaign:{campaign.id}",
+            status="preflight_passed",
+            safety_gate_state="scope_guard_preflight_passed",
+            plan_digest="fixture_replay_plan",
+            approval_required=False,
+            allowed_to_execute=True,
+            evidence_ref_count=0,
+            summary="Ready for local fixture observation",
+            payload={},
+        )
+
+        repository.record_validation_run_manual_result(
+            validation_run.id,
+            outcome="observed",
+            reviewer="fixture_reviewer",
+            summary="Observed fixture replay. X-API-Key: secret-fixture-key",
+            evidence_refs=[
+                "sanitized_request_response",
+                "local_code_reference",
+                "role_matrix_snapshot",
+            ],
+        )
+
+        run = repository.session.get(type(validation_run), validation_run.id)
+        review = run.payload["validation_result_review"]
+        assert review["redaction_status"] == "redacted"
+        assert review["promotion_review_ready"] is False
+        assert "sensitive_material_redacted" in review["quality_reasons"]
+        assert "promotion_blocked_by_redaction_review" in review["quality_reasons"]
+        assert "secret-fixture-key" not in str(run.payload)
+        assert "X-API-Key" not in str(run.payload)
     finally:
         session.close()
 

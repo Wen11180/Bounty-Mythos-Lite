@@ -36,15 +36,15 @@ export default async function CampaignArtifactsPage({ params }: PageProps) {
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Authorized material summaries filtered to this campaign with only safety status, usage
+          Campaign artifact summaries filtered to this campaign with only safety status, usage
           counts, and report-chain readiness.
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Artifacts" value={summaries.length} />
-        <Metric label="Report-chain eligible" value={reportChainAllowedCount} />
-        <Metric label="Report-chain blocked" value={reportChainBlockedCount} />
+        <Metric label="Report-chain review ready" value={reportChainAllowedCount} />
+        <Metric label="Report-chain review required" value={reportChainBlockedCount} />
         <Metric
           label="Usage refs"
           value={summaries.reduce((total, artifact) => total + artifact.usageCount, 0)}
@@ -62,7 +62,7 @@ export default async function CampaignArtifactsPage({ params }: PageProps) {
         {summaries.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No authorized artifacts ready.
+            No reviewed artifacts ready.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -85,8 +85,8 @@ export default async function CampaignArtifactsPage({ params }: PageProps) {
                 <p className="flex items-start gap-2 break-words font-semibold">
                   <ShieldCheck size={16} className="mt-0.5 text-[var(--accent)]" aria-hidden="true" />
                   {artifact.reportChainAllowed
-                    ? "Eligible for report chain"
-                    : `Blocked for report chain (${artifact.safetyBlockerCount})`}
+                    ? "Report chain review ready"
+                    : `Report chain review required (${artifact.safetyBlockerCount})`}
                 </p>
                 <div className="grid content-start gap-2">
                   <span className="font-semibold tabular-nums">{artifact.usageCount}</span>

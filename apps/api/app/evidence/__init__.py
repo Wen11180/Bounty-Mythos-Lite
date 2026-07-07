@@ -88,10 +88,16 @@ def _is_secret_like(value: str) -> bool:
         marker in normalized
         for marker in (
             "authorization:",
+            "api-key:",
+            "api_key=",
             "bearer ",
             "cookie:",
+            "secret=",
             "set-cookie:",
+            "session=",
             "sk-",
+            "token=",
+            "x-api-key:",
         )
     )
 

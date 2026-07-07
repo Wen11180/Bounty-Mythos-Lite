@@ -73,9 +73,9 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-5">
         <Metric label="Drafts" value={drafts.length} />
-        <Metric label="Ready claims" value={drafts.reduce((total, draft) => total + draft.readyClaimCount, 0)} />
+        <Metric label="Reviewed claims" value={drafts.reduce((total, draft) => total + draft.readyClaimCount, 0)} />
         <Metric
-          label="Blocked claims"
+          label="Claims needing review"
           value={drafts.reduce((total, draft) => total + draft.blockedClaimCount, 0)}
         />
         <Metric label="Evidence refs" value={drafts.reduce((total, draft) => total + draft.evidenceRefCount, 0)} />
@@ -98,7 +98,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
       </section>
 
       <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
-        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
+        <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px_150px_150px]">
           <div className="min-w-0">
             <p className="font-semibold">Finding candidate gate</p>
             <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
@@ -106,24 +106,62 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
               the report-chain gate without showing raw evidence refs.
             </p>
           </div>
-          <Field label="Eligible" value={String(findingCandidateGate.eligibleClaimCount)} />
+          <Field label="Reviewed claims" value={String(findingCandidateGate.eligibleClaimCount)} />
           <Field label="Research feedback" value={String(findingCandidateGate.researchFeedbackCount)} />
-          <Field label="Promotion blocked" value={String(findingCandidateGate.researchPromotionBlockedCount)} />
+          <Field label="Promotion review holds" value={String(findingCandidateGate.researchPromotionBlockedCount)} />
           <Field
-            label="Promotion attempts blocked"
+            label="Promotion audit holds"
             value={String(findingCandidateGate.promotionAuditBlockedCount)}
+          />
+          <Field
+            label="Promotion reviews"
+            value={String(findingCandidateGate.promotionAuditCreatedCount)}
+          />
+          <Field
+            label="Provenance refs"
+            value={String(findingCandidateGate.promotionAuditProvenanceRefCount)}
+          />
+          <Field
+            label="Review evidence"
+            value={String(findingCandidateGate.promotionAuditReviewEvidenceRefCount)}
           />
           <Field
             label="Mode"
             value={
-              findingCandidateGate.promotionAuditLatestReason
+              findingCandidateGate.status === "blocked_by_research_feedback"
+                ? "Research feedback blocks promotion"
+                : findingCandidateGate.promotionAuditLatestReason
                 ? findingCandidateGate.promotionAuditLatestReason
                 : findingCandidateGate.manualPromotionOnly
-                ? `Manual review required; ${findingCandidateGate.blockedClaimCount} blocked claim(s)`
-                : "Blocked"
+                ? `Manual review required; ${findingCandidateGate.blockedClaimCount} claim(s) needing review`
+                : "Review required"
             }
           />
         </div>
+        {findingCandidateGate.readyRunIds.length > 0 ? (
+          <div className="mt-4 border-t border-[var(--line)] pt-4">
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+              Finding candidate reviews queued
+            </p>
+            <ul className="mt-3 grid gap-2">
+              {findingCandidateGate.readyRunIds.map((runId) => (
+                <li
+                  key={runId}
+                  className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                >
+                  <span className="break-words font-semibold">{runId}</span>
+                  <Link
+                    href={`/reports/${encodeURIComponent(runId)}`}
+                    className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] px-3 text-sm font-semibold text-[var(--accent-strong)]"
+                  >
+                    <ShieldCheck size={16} aria-hidden="true" />
+                    Review finding candidate
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </section>
 
       <section className="border border-[var(--line)] bg-white">
@@ -131,12 +169,12 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
           <span>Draft</span>
           <span>Manual submission gate</span>
           <span>Claims</span>
-          <span>Evidence</span>
+          <span>Evidence refs</span>
         </div>
         {drafts.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No report drafts ready for review.
+            No report drafts queued for review.
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -163,7 +201,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
                   ) : null}
                 </div>
                 <div className="grid content-start gap-2">
-                  <GateText value={draft.submissionBlocked ? "Submission blocked" : "Human review ready"} />
+                  <GateText value={draft.submissionBlocked ? "Submission blocked" : "Human review requires manual decision"} />
                   <p className="text-xs text-[var(--muted)]">
                     {draft.humanReviewRequired ? "Human review required" : "Human review not required"}
                   </p>
@@ -179,8 +217,8 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
                 </div>
                 <dl className="grid content-start gap-2 text-xs text-[var(--muted)]">
                   <Field label="Total" value={String(draft.claimCount)} />
-                  <Field label="Ready" value={String(draft.readyClaimCount)} />
-                  <Field label="Blocked" value={String(draft.blockedClaimCount)} />
+                  <Field label="Reviewed" value={String(draft.readyClaimCount)} />
+                  <Field label="Review holds" value={String(draft.blockedClaimCount)} />
                 </dl>
                 <span className="font-semibold tabular-nums">{draft.evidenceRefCount}</span>
               </article>

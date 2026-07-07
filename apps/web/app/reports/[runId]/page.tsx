@@ -76,6 +76,8 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
   const provenanceRefCount = firstParam(query.provenance_ref_count);
   const findingPromotionAllowed = firstParam(query.finding_promotion_allowed);
   const reportSubmissionAllowed = firstParam(query.report_submission_allowed);
+  const findingPromotionGate = formatReviewGateFlag(findingPromotionAllowed);
+  const reportSubmissionGate = formatReviewGateFlag(reportSubmissionAllowed);
   const showPromotionGateNotice =
     promotionGateStatus === "blocked" &&
     promotionGateReason === "blocked_by_research_feedback_gate";
@@ -179,10 +181,10 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
           </div>
           <div className="flex flex-wrap gap-2">
             <ActionLink href={`/runs/${encodeURIComponent(preview.run_id)}`} icon={Target}>
-              Run
+              Research audit
             </ActionLink>
             <ActionLink href={`/validation-workspace/${encodeURIComponent(preview.run_id)}`} icon={ClipboardCheck}>
-              Validation
+              Review validation
             </ActionLink>
           </div>
         </div>
@@ -202,10 +204,10 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
           </p>
           <dl className="mt-3 grid gap-3 sm:grid-cols-2">
             <Field label="Reason" value={promotionGateReason} />
-            <Field label="Blocked stages" value={blockedStageCount} />
+            <Field label="Review holds" value={blockedStageCount} />
             <Field label="Provenance refs" value={provenanceRefCount} />
-            <Field label="Finding promotion allowed" value={findingPromotionAllowed} />
-            <Field label="Report submission allowed" value={reportSubmissionAllowed} />
+            <Field label="Finding promotion gate" value={findingPromotionGate} />
+            <Field label="Submission gate" value={reportSubmissionGate} />
           </dl>
         </section>
       ) : null}
@@ -255,7 +257,7 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                         <Field label="Redaction" value={claim.redaction_status} />
                         <Field
                           label="Review"
-                          value={claim.human_review_required ? "Human required" : "Cleared"}
+                          value={claim.human_review_required ? "Human required" : "Review captured"}
                         />
                         <Field label="Review status" value={claim.review_status} />
                         <Field label="Reviewer" value={claim.reviewer ?? "Unassigned"} />
@@ -290,7 +292,7 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                         )}
                       </div>
                       <div className="mt-4">
-                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Blockers</p>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Review requirements</p>
                         {claim.readiness_blockers.length === 0 ? (
                           <p className="mt-1 font-semibold">None</p>
                         ) : (
@@ -375,14 +377,14 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                 value={preview.submission_blocked ? "Submission blocked" : "Human review ready"}
               />
               <Field label="Research feedback gate" value={promotionGateDisplayStatus} />
-              <Field label="Blocked stages" value={blockedStageDisplayCount} />
+              <Field label="Review holds" value={blockedStageDisplayCount} />
               <Field label="Provenance refs" value={provenanceRefDisplayCount} />
-              <Field label="Run" value={preview.run_id} />
+              <Field label="Research audit" value={preview.run_id} />
             </dl>
             {canPromoteFindingCandidate ? (
               <form action={promoteFindingCandidateAction} className="border-t border-[var(--line)] p-5">
                 <p className="mb-3 text-sm text-[var(--muted)]">
-                  Promote the eligible human-reviewed observed claim into Finding DB. Research feedback gates can still
+                  Promote the review-ready human-reviewed observed claim into Finding DB. Research feedback gates can still
                   block promotion. Submission remains manual.
                 </p>
                 <button
@@ -408,8 +410,7 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
             <SectionHeader icon={ClipboardCheck} title="Learning Outcome" />
             <form action={recordLearningOutcomeAction} className="grid gap-4 p-5 text-sm">
               <p className="font-semibold text-[var(--muted)]">
-                advisory_memory_only. Records triage learning for future prioritization without changing validation
-                permission.
+                advisory_memory_only. Records triage learning for future prioritization without changing validation gate state.
               </p>
               <label className="grid gap-1">
                 <span className="text-xs font-semibold uppercase text-[var(--muted)]">Outcome</span>
@@ -485,6 +486,18 @@ function firstParam(value: string | string[] | undefined): string | undefined {
   }
 
   return value || undefined;
+}
+
+function formatReviewGateFlag(value: string | undefined): string {
+  if (value === "true") {
+    return "Review ready";
+  }
+
+  if (value === "false") {
+    return "Review blocked";
+  }
+
+  return value ?? "Unknown";
 }
 
 function PageBack() {

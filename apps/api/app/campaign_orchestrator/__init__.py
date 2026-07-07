@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import Any
 
-from app.db_models import CampaignRecord
+from app.db_models import ApprovalRecord, CampaignRecord
 from app.repository import DatabaseRepository, approval_record_is_active
 
 
@@ -250,12 +250,7 @@ def _completed_research_cycle_review(
     ]
     awaiting_validation_runs = [
         run for run in validation_runs
-        if run.approval_required
-        and not run.allowed_to_execute
-        and (
-            run.status in {"awaiting_approval", "ready"}
-            or run.safety_gate_state in {"awaiting_approval", "approved_validation_record"}
-        )
+        if _validation_run_needs_human_review(run, repository)
         and f"validation_run:{run.id}" not in reviewed_output_refs
     ]
     manual_evidence_runs = [
@@ -336,6 +331,97 @@ def _completed_research_cycle_review(
 def _validation_run_has_manual_evidence(run: Any) -> bool:
     payload = getattr(run, "payload", None)
     return isinstance(payload, dict) and isinstance(payload.get("manual_result"), dict)
+
+
+def _validation_run_needs_human_review(
+    run: Any,
+    repository: DatabaseRepository,
+) -> bool:
+    return (
+        bool(getattr(run, "approval_required", False))
+        and not _validation_run_currently_allowed_to_execute(run, repository)
+        and (
+            getattr(run, "status", None) in {"awaiting_approval", "ready", "preflight_passed"}
+            or getattr(run, "safety_gate_state", None)
+            in {
+                "awaiting_approval",
+                "approved_validation_record",
+                "scope_guard_preflight_passed",
+            }
+        )
+    )
+
+
+def _validation_run_currently_allowed_to_execute(
+    run: Any,
+    repository: DatabaseRepository,
+) -> bool:
+    if getattr(run, "status", None) != "preflight_passed":
+        return False
+    if not bool(getattr(run, "allowed_to_execute", False)):
+        return False
+    campaign = repository.get_campaign(getattr(run, "campaign_id", ""))
+    if campaign is None or campaign.scope_status != "in_scope":
+        return False
+    if not bool(getattr(run, "approval_required", False)):
+        return True
+
+    approval_id = getattr(run, "approval_id", None)
+    if approval_id is None:
+        return False
+    approval = repository.session.get(ApprovalRecord, approval_id)
+    return approval is not None and _validation_run_approval_matches(
+        approval,
+        run,
+        campaign,
+    )
+
+
+def _validation_run_approval_matches(
+    approval: ApprovalRecord,
+    run: Any,
+    campaign: CampaignRecord | None,
+) -> bool:
+    if campaign is None or campaign.scope_status != "in_scope":
+        return False
+    target_ref = getattr(run, "target_ref", "")
+    asset = campaign.default_asset if target_ref == f"campaign:{campaign.id}" else target_ref
+    return (
+        approval.status == "approved"
+        and approval_record_is_active(approval)
+        and approval.campaign_id == campaign.id
+        and approval.task_id == getattr(run, "task_id", None)
+        and approval.asset == asset
+        and approval.validation_mode == getattr(run, "validation_mode", None)
+        and approval.plan_digest == getattr(run, "plan_digest", None)
+        and _approval_scope_reference_matches(approval, run)
+        and _approval_allowed_accounts_match(approval, run)
+    )
+
+
+def _approval_scope_reference_matches(approval: ApprovalRecord, run: Any) -> bool:
+    if approval.scope_reference is None:
+        return True
+    payload = getattr(run, "payload", None)
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("scope_reference") == approval.scope_reference
+
+
+def _approval_allowed_accounts_match(approval: ApprovalRecord, run: Any) -> bool:
+    approval_accounts = _payload_string_set(approval.payload, "allowed_accounts")
+    if not approval_accounts:
+        return True
+    payload = getattr(run, "payload", None)
+    validation_accounts = _payload_string_set(payload, "allowed_accounts")
+    return bool(validation_accounts) and validation_accounts <= approval_accounts
+
+
+def _payload_string_set(payload: Any, key: str) -> set[str]:
+    values = payload.get(key) if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return set()
+    return {value for value in values if isinstance(value, str) and value}
 
 
 def _completed_cycle_review_output_refs(

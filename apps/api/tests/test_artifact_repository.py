@@ -249,6 +249,67 @@ def test_save_artifact_returns_existing_record_for_duplicate_source_hash():
         session.close()
 
 
+def test_append_artifact_usage_records_deduplicates_by_closed_loop_identity():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        artifact = repository.save_artifact(
+            program_id="program_example",
+            asset="api.example.com",
+            kind="openapi",
+            source_type="dry_run_inline",
+            source_hash=sha256(b"usage identity").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/files/{file_id}/export"]},
+        )
+
+        first = repository.append_artifact_usage_records(
+            artifact_id=artifact.id,
+            usage_records=[
+                {
+                    "usage_type": "learning_signal",
+                    "ref": "learning_signal:learning_signal_1",
+                    "run_id": "pipeline_run_1",
+                    "stage": "mythos_brain",
+                    "learning_signal_id": "learning_signal_1",
+                    "note": "Authorization: Bearer live-token",
+                }
+            ],
+        )
+        repeated = repository.append_artifact_usage_records(
+            artifact_id=artifact.id,
+            usage_records=[
+                {
+                    "usage_type": "learning_signal",
+                    "ref": "learning_signal:learning_signal_1",
+                    "run_id": "pipeline_run_1",
+                    "stage": "mythos_brain",
+                    "learning_signal_id": "learning_signal_1",
+                    "evidence_quality": "strong",
+                }
+            ],
+        )
+
+        assert first is not None
+        assert repeated is not None
+        usage_records = repeated.provenance["usage_records"]
+        assert usage_records == [
+            {
+                "usage_type": "learning_signal",
+                "ref": "learning_signal:learning_signal_1",
+                "run_id": "pipeline_run_1",
+                "stage": "mythos_brain",
+                "learning_signal_id": "learning_signal_1",
+                "note": "[REDACTED]",
+            }
+        ]
+        assert "live-token" not in json.dumps(repeated.provenance)
+    finally:
+        session.close()
+
+
 def test_list_artifacts_filters_by_structured_provenance_edge():
     session = build_session()
     try:

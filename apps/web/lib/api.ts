@@ -4,6 +4,7 @@ import type {
   CampaignCodebaseMap,
   CampaignControlCenter,
   CampaignPipelineStage,
+  CampaignResearchRefutationDecision,
   CampaignResearchTaskReview,
   CampaignTask,
   CampaignValidationRun,
@@ -47,6 +48,24 @@ export type Program = {
 export type CampaignListItem = CampaignControlCenter["campaign"] & {
   budget?: CampaignControlCenter["budget"];
   policy_text_hash?: string;
+};
+
+export type AuthorizedCampaignLaunchInput = {
+  allowed_tools: string[];
+  autonomy_level: string;
+  budget?: {
+    time_budget_minutes?: number;
+    token_budget?: number;
+    tool_call_budget?: number;
+    validation_budget?: number;
+  };
+  created_by: string;
+  default_asset: string;
+  name: string;
+  policy_text: string;
+  program_id?: string;
+  scope_status: string;
+  target_classes: string[];
 };
 
 export type Finding = {
@@ -140,6 +159,10 @@ export type PipelineHypothesis = {
   vuln_type?: string;
   broken_invariant?: string;
   evidence_needed?: string[];
+  source_facts?: {
+    fact_type?: string;
+    [key: string]: unknown;
+  }[];
   validation_mode?: string;
   risk_level?: string;
   policy_risk?: string;
@@ -546,6 +569,58 @@ export type ClaimReviewDecisionResponse = {
   reviewed_at: string;
 };
 
+export type ValidationFeedbackReviewDecisionValue = "allow_finding_promotion";
+
+export type ValidationFeedbackReviewRequest = {
+  decision: ValidationFeedbackReviewDecisionValue;
+  reviewer: string;
+  rationale: string;
+};
+
+export type CampaignCycleReviewCompletionRequest = {
+  actor: string;
+  reason: string;
+};
+
+export type ResearchQueueTaskMaterializationRequest = {
+  queue_key: string;
+  requester: string;
+  reason: string;
+};
+
+export type ResearchReviewPlanRequest = {
+  reviewer: string;
+  rationale: string;
+  hypothesis: string;
+  refutation_questions: string[];
+  evidence_plan: string[];
+};
+
+export type ResearchRefutationDecisionValue =
+  | "refuted"
+  | "needs_evidence"
+  | "needs_validation_review"
+  | "parked_duplicate"
+  | "policy_blocked";
+
+export type ResearchCandidateContextSummaryRequest = {
+  triage_signal_count: number;
+  evidence_focus_count: number;
+  source_fact_type_count: number;
+  has_authorization_gap_candidate: boolean;
+};
+
+export type ResearchRefutationDecisionRequest = {
+  plan_id: string;
+  reviewer: string;
+  decision: ResearchRefutationDecisionValue;
+  rationale: string;
+  candidate_context_summary?: ResearchCandidateContextSummaryRequest | null;
+  refutation_answers?: string[];
+  validation_mode?: string | null;
+  target_ref?: string | null;
+};
+
 export type ManualObservationRequest = {
   claim_id: string;
   observation_type?: string;
@@ -556,6 +631,15 @@ export type ManualObservationRequest = {
 };
 
 export type ManualObservationResponse = ManualObservation;
+
+export type ValidationRunManualResultOutcome = "observed" | "refuted" | "needs_more_evidence";
+
+export type ValidationRunManualResultRequest = {
+  outcome: ValidationRunManualResultOutcome;
+  reviewer: string;
+  summary: string;
+  evidence_refs?: string[];
+};
 
 export type LearningOutcome = "accepted" | "duplicate" | "informative" | "na" | "rejected";
 export type LearningSeverityDelta = "up" | "down" | "same";
@@ -773,6 +857,22 @@ export function getCampaigns(fallback: CampaignListItem[]): Promise<CampaignList
   return apiGet("/mythos/campaigns", fallback);
 }
 
+export async function launchAuthorizedCampaign(
+  input: AuthorizedCampaignLaunchInput,
+): Promise<CampaignListItem | null> {
+  const created = await apiPost<CampaignListItem | null>("/mythos/campaigns", input, null);
+
+  if (!created) {
+    return null;
+  }
+
+  return apiPost<CampaignListItem | null>(
+    `/mythos/campaigns/${encodeURIComponent(created.id)}/start`,
+    {},
+    created,
+  );
+}
+
 export function getCampaignControlCenter(
   campaignId: string,
   fallback: CampaignControlCenter | null,
@@ -808,6 +908,44 @@ export function getCampaignResearchTaskReview(
   );
 }
 
+export function materializeResearchQueueTask(
+  campaignId: string,
+  request: ResearchQueueTaskMaterializationRequest,
+  fallback: CampaignTask,
+): Promise<CampaignTask> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/research-queue/tasks`,
+    request,
+    fallback,
+  );
+}
+
+export function createResearchReviewPlan(
+  campaignId: string,
+  taskId: string,
+  request: ResearchReviewPlanRequest,
+  fallback: CampaignResearchTaskReview["latest_review_plan"],
+): Promise<CampaignResearchTaskReview["latest_review_plan"]> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/research-queue/tasks/${encodeURIComponent(taskId)}/review-plans`,
+    request,
+    fallback,
+  );
+}
+
+export function createResearchRefutationDecision(
+  campaignId: string,
+  taskId: string,
+  request: ResearchRefutationDecisionRequest,
+  fallback: CampaignResearchRefutationDecision,
+): Promise<CampaignResearchRefutationDecision> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/research-queue/tasks/${encodeURIComponent(taskId)}/review-decisions`,
+    request,
+    fallback,
+  );
+}
+
 export function getCampaignApprovals(
   campaignId: string,
   fallback: CampaignApproval[],
@@ -820,6 +958,18 @@ export function getCampaignValidationRuns(
   fallback: CampaignValidationRun[],
 ): Promise<CampaignValidationRun[]> {
   return apiGet(`/mythos/campaigns/${encodeURIComponent(campaignId)}/validation-runs`, fallback);
+}
+
+export function recordCampaignValidationRunManualResult(
+  validationRunId: string,
+  request: ValidationRunManualResultRequest,
+  fallback: CampaignValidationRun,
+): Promise<CampaignValidationRun> {
+  return apiPost(
+    `/mythos/validation-runs/${encodeURIComponent(validationRunId)}/manual-results`,
+    request,
+    fallback,
+  );
 }
 
 export function getCampaignPipelineStages(
@@ -1014,6 +1164,32 @@ export function recordClaimReviewDecision(
 ): Promise<ClaimReviewDecisionResponse> {
   return apiPost(
     `/mythos/pipeline/runs/${encodeURIComponent(runId)}/claim-review-decisions`,
+    request,
+    fallback,
+  );
+}
+
+export function reviewValidationFeedbackForFindingPromotion(
+  campaignId: string,
+  stageId: string,
+  request: ValidationFeedbackReviewRequest,
+  fallback: CampaignPipelineStage,
+): Promise<CampaignPipelineStage> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/pipeline-stages/${encodeURIComponent(stageId)}/validation-feedback-review`,
+    request,
+    fallback,
+  );
+}
+
+export function completeCampaignCycleReview(
+  campaignId: string,
+  stageId: string,
+  request: CampaignCycleReviewCompletionRequest,
+  fallback: CampaignPipelineStage,
+): Promise<CampaignPipelineStage> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/cycle-reviews/${encodeURIComponent(stageId)}/complete`,
     request,
     fallback,
   );

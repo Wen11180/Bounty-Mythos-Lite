@@ -1,6 +1,11 @@
+import { revalidatePath } from "next/cache";
 import { AlertTriangle, ArrowLeft, ClipboardCheck, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { getCampaignResearchTaskReview } from "@/lib/api";
+import {
+  createResearchRefutationDecision,
+  createResearchReviewPlan,
+  getCampaignResearchTaskReview,
+} from "@/lib/api";
 import { toCampaignResearchTaskReviewSummary } from "@/lib/campaigns-data";
 
 type PageProps = {
@@ -18,11 +23,11 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
           <p className="flex items-center gap-2 text-sm font-semibold text-[var(--warning)]">
             <AlertTriangle size={17} aria-hidden="true" />
-            Research task review unavailable
+            Research review item unavailable
           </p>
           <h1 className="mt-3 break-words text-3xl font-semibold text-balance">{taskId}</h1>
           <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-            No audited research review workspace was returned for this task.
+            No audited research review workspace was returned for this review item.
           </p>
         </section>
       </main>
@@ -30,6 +35,104 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
   }
 
   const summary = toCampaignResearchTaskReviewSummary(review);
+  const reviewHypothesis = summary.autonomousCandidateContext?.hypothesis ?? summary.title;
+  const reviewRefutationQuestions =
+    summary.autonomousCandidateContext?.refutationQuestions.length
+      ? summary.autonomousCandidateContext.refutationQuestions
+      : ["Can existing redacted artifacts refute this research candidate?"];
+  const reviewEvidencePlan = summary.nonDestructivePlan.length
+    ? summary.nonDestructivePlan.slice(0, 5)
+    : ["Collect only redacted artifact summaries and provenance counts."];
+  const candidateContextSummary = summary.autonomousCandidateContext
+    ? {
+        evidence_focus_count: summary.autonomousCandidateContext.evidenceFocus.length,
+        has_authorization_gap_candidate: hasAuthorizationGapCandidate([
+          ...summary.autonomousCandidateContext.sourceFactTypes,
+          ...summary.autonomousCandidateContext.triageSignals,
+        ]),
+        source_fact_type_count: summary.autonomousCandidateContext.sourceFactTypes.length,
+        triage_signal_count: summary.autonomousCandidateContext.triageSignals.length,
+      }
+    : null;
+
+  async function createReviewPlanAction() {
+    "use server";
+
+    await createResearchReviewPlan(
+      campaignId,
+      taskId,
+      {
+        evidence_plan: reviewEvidencePlan,
+        hypothesis: reviewHypothesis,
+        rationale: "Drafted from redacted research review context.",
+        refutation_questions: reviewRefutationQuestions,
+        reviewer: "operator",
+      },
+      {
+        campaign_id: campaignId,
+        dispatch_allowed: false,
+        evidence_plan: [],
+        execution_allowed: false,
+        hypothesis: reviewHypothesis,
+        next_allowed_action: "Review hypothesis board and request review before validation.",
+        plan_id: "fallback_research_plan",
+        refutation_questions: [],
+        report_submission_allowed: false,
+        required_human_gates: [],
+        safety_gate: "advisory_plan_only",
+        status: "fallback",
+        task_id: taskId,
+        validation_allowed: false,
+      },
+    );
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/tasks`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/tasks/${encodeURIComponent(taskId)}`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/hypothesis-board`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/timeline`);
+  }
+
+  async function recordNeedsEvidenceDecisionAction() {
+    "use server";
+
+    if (!summary.latestReviewPlan) {
+      return;
+    }
+
+    await createResearchRefutationDecision(
+      campaignId,
+      taskId,
+      {
+        candidate_context_summary: candidateContextSummary,
+        decision: "needs_evidence",
+        plan_id: summary.latestReviewPlan.planId,
+        rationale: "Needs more redacted evidence before validation.",
+        refutation_answers: [
+          "Current redacted evidence is insufficient for validation review.",
+        ],
+        reviewer: "operator",
+      },
+      {
+        campaign_id: campaignId,
+        decision: "needs_evidence",
+        decision_id: "fallback_refutation_decision",
+        dispatch_allowed: false,
+        execution_allowed: false,
+        next_allowed_action: "Collect redacted evidence or refine the hypothesis before validation.",
+        plan_id: summary.latestReviewPlan.planId,
+        rationale: "Needs more redacted evidence before validation.",
+        refutation_answers: [],
+        report_submission_allowed: false,
+        task_id: taskId,
+        validation_allowed: false,
+        validation_run_id: null,
+      },
+    );
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/tasks`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/tasks/${encodeURIComponent(taskId)}`);
+    revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/timeline`);
+  }
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -48,19 +151,89 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
           Advisory workspace for planning non-destructive evidence work. It is review-only and
-          cannot approve validation, agent work, or report submission.
+          cannot start validation, agent work, or report submission.
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Priority" value={summary.priorityScore} />
         <Metric label="Status" value={summary.status} />
-        <Metric label="Task review gate" value={summary.safetyGate} />
+        <Metric label="Review gate" value={summary.safetyGate} />
         <Metric label="Action gate" value="Review only" />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="grid gap-5">
+          {summary.autonomousCandidateContext ? (
+            <article className="border border-[var(--line)] bg-white">
+              <SectionHeader title="Autonomous Candidate Review" />
+              <div className="grid gap-5 p-5 text-sm">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Candidate"
+                    value={summary.autonomousCandidateContext.candidateId}
+                  />
+                  <Field
+                    label="Status"
+                    value={summary.autonomousCandidateContext.candidateStatus}
+                  />
+                  <Field
+                    label="Pipeline audit"
+                    value={summary.autonomousCandidateContext.pipelineRunId}
+                  />
+                  <Field
+                    label="Refutation"
+                    value={summary.autonomousCandidateContext.refutationStatus}
+                  />
+                  <Field
+                    label="Validation plan"
+                    value={summary.autonomousCandidateContext.validationPlanStatus}
+                  />
+                  <Field
+                    label="Human review"
+                    value={
+                      summary.autonomousCandidateContext.humanApprovalRequired
+                        ? "Manual review required"
+                        : "Human review required"
+                    }
+                  />
+                </div>
+                <Field
+                  label="Hypothesis"
+                  value={summary.autonomousCandidateContext.hypothesis}
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.refutationQuestions}
+                  title="Candidate Refutation Questions"
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.triageSignals}
+                  title="Candidate Triage Signals"
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.evidenceFocus}
+                  title="Candidate Evidence Focus"
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.sourceFactTypes}
+                  title="Candidate Source Facts"
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.validationSteps}
+                  title="Candidate Validation Steps"
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.blockedActions}
+                  title="Blocked Actions"
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.safetyNotes}
+                  title="Safety Notes"
+                />
+              </div>
+            </article>
+          ) : null}
+
           {summary.latestReviewPlan ? (
             <article className="border border-[var(--line)] bg-white">
               <SectionHeader title="Latest Review Plan" />
@@ -78,6 +251,69 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
             </article>
           ) : null}
 
+          {summary.latestReviewPlan ? (
+            <article className="border border-[var(--line)] bg-white">
+              <SectionHeader title="Record Needs Evidence" />
+              <div className="grid gap-5 p-5 text-sm">
+                <Field label="Plan" value={summary.latestReviewPlan.planId} />
+                <Field
+                  label="Decision"
+                  value="Needs more redacted evidence before validation."
+                />
+                <form action={recordNeedsEvidenceDecisionAction}>
+                  <button
+                    type="submit"
+                    className="inline-flex min-h-10 items-center rounded-md border border-[var(--line)] px-3 text-sm font-semibold text-[var(--accent-strong)]"
+                  >
+                    Record needs evidence
+                  </button>
+                </form>
+              </div>
+            </article>
+          ) : null}
+
+          {summary.suggestedRefutationDecision ? (
+            <article className="border border-[var(--line)] bg-white">
+              <SectionHeader title="Suggested Refutation Decision" />
+              <div className="grid gap-5 p-5 text-sm">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Decision"
+                    value={summary.suggestedRefutationDecision.decision}
+                  />
+                  <Field
+                    label="Plan"
+                    value={summary.suggestedRefutationDecision.planId}
+                  />
+                  <Field
+                    label="Refutation questions"
+                    value={String(summary.suggestedRefutationDecision.refutationQuestionCount)}
+                  />
+                  <Field
+                    label="Refutation answers"
+                    value={String(summary.suggestedRefutationDecision.refutationAnswerCount)}
+                  />
+                  <Field
+                    label="Validation mode"
+                    value={summary.suggestedRefutationDecision.validationMode ?? "Validation review pending"}
+                  />
+                  <Field
+                    label="Target"
+                    value={summary.suggestedRefutationDecision.targetRef ?? "Campaign review required"}
+                  />
+                </div>
+                <Field
+                  label="Next review action"
+                  value={summary.suggestedRefutationDecision.nextAllowedAction}
+                />
+                <Field
+                  label="Rationale"
+                  value={summary.suggestedRefutationDecision.rationale}
+                />
+              </div>
+            </article>
+          ) : null}
+
           {summary.latestRefutationDecision ? (
             <article className="border border-[var(--line)] bg-white">
               <SectionHeader title="Latest Refutation Decision" />
@@ -85,14 +321,14 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
                 <Field label="Decision" value={summary.latestRefutationDecision.decision} />
                 <Field label="Plan" value={summary.latestRefutationDecision.planId} />
                 <Field
-                  label="Approval"
-                  value={summary.latestRefutationDecision.approvalId ?? "No approval request"}
+                  label="Review gate record"
+                  value={summary.latestRefutationDecision.approvalId ?? "No review gate"}
                 />
                 <Field
                   label="Validation audit"
                   value={summary.latestRefutationDecision.validationRunId ?? "No validation audit"}
                 />
-                <Field label="Next action" value={summary.latestRefutationDecision.nextAllowedAction} />
+                <Field label="Next review action" value={summary.latestRefutationDecision.nextAllowedAction} />
                 <Field label="Rationale" value={summary.latestRefutationDecision.rationale} />
                 <ListBlock
                   items={summary.latestRefutationDecision.refutationAnswers}
@@ -109,7 +345,8 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
                 <Field label="Status" value={summary.latestValidationFeedback.status} />
                 <Field label="Outcome" value={summary.latestValidationFeedback.outcome} />
                 <Field label="Plan" value={summary.latestValidationFeedback.planId} />
-                <Field label="Approval" value={summary.latestValidationFeedback.approvalId} />
+                <Field label="Review gate record" value={summary.latestValidationFeedback.approvalId} />
+                <Field label="Feedback stage" value={summary.latestValidationFeedback.feedbackStageId} />
                 <Field
                   label="Validation audit"
                   value={summary.latestValidationFeedback.validationRunId}
@@ -119,7 +356,7 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
                   value={String(summary.latestValidationFeedback.evidenceRefCount)}
                 />
                 <Field label="Review gate" value={summary.latestValidationFeedback.safetyGate} />
-                <Field label="Next action" value={summary.latestValidationFeedback.nextAllowedAction} />
+                <Field label="Next review action" value={summary.latestValidationFeedback.nextAllowedAction} />
                 <Field
                   label="Finding confirmation"
                   value={
@@ -128,6 +365,12 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
                       : "Confirmation blocked"
                   }
                 />
+                <Link
+                  href={`/campaigns/${encodeURIComponent(campaignId)}/feedback-reviews/${encodeURIComponent(summary.latestValidationFeedback.feedbackStageId)}`}
+                  className="inline-flex min-h-9 items-center justify-self-start rounded-md border border-[var(--line)] px-3 text-xs font-semibold text-[var(--accent-strong)]"
+                >
+                  Review promotion gate
+                </Link>
               </div>
             </article>
           ) : null}
@@ -145,18 +388,35 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
               ))}
             </ol>
           </article>
+
+          <article className="border border-[var(--line)] bg-white">
+            <SectionHeader title="Draft Review Plan" />
+            <div className="grid gap-5 p-5 text-sm">
+              <Field label="Hypothesis" value={reviewHypothesis} />
+              <ListBlock items={reviewRefutationQuestions} title="Refutation Questions" />
+              <ListBlock items={reviewEvidencePlan} title="Evidence Plan" />
+              <form action={createReviewPlanAction}>
+                <button
+                  type="submit"
+                  className="inline-flex min-h-10 items-center rounded-md border border-[var(--line)] px-3 text-sm font-semibold text-[var(--accent-strong)]"
+                >
+                  Draft review plan
+                </button>
+              </form>
+            </div>
+          </article>
         </section>
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
             <SectionHeader title="Review Context" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Task" value={summary.taskId} />
+              <Field label="Review item" value={summary.taskId} />
               <Field label="Reasoning memory key" value={summary.queueKey} />
               <Field label="Source" value={summary.source} />
               <Field label="Playbook" value={summary.playbookId ?? "No playbook"} />
               <Field label="Surface" value={summary.surfaceKey ?? "No surface"} />
-              <Field label="Next action" value={summary.nextAllowedAction} />
+              <Field label="Next review action" value={summary.nextAllowedAction} />
             </dl>
           </section>
 
@@ -175,6 +435,19 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
       </div>
     </main>
   );
+}
+
+function hasAuthorizationGapCandidate(values: string[]) {
+  return values.some((value) => {
+    const normalized = value.toLowerCase();
+    return (
+      normalized.includes("authorization_gap") ||
+      normalized.includes("authorization gap") ||
+      normalized.includes("access_control_gap") ||
+      normalized.includes("access control gap") ||
+      normalized.includes("access-control gap")
+    );
+  });
 }
 
 function PageBack({ campaignId }: { campaignId: string }) {

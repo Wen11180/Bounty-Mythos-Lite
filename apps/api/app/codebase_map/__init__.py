@@ -94,7 +94,7 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
 def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     facts: list[CodebaseFactCandidate] = []
     pending_route: tuple[str, str, int] | None = None
-    current_function: str | None = None
+    function_stack: list[tuple[str, int]] = []
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         route_match = ROUTE_DECORATOR_PATTERN.search(line)
@@ -106,9 +106,17 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             )
             continue
 
+        if line.strip():
+            indent = _indent_width(line)
+            function_stack = [
+                (function_name, function_indent)
+                for function_name, function_indent in function_stack
+                if function_indent < indent
+            ]
+
         function_match = FUNCTION_PATTERN.match(line)
         if function_match is not None:
-            current_function = function_match.group(1)
+            function_stack.append((function_match.group(1), _indent_width(line)))
         if function_match is not None and pending_route is not None:
             method, route_path, decorator_line = pending_route
             facts.append(
@@ -162,7 +170,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         authz_hint=_authz_hint(call_name),
                         sensitivity_label="low",
                         payload={
-                            "handler": current_function,
+                            "handler": _current_function(function_stack),
                             "line": line_number,
                             "mapping_mode": "static_code_snippet_analysis",
                         },
@@ -179,14 +187,71 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         authz_hint=None,
                         sensitivity_label="low",
                         payload={
-                            "handler": current_function,
+                            "handler": _current_function(function_stack),
                             "line": line_number,
                             "mapping_mode": "static_code_snippet_analysis",
                         },
                     )
                 )
 
-    return facts
+    return [*facts, *_authorization_gap_candidates(facts)]
+
+
+def _current_function(function_stack: list[tuple[str, int]]) -> str | None:
+    if not function_stack:
+        return None
+    return function_stack[-1][0]
+
+
+def _authorization_gap_candidates(
+    facts: list[CodebaseFactCandidate],
+) -> list[CodebaseFactCandidate]:
+    candidates: list[CodebaseFactCandidate] = []
+    routes = [fact for fact in facts if fact.fact_type == "route_handler"]
+    for route in routes:
+        handler = route.payload.get("handler") if isinstance(route.payload, dict) else None
+        if not isinstance(handler, str):
+            continue
+        has_authz = any(
+            fact.fact_type == "authz_check"
+            and isinstance(fact.payload, dict)
+            and fact.payload.get("handler") == handler
+            for fact in facts
+        )
+        if has_authz:
+            continue
+        sink_count = sum(
+            1
+            for fact in facts
+            if fact.fact_type == "sensitive_sink"
+            and isinstance(fact.payload, dict)
+            and fact.payload.get("handler") == handler
+        )
+        if sink_count == 0:
+            continue
+        candidates.append(
+            CodebaseFactCandidate(
+                fact_type="authorization_gap_candidate",
+                source_path=route.source_path,
+                symbol_name=handler,
+                route_method=route.route_method,
+                route_path=route.route_path,
+                authz_hint="missing_handler_authz_check",
+                sensitivity_label="high",
+                payload={
+                    "handler": handler,
+                    "mapping_mode": "static_code_snippet_analysis",
+                    "review_state": "needs_human_review",
+                    "sink_count": sink_count,
+                },
+            )
+        )
+    return candidates
+
+
+def _indent_width(line: str) -> int:
+    expanded = line.expandtabs()
+    return len(expanded) - len(expanded.lstrip(" "))
 
 
 def _called_names(line: str) -> list[str]:

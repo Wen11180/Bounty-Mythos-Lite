@@ -505,6 +505,231 @@ def test_tick_keeps_approved_validation_run_in_preflight_review_gate():
         session.close()
 
 
+def test_tick_routes_expired_post_preflight_approval_to_validation_review():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Expired post-preflight approval campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            target_classes=["idor"],
+            allowed_tools=["two_account_authorization_check"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=3,
+        )
+
+        first = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        for task_id in first["dispatched_task_ids"]:
+            run_agent_task(task_id, repository=repository)
+
+        approval = repository.list_campaign_approval_records(campaign.id)[0]
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for preflight only.",
+        )
+        validation_run = repository.list_campaign_validation_runs(campaign.id)[0]
+        preflighted = repository.record_validation_run_preflight(
+            validation_run.id,
+            allowed=True,
+            reason="approved_validation_record",
+        )
+        assert preflighted is not None
+        assert preflighted.status == "preflight_passed"
+        assert preflighted.allowed_to_execute is True
+
+        approval.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        session.add(approval)
+        session.commit()
+
+        second = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert second["status"] == "awaiting_review"
+        assert second["dispatched_task_ids"] == []
+        assert second["stop_reasons"] == ["validation_approval_required"]
+        assert "review_validation_queue" in second["next_actions"]
+
+        review_stage = next(
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign.id)
+            if stage.stage_key == "campaign_cycle_review"
+            and stage.status == "awaiting_review"
+        )
+        assert review_stage.payload["awaiting_validation_count"] == 1
+        assert f"validation_run:{validation_run.id}" in review_stage.output_refs
+    finally:
+        session.close()
+
+
+def test_tick_routes_mismatched_post_preflight_approval_to_validation_review():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Mismatched post-preflight approval campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            target_classes=["idor"],
+            allowed_tools=["two_account_authorization_check", "static_analyzer"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=3,
+        )
+
+        first = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        for task_id in first["dispatched_task_ids"]:
+            run_agent_task(task_id, repository=repository)
+
+        approval = repository.list_campaign_approval_records(campaign.id)[0]
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for one validation mode only.",
+        )
+        validation_run = repository.list_campaign_validation_runs(campaign.id)[0]
+        preflighted = repository.record_validation_run_preflight(
+            validation_run.id,
+            allowed=True,
+            reason="approved_validation_record",
+        )
+        assert preflighted is not None
+        assert preflighted.allowed_to_execute is True
+
+        preflighted.validation_mode = "static_analyzer"
+        session.add(preflighted)
+        session.commit()
+
+        second = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert second["status"] == "awaiting_review"
+        assert second["dispatched_task_ids"] == []
+        assert second["stop_reasons"] == ["validation_approval_required"]
+        assert "review_validation_queue" in second["next_actions"]
+        review_stage = next(
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign.id)
+            if stage.stage_key == "campaign_cycle_review"
+            and stage.status == "awaiting_review"
+        )
+        assert review_stage.payload["awaiting_validation_count"] == 1
+        assert f"validation_run:{validation_run.id}" in review_stage.output_refs
+    finally:
+        session.close()
+
+
+def test_tick_routes_mismatched_scope_reference_to_validation_review():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Mismatched scope reference approval campaign",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            target_classes=["idor"],
+            allowed_tools=["two_account_authorization_check"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=3,
+        )
+
+        first = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+        for task_id in first["dispatched_task_ids"]:
+            run_agent_task(task_id, repository=repository)
+
+        approval = repository.list_campaign_approval_records(campaign.id)[0]
+        repository.decide_approval_record(
+            approval_id=approval.id,
+            decision="approved",
+            actor="lead_reviewer",
+            reason="Approved for one policy reference only.",
+        )
+        validation_run = repository.list_campaign_validation_runs(campaign.id)[0]
+        preflighted = repository.record_validation_run_preflight(
+            validation_run.id,
+            allowed=True,
+            reason="approved_validation_record",
+        )
+        assert preflighted is not None
+        assert preflighted.allowed_to_execute is True
+        approval.scope_reference = "policy:api-example"
+        preflighted.payload = {"scope_reference": "policy:other-asset"}
+        session.add(approval)
+        session.add(preflighted)
+        session.commit()
+
+        second = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert second["status"] == "awaiting_review"
+        assert second["dispatched_task_ids"] == []
+        assert second["stop_reasons"] == ["validation_approval_required"]
+        assert "review_validation_queue" in second["next_actions"]
+        review_stage = next(
+            stage
+            for stage in repository.list_campaign_pipeline_stages(campaign.id)
+            if stage.stage_key == "campaign_cycle_review"
+            and stage.status == "awaiting_review"
+        )
+        assert review_stage.payload["awaiting_validation_count"] == 1
+        assert f"validation_run:{validation_run.id}" in review_stage.output_refs
+    finally:
+        session.close()
+
+
 def test_tick_points_to_evidence_review_after_manual_validation_evidence():
     repository, session = build_repository()
     dispatched: list[dict] = []
