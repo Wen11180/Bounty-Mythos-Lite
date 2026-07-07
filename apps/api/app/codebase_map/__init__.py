@@ -1068,6 +1068,10 @@ def _authz_boundary_membership_field(field_name: str, values: str) -> str | None
         ):
             return None
         return f"{relation_field}_id"
+    if _is_principal_id_boundary_field(normalized_field) and _is_principal_id_identifier(
+        values,
+    ):
+        return normalized_field
     relation_id_field = _principal_relation_id_boundary_field(values)
     if (
         relation_id_field is not None
