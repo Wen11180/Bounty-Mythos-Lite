@@ -1003,6 +1003,12 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     relation_field = _relation_boundary_field(field_name)
     if relation_field is not None and value_field == relation_field:
         return f"{relation_field}_id"
+    relation_membership_field = _relation_membership_boundary_field(field_name)
+    if (
+        relation_membership_field is not None
+        and value_field == f"{relation_membership_field}s"
+    ):
+        return f"{relation_membership_field}_id"
     if normalized_field == value_field and normalized_field in AUTHZ_BOUNDARY_FIELDS:
         return normalized_field
     if value_field == f"{normalized_field}s" and normalized_field in AUTHZ_BOUNDARY_FIELDS:
@@ -1039,6 +1045,16 @@ def _relation_boundary_field(field_name: str) -> str | None:
         return None
     if normalized in {"owner", "user", "tenant", "account", "org", "organization"}:
         return normalized
+    return None
+
+
+def _relation_membership_boundary_field(field_name: str) -> str | None:
+    normalized = field_name.lower()
+    if not normalized.endswith("__in"):
+        return None
+    relation = normalized.removesuffix("__in")
+    if relation in {"owner", "user", "tenant", "account", "org", "organization"}:
+        return relation
     return None
 
 
