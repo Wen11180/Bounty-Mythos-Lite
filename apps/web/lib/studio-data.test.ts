@@ -113,6 +113,17 @@ test("studio workbench imports policy as a first-class authorized artifact", asy
   assert.match(workbench, /kind: "policy"/);
 });
 
+test("studio workbench imports HAR as a first-class authorized artifact", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /harPath/);
+  assert.match(workbench, /HAR file/);
+  assert.match(workbench, /kind: "har"/);
+});
+
 test("studio workbench surfaces exported markdown report drafts", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),

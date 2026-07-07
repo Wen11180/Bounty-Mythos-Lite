@@ -40,6 +40,7 @@ export function StudioWorkbench() {
   const [scopePath, setScopePath] = useState("");
   const [codePath, setCodePath] = useState("");
   const [apiPath, setApiPath] = useState("");
+  const [harPath, setHarPath] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [manifest, setManifest] = useState<StudioWorkspaceManifest>(emptyManifest);
   const [candidates, setCandidates] = useState<ReturnType<typeof toStudioCandidateCards>>([]);
@@ -121,6 +122,7 @@ export function StudioWorkbench() {
         { kind: "scope", source_path: scopePath },
         { kind: "code", source_path: codePath },
         { kind: "api", source_path: apiPath },
+        { kind: "har", source_path: harPath },
       ]) {
         if (!artifact.source_path.trim()) {
           continue;
@@ -242,11 +244,12 @@ export function StudioWorkbench() {
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Conversation" />
           <div className="grid gap-4 p-5 text-sm">
-            <div className="grid gap-3 lg:grid-cols-4">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
               <TextField label="Policy file" value={policyPath} onChange={setPolicyPath} />
               <TextField label="Scope file" value={scopePath} onChange={setScopePath} />
               <TextField label="Code directory" value={codePath} onChange={setCodePath} />
-              <TextField label="API or HAR file" value={apiPath} onChange={setApiPath} />
+              <TextField label="API file" value={apiPath} onChange={setApiPath} />
+              <TextField label="HAR file" value={harPath} onChange={setHarPath} />
             </div>
             <div className="flex flex-wrap gap-3">
               <ActionButton
