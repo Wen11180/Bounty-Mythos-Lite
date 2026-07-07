@@ -46,7 +46,7 @@ AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
-    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|owner_id|user_id|tenant_id|account_id|org_id|organization_id|owner__id|user__id|tenant__id|account__id|org__id|organization__id)(?:__in)?)\s*=\s*"
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|owner__id|user__id|tenant__id|account__id|org__id|organization__id)(?:__in)?)\s*=\s*"
     r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\b",
     re.IGNORECASE,
 )
@@ -1026,7 +1026,7 @@ def _authz_boundary_field(left: str, right: str) -> str | None:
 def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     normalized_field = _normalized_boundary_field(field_name)
     value_field = _identifier_leaf(value)
-    if normalized_field in {"owner_id", "user_id"} and _is_principal_id_identifier(value):
+    if _is_principal_id_boundary_field(normalized_field) and _is_principal_id_identifier(value):
         return normalized_field
     relation_id_field = _principal_relation_id_boundary_field(value)
     if (

@@ -31,7 +31,7 @@ Allowed:
 - Parse policy.
 - Read authorized artifacts.
 - Map code and API surfaces.
-- Import SARIF and static scanner outputs.
+- Import SARIF, SBOM, and static scanner outputs.
 - Generate target models, invariants, hypotheses, and refutations.
 - Build report drafts from existing evidence.
 
@@ -189,6 +189,7 @@ Supported inputs:
 - Local code repositories or snapshots.
 - Code excerpts.
 - SARIF output.
+- SBOM/dependency manifests.
 - Public docs supplied by the researcher.
 - Historical public reports supplied by the researcher.
 
@@ -526,7 +527,7 @@ Remaining gaps:
 - The orchestrator is still a safe campaign skeleton, not a fully autonomous long-running research crew.
 - Agent execution is recorded and surfaced, but specialist agents are not yet fully wired to independent tool workflows.
 - Codebase maps exist as a product surface and persistence layer, but extraction depth still needs route/handler/authz/sink enrichment.
-- Scanner run persistence and SARIF-to-target-model merge are incomplete.
+- Scanner run persistence and SARIF/SBOM-to-target-model merge are incomplete.
 - Exploit-chain reasoning is not yet a first-class workflow with primitive extraction, preconditions, and refutation questions.
 - Validation remains deliberately constrained to plans, approval records, preflight state, and manual observations; no autonomous live validation harness should be added without stronger gates.
 - Structured LLM workflows need tighter schemas, replayability, and campaign-stage wiring.
@@ -546,7 +547,7 @@ Remaining gaps:
 
 1. Improve artifact import for authorized materials with stronger provenance, sensitivity, and report-chain eligibility.
 2. Deepen the codebase map engine for routes, handlers, models, authz checks, sensitive sinks, and source-to-route links.
-3. Add scanner run persistence for authorized local/static tools and SARIF.
+3. Add scanner run persistence for authorized local/static tools, SARIF, and SBOM.
 4. Merge target models across artifacts, code maps, scanner facts, and manual notes.
 5. Run hypothesis/refutation loops over multiple candidates with duplicate and policy-risk scoring.
 6. Add exploit-chain reasoning output schemas.

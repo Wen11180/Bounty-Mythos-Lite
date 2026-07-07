@@ -2490,7 +2490,10 @@ def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
     if not isinstance(artifacts, list):
         return facts
     for artifact in artifacts:
-        if not isinstance(artifact, dict) or artifact.get("kind") not in {"api", "har", "sarif"}:
+        if (
+            not isinstance(artifact, dict)
+            or artifact.get("kind") not in {"api", "har", "sarif", "sbom"}
+        ):
             continue
         source_path = artifact.get("source_path")
         if not isinstance(source_path, str) or not source_path:
@@ -2510,6 +2513,8 @@ def _studio_surface_facts_from_file(kind: str, source_path: str) -> list[dict[st
         return _studio_har_surface_facts(payload)
     if kind == "sarif":
         return _studio_sarif_surface_facts(payload)
+    if kind == "sbom":
+        return _studio_sbom_surface_facts(payload)
     return []
 
 
@@ -2600,18 +2605,105 @@ def _studio_sarif_surface_facts(payload: object) -> list[dict[str, str]]:
     return facts
 
 
+def _studio_sbom_surface_facts(payload: object) -> list[dict[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+    components = payload.get("components")
+    if not isinstance(components, list):
+        return []
+    vulnerability_by_ref = _studio_sbom_vulnerability_by_ref(payload)
+    facts: list[dict[str, str]] = []
+    for component in components:
+        if not isinstance(component, dict) or component.get("type") not in {None, "library"}:
+            continue
+        name = component.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        purl = component.get("purl")
+        purl_ref = purl if isinstance(purl, str) else ""
+        vulnerability = vulnerability_by_ref.get(purl_ref, {})
+        fact = {
+            "fact_type": "dependency_signal",
+            "artifact_kind": "sbom",
+            "package_name": safe_preview_text(name),
+            "package_version": safe_preview_text(str(component.get("version", ""))),
+            "ecosystem": safe_preview_text(_studio_purl_ecosystem(purl_ref)),
+            "advisory_only": "true",
+        }
+        vulnerability_id = vulnerability.get("id")
+        if isinstance(vulnerability_id, str) and vulnerability_id:
+            fact["vulnerability_id"] = safe_preview_text(vulnerability_id)
+        severity = vulnerability.get("severity")
+        if isinstance(severity, str) and severity:
+            fact["severity"] = safe_preview_text(severity.lower())
+        facts.append(fact)
+    return facts[:5]
+
+
+def _studio_sbom_vulnerability_by_ref(payload: dict) -> dict[str, dict[str, str]]:
+    vulnerabilities = payload.get("vulnerabilities")
+    if not isinstance(vulnerabilities, list):
+        return {}
+    by_ref: dict[str, dict[str, str]] = {}
+    for vulnerability in vulnerabilities:
+        if not isinstance(vulnerability, dict):
+            continue
+        affects = vulnerability.get("affects")
+        if not isinstance(affects, list):
+            continue
+        for affected in affects:
+            if not isinstance(affected, dict):
+                continue
+            ref = affected.get("ref")
+            if not isinstance(ref, str) or not ref:
+                continue
+            by_ref.setdefault(
+                ref,
+                {
+                    "id": safe_preview_text(vulnerability.get("id", "")),
+                    "severity": _studio_sbom_vulnerability_severity(vulnerability),
+                },
+            )
+    return by_ref
+
+
+def _studio_sbom_vulnerability_severity(vulnerability: dict) -> str:
+    ratings = vulnerability.get("ratings")
+    if not isinstance(ratings, list):
+        return ""
+    for rating in ratings:
+        if not isinstance(rating, dict):
+            continue
+        severity = rating.get("severity")
+        if isinstance(severity, str) and severity:
+            return safe_preview_text(severity)
+    return ""
+
+
+def _studio_purl_ecosystem(purl: str) -> str:
+    if not purl.startswith("pkg:"):
+        return ""
+    return purl.removeprefix("pkg:").split("/", 1)[0].split("@", 1)[0]
+
+
 def _studio_matching_surface_facts(
     hypothesis: dict,
     imported_surface_facts: list[dict[str, str]],
 ) -> list[dict[str, str]]:
+    global_facts = [
+        fact
+        for fact in imported_surface_facts
+        if not fact.get("route_path")
+    ][:3]
     route_hints = _studio_candidate_route_hints(hypothesis)
     if not route_hints:
         return imported_surface_facts[:3]
-    return [
+    route_facts = [
         fact
         for fact in imported_surface_facts
         if fact.get("route_path") in route_hints
     ][:3]
+    return (route_facts + global_facts)[:3]
 
 
 def _studio_candidate_route_hints(hypothesis: dict) -> set[str]:

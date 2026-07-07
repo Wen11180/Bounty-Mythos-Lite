@@ -351,6 +351,113 @@ def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
         app.dependency_overrides.clear()
 
 
+def test_studio_candidates_include_imported_sbom_dependency_context_as_advisory(
+    tmp_path: Path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    sbom_path = tmp_path / "deps.cdx.json"
+    sbom_path.write_text(
+        """
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "type": "library",
+      "name": "django",
+      "version": "4.2.1",
+      "purl": "pkg:pypi/django@4.2.1",
+      "description": "Authorization: Bearer secret-token should not leak"
+    }
+  ],
+  "vulnerabilities": [
+    {
+      "id": "CVE-2099-0001",
+      "ratings": [{"severity": "high"}],
+      "affects": [{"ref": "pkg:pypi/django@4.2.1"}],
+      "description": "secret-token should not leak"
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("code", repo),
+            ("sbom", sbom_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+
+        candidates_response = client.get(
+            "/mythos/studio/workspaces/candidates",
+            params={"workspace_path": workspace_path},
+        )
+        assert candidates_response.status_code == 200
+        candidates = candidates_response.json()["candidates"]
+        dependency_facts = [
+            fact
+            for candidate in candidates
+            for fact in candidate["source_facts"]
+            if fact.get("fact_type") == "dependency_signal"
+        ]
+
+        assert dependency_facts
+        assert dependency_facts[0] == {
+            "fact_type": "dependency_signal",
+            "artifact_kind": "sbom",
+            "package_name": "django",
+            "package_version": "4.2.1",
+            "ecosystem": "pypi",
+            "vulnerability_id": "CVE-2099-0001",
+            "severity": "high",
+            "advisory_only": "true",
+        }
+        assert "deps.cdx.json" not in str(candidates)
+        assert "secret-token" not in str(candidates)
+        assert "Authorization: Bearer" not in str(candidates)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_studio_run_requires_scope_and_code_artifacts(tmp_path: Path):
     workspace_response = client.post(
         "/mythos/studio/workspaces",

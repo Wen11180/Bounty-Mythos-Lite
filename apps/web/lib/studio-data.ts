@@ -46,12 +46,17 @@ export type StudioCandidateInput = {
   source_facts?: Array<{
     advisory_only?: string;
     artifact_kind?: string;
+    ecosystem?: string;
     fact_type?: string;
     operation_id?: string;
+    package_name?: string;
+    package_version?: string;
     route_method?: string;
     route_path?: string;
+    severity?: string;
     source_path?: string;
     symbol_name?: string;
+    vulnerability_id?: string;
   }>;
 };
 
