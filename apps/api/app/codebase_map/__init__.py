@@ -52,7 +52,8 @@ AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
 )
 AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN = re.compile(
     r"\b(?P<field>[A-Za-z_][A-Za-z0-9_.]*)\.in_\(\s*"
-    r"(?P<values>[A-Za-z_][A-Za-z0-9_.]*)\s*\)",
+    r"(?:[\[(]\s*)?"
+    r"(?P<values>[A-Za-z_][A-Za-z0-9_.]*)\s*[\])]?\s*\)",
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_FIELDS = {
@@ -989,6 +990,22 @@ def _authz_boundary_field(left: str, right: str) -> str | None:
     if left_field in {"owner_id", "user_id"} and _is_principal_id_identifier(right):
         return left_field
     if right_field in {"owner_id", "user_id"} and _is_principal_id_identifier(left):
+        return right_field
+    right_relation_id_field = _principal_relation_id_boundary_field(right)
+    if (
+        left_field in AUTHZ_BOUNDARY_FIELDS
+        and right_relation_id_field is not None
+        and _canonical_boundary_field(left_field)
+        == _canonical_boundary_field(right_relation_id_field)
+    ):
+        return left_field
+    left_relation_id_field = _principal_relation_id_boundary_field(left)
+    if (
+        right_field in AUTHZ_BOUNDARY_FIELDS
+        and left_relation_id_field is not None
+        and _canonical_boundary_field(right_field)
+        == _canonical_boundary_field(left_relation_id_field)
+    ):
         return right_field
     if (
         left_field in AUTHZ_BOUNDARY_FIELDS
