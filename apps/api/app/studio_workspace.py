@@ -211,6 +211,17 @@ def _report_markdown(report: dict[str, Any]) -> str:
     ]
     if summary:
         lines.extend(["", "## Summary", "", summary])
+    sections = report.get("sections")
+    if isinstance(sections, dict):
+        for key, heading in (
+            ("observed_facts", "Observed facts"),
+            ("model_reasoning", "Model reasoning"),
+            ("unverified_claims", "Unverified claims"),
+        ):
+            items = _markdown_list(sections.get(key))
+            if items:
+                lines.extend(["", f"## {heading}"])
+                lines.extend(f"- {item}" for item in items)
     if notes:
         lines.extend(["", "## Safety notes"])
         lines.extend(f"- {note}" for note in notes)
@@ -229,6 +240,16 @@ def _markdown_text(value: Any, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
     return value.replace("\r", " ").replace("\n", " ").strip() or fallback
+
+
+def _markdown_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        text
+        for item in value
+        if (text := _markdown_text(item, "")) and not _secret_like_text(text)
+    ]
 
 
 def _secret_like_text(value: str) -> bool:

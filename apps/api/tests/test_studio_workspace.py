@@ -202,3 +202,59 @@ def test_report_export_writes_submission_blocked_markdown_draft(tmp_path: Path):
     assert "Report submission allowed: false" in markdown
     assert "Object access needs evidence review." in markdown
     assert "Object access needs evidence review." not in str(updated)
+
+
+def test_report_export_markdown_includes_preview_claim_sections(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "sections": {
+                "observed_facts": ["GET /files/{file_id}/export is routed locally."],
+                "model_reasoning": ["Ownership enforcement needs manual review."],
+                "unverified_claims": ["Changing file_id may cross tenant boundaries."],
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Observed facts" in markdown
+    assert "- GET /files/{file_id}/export is routed locally." in markdown
+    assert "## Model reasoning" in markdown
+    assert "- Ownership enforcement needs manual review." in markdown
+    assert "## Unverified claims" in markdown
+    assert "- Changing file_id may cross tenant boundaries." in markdown
+    assert "Changing file_id may cross tenant boundaries." not in str(updated)
+
+
+def test_report_export_markdown_skips_secret_like_section_items(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "sections": {
+                "observed_facts": [
+                    "GET /files/{file_id}/export is routed locally.",
+                    "Authorization: Bearer secret-token",
+                ],
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "GET /files/{file_id}/export is routed locally." in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+    assert "secret-token" not in str(updated)
