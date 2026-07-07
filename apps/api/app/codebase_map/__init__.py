@@ -71,6 +71,7 @@ PRINCIPAL_ID_IDENTIFIERS = {
     "current_user.id",
     "current_user.pk",
     "request.user.id",
+    "request.user.pk",
     "user.id",
     "user.pk",
 }
@@ -166,6 +167,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     function_stack: list[tuple[str, int]] = []
     class_stack: list[tuple[str, int]] = []
     dependency_aliases: dict[str, str] = {}
+    dependency_wrapper_aliases: dict[str, str] = {}
     import_aliases: dict[str, str] = {}
     local_call_aliases: dict[str, dict[str, str]] = {}
     class_call_aliases: dict[str, dict[str, str]] = {}
@@ -244,17 +246,39 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             ]
 
         imported_aliases = _imported_aliases(line)
-        if imported_aliases and not function_stack:
+        dependency_imported_aliases = _dependency_imported_aliases(line)
+        if (imported_aliases or dependency_imported_aliases) and not function_stack:
             for alias_name, call_name in imported_aliases:
                 import_aliases[alias_name] = call_name
                 if _is_authz_call(call_name):
                     dependency_aliases[alias_name] = call_name
+            for alias_name, call_name in dependency_imported_aliases:
+                dependency_wrapper_aliases[alias_name] = call_name
             continue
 
         alias = _dependency_alias(line)
         if alias is not None and not function_stack:
             alias_name, call_name = alias
-            dependency_aliases[alias_name] = call_name
+            if _is_authz_call(call_name):
+                dependency_aliases[alias_name] = call_name
+            else:
+                dependency_wrapper_aliases[alias_name] = call_name
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="dependency_call",
+                        source_path=source_path,
+                        symbol_name=call_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=None,
+                        sensitivity_label="low",
+                        payload={
+                            "caller": alias_name,
+                            "line": line_number,
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
             continue
 
         function_match = FUNCTION_PATTERN.match(line)
@@ -287,6 +311,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 line,
                 line_number,
                 dependency_aliases,
+                dependency_wrapper_aliases,
             ):
                 facts.append(
                     CodebaseFactCandidate(
@@ -351,6 +376,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 line,
                 line_number,
                 dependency_aliases,
+                dependency_wrapper_aliases,
             ):
                 facts.append(
                     CodebaseFactCandidate(
@@ -399,6 +425,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 line,
                 line_number,
                 dependency_aliases,
+                dependency_wrapper_aliases,
             ):
                 facts.append(
                     CodebaseFactCandidate(
@@ -787,17 +814,24 @@ def _dependency_wrapper_refs(
     line: str,
     line_number: int,
     dependency_aliases: dict[str, str],
+    dependency_wrapper_aliases: dict[str, str],
 ) -> list[tuple[str, int]]:
     authz_names = {call_name for call_name, _ in _dependency_authz_refs(
         line,
         line_number,
         dependency_aliases,
     )}
-    return [
+    refs = [
         (call_name, line_number)
         for call_name in _dependency_calls(line)
         if call_name not in authz_names
     ]
+    refs.extend(
+        (call_name, line_number)
+        for alias_name, call_name in dependency_wrapper_aliases.items()
+        if _line_references_dependency_alias(line, alias_name)
+    )
+    return _dedupe_refs(refs)
 
 
 def _dependency_calls(line: str) -> list[str]:
@@ -810,9 +844,26 @@ def _dependency_alias(line: str) -> tuple[str, str] | None:
         return None
     alias_name = match.group(1)
     call_name = match.group(2)
-    if not _is_authz_call(call_name):
-        return None
     return alias_name, call_name
+
+
+def _dependency_imported_aliases(line: str) -> list[tuple[str, str]]:
+    match = IMPORT_AUTHZ_ALIAS_PATTERN.match(line)
+    if match is None or "dependencies" not in line:
+        return []
+    aliases: list[tuple[str, str]] = []
+    for item in match.group(1).split(","):
+        item_match = IMPORT_ALIAS_ITEM_PATTERN.match(item)
+        if item_match is None:
+            call_name = item.strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", call_name):
+                aliases.append((call_name, call_name))
+            continue
+        call_name = item_match.group(1)
+        alias_name = item_match.group(2)
+        if not _is_authz_call(call_name):
+            aliases.append((alias_name, call_name))
+    return aliases
 
 
 def _imported_aliases(line: str) -> list[tuple[str, str]]:
@@ -832,6 +883,14 @@ def _imported_aliases(line: str) -> list[tuple[str, str]]:
 
 def _line_references_name(line: str, name: str) -> bool:
     return re.search(rf"\b{re.escape(name)}\b", line) is not None
+
+
+def _line_references_dependency_alias(line: str, name: str) -> bool:
+    escaped = re.escape(name)
+    return (
+        re.search(rf"=\s*{escaped}\b", line) is not None
+        or re.search(rf"dependencies\s*=\s*\[[^\]]*\b{escaped}\b", line) is not None
+    )
 
 
 def _dedupe_refs(refs: list[tuple[str, int]]) -> list[tuple[str, int]]:

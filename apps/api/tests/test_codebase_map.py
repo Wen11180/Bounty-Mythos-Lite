@@ -706,6 +706,43 @@ def export_file(file_id: str, request):
     }
 
 
+def test_map_authorized_code_files_treats_created_by_id_request_user_pk_kwarg_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, request):
+    file = File.objects.filter(id=file_id, created_by_id=request.user.pk).get()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "created_by_id_filter"
+    assert authz.authz_hint == "ownership_boundary_check"
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 8,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
 def test_map_authorized_code_files_treats_filter_by_account_boundary_as_authz_check():
     result = map_authorized_code_files(
         {
@@ -1340,6 +1377,54 @@ def export_file(file_id: str):
     }
 
 
+def test_map_authorized_code_files_treats_decorator_dependency_wrapper_as_route_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+from app.dependencies import current_staff_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export", dependencies=[Depends(current_staff_user)])
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+                {
+                    "path": "apps/api/dependencies.py",
+                    "content": """
+from fastapi import Depends
+from app.auth import require_user
+
+def current_staff_user(user=Depends(current_user)):
+    return user
+
+def current_user(user=Depends(require_user)):
+    return user
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    route_authz = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "export_file"
+    ]
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert route_authz[0].symbol_name == "require_user"
+
+
 def test_map_authorized_code_files_treats_multiline_scoped_security_as_route_authz():
     result = map_authorized_code_files(
         {
@@ -1638,6 +1723,110 @@ def export_file(file_id: str, user=Depends(current_active_user)):
                     "content": """
 from fastapi import Depends
 from app.auth import require_user
+
+def current_active_user(user=Depends(current_user)):
+    return user
+
+def current_user(user=Depends(require_user)):
+    return user
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    route_authz = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "export_file"
+    ]
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert route_authz[0].symbol_name == "require_user"
+
+
+def test_map_authorized_code_files_treats_deeper_dependency_wrapper_chain_as_route_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+from app.dependencies import current_staff_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=Depends(current_staff_user)):
+    return send_file(file_id)
+""",
+                },
+                {
+                    "path": "apps/api/dependencies.py",
+                    "content": """
+from fastapi import Depends
+from app.auth import require_user
+
+def current_staff_user(user=Depends(current_active_user)):
+    return user
+
+def current_active_user(user=Depends(current_user)):
+    return user
+
+def current_user(user=Depends(require_user)):
+    return user
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    route_authz = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "export_file"
+    ]
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert route_authz[0].symbol_name == "require_user"
+
+
+def test_map_authorized_code_files_treats_dependency_alias_to_wrapper_chain_as_route_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+from app.dependencies import CurrentStaffUser
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=CurrentStaffUser):
+    return send_file(file_id)
+""",
+                },
+                {
+                    "path": "apps/api/dependencies.py",
+                    "content": """
+from fastapi import Depends
+from app.auth import require_user
+
+CurrentStaffUser = Depends(current_staff_user)
+
+def current_staff_user(user=Depends(current_active_user)):
+    return user
 
 def current_active_user(user=Depends(current_user)):
     return user
