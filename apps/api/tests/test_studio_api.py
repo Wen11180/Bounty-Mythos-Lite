@@ -147,6 +147,11 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
             "touch_real_user_data",
             "submit_report",
         ]
+        assert candidates[0]["report_readiness"] == {
+            "status": "submission_blocked",
+            "report_submission_allowed": False,
+            "next_allowed_action": "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
+        }
         assert "send_file(file_id)" not in str(candidates)
 
         export_response = client.post(

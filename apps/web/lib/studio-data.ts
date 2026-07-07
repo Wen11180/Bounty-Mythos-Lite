@@ -33,6 +33,11 @@ export type StudioCandidateInput = {
   evidence_needed?: string[];
   false_positive_checks?: string[];
   ranking_reasons?: string[];
+  report_readiness?: {
+    next_allowed_action?: string;
+    report_submission_allowed?: boolean;
+    status?: string;
+  };
   safe_validation_plan?: string[];
   safe_verification?: boolean;
   safety_blockers?: string[];
@@ -61,6 +66,11 @@ export type StudioCandidateCard = {
   refutationQuestions: string[];
   rankingReasons: string[];
   reason: string;
+  reportReadiness: {
+    nextAllowedAction: string;
+    reportSubmissionAllowed: boolean;
+    status: string;
+  };
   safeValidationPlan: string[];
   safetyBlockers: string[];
   priorityScore: number;
@@ -99,12 +109,26 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       refutationQuestions: candidate.false_positive_checks ?? [],
       rankingReasons: candidate.ranking_reasons ?? [],
       reason: safeText(candidate.reason, "Review rationale unavailable."),
+      reportReadiness: reportReadinessFromCandidate(candidate),
       safeValidationPlan: candidate.safe_validation_plan ?? [],
       safetyBlockers: candidate.safety_blockers ?? [],
       priorityScore: candidate.priority_score ?? 0,
       validationMode: safeText(candidate.validation_mode, "manual_review"),
     };
   });
+}
+
+function reportReadinessFromCandidate(
+  candidate: StudioCandidateInput,
+): StudioCandidateCard["reportReadiness"] {
+  return {
+    nextAllowedAction: safeText(
+      candidate.report_readiness?.next_allowed_action,
+      "Review evidence and safety blockers before exporting a report preview.",
+    ),
+    reportSubmissionAllowed: candidate.report_readiness?.report_submission_allowed === true,
+    status: safeText(candidate.report_readiness?.status, "submission_blocked"),
+  };
 }
 
 function endpointFromCandidate(candidate: StudioCandidateInput): string {

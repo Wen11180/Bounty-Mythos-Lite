@@ -328,10 +328,17 @@ export function StudioWorkbench() {
                   <StatusRow label="Code path" value={candidate.affectedCodePath} />
                   <StatusRow label="Priority" value={String(candidate.priorityScore)} />
                   <StatusRow label="Validation mode" value={candidate.validationMode} />
+                  <StatusRow label="Report readiness" value={candidate.reportReadiness.status} warning />
                 </dl>
                 <div className="mt-4">
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">Reason</p>
                   <p className="mt-2 text-[var(--muted)]">{candidate.reason}</p>
+                </div>
+                <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Next report action</p>
+                  <p className="mt-2 text-[var(--muted)]">
+                    {candidate.reportReadiness.nextAllowedAction}
+                  </p>
                 </div>
                 <ListBlock title="Ranking reasons" items={candidate.rankingReasons} />
                 <ListBlock title="Safe validation plan" items={candidate.safeValidationPlan} />

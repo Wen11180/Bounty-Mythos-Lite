@@ -85,6 +85,29 @@ test("candidate cards expose safe validation plan and safety blockers", () => {
   assert.deepEqual(card.safetyBlockers, ["execute_live_validation", "submit_report"]);
 });
 
+test("candidate cards expose report readiness gate", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-005",
+      vuln_type: "authorization",
+      risk: "high",
+      report_readiness: {
+        status: "submission_blocked",
+        report_submission_allowed: false,
+        next_allowed_action: "Review evidence before exporting a report preview.",
+      },
+      safe_verification: true,
+    },
+  ]);
+
+  assert.equal(card.reportReadiness.status, "submission_blocked");
+  assert.equal(card.reportReadiness.reportSubmissionAllowed, false);
+  assert.equal(
+    card.reportReadiness.nextAllowedAction,
+    "Review evidence before exporting a report preview.",
+  );
+});
+
 test("candidate cards keep unsafe candidates visibly blocked", () => {
   const [card] = toStudioCandidateCards([
     {
@@ -198,4 +221,14 @@ test("studio workbench surfaces validation plan and safety blockers", async () =
   assert.match(workbench, /Safe validation plan/);
   assert.match(workbench, /Safety blockers/);
   assert.match(workbench, /candidate\.validationMode/);
+});
+
+test("studio workbench surfaces candidate report readiness", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /Report readiness/);
+  assert.match(workbench, /candidate\.reportReadiness/);
 });

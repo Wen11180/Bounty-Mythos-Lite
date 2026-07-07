@@ -2449,6 +2449,13 @@ def _studio_candidate_from_hypothesis(
             "touch_real_user_data",
             "submit_report",
         ],
+        "report_readiness": {
+            "status": "submission_blocked",
+            "report_submission_allowed": False,
+            "next_allowed_action": (
+                "Review evidence, refutation checks, and safety blockers before exporting a report preview."
+            ),
+        },
         "safe_verification": hypothesis.get("validation_mode") != "blocked",
         "priority_score": hypothesis.get("priority_score", 0),
         "source_facts": safe_source_facts
