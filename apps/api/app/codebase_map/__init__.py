@@ -23,11 +23,25 @@ IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+i
 IMPORT_ALIAS_ITEM_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
-OWNER_FILTER_PATTERN = re.compile(
-    r"\b[A-Za-z_][A-Za-z0-9_.]*owner_id\s*==\s*(?:user_id|current_user\.id|user\.id)\b"
-    r"|\b(?:user_id|current_user\.id|user\.id)\s*==\s*[A-Za-z_][A-Za-z0-9_.]*owner_id\b",
+AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
+    r"\b(?P<left>[A-Za-z_][A-Za-z0-9_.]*)\s*==\s*"
+    r"(?P<right>[A-Za-z_][A-Za-z0-9_.]*)\b",
     re.IGNORECASE,
 )
+AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
+    r"\b(?P<field>owner_id|user_id|tenant_id|account_id|org_id|organization_id)\s*=\s*"
+    r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\b",
+    re.IGNORECASE,
+)
+AUTHZ_BOUNDARY_FIELDS = {
+    "owner_id",
+    "user_id",
+    "tenant_id",
+    "account_id",
+    "org_id",
+    "organization_id",
+}
+PRINCIPAL_ID_IDENTIFIERS = {"user_id", "current_user.id", "user.id"}
 AUTHZ_NAME_MARKERS = (
     "authorize",
     "authz",
@@ -389,15 +403,17 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             continue
 
         current_function = _current_function(function_stack)
-        if current_function is not None and _has_owner_filter(line):
+        boundary_filter = _authz_boundary_filter(line)
+        if current_function is not None and boundary_filter is not None:
+            symbol_name, authz_hint = boundary_filter
             facts.append(
                 CodebaseFactCandidate(
                     fact_type="authz_check",
                     source_path=source_path,
-                    symbol_name="owner_id_filter",
+                    symbol_name=symbol_name,
                     route_method=None,
                     route_path=None,
-                    authz_hint="owner_or_admin_check",
+                    authz_hint=authz_hint,
                     sensitivity_label="low",
                     payload={
                         "handler": current_function,
@@ -781,8 +797,61 @@ def _is_service_call(call_name: str) -> bool:
     return not _is_authz_call(call_name) and not _is_sensitive_sink(call_name)
 
 
-def _has_owner_filter(line: str) -> bool:
-    return not line.lstrip().startswith("#") and OWNER_FILTER_PATTERN.search(line) is not None
+def _authz_boundary_filter(line: str) -> tuple[str, str] | None:
+    if line.lstrip().startswith("#"):
+        return None
+    for match in AUTHZ_BOUNDARY_COMPARISON_PATTERN.finditer(line):
+        field_name = _authz_boundary_field(match.group("left"), match.group("right"))
+        if field_name is None:
+            continue
+        return (f"{field_name}_filter", _authz_boundary_hint(field_name))
+    for match in AUTHZ_BOUNDARY_KWARG_PATTERN.finditer(line):
+        field_name = _authz_boundary_kwarg_field(
+            match.group("field"),
+            match.group("value"),
+        )
+        if field_name is None:
+            continue
+        return (f"{field_name}_filter", _authz_boundary_hint(field_name))
+    return None
+
+
+def _authz_boundary_field(left: str, right: str) -> str | None:
+    left_field = _identifier_leaf(left)
+    right_field = _identifier_leaf(right)
+    if left_field not in AUTHZ_BOUNDARY_FIELDS and right_field not in AUTHZ_BOUNDARY_FIELDS:
+        return None
+    if left_field in {"owner_id", "user_id"} and _is_principal_id_identifier(right):
+        return left_field
+    if right_field in {"owner_id", "user_id"} and _is_principal_id_identifier(left):
+        return right_field
+    if left_field == right_field and left_field in AUTHZ_BOUNDARY_FIELDS:
+        return left_field
+    return None
+
+
+def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
+    normalized_field = field_name.lower()
+    value_field = _identifier_leaf(value)
+    if normalized_field in {"owner_id", "user_id"} and _is_principal_id_identifier(value):
+        return normalized_field
+    if normalized_field == value_field and normalized_field in AUTHZ_BOUNDARY_FIELDS:
+        return normalized_field
+    return None
+
+
+def _identifier_leaf(identifier: str) -> str:
+    return identifier.rsplit(".", 1)[-1].lower()
+
+
+def _is_principal_id_identifier(identifier: str) -> bool:
+    return identifier.lower() in PRINCIPAL_ID_IDENTIFIERS
+
+
+def _authz_boundary_hint(field_name: str) -> str:
+    if field_name == "owner_id":
+        return "owner_or_admin_check"
+    return "ownership_boundary_check"
 
 
 def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandidate]:
@@ -829,6 +898,8 @@ def _dedupe_handler_authz_facts(
 
 def _authz_hint_priority(authz_hint: str | None) -> int:
     if authz_hint == "owner_or_admin_check":
+        return 4
+    if authz_hint == "ownership_boundary_check":
         return 4
     if authz_hint == "permission_check":
         return 3
