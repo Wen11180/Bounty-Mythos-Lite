@@ -21,6 +21,12 @@ authorized program policy/scope
 
 This stage is not a generic dashboard effort. It should prove that the system can read authorized target materials, understand API and code surfaces together, and produce a small set of candidates worth human validation.
 
+## Preferred Product Form
+
+The preferred user experience is Mythos Studio: a local, desktop-style, chat-first research workspace. See `docs/superpowers/specs/2026-07-07-mythos-studio-design.md`.
+
+The studio should let an operator create a local workspace, import authorized materials, direct the research agent through conversation, review candidate cards, approve or reject validation plans, attach redacted evidence, and export submission-blocked report drafts.
+
 ## Expected Inputs
 
 - Program policy and scope.
