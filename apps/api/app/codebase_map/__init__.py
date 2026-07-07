@@ -985,6 +985,10 @@ def _authz_boundary_field(left: str, right: str) -> str | None:
         and _same_relation_boundary(left_relation, right_relation)
     ):
         return f"{left_relation}_id"
+    if left_relation in {"owner", "user"} and _is_principal_object_identifier(right):
+        return f"{left_relation}_id"
+    if right_relation in {"owner", "user"} and _is_principal_object_identifier(left):
+        return f"{right_relation}_id"
     if left_field not in AUTHZ_BOUNDARY_FIELDS and right_field not in AUTHZ_BOUNDARY_FIELDS:
         return None
     if left_field in {"owner_id", "user_id"} and _is_principal_id_identifier(right):
