@@ -1006,6 +1006,14 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     value_field = _identifier_leaf(value)
     if normalized_field in {"owner_id", "user_id"} and _is_principal_id_identifier(value):
         return normalized_field
+    relation_id_field = _principal_relation_id_boundary_field(value)
+    if (
+        normalized_field in AUTHZ_BOUNDARY_FIELDS
+        and relation_id_field is not None
+        and _canonical_boundary_field(normalized_field)
+        == _canonical_boundary_field(relation_id_field)
+    ):
+        return normalized_field
     relation_field = _relation_boundary_field(field_name)
     if relation_field is not None and _same_relation_boundary(relation_field, value_field):
         return f"{relation_field}_id"
@@ -1100,6 +1108,16 @@ def _boundary_collection_matches(field_name: str, values_field: str) -> bool:
     if not singular.endswith("_id"):
         return False
     return _canonical_boundary_field(singular) == _canonical_boundary_field(field_name)
+
+
+def _principal_relation_id_boundary_field(identifier: str) -> str | None:
+    parts = identifier.lower().split(".")
+    if len(parts) != 3 or parts[0] != "current_user" or parts[2] != "id":
+        return None
+    relation = _relation_boundary_field(parts[1])
+    if relation is None:
+        return None
+    return f"{relation}_id"
 
 
 def _is_principal_id_identifier(identifier: str) -> bool:
