@@ -46,7 +46,7 @@ AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
-    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|owner__id|user__id|tenant__id|account__id|org__id|organization__id)(?:__in)?)\s*=\s*"
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id)(?:__in)?)\s*=\s*"
     r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\b",
     re.IGNORECASE,
 )
