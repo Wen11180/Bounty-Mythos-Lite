@@ -1880,6 +1880,75 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_router_lev
     )
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_qualified_router_level_dependency_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import Depends",
+                "import fastapi",
+                "router = fastapi.APIRouter(dependencies=[Depends(require_user)])",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_aliased_router_level_dependency_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter as Router, Depends",
+                "router = Router(dependencies=[Depends(require_user)])",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_security_authz(
     tmp_path,
 ):

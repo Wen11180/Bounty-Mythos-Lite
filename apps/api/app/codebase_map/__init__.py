@@ -14,7 +14,9 @@ ROUTE_DECORATOR_START_PATTERN = re.compile(
 )
 ROUTE_DECORATOR_ROUTER_PATTERN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)\.")
 ROUTER_ASSIGNMENT_PATTERN = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*APIRouter\("
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"(?:(?P<module>[A-Za-z_][A-Za-z0-9_]*)\.)?"
+    r"(?P<constructor>[A-Za-z_][A-Za-z0-9_]*)\("
 )
 STRING_LITERAL_PATTERN = re.compile(r"[\"']([^\"']+)[\"']")
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
@@ -174,7 +176,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     pending_route_decorator: (
         tuple[str, int, list[str], list[tuple[str, int]], list[tuple[str, int]]] | None
     ) = None
-    pending_router_assignment: tuple[str, int, list[str]] | None = None
+    pending_router_assignment: tuple[str, int, list[str], str] | None = None
     pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
     class_stack: list[tuple[str, int]] = []
@@ -182,6 +184,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     dependency_wrapper_aliases: dict[str, str] = {}
     router_authz_refs: dict[str, list[tuple[str, int]]] = {}
     router_dependency_refs: dict[str, list[tuple[str, int]]] = {}
+    router_constructor_aliases: set[str] = set()
     import_aliases: dict[str, str] = {}
     local_call_aliases: dict[str, dict[str, str]] = {}
     class_call_aliases: dict[str, dict[str, str]] = {}
@@ -189,9 +192,14 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         if pending_router_assignment is not None:
-            router_name, router_line, router_lines = pending_router_assignment
+            (
+                router_name,
+                router_line,
+                router_lines,
+                router_constructor,
+            ) = pending_router_assignment
             router_lines = [*router_lines, line]
-            if _router_assignment_closed(router_lines):
+            if _router_assignment_closed(router_lines, router_constructor):
                 router_authz_refs[router_name] = _dedupe_refs(
                     _dependency_authz_refs_from_lines(
                         router_lines,
@@ -209,7 +217,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 )
                 pending_router_assignment = None
             else:
-                pending_router_assignment = (router_name, router_line, router_lines)
+                pending_router_assignment = (
+                    router_name,
+                    router_line,
+                    router_lines,
+                    router_constructor,
+                )
             continue
 
         if pending_route_decorator is not None:
@@ -281,9 +294,18 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             continue
 
         router_assignment_match = ROUTER_ASSIGNMENT_PATTERN.match(line)
-        if router_assignment_match is not None and not function_stack:
+        if (
+            router_assignment_match is not None
+            and not function_stack
+            and _is_router_constructor(
+                router_assignment_match.group("module"),
+                router_assignment_match.group("constructor"),
+                router_constructor_aliases,
+            )
+        ):
             router_name = router_assignment_match.group(1)
-            if _router_assignment_closed([line]):
+            router_constructor = router_assignment_match.group("constructor")
+            if _router_assignment_closed([line], router_constructor):
                 router_authz_refs[router_name] = _dependency_authz_refs(
                     line,
                     line_number,
@@ -296,7 +318,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     dependency_wrapper_aliases,
                 )
             else:
-                pending_router_assignment = (router_name, line_number, [line])
+                pending_router_assignment = (
+                    router_name,
+                    line_number,
+                    [line],
+                    router_constructor,
+                )
                 continue
 
         route_match = ROUTE_DECORATOR_PATTERN.search(line)
@@ -370,6 +397,8 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         if (imported_aliases or dependency_imported_aliases) and not function_stack:
             for alias_name, call_name in imported_aliases:
                 import_aliases[alias_name] = call_name
+                if call_name == "APIRouter":
+                    router_constructor_aliases.add(alias_name)
                 if _is_authz_call(call_name):
                     dependency_aliases[alias_name] = call_name
             for alias_name, call_name in dependency_imported_aliases:
@@ -1152,9 +1181,21 @@ def _route_decorator_closed(line: str) -> bool:
     return line.strip().startswith(")")
 
 
-def _router_assignment_closed(lines: list[str]) -> bool:
+def _is_router_constructor(
+    module_name: str | None,
+    constructor_name: str,
+    router_constructor_aliases: set[str],
+) -> bool:
+    if module_name is not None:
+        return module_name == "fastapi" and constructor_name == "APIRouter"
+    if constructor_name == "APIRouter":
+        return True
+    return constructor_name in router_constructor_aliases
+
+
+def _router_assignment_closed(lines: list[str], constructor_name: str) -> bool:
     block = "\n".join(lines)
-    start = block.find("APIRouter")
+    start = block.find(constructor_name)
     if start == -1:
         return False
 
