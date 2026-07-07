@@ -88,3 +88,16 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /Start research/);
   assert.match(workbench, /Export report preview/);
 });
+
+test("studio workbench can open an existing local workspace", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /getStudioWorkspaceManifest/);
+  assert.match(workbench, /handleOpenWorkspace/);
+  assert.match(workbench, /Open workspace/);
+  assert.match(workbench, /latestRunFromManifest/);
+  assert.match(workbench, /listStudioWorkspaceCandidates\(workspacePath/);
+});

@@ -1,11 +1,12 @@
 "use client";
 
-import { FileDown, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
+import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
   createStudioWorkspace,
   exportStudioWorkspaceReport,
+  getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
   listStudioWorkspaceCandidates,
   runStudioWorkspaceResearch,
@@ -52,6 +53,37 @@ export function StudioWorkbench() {
   ]);
 
   const workspace = useMemo(() => toStudioWorkspaceSummary(manifest), [manifest]);
+
+  async function handleOpenWorkspace() {
+    if (!workspacePath.trim()) {
+      pushLog("Enter a local workspace path before opening.", "blocked");
+      return;
+    }
+    setBusy("open");
+    try {
+      const opened = await getStudioWorkspaceManifest(workspacePath, null);
+      if (!opened) {
+        pushLog("Workspace manifest was not found.", "blocked");
+        return;
+      }
+      setManifest(opened);
+      const latest = latestRunFromManifest(opened);
+      setLatestRunId(latest);
+      setReportExport(null);
+      if (latest) {
+        const listed = await listStudioWorkspaceCandidates(workspacePath, latest, {
+          candidates: [],
+          run_id: latest,
+        });
+        setCandidates(toStudioCandidateCards(listed.candidates));
+      } else {
+        setCandidates([]);
+      }
+      pushLog("Workspace opened locally.", "safe");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function handleCreateWorkspace() {
     setBusy("workspace");
@@ -177,6 +209,13 @@ export function StudioWorkbench() {
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Workspaces" />
           <div className="grid gap-4 p-5 text-sm">
+            <TextField label="Workspace path" value={workspacePath} onChange={setWorkspacePath} />
+            <ActionButton
+              busy={busy === "open"}
+              icon={<FolderOpen size={16} aria-hidden="true" />}
+              label="Open workspace"
+              onClick={handleOpenWorkspace}
+            />
             <TextField label="Workspace root" value={workspaceRoot} onChange={setWorkspaceRoot} />
             <TextField label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
             <ActionButton
@@ -402,4 +441,13 @@ function logTone(tone: LogEntry["tone"]): string {
     return "text-[var(--warning)]";
   }
   return "text-[var(--muted)]";
+}
+
+function latestRunFromManifest(manifest: StudioWorkspaceManifest): string | null {
+  for (const run of [...(manifest.runs ?? [])].reverse()) {
+    if (run.run_id) {
+      return run.run_id;
+    }
+  }
+  return null;
 }
