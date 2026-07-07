@@ -1,5 +1,11 @@
 # Bounty Mythos-Lite 产品总览
 
+## 北极星目标
+
+长期目标以仓库根目录的 `私人 AI 漏洞研究系统最终方案.md` 为准；短版工作目标见 `docs/product/north-star.md`。
+
+当前阶段优先实现 A+B Autonomous Candidate Hunter：把授权 policy/scope/API/HAR 和授权本地代码结合起来，自动产出少量高质量漏洞候选，并为每个候选提供接口路径、代码路径、风险原因、反证问题、证据需求、安全验证计划和 submission-blocked 报告草稿状态。
+
 ## 核心目标
 
 Bounty Mythos-Lite 面向合法赏金项目：系统以 research campaign 为核心，读取项目规则和授权 artifact，完成目标建模、攻击面选择、漏洞假设生成、误报反证、低风险验证计划、证据审查、报告草稿生成，并把人工提交结果回灌为长期经验。

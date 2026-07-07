@@ -51,6 +51,31 @@ Bounty Mythos-Lite is a lawful bug bounty research assistant. It must stay insid
 - Do not bypass Scope Guard, human approval, redaction review, or report submission gates.
 - Do not submit reports automatically.
 
+## Project North Star
+
+This project targets the final direction in `私人 AI 漏洞研究系统最终方案.md`.
+
+Bounty Mythos-Lite should evolve into a lawful, auditable AI vulnerability research factory:
+
+```text
+authorized policy/API/HAR/local code
+-> Scope Guard
+-> target intake
+-> API/code attack-surface modeling
+-> static analysis
+-> semantic code audit
+-> vulnerability hypotheses
+-> refutation and deduplication
+-> safe validation planning
+-> evidence review
+-> submission-blocked report draft
+-> human review
+```
+
+The immediate implementation priority is A+B: policy/scope/API/HAR plus authorized local code, producing top high-quality vulnerability candidates with affected endpoints, affected code paths, evidence needs, refutation questions, safe validation plans, and report draft readiness.
+
+Do not optimize for dashboard completeness before the autonomous candidate-hunter loop works.
+
 ## Expected Working Style
 
 For this repository, prefer safe, auditable research operations over autonomous exploitation.
