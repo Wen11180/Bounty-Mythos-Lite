@@ -24,6 +24,19 @@ export type StudioWorkspaceSummary = {
   blockedActions: string[];
 };
 
+export type StudioArtifactChecklistItem = {
+  kind: "scope" | "code" | "policy" | "api" | "har" | "sbom" | "sarif";
+  label: string;
+  present: boolean;
+  required: boolean;
+  status: "ready" | "missing" | "optional";
+};
+
+export type StudioResearchReadiness = {
+  canStart: boolean;
+  reason: string;
+};
+
 export type StudioCandidateInput = {
   hypothesis_id?: string;
   vuln_type?: string;
@@ -94,6 +107,55 @@ export function toStudioWorkspaceSummary(
   };
 }
 
+export function toStudioArtifactChecklist(
+  manifest: StudioWorkspaceManifest,
+): StudioArtifactChecklistItem[] {
+  const presentKinds = new Set(
+    (manifest.artifacts ?? [])
+      .map((artifact) => artifact.kind)
+      .filter((kind): kind is string => typeof kind === "string" && kind.length > 0),
+  );
+
+  return [
+    artifactChecklistItem("scope", "Scope", true, presentKinds),
+    artifactChecklistItem("code", "Authorized code", true, presentKinds),
+    artifactChecklistItem("policy", "Policy", false, presentKinds),
+    artifactChecklistItem("api", "API", false, presentKinds),
+    artifactChecklistItem("har", "HAR", false, presentKinds),
+    artifactChecklistItem("sbom", "SBOM", false, presentKinds),
+    artifactChecklistItem("sarif", "SARIF", false, presentKinds),
+  ];
+}
+
+export function toStudioResearchReadiness(
+  workspacePath: string,
+  manifest: StudioWorkspaceManifest,
+): StudioResearchReadiness {
+  if (!workspacePath.trim()) {
+    return {
+      canStart: false,
+      reason: "Create or open a workspace before research.",
+    };
+  }
+
+  const checklist = toStudioArtifactChecklist(manifest);
+  const missingRequired = checklist
+    .filter((item) => item.required && !item.present)
+    .map((item) => item.label.toLowerCase());
+
+  if (missingRequired.length > 0) {
+    return {
+      canStart: false,
+      reason: `Import ${missingRequired.join(" and ")} before research.`,
+    };
+  }
+
+  return {
+    canStart: true,
+    reason: "Scope and code are ready for local candidate research.",
+  };
+}
+
 export function toStudioCandidateCards(candidates: StudioCandidateInput[]): StudioCandidateCard[] {
   return candidates.slice(0, 5).map((candidate, index) => {
     const endpoint = endpointFromCandidate(candidate);
@@ -121,6 +183,22 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       validationMode: safeText(candidate.validation_mode, "manual_review"),
     };
   });
+}
+
+function artifactChecklistItem(
+  kind: StudioArtifactChecklistItem["kind"],
+  label: string,
+  required: boolean,
+  presentKinds: Set<string>,
+): StudioArtifactChecklistItem {
+  const present = presentKinds.has(kind);
+  return {
+    kind,
+    label,
+    present,
+    required,
+    status: present ? "ready" : required ? "missing" : "optional",
+  };
 }
 
 function reportReadinessFromCandidate(

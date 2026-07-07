@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
-import { toStudioCandidateCards, toStudioWorkspaceSummary } from "./studio-data.ts";
+import {
+  toStudioArtifactChecklist,
+  toStudioCandidateCards,
+  toStudioResearchReadiness,
+  toStudioWorkspaceSummary,
+} from "./studio-data.ts";
 
 test("workspace summary maps manifest safety state", () => {
   const summary = toStudioWorkspaceSummary({
@@ -38,6 +43,46 @@ test("candidate cards map missing endpoint and code path to review fallbacks", (
   assert.equal(card.affectedEndpoint, "Endpoint needs review");
   assert.equal(card.affectedCodePath, "Code path needs review");
   assert.equal(card.status, "needs_review");
+});
+
+test("artifact checklist marks required authorized inputs before research", () => {
+  const checklist = toStudioArtifactChecklist({
+    artifacts: [
+      { kind: "scope", source_path: "C:/targets/scope.yaml" },
+      { kind: "policy", source_path: "C:/targets/policy.md" },
+    ],
+  });
+
+  assert.deepEqual(
+    checklist
+      .filter((item) => item.required)
+      .map((item) => [item.kind, item.present, item.status]),
+    [
+      ["scope", true, "ready"],
+      ["code", false, "missing"],
+    ],
+  );
+  assert.equal(checklist.find((item) => item.kind === "policy")?.present, true);
+  assert.equal(checklist.find((item) => item.kind === "har")?.status, "optional");
+});
+
+test("research readiness requires a workspace plus scope and code artifacts", () => {
+  const missingCode = toStudioResearchReadiness("", {
+    artifacts: [{ kind: "scope", source_path: "C:/targets/scope.yaml" }],
+  });
+
+  assert.equal(missingCode.canStart, false);
+  assert.equal(missingCode.reason, "Create or open a workspace before research.");
+
+  const ready = toStudioResearchReadiness("C:/mythos-workspaces/acme", {
+    artifacts: [
+      { kind: "scope", source_path: "C:/targets/scope.yaml" },
+      { kind: "code", source_path: "C:/targets/repo" },
+    ],
+  });
+
+  assert.equal(ready.canStart, true);
+  assert.equal(ready.reason, "Scope and code are ready for local candidate research.");
 });
 
 test("candidate cards expose review rationale and ranking reasons", () => {
@@ -190,6 +235,19 @@ test("studio workbench imports HAR as a first-class authorized artifact", async 
   assert.match(workbench, /harPath/);
   assert.match(workbench, /HAR file/);
   assert.match(workbench, /kind: "har"/);
+});
+
+test("studio workbench shows artifact readiness before research", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /toStudioArtifactChecklist/);
+  assert.match(workbench, /toStudioResearchReadiness/);
+  assert.match(workbench, /Artifact readiness/);
+  assert.match(workbench, /researchReadiness\.reason/);
+  assert.match(workbench, /disabled=\{!researchReadiness\.canStart\}/);
 });
 
 test("studio workbench surfaces exported markdown report drafts", async () => {

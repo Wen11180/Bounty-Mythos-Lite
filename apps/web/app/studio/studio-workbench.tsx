@@ -13,7 +13,9 @@ import {
   type StudioReportExportResponse,
 } from "@/lib/api";
 import {
+  toStudioArtifactChecklist,
   toStudioCandidateCards,
+  toStudioResearchReadiness,
   toStudioWorkspaceSummary,
   type StudioWorkspaceManifest,
 } from "@/lib/studio-data";
@@ -55,6 +57,11 @@ export function StudioWorkbench() {
   ]);
 
   const workspace = useMemo(() => toStudioWorkspaceSummary(manifest), [manifest]);
+  const artifactChecklist = useMemo(() => toStudioArtifactChecklist(manifest), [manifest]);
+  const researchReadiness = useMemo(
+    () => toStudioResearchReadiness(workspacePath, manifest),
+    [manifest, workspacePath],
+  );
 
   async function handleOpenWorkspace() {
     if (!workspacePath.trim()) {
@@ -142,8 +149,8 @@ export function StudioWorkbench() {
   }
 
   async function handleStartResearch() {
-    if (!workspacePath) {
-      pushLog("Create a workspace and import scope plus code before research.", "blocked");
+    if (!researchReadiness.canStart) {
+      pushLog(researchReadiness.reason, "blocked");
       return;
     }
     setBusy("research");
@@ -251,6 +258,20 @@ export function StudioWorkbench() {
               <TextField label="API file" value={apiPath} onChange={setApiPath} />
               <TextField label="HAR file" value={harPath} onChange={setHarPath} />
             </div>
+            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+              <p className="font-semibold">Artifact readiness</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {artifactChecklist.map((item) => (
+                  <span
+                    className={`border border-[var(--line)] px-3 py-2 ${checklistTone(item.status)}`}
+                    key={item.kind}
+                  >
+                    {item.label}: {item.status}
+                  </span>
+                ))}
+              </div>
+              <p className="mt-3 text-[var(--muted)]">{researchReadiness.reason}</p>
+            </div>
             <div className="flex flex-wrap gap-3">
               <ActionButton
                 busy={busy === "import"}
@@ -260,6 +281,7 @@ export function StudioWorkbench() {
               />
               <ActionButton
                 busy={busy === "research"}
+                disabled={!researchReadiness.canStart}
                 icon={<Play size={16} aria-hidden="true" />}
                 label="Start research"
                 onClick={handleStartResearch}
@@ -464,6 +486,16 @@ function logTone(tone: LogEntry["tone"]): string {
     return "text-[var(--success)]";
   }
   if (tone === "blocked") {
+    return "text-[var(--warning)]";
+  }
+  return "text-[var(--muted)]";
+}
+
+function checklistTone(status: "ready" | "missing" | "optional"): string {
+  if (status === "ready") {
+    return "text-[var(--success)]";
+  }
+  if (status === "missing") {
     return "text-[var(--warning)]";
   }
   return "text-[var(--muted)]";
