@@ -328,6 +328,11 @@ export function StudioWorkbench() {
                   <StatusRow label="Code path" value={candidate.affectedCodePath} />
                   <StatusRow label="Priority" value={String(candidate.priorityScore)} />
                 </dl>
+                <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Reason</p>
+                  <p className="mt-2 text-[var(--muted)]">{candidate.reason}</p>
+                </div>
+                <ListBlock title="Ranking reasons" items={candidate.rankingReasons} />
                 <ListBlock title="Evidence needed" items={candidate.evidenceNeeds} />
                 <ListBlock title="False-positive checks" items={candidate.refutationQuestions} />
               </article>

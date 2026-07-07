@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
+from app.artifact_ingestion import normalize_artifact
 from app.db import get_session
 from app.db_models import (
     AgentRunRecord,
@@ -2440,6 +2441,7 @@ def _studio_candidate_from_hypothesis(
         "false_positive_checks": safe_preview_lines(
             hypothesis.get("false_positive_checks", [])
         ),
+        "ranking_reasons": safe_preview_lines(hypothesis.get("ranking_reasons", [])),
         "safe_verification": hypothesis.get("validation_mode") != "blocked",
         "priority_score": hypothesis.get("priority_score", 0),
         "source_facts": safe_source_facts
@@ -2454,7 +2456,7 @@ def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
     if not isinstance(artifacts, list):
         return facts
     for artifact in artifacts:
-        if not isinstance(artifact, dict) or artifact.get("kind") not in {"api", "har"}:
+        if not isinstance(artifact, dict) or artifact.get("kind") not in {"api", "har", "sarif"}:
             continue
         source_path = artifact.get("source_path")
         if not isinstance(source_path, str) or not source_path:
@@ -2472,6 +2474,8 @@ def _studio_surface_facts_from_file(kind: str, source_path: str) -> list[dict[st
         return _studio_openapi_surface_facts(payload)
     if kind == "har":
         return _studio_har_surface_facts(payload)
+    if kind == "sarif":
+        return _studio_sarif_surface_facts(payload)
     return []
 
 
@@ -2531,6 +2535,34 @@ def _studio_har_surface_facts(payload: object) -> list[dict[str, str]]:
                 "route_path": safe_preview_text(route_path),
             }
         )
+    return facts
+
+
+def _studio_sarif_surface_facts(payload: object) -> list[dict[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+    try:
+        normalized = normalize_artifact("sarif", payload).openapi_like
+    except ValueError:
+        return []
+    facts: list[dict[str, str]] = []
+    for route_path, operations in normalized.get("paths", {}).items():
+        if not isinstance(route_path, str) or not isinstance(operations, dict):
+            continue
+        for method, operation in operations.items():
+            if not isinstance(method, str):
+                continue
+            fact = {
+                "fact_type": "scanner_signal",
+                "artifact_kind": "sarif",
+                "route_method": safe_preview_text(method.upper()),
+                "route_path": safe_preview_text(route_path),
+                "advisory_only": "true",
+            }
+            operation_id = operation.get("operationId") if isinstance(operation, dict) else None
+            if isinstance(operation_id, str) and operation_id:
+                fact["operation_id"] = safe_preview_text(operation_id)
+            facts.append(fact)
     return facts
 
 

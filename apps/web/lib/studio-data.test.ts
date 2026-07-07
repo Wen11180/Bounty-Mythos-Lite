@@ -40,6 +40,30 @@ test("candidate cards map missing endpoint and code path to review fallbacks", (
   assert.equal(card.status, "needs_review");
 });
 
+test("candidate cards expose review rationale and ranking reasons", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-003",
+      vuln_type: "IDOR",
+      risk: "high",
+      reason: "Authenticated users can request object ids without proven ownership.",
+      ranking_reasons: ["impact:sensitive_data_sink", "traceable_source_fact"],
+      safe_verification: true,
+      source_facts: [{ route_path: "/files/{file_id}", source_path: "routes.py" }],
+    },
+  ]);
+
+  assert.equal(
+    card.reason,
+    "Authenticated users can request object ids without proven ownership.",
+  );
+  assert.deepEqual(card.rankingReasons, [
+    "impact:sensitive_data_sink",
+    "traceable_source_fact",
+  ]);
+  assert.equal(card.status, "needs_evidence");
+});
+
 test("candidate cards keep unsafe candidates visibly blocked", () => {
   const [card] = toStudioCandidateCards([
     {
@@ -132,4 +156,14 @@ test("studio workbench surfaces exported markdown report drafts", async () => {
 
   assert.match(workbench, /report_markdown_path/);
   assert.match(workbench, /Markdown draft/);
+});
+
+test("studio workbench surfaces candidate rationale and ranking reasons", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /candidate\.reason/);
+  assert.match(workbench, /Ranking reasons/);
 });

@@ -32,9 +32,11 @@ export type StudioCandidateInput = {
   reason?: string;
   evidence_needed?: string[];
   false_positive_checks?: string[];
+  ranking_reasons?: string[];
   safe_verification?: boolean;
   priority_score?: number;
   source_facts?: Array<{
+    advisory_only?: string;
     artifact_kind?: string;
     fact_type?: string;
     operation_id?: string;
@@ -54,6 +56,8 @@ export type StudioCandidateCard = {
   affectedCodePath: string;
   evidenceNeeds: string[];
   refutationQuestions: string[];
+  rankingReasons: string[];
+  reason: string;
   priorityScore: number;
 };
 
@@ -87,6 +91,8 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       affectedCodePath: codePath || "Code path needs review",
       evidenceNeeds: candidate.evidence_needed ?? [],
       refutationQuestions: candidate.false_positive_checks ?? [],
+      rankingReasons: candidate.ranking_reasons ?? [],
+      reason: safeText(candidate.reason, "Review rationale unavailable."),
       priorityScore: candidate.priority_score ?? 0,
     };
   });
