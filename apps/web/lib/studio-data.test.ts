@@ -237,6 +237,22 @@ test("studio workbench imports HAR as a first-class authorized artifact", async 
   assert.match(workbench, /kind: "har"/);
 });
 
+test("studio workbench imports SBOM and SARIF as optional local context", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /sbomPath/);
+  assert.match(workbench, /sarifPath/);
+  assert.match(workbench, /SBOM file/);
+  assert.match(workbench, /SARIF file/);
+  assert.match(workbench, /kind: "sbom"/);
+  assert.match(workbench, /kind: "sarif"/);
+  assert.match(workbench, /setSbomPath/);
+  assert.match(workbench, /setSarifPath/);
+});
+
 test("studio workbench shows artifact readiness before research", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),
@@ -269,6 +285,11 @@ test("studio workbench guides the first local research run", async () => {
   assert.match(workbench, /Next safe action/);
   assert.match(workbench, /wizardPrimaryAction/);
   assert.match(workbench, /Export submission-blocked draft/);
+  assert.match(workbench, /Required inputs/);
+  assert.match(workbench, /Missing required inputs/);
+  assert.match(workbench, /Optional context/);
+  assert.match(workbench, /missingRequiredArtifacts/);
+  assert.match(workbench, /optionalContextArtifacts/);
   assert.match(workbench, /handleCreateWorkspace/);
   assert.match(workbench, /handleImportArtifacts/);
   assert.match(workbench, /handleStartResearch/);

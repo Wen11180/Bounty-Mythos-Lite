@@ -56,6 +56,18 @@ test("startupErrorHtml escapes startup failure details", () => {
   assert.doesNotMatch(html, /<token>/);
 });
 
+test("startupErrorHtml gives local recovery steps", () => {
+  const html = startupErrorHtml(new Error("service failed"));
+
+  assert.match(html, /Check local prerequisites/);
+  assert.match(html, /apps\/api/);
+  assert.match(html, /python -m pip install -r requirements\.txt/);
+  assert.match(html, /apps\/web/);
+  assert.match(html, /npm install/);
+  assert.match(html, /apps\/studio/);
+  assert.match(html, /npm start/);
+});
+
 test("findAvailablePort returns the preferred port when it is free", async () => {
   const preferred = await reserveAndReleasePort();
 

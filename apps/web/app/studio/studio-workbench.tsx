@@ -54,6 +54,8 @@ export function StudioWorkbench() {
   const [codePath, setCodePath] = useState("");
   const [apiPath, setApiPath] = useState("");
   const [harPath, setHarPath] = useState("");
+  const [sbomPath, setSbomPath] = useState("");
+  const [sarifPath, setSarifPath] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [manifest, setManifest] = useState<StudioWorkspaceManifest>(emptyManifest);
   const [candidates, setCandidates] = useState<ReturnType<typeof toStudioCandidateCards>>([]);
@@ -113,6 +115,14 @@ export function StudioWorkbench() {
       },
     ],
     [candidates.length, researchReadiness.canStart, researchReadiness.reason, workspacePath],
+  );
+  const missingRequiredArtifacts = useMemo(
+    () => artifactChecklist.filter((item) => item.required && !item.present),
+    [artifactChecklist],
+  );
+  const optionalContextArtifacts = useMemo(
+    () => artifactChecklist.filter((item) => !item.required),
+    [artifactChecklist],
   );
 
   useEffect(() => {
@@ -189,6 +199,8 @@ export function StudioWorkbench() {
         { kind: "code", source_path: codePath },
         { kind: "api", source_path: apiPath },
         { kind: "har", source_path: harPath },
+        { kind: "sbom", source_path: sbomPath },
+        { kind: "sarif", source_path: sarifPath },
       ]) {
         if (!artifact.source_path.trim()) {
           continue;
@@ -357,6 +369,24 @@ export function StudioWorkbench() {
             onClick={wizardPrimaryAction.onClick}
           />
         </div>
+        <div className="grid gap-3 border-t border-[var(--line)] p-5 text-sm md:grid-cols-2">
+          <div>
+            <p className="font-semibold">Required inputs</p>
+            <p className="mt-2 text-[var(--muted)]">
+              {missingRequiredArtifacts.length === 0
+                ? "Required inputs are ready."
+                : `Missing required inputs: ${missingRequiredArtifacts
+                    .map((item) => item.label)
+                    .join(", ")}`}
+            </p>
+          </div>
+          <div>
+            <p className="font-semibold">Optional context</p>
+            <p className="mt-2 text-[var(--muted)]">
+              {optionalContextArtifacts.map((item) => `${item.label}: ${item.status}`).join(", ")}
+            </p>
+          </div>
+        </div>
       </section>
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_360px]">
@@ -418,7 +448,7 @@ export function StudioWorkbench() {
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Conversation" />
           <div className="grid gap-4 p-5 text-sm">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <TextField
                 browseEnabled={desktopPickerAvailable}
                 label="Policy file"
@@ -483,6 +513,32 @@ export function StudioWorkbench() {
                 }
                 value={harPath}
                 onChange={setHarPath}
+              />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="SBOM file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setSbomPath,
+                    title: "Select SBOM file",
+                  })
+                }
+                value={sbomPath}
+                onChange={setSbomPath}
+              />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="SARIF file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setSarifPath,
+                    title: "Select SARIF file",
+                  })
+                }
+                value={sarifPath}
+                onChange={setSarifPath}
               />
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">

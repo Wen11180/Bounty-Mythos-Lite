@@ -119,12 +119,28 @@ function startupErrorHtml(error) {
         white-space: pre-wrap;
         color: #7a2d18;
       }
+      ol {
+        margin: 18px 0 0;
+        padding-left: 22px;
+      }
+      li {
+        margin-top: 10px;
+      }
+      .command {
+        color: #151515;
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>Mythos Studio could not start</h1>
       <p>The local app shell started, but the local Studio service did not become ready.</p>
+      <h2>Check local prerequisites</h2>
+      <ol>
+        <li><span class="command">apps/api</span>: run <span class="command">python -m pip install -r requirements.txt</span></li>
+        <li><span class="command">apps/web</span>: run <span class="command">npm install</span></li>
+        <li><span class="command">apps/studio</span>: run <span class="command">npm install</span>, then <span class="command">npm start</span></li>
+      </ol>
       <code>${escapeHtml(message)}</code>
     </main>
   </body>
