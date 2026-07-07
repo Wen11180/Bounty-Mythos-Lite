@@ -46,7 +46,7 @@ AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
-    r"\b(?P<field>(?:owner_id|user_id|tenant_id|account_id|org_id|organization_id|owner__id|user__id|tenant__id|account__id|org__id|organization__id)(?:__in)?)\s*=\s*"
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|owner_id|user_id|tenant_id|account_id|org_id|organization_id|owner__id|user__id|tenant__id|account__id|org__id|organization__id)(?:__in)?)\s*=\s*"
     r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\b",
     re.IGNORECASE,
 )
@@ -976,6 +976,14 @@ def _authz_boundary_filter(line: str) -> tuple[str, str] | None:
 def _authz_boundary_field(left: str, right: str) -> str | None:
     left_field = _identifier_leaf(left)
     right_field = _identifier_leaf(right)
+    left_relation = _relation_boundary_field(left_field)
+    right_relation = _relation_boundary_field(right_field)
+    if (
+        left_relation is not None
+        and right_relation is not None
+        and left_relation == right_relation
+    ):
+        return f"{left_relation}_id"
     if left_field not in AUTHZ_BOUNDARY_FIELDS and right_field not in AUTHZ_BOUNDARY_FIELDS:
         return None
     if left_field in {"owner_id", "user_id"} and _is_principal_id_identifier(right):
@@ -992,6 +1000,9 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     value_field = _identifier_leaf(value)
     if normalized_field in {"owner_id", "user_id"} and _is_principal_id_identifier(value):
         return normalized_field
+    relation_field = _relation_boundary_field(field_name)
+    if relation_field is not None and value_field == relation_field:
+        return f"{relation_field}_id"
     if normalized_field == value_field and normalized_field in AUTHZ_BOUNDARY_FIELDS:
         return normalized_field
     if value_field == f"{normalized_field}s" and normalized_field in AUTHZ_BOUNDARY_FIELDS:
@@ -1020,6 +1031,15 @@ def _normalized_boundary_field(field_name: str) -> str:
     if normalized.endswith("__id"):
         return f"{normalized.removesuffix('__id')}_id"
     return normalized
+
+
+def _relation_boundary_field(field_name: str) -> str | None:
+    normalized = field_name.lower()
+    if normalized.endswith("__in"):
+        return None
+    if normalized in {"owner", "user", "tenant", "account", "org", "organization"}:
+        return normalized
+    return None
 
 
 def _is_principal_id_identifier(identifier: str) -> bool:

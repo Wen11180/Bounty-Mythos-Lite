@@ -304,6 +304,41 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_tenant_fil
     )
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_account_relation_comparison_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    file = db.query(File).filter(File.id == file_id, File.account == current_user.account).one()",
+                "    return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_filter_by_account_authz(
     tmp_path,
 ):
@@ -318,6 +353,41 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_filter_by_
                 '@router.get("/files/{file_id}/export")',
                 "def export_file(file_id: str, current_user):",
                 "    file = db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()",
+                "    return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_account_relation_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    file = File.objects.filter(id=file_id, account=current_user.account).get()",
                 "    return send_file(file.path)",
             ]
         ),
