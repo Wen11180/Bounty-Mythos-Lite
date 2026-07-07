@@ -36,6 +36,7 @@ const emptyManifest: StudioWorkspaceManifest = {
 export function StudioWorkbench() {
   const [workspaceRoot, setWorkspaceRoot] = useState("C:/mythos-workspaces");
   const [workspaceName, setWorkspaceName] = useState("authorized-target");
+  const [policyPath, setPolicyPath] = useState("");
   const [scopePath, setScopePath] = useState("");
   const [codePath, setCodePath] = useState("");
   const [apiPath, setApiPath] = useState("");
@@ -116,6 +117,7 @@ export function StudioWorkbench() {
     try {
       let updated: StudioWorkspaceManifest | null = manifest;
       for (const artifact of [
+        { kind: "policy", source_path: policyPath },
         { kind: "scope", source_path: scopePath },
         { kind: "code", source_path: codePath },
         { kind: "api", source_path: apiPath },
@@ -240,7 +242,8 @@ export function StudioWorkbench() {
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Conversation" />
           <div className="grid gap-4 p-5 text-sm">
-            <div className="grid gap-3 lg:grid-cols-3">
+            <div className="grid gap-3 lg:grid-cols-4">
+              <TextField label="Policy file" value={policyPath} onChange={setPolicyPath} />
               <TextField label="Scope file" value={scopePath} onChange={setScopePath} />
               <TextField label="Code directory" value={codePath} onChange={setCodePath} />
               <TextField label="API or HAR file" value={apiPath} onChange={setApiPath} />

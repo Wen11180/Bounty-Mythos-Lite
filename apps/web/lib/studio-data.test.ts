@@ -101,3 +101,14 @@ test("studio workbench can open an existing local workspace", async () => {
   assert.match(workbench, /latestRunFromManifest/);
   assert.match(workbench, /listStudioWorkspaceCandidates\(workspacePath/);
 });
+
+test("studio workbench imports policy as a first-class authorized artifact", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /policyPath/);
+  assert.match(workbench, /Policy file/);
+  assert.match(workbench, /kind: "policy"/);
+});
