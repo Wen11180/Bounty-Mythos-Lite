@@ -990,6 +990,12 @@ def _authz_boundary_field(left: str, right: str) -> str | None:
         return left_field
     if right_field in {"owner_id", "user_id"} and _is_principal_id_identifier(left):
         return right_field
+    if (
+        left_field in AUTHZ_BOUNDARY_FIELDS
+        and right_field in AUTHZ_BOUNDARY_FIELDS
+        and _canonical_boundary_field(left_field) == _canonical_boundary_field(right_field)
+    ):
+        return left_field
     if left_field == right_field and left_field in AUTHZ_BOUNDARY_FIELDS:
         return left_field
     return None
@@ -1077,6 +1083,12 @@ def _relation_collection_matches(relation: str, values_field: str) -> bool:
 def _canonical_relation_boundary(field_name: str) -> str:
     if field_name in {"org", "organization"}:
         return "organization"
+    return field_name
+
+
+def _canonical_boundary_field(field_name: str) -> str:
+    if field_name in {"org_id", "organization_id"}:
+        return "organization_id"
     return field_name
 
 
