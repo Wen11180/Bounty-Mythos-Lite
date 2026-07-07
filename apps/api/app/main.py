@@ -3,6 +3,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -2337,8 +2338,9 @@ def list_mythos_studio_workspace_candidates(
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     payload = record.payload if isinstance(record.payload, dict) else {}
+    imported_surface_facts = _studio_imported_surface_facts(manifest)
     candidates = [
-        _studio_candidate_from_hypothesis(item)
+        _studio_candidate_from_hypothesis(item, imported_surface_facts)
         for item in payload.get("hypotheses", [])[:5]
         if isinstance(item, dict)
     ]
@@ -2418,7 +2420,14 @@ def _studio_run_field(manifest: dict, run_id: str, field_name: str) -> str | Non
     return None
 
 
-def _studio_candidate_from_hypothesis(hypothesis: dict) -> dict:
+def _studio_candidate_from_hypothesis(
+    hypothesis: dict,
+    imported_surface_facts: list[dict[str, str]] | None = None,
+) -> dict:
+    source_facts = hypothesis.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        source_facts = []
+    safe_source_facts = [fact for fact in source_facts if isinstance(fact, dict)]
     return {
         "hypothesis_id": safe_preview_text(hypothesis.get("hypothesis_id", "")),
         "vuln_type": safe_preview_text(hypothesis.get("vuln_type", "candidate")),
@@ -2433,9 +2442,127 @@ def _studio_candidate_from_hypothesis(hypothesis: dict) -> dict:
         ),
         "safe_verification": hypothesis.get("validation_mode") != "blocked",
         "priority_score": hypothesis.get("priority_score", 0),
-        "source_facts": hypothesis.get("source_facts", []),
+        "source_facts": safe_source_facts
+        + _studio_matching_surface_facts(hypothesis, imported_surface_facts or []),
         "submission_blocked": True,
     }
+
+
+def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
+    facts: list[dict[str, str]] = []
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return facts
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or artifact.get("kind") not in {"api", "har"}:
+            continue
+        source_path = artifact.get("source_path")
+        if not isinstance(source_path, str) or not source_path:
+            continue
+        facts.extend(_studio_surface_facts_from_file(artifact["kind"], source_path))
+    return facts
+
+
+def _studio_surface_facts_from_file(kind: str, source_path: str) -> list[dict[str, str]]:
+    try:
+        payload = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if kind == "api":
+        return _studio_openapi_surface_facts(payload)
+    if kind == "har":
+        return _studio_har_surface_facts(payload)
+    return []
+
+
+def _studio_openapi_surface_facts(payload: object) -> list[dict[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+    paths = payload.get("paths")
+    if not isinstance(paths, dict):
+        return []
+    facts: list[dict[str, str]] = []
+    for route_path, operations in paths.items():
+        if not isinstance(route_path, str) or not isinstance(operations, dict):
+            continue
+        for method, operation in operations.items():
+            if not isinstance(method, str) or not isinstance(operation, dict):
+                continue
+            fact = {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": safe_preview_text(method.upper()),
+                "route_path": safe_preview_text(route_path),
+            }
+            operation_id = operation.get("operationId")
+            if isinstance(operation_id, str) and operation_id:
+                fact["operation_id"] = safe_preview_text(operation_id)
+            facts.append(fact)
+    return facts
+
+
+def _studio_har_surface_facts(payload: object) -> list[dict[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+    log = payload.get("log")
+    entries = log.get("entries") if isinstance(log, dict) else None
+    if not isinstance(entries, list):
+        return []
+    facts: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        request = entry.get("request") if isinstance(entry, dict) else None
+        if not isinstance(request, dict):
+            continue
+        method = request.get("method")
+        url = request.get("url")
+        if not isinstance(method, str) or not isinstance(url, str):
+            continue
+        route_path = urlparse(url).path
+        key = (method.upper(), route_path)
+        if not route_path or key in seen:
+            continue
+        seen.add(key)
+        facts.append(
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "har",
+                "route_method": safe_preview_text(method.upper()),
+                "route_path": safe_preview_text(route_path),
+            }
+        )
+    return facts
+
+
+def _studio_matching_surface_facts(
+    hypothesis: dict,
+    imported_surface_facts: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    route_hints = _studio_candidate_route_hints(hypothesis)
+    if not route_hints:
+        return imported_surface_facts[:3]
+    return [
+        fact
+        for fact in imported_surface_facts
+        if fact.get("route_path") in route_hints
+    ][:3]
+
+
+def _studio_candidate_route_hints(hypothesis: dict) -> set[str]:
+    hints: set[str] = set()
+    location = hypothesis.get("location")
+    if isinstance(location, str) and location.startswith("/"):
+        hints.add(location)
+    source_facts = hypothesis.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        return hints
+    for fact in source_facts:
+        if not isinstance(fact, dict):
+            continue
+        route_path = fact.get("route_path")
+        if isinstance(route_path, str) and route_path:
+            hints.add(route_path)
+    return hints
 
 
 @app.post("/mythos/source-audit/scans", response_model=SourceAuditScanResponse)

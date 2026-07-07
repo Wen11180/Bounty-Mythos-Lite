@@ -35,6 +35,10 @@ export type StudioCandidateInput = {
   safe_verification?: boolean;
   priority_score?: number;
   source_facts?: Array<{
+    artifact_kind?: string;
+    fact_type?: string;
+    operation_id?: string;
+    route_method?: string;
     route_path?: string;
     source_path?: string;
     symbol_name?: string;
