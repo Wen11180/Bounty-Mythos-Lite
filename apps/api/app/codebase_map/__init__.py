@@ -57,6 +57,7 @@ AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_FIELDS = {
+    "created_by_id",
     "owner_id",
     "user_id",
     "tenant_id",
@@ -989,12 +990,12 @@ def _authz_boundary_field(left: str, right: str) -> str | None:
         return f"{left_relation}_id"
     if right_relation in {"owner", "user"} and _is_principal_object_identifier(left):
         return f"{right_relation}_id"
+    if _is_principal_id_boundary_field(left_field) and _is_principal_id_identifier(right):
+        return left_field
+    if _is_principal_id_boundary_field(right_field) and _is_principal_id_identifier(left):
+        return right_field
     if left_field not in AUTHZ_BOUNDARY_FIELDS and right_field not in AUTHZ_BOUNDARY_FIELDS:
         return None
-    if left_field in {"owner_id", "user_id"} and _is_principal_id_identifier(right):
-        return left_field
-    if right_field in {"owner_id", "user_id"} and _is_principal_id_identifier(left):
-        return right_field
     right_relation_id_field = _principal_relation_id_boundary_field(right)
     if (
         left_field in AUTHZ_BOUNDARY_FIELDS
@@ -1152,6 +1153,10 @@ def _principal_relation_id_boundary_field(identifier: str) -> str | None:
 
 def _is_principal_id_identifier(identifier: str) -> bool:
     return identifier.lower() in PRINCIPAL_ID_IDENTIFIERS
+
+
+def _is_principal_id_boundary_field(field_name: str) -> bool:
+    return field_name in {"owner_id", "user_id", "created_by_id"}
 
 
 def _is_principal_object_identifier(identifier: str) -> bool:
