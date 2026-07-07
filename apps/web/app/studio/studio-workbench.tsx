@@ -1,7 +1,7 @@
 "use client";
 
 import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   createStudioWorkspace,
@@ -24,6 +24,17 @@ type LogEntry = {
   message: string;
   tone: "info" | "safe" | "blocked";
 };
+
+type MythosStudioDesktopBridge = {
+  selectDirectory: () => Promise<string | null>;
+  selectFile: (options?: { title?: string }) => Promise<string | null>;
+};
+
+declare global {
+  interface Window {
+    mythosStudio?: MythosStudioDesktopBridge;
+  }
+}
 
 const emptyManifest: StudioWorkspaceManifest = {
   name: "Local Mythos Studio",
@@ -49,6 +60,7 @@ export function StudioWorkbench() {
   const [latestRunId, setLatestRunId] = useState<string | null>(null);
   const [reportExport, setReportExport] = useState<StudioReportExportResponse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([
     {
       message: "Studio ready.",
@@ -62,6 +74,13 @@ export function StudioWorkbench() {
     () => toStudioResearchReadiness(workspacePath, manifest),
     [manifest, workspacePath],
   );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDesktopPickerAvailable(Boolean(window.mythosStudio));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   async function handleOpenWorkspace() {
     if (!workspacePath.trim()) {
@@ -148,6 +167,28 @@ export function StudioWorkbench() {
     }
   }
 
+  async function handleSelectPath({
+    mode,
+    setter,
+    title,
+  }: {
+    mode: "directory" | "file";
+    setter: (value: string) => void;
+    title: string;
+  }) {
+    const bridge = window.mythosStudio;
+    if (!bridge) {
+      pushLog("Desktop path picker is available only in Mythos Studio.", "blocked");
+      return;
+    }
+    const selected =
+      mode === "directory" ? await bridge.selectDirectory() : await bridge.selectFile({ title });
+    if (selected) {
+      setter(selected);
+      pushLog("Local path selected. Artifact contents remain local and review-gated.", "safe");
+    }
+  }
+
   async function handleStartResearch() {
     if (!researchReadiness.canStart) {
       pushLog(researchReadiness.reason, "blocked");
@@ -220,14 +261,38 @@ export function StudioWorkbench() {
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Workspaces" />
           <div className="grid gap-4 p-5 text-sm">
-            <TextField label="Workspace path" value={workspacePath} onChange={setWorkspacePath} />
+            <TextField
+              browseEnabled={desktopPickerAvailable}
+              label="Workspace path"
+              onBrowse={() =>
+                handleSelectPath({
+                  mode: "directory",
+                  setter: setWorkspacePath,
+                  title: "Select Mythos workspace",
+                })
+              }
+              value={workspacePath}
+              onChange={setWorkspacePath}
+            />
             <ActionButton
               busy={busy === "open"}
               icon={<FolderOpen size={16} aria-hidden="true" />}
               label="Open workspace"
               onClick={handleOpenWorkspace}
             />
-            <TextField label="Workspace root" value={workspaceRoot} onChange={setWorkspaceRoot} />
+            <TextField
+              browseEnabled={desktopPickerAvailable}
+              label="Workspace root"
+              onBrowse={() =>
+                handleSelectPath({
+                  mode: "directory",
+                  setter: setWorkspaceRoot,
+                  title: "Select workspace root",
+                })
+              }
+              value={workspaceRoot}
+              onChange={setWorkspaceRoot}
+            />
             <TextField label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
             <ActionButton
               busy={busy === "workspace"}
@@ -252,11 +317,71 @@ export function StudioWorkbench() {
           <SectionHeader title="Conversation" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-              <TextField label="Policy file" value={policyPath} onChange={setPolicyPath} />
-              <TextField label="Scope file" value={scopePath} onChange={setScopePath} />
-              <TextField label="Code directory" value={codePath} onChange={setCodePath} />
-              <TextField label="API file" value={apiPath} onChange={setApiPath} />
-              <TextField label="HAR file" value={harPath} onChange={setHarPath} />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="Policy file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setPolicyPath,
+                    title: "Select policy file",
+                  })
+                }
+                value={policyPath}
+                onChange={setPolicyPath}
+              />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="Scope file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setScopePath,
+                    title: "Select scope file",
+                  })
+                }
+                value={scopePath}
+                onChange={setScopePath}
+              />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="Code directory"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "directory",
+                    setter: setCodePath,
+                    title: "Select authorized code directory",
+                  })
+                }
+                value={codePath}
+                onChange={setCodePath}
+              />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="API file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setApiPath,
+                    title: "Select API artifact",
+                  })
+                }
+                value={apiPath}
+                onChange={setApiPath}
+              />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="HAR file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setHarPath,
+                    title: "Select HAR file",
+                  })
+                }
+                value={harPath}
+                onChange={setHarPath}
+              />
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
               <p className="font-semibold">Artifact readiness</p>
@@ -399,22 +524,39 @@ function SectionHeader({ title }: { title: string }) {
 }
 
 function TextField({
+  browseEnabled = false,
   label,
+  onBrowse,
   onChange,
   value,
 }: {
+  browseEnabled?: boolean;
   label: string;
+  onBrowse?: () => void;
   onChange: (value: string) => void;
   value: string;
 }) {
   return (
     <label className="grid gap-1 text-sm">
       <span className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</span>
-      <input
-        className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
-        onChange={(event) => onChange(event.target.value)}
-        value={value}
-      />
+      <span className="grid gap-2">
+        <input
+          className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
+          onChange={(event) => onChange(event.target.value)}
+          value={value}
+        />
+        {onBrowse ? (
+          <button
+            className="min-h-9 rounded-md border border-[var(--line)] px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={!browseEnabled}
+            onClick={onBrowse}
+            type="button"
+          >
+            <FolderOpen size={16} aria-hidden="true" />
+            Browse
+          </button>
+        ) : null}
+      </span>
     </label>
   );
 }

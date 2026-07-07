@@ -1,8 +1,9 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
 const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./launcher.cjs");
+const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
@@ -66,11 +67,20 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs"),
     },
   });
 
   return window;
 }
+
+ipcMain.handle("mythos:select-file", (event, options) => {
+  return selectStudioFile(dialog, BrowserWindow.fromWebContents(event.sender), options);
+});
+
+ipcMain.handle("mythos:select-directory", (event, options) => {
+  return selectStudioDirectory(dialog, BrowserWindow.fromWebContents(event.sender), options);
+});
 
 app.whenReady().then(async () => {
   const window = createWindow();

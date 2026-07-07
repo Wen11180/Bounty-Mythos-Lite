@@ -66,7 +66,7 @@ AUTHZ_BOUNDARY_FIELDS = {
     "org_id",
     "organization_id",
 }
-PRINCIPAL_ID_IDENTIFIERS = {"user_id", "current_user.id", "user.id"}
+PRINCIPAL_ID_IDENTIFIERS = {"user_id", "current_user.id", "current_user.pk", "user.id"}
 AUTHZ_NAME_MARKERS = (
     "authorize",
     "authz",

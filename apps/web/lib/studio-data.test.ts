@@ -250,6 +250,26 @@ test("studio workbench shows artifact readiness before research", async () => {
   assert.match(workbench, /disabled=\{!researchReadiness\.canStart\}/);
 });
 
+test("studio workbench can use the desktop path picker bridge", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /mythosStudio/);
+  assert.match(workbench, /selectFile/);
+  assert.match(workbench, /selectDirectory/);
+  assert.match(workbench, /Browse/);
+  assert.match(workbench, /handleSelectPath/);
+  assert.match(workbench, /useEffect/);
+  assert.match(workbench, /desktopPickerAvailable/);
+  assert.match(workbench, /window\.setTimeout/);
+  assert.match(workbench, /setDesktopPickerAvailable\(Boolean\(window\.mythosStudio\)\)/);
+  assert.match(workbench, /browseEnabled=\{desktopPickerAvailable\}/);
+  assert.doesNotMatch(workbench, /const desktopPickerAvailable = typeof window/);
+  assert.doesNotMatch(workbench, /useEffect\(\(\) => \{\s*setDesktopPickerAvailable/s);
+});
+
 test("studio workbench surfaces exported markdown report drafts", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),
