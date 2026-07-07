@@ -52,8 +52,8 @@ AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
 )
 AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN = re.compile(
     r"\b(?P<field>[A-Za-z_][A-Za-z0-9_.]*)\.in_\(\s*"
-    r"(?:[\[(]\s*)?"
-    r"(?P<values>[A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*[\])]?\s*\)",
+    r"(?:[\[({]\s*)?"
+    r"(?P<values>[A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*[\])}]?\s*\)",
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_FIELDS = {
