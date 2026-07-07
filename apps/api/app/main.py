@@ -2370,6 +2370,11 @@ def export_mythos_studio_workspace_report(
         "title": preview.title,
         "submission_blocked": preview.submission_blocked,
         "report_submission_allowed": False,
+        "report_markdown_path": _studio_run_field(
+            updated_manifest,
+            request.run_id,
+            "report_markdown_path",
+        ),
         "report": report,
         "manifest": updated_manifest,
     }
@@ -2398,6 +2403,18 @@ def _latest_studio_run_id(manifest: dict) -> str | None:
         run_id = run.get("run_id")
         if isinstance(run_id, str) and run_id:
             return run_id
+    return None
+
+
+def _studio_run_field(manifest: dict, run_id: str, field_name: str) -> str | None:
+    runs = manifest.get("runs", [])
+    if not isinstance(runs, list):
+        return None
+    for run in reversed(runs):
+        if not isinstance(run, dict) or run.get("run_id") != run_id:
+            continue
+        value = run.get(field_name)
+        return value if isinstance(value, str) else None
     return None
 
 

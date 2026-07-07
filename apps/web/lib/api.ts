@@ -554,6 +554,7 @@ export type StudioReportExportResponse = {
   title: string;
   submission_blocked: boolean;
   report_submission_allowed: false;
+  report_markdown_path: string | null;
   report: Record<string, unknown>;
   manifest: StudioWorkspaceManifest;
 };

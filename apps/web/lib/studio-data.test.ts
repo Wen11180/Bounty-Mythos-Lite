@@ -112,3 +112,13 @@ test("studio workbench imports policy as a first-class authorized artifact", asy
   assert.match(workbench, /Policy file/);
   assert.match(workbench, /kind: "policy"/);
 });
+
+test("studio workbench surfaces exported markdown report drafts", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /report_markdown_path/);
+  assert.match(workbench, /Markdown draft/);
+});

@@ -176,3 +176,29 @@ def test_report_export_uses_safe_workspace_report_path(tmp_path: Path):
     report_path = updated["runs"][0]["report_path"]
     assert report_path.endswith("run-1-report-preview.json")
     assert "submission_blocked" not in str(updated)
+
+
+def test_report_export_writes_submission_blocked_markdown_draft(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "summary": "Object access needs evidence review.",
+            "submission_blocked": True,
+            "report_submission_allowed": False,
+            "safety_notes": ["no_auto_submission"],
+        },
+    )
+
+    markdown_path = Path(updated["runs"][0]["report_markdown_path"])
+
+    assert markdown_path.name == "run-1-report-draft.md"
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "# Authorization gap candidate" in markdown
+    assert "Submission status: blocked" in markdown
+    assert "Report submission allowed: false" in markdown
+    assert "Object access needs evidence review." in markdown
+    assert "Object access needs evidence review." not in str(updated)

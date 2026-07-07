@@ -334,6 +334,11 @@ export function StudioWorkbench() {
         {reportExport ? (
           <div className="border-t border-[var(--line)] p-5 text-sm">
             <p className="font-semibold">{reportExport.title}</p>
+            {reportExport.report_markdown_path ? (
+              <p className="mt-1 text-[var(--muted)]">
+                Markdown draft: {reportExport.report_markdown_path}
+              </p>
+            ) : null}
             <p className="mt-1 text-[var(--muted)]">
               Exported report preview remains submission-blocked and cannot be submitted from
               Studio.

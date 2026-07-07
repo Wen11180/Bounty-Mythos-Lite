@@ -147,6 +147,10 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert export["submission_blocked"] is True
         assert export["report_submission_allowed"] is False
         assert export["manifest"]["runs"][-1]["report_path"].endswith(".json")
+        assert export["report_markdown_path"].endswith("-report-draft.md")
+        assert export["manifest"]["runs"][-1]["report_markdown_path"].endswith(
+            "-report-draft.md"
+        )
         assert "send_file(file_id)" not in str(export)
     finally:
         app.dependency_overrides.clear()

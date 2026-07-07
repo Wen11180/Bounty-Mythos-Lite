@@ -285,6 +285,8 @@ test("studio research API helpers keep reports submission-blocked", async () => 
             ],
           },
           report: { submission_blocked: true, title: "Source audit: target" },
+          report_markdown_path:
+            "C:/workspaces/acme-api/reports/pipeline_run_1-report-draft.md",
           report_submission_allowed: false,
           run_id: "pipeline_run_1",
           submission_blocked: true,
@@ -319,6 +321,10 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       null,
     );
     assert.equal(exported?.report_submission_allowed, false);
+    assert.equal(
+      exported?.report_markdown_path,
+      "C:/workspaces/acme-api/reports/pipeline_run_1-report-draft.md",
+    );
     assert.equal(exported?.submission_blocked, true);
 
     assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [

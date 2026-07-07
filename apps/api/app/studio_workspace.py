@@ -138,10 +138,14 @@ def record_workspace_report_export(
     manifest = load_workspace_manifest(path)
     report_path = path / "reports" / f"{_safe_name(run_id)}-report-preview.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    markdown_path = path / "reports" / f"{_safe_name(run_id)}-report-draft.md"
+    markdown_path.write_text(_report_markdown(report), encoding="utf-8")
     report_ref = _safe_path_ref(str(report_path))
+    markdown_ref = _safe_path_ref(str(markdown_path))
     for run in manifest["runs"]:
         if run.get("run_id") == run_id:
             run["report_path"] = report_ref
+            run["report_markdown_path"] = markdown_ref
             break
     else:
         manifest["runs"].append(
@@ -149,6 +153,7 @@ def record_workspace_report_export(
                 "run_id": run_id,
                 "status": "report_exported",
                 "report_path": report_ref,
+                "report_markdown_path": markdown_ref,
                 "candidate_count": 0,
                 "recorded_at": _utc_now(),
             }
@@ -188,6 +193,42 @@ def _sensitivity_label(path: Path) -> str:
 
 def _safe_path_ref(value: str) -> str:
     return "[REDACTED_PATH]" if _secret_like_text(value) else value
+
+
+def _report_markdown(report: dict[str, Any]) -> str:
+    title = _markdown_text(report.get("title"), "Submission-blocked report draft")
+    summary = _markdown_text(report.get("summary"), "")
+    notes = [
+        _markdown_text(item, "")
+        for item in report.get("safety_notes", [])
+        if _markdown_text(item, "")
+    ]
+    lines = [
+        f"# {title}",
+        "",
+        "Submission status: blocked",
+        "Report submission allowed: false",
+    ]
+    if summary:
+        lines.extend(["", "## Summary", "", summary])
+    if notes:
+        lines.extend(["", "## Safety notes"])
+        lines.extend(f"- {note}" for note in notes)
+    lines.extend(
+        [
+            "",
+            "## Review gate",
+            "",
+            "Human evidence review and redaction are required before any report submission.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _markdown_text(value: Any, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    return value.replace("\r", " ").replace("\n", " ").strip() or fallback
 
 
 def _secret_like_text(value: str) -> bool:
