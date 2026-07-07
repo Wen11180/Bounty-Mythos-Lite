@@ -899,6 +899,42 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_filter_by_
     )
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_local_principal_account_id_alias_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    authorized_account_id = current_user.account_id",
+                "    file = db.query(File).filter_by(id=file_id, account_id=authorized_account_id).one()",
+                "    return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_account_relation_authz(
     tmp_path,
 ):
@@ -1894,6 +1930,46 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_
                 "    file_id: str,",
                 "    user=Depends(require_user),",
                 "):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_router_level_dependency_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter, Depends",
+                "router = APIRouter(",
+                "    dependencies=[",
+                "        Depends(",
+                "            require_user,",
+                "        )",
+                "    ]",
+                ")",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
                 "    return send_file(file_id)",
             ]
         ),

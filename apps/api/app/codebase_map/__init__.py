@@ -43,6 +43,9 @@ SELF_NAME_ALIAS_PATTERN = re.compile(
 LOCAL_NAME_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
+PRINCIPAL_ID_ALIAS_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\s*$"
+)
 SELF_CALL_PATTERN = re.compile(r"\bself\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     r"\b(?P<left>[A-Za-z_][A-Za-z0-9_.]*)\s*==\s*"
@@ -171,6 +174,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     pending_route_decorator: (
         tuple[str, int, list[str], list[tuple[str, int]], list[tuple[str, int]]] | None
     ) = None
+    pending_router_assignment: tuple[str, int, list[str]] | None = None
     pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
     class_stack: list[tuple[str, int]] = []
@@ -181,8 +185,33 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     import_aliases: dict[str, str] = {}
     local_call_aliases: dict[str, dict[str, str]] = {}
     class_call_aliases: dict[str, dict[str, str]] = {}
+    principal_id_aliases: dict[str, dict[str, str]] = {}
 
     for line_number, line in enumerate(content.splitlines(), start=1):
+        if pending_router_assignment is not None:
+            router_name, router_line, router_lines = pending_router_assignment
+            router_lines = [*router_lines, line]
+            if _router_assignment_closed(router_lines):
+                router_authz_refs[router_name] = _dedupe_refs(
+                    _dependency_authz_refs_from_lines(
+                        router_lines,
+                        router_line,
+                        dependency_aliases,
+                    )
+                )
+                router_dependency_refs[router_name] = _dedupe_refs(
+                    _dependency_wrapper_refs_from_lines(
+                        router_lines,
+                        router_line,
+                        dependency_aliases,
+                        dependency_wrapper_aliases,
+                    )
+                )
+                pending_router_assignment = None
+            else:
+                pending_router_assignment = (router_name, router_line, router_lines)
+            continue
+
         if pending_route_decorator is not None:
             (
                 method,
@@ -254,17 +283,21 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         router_assignment_match = ROUTER_ASSIGNMENT_PATTERN.match(line)
         if router_assignment_match is not None and not function_stack:
             router_name = router_assignment_match.group(1)
-            router_authz_refs[router_name] = _dependency_authz_refs(
-                line,
-                line_number,
-                dependency_aliases,
-            )
-            router_dependency_refs[router_name] = _dependency_wrapper_refs(
-                line,
-                line_number,
-                dependency_aliases,
-                dependency_wrapper_aliases,
-            )
+            if _router_assignment_closed([line]):
+                router_authz_refs[router_name] = _dependency_authz_refs(
+                    line,
+                    line_number,
+                    dependency_aliases,
+                )
+                router_dependency_refs[router_name] = _dependency_wrapper_refs(
+                    line,
+                    line_number,
+                    dependency_aliases,
+                    dependency_wrapper_aliases,
+                )
+            else:
+                pending_router_assignment = (router_name, line_number, [line])
+                continue
 
         route_match = ROUTE_DECORATOR_PATTERN.search(line)
         if route_match is not None:
@@ -596,7 +629,15 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             if existing_alias in local_aliases:
                 local_aliases[alias_name] = local_aliases[existing_alias]
 
-        boundary_filter = _authz_boundary_filter(line)
+        principal_id_alias = _principal_id_alias(line)
+        if current_function is not None and principal_id_alias is not None:
+            alias_name, boundary_field = principal_id_alias
+            principal_id_aliases.setdefault(current_function, {})[alias_name] = boundary_field
+
+        boundary_filter = _authz_boundary_filter(
+            line,
+            principal_id_aliases.get(current_function or "", {}),
+        )
         if current_function is not None and boundary_filter is not None:
             symbol_name, authz_hint = boundary_filter
             facts.append(
@@ -838,6 +879,17 @@ def _local_name_alias(line: str) -> tuple[str, str] | None:
     if match is None:
         return None
     return match.group(1), match.group(2)
+
+
+def _principal_id_alias(line: str) -> tuple[str, str] | None:
+    match = PRINCIPAL_ID_ALIAS_PATTERN.match(line)
+    if match is None:
+        return None
+    alias_name = match.group(1)
+    boundary_field = _principal_boundary_identifier_field(match.group(2))
+    if boundary_field is None:
+        return None
+    return alias_name, boundary_field
 
 
 def _resolved_call_name(
@@ -1100,6 +1152,31 @@ def _route_decorator_closed(line: str) -> bool:
     return line.strip().startswith(")")
 
 
+def _router_assignment_closed(lines: list[str]) -> bool:
+    block = "\n".join(lines)
+    start = block.find("APIRouter")
+    if start == -1:
+        return False
+
+    depth = 0
+    saw_open = False
+    try:
+        tokens = tokenize.generate_tokens(StringIO(block[start:]).readline)
+        for token in tokens:
+            if token.type != tokenize.OP:
+                continue
+            if token.string == "(":
+                depth += 1
+                saw_open = True
+            elif token.string == ")" and saw_open:
+                depth -= 1
+                if depth == 0:
+                    return True
+    except tokenize.TokenError:
+        return False
+    return False
+
+
 def _route_decorator_router_name(line: str) -> str | None:
     match = ROUTE_DECORATOR_ROUTER_PATTERN.search(line)
     if match is None:
@@ -1147,11 +1224,19 @@ def _is_service_call(call_name: str) -> bool:
     return not _is_authz_call(call_name) and not _is_sensitive_sink(call_name)
 
 
-def _authz_boundary_filter(line: str) -> tuple[str, str] | None:
+def _authz_boundary_filter(
+    line: str,
+    principal_aliases: dict[str, str] | None = None,
+) -> tuple[str, str] | None:
     if line.lstrip().startswith("#"):
         return None
+    principal_aliases = principal_aliases or {}
     for match in AUTHZ_BOUNDARY_COMPARISON_PATTERN.finditer(line):
-        field_name = _authz_boundary_field(match.group("left"), match.group("right"))
+        field_name = _authz_boundary_field(
+            match.group("left"),
+            match.group("right"),
+            principal_aliases,
+        )
         if field_name is None:
             continue
         return (f"{field_name}_filter", _authz_boundary_hint(field_name))
@@ -1159,6 +1244,7 @@ def _authz_boundary_filter(line: str) -> tuple[str, str] | None:
         field_name = _authz_boundary_kwarg_field(
             match.group("field"),
             match.group("value"),
+            principal_aliases,
         )
         if field_name is None:
             continue
@@ -1167,6 +1253,7 @@ def _authz_boundary_filter(line: str) -> tuple[str, str] | None:
         field_name = _authz_boundary_membership_field(
             match.group("field"),
             match.group("values"),
+            principal_aliases,
         )
         if field_name is None:
             continue
@@ -1174,9 +1261,28 @@ def _authz_boundary_filter(line: str) -> tuple[str, str] | None:
     return None
 
 
-def _authz_boundary_field(left: str, right: str) -> str | None:
+def _authz_boundary_field(
+    left: str,
+    right: str,
+    principal_aliases: dict[str, str] | None = None,
+) -> str | None:
+    principal_aliases = principal_aliases or {}
     left_field = _identifier_leaf(left)
     right_field = _identifier_leaf(right)
+    left_alias_field = _principal_alias_boundary_field(left, principal_aliases)
+    right_alias_field = _principal_alias_boundary_field(right, principal_aliases)
+    if (
+        left_alias_field is not None
+        and right_field in AUTHZ_BOUNDARY_FIELDS
+        and _canonical_boundary_field(left_alias_field) == _canonical_boundary_field(right_field)
+    ):
+        return right_field
+    if (
+        right_alias_field is not None
+        and left_field in AUTHZ_BOUNDARY_FIELDS
+        and _canonical_boundary_field(right_alias_field) == _canonical_boundary_field(left_field)
+    ):
+        return left_field
     left_relation = _relation_boundary_field(left_field)
     right_relation = _relation_boundary_field(right_field)
     if (
@@ -1226,9 +1332,21 @@ def _authz_boundary_field(left: str, right: str) -> str | None:
     return None
 
 
-def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
+def _authz_boundary_kwarg_field(
+    field_name: str,
+    value: str,
+    principal_aliases: dict[str, str] | None = None,
+) -> str | None:
+    principal_aliases = principal_aliases or {}
     normalized_field = _normalized_boundary_field(field_name)
     value_field = _identifier_leaf(value)
+    alias_field = _principal_alias_boundary_field(value, principal_aliases)
+    if (
+        alias_field is not None
+        and normalized_field in AUTHZ_BOUNDARY_FIELDS
+        and _canonical_boundary_field(alias_field) == _canonical_boundary_field(normalized_field)
+    ):
+        return normalized_field
     if _is_principal_id_boundary_field(normalized_field) and _is_principal_id_identifier(value):
         return normalized_field
     relation_id_field = _principal_relation_id_boundary_field(value)
@@ -1262,7 +1380,12 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     return None
 
 
-def _authz_boundary_membership_field(field_name: str, values: str) -> str | None:
+def _authz_boundary_membership_field(
+    field_name: str,
+    values: str,
+    principal_aliases: dict[str, str] | None = None,
+) -> str | None:
+    principal_aliases = principal_aliases or {}
     normalized_field = _identifier_leaf(field_name)
     values_field = _identifier_leaf(values)
     if normalized_field not in AUTHZ_BOUNDARY_FIELDS:
@@ -1275,6 +1398,13 @@ def _authz_boundary_membership_field(field_name: str, values: str) -> str | None
         return f"{relation_field}_id"
     if _is_principal_id_boundary_field(normalized_field) and _is_principal_id_identifier(
         values,
+    ):
+        return normalized_field
+    alias_field = _principal_alias_boundary_field(values, principal_aliases)
+    if (
+        alias_field is not None
+        and _canonical_boundary_field(normalized_field)
+        == _canonical_boundary_field(alias_field)
     ):
         return normalized_field
     relation_id_field = _principal_relation_id_boundary_field(values)
@@ -1358,6 +1488,30 @@ def _principal_relation_id_boundary_field(identifier: str) -> str | None:
     if relation is None:
         return None
     return f"{relation}_id"
+
+
+def _principal_boundary_identifier_field(identifier: str) -> str | None:
+    normalized = identifier.lower()
+    relation_id_field = _principal_relation_id_boundary_field(normalized)
+    if relation_id_field is not None:
+        return relation_id_field
+    parts = normalized.split(".")
+    if len(parts) == 2 and parts[0] == "current_user":
+        field_name = _normalized_boundary_field(parts[1])
+        if field_name in AUTHZ_BOUNDARY_FIELDS:
+            return field_name
+    if len(parts) == 3 and parts[:2] == ["request", "user"]:
+        field_name = _normalized_boundary_field(parts[2])
+        if field_name in AUTHZ_BOUNDARY_FIELDS:
+            return field_name
+    return None
+
+
+def _principal_alias_boundary_field(
+    identifier: str,
+    principal_aliases: dict[str, str],
+) -> str | None:
+    return principal_aliases.get(_identifier_leaf(identifier))
 
 
 def _is_principal_id_identifier(identifier: str) -> bool:
