@@ -73,6 +73,43 @@ def export_file(file_id: str):
     }
 
 
+def test_map_authorized_code_files_treats_owner_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user_id: str):
+    file = db.query(File).filter(File.id == file_id, File.owner_id == user_id).one()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "owner_id_filter"
+    assert authz.authz_hint == "owner_or_admin_check"
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 8,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
 def test_map_authorized_code_files_treats_dependency_injected_authz_as_route_authz():
     result = map_authorized_code_files(
         {

@@ -23,6 +23,11 @@ IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+i
 IMPORT_ALIAS_ITEM_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
+OWNER_FILTER_PATTERN = re.compile(
+    r"\b[A-Za-z_][A-Za-z0-9_.]*owner_id\s*==\s*(?:user_id|current_user\.id|user\.id)\b"
+    r"|\b(?:user_id|current_user\.id|user\.id)\s*==\s*[A-Za-z_][A-Za-z0-9_.]*owner_id\b",
+    re.IGNORECASE,
+)
 AUTHZ_NAME_MARKERS = (
     "authorize",
     "authz",
@@ -384,6 +389,23 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             continue
 
         current_function = _current_function(function_stack)
+        if current_function is not None and _has_owner_filter(line):
+            facts.append(
+                CodebaseFactCandidate(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name="owner_id_filter",
+                    route_method=None,
+                    route_path=None,
+                    authz_hint="owner_or_admin_check",
+                    sensitivity_label="low",
+                    payload={
+                        "handler": current_function,
+                        "line": line_number,
+                        "mapping_mode": "static_code_snippet_analysis",
+                    },
+                )
+            )
         for call_name in _called_names(line):
             if _is_authz_call(call_name):
                 facts.append(
@@ -757,6 +779,10 @@ def _is_sensitive_sink(call_name: str) -> bool:
 
 def _is_service_call(call_name: str) -> bool:
     return not _is_authz_call(call_name) and not _is_sensitive_sink(call_name)
+
+
+def _has_owner_filter(line: str) -> bool:
+    return not line.lstrip().startswith("#") and OWNER_FILTER_PATTERN.search(line) is not None
 
 
 def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandidate]:
