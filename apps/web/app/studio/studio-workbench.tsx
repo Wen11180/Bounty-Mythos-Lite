@@ -46,7 +46,7 @@ export function StudioWorkbench() {
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([
     {
-      message: "Studio ready. Import authorized local materials before starting research.",
+      message: "Studio ready.",
       tone: "info",
     },
   ]);
@@ -169,12 +169,8 @@ export function StudioWorkbench() {
           Mythos Studio
         </p>
         <h1 className="mt-3 max-w-4xl text-3xl font-semibold leading-tight text-balance">
-          Local authorized vulnerability research workspace
+          Authorized research workspace
         </h1>
-        <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">
-          Create a local workspace, import authorized artifacts, run the safe candidate hunter,
-          review hypotheses, and export a submission-blocked report preview.
-        </p>
       </header>
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_360px]">
@@ -205,10 +201,6 @@ export function StudioWorkbench() {
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Conversation" />
           <div className="grid gap-4 p-5 text-sm">
-            <p className="text-[var(--muted)]">
-              Use local paths only. The Studio stores artifact references and keeps sensitive
-              material behind redaction review.
-            </p>
             <div className="grid gap-3 lg:grid-cols-3">
               <TextField label="Scope file" value={scopePath} onChange={setScopePath} />
               <TextField label="Code directory" value={codePath} onChange={setCodePath} />
@@ -236,10 +228,9 @@ export function StudioWorkbench() {
               />
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
-              <p className="font-semibold">Agent instruction</p>
+              <p className="font-semibold">Research intent</p>
               <p className="mt-2 text-[var(--muted)]">
-                Start research, prioritize access control and role boundary issues, and refute
-                candidates before suggesting validation.
+                Access control, role boundaries, refutation first.
               </p>
             </div>
           </div>
@@ -272,8 +263,7 @@ export function StudioWorkbench() {
         <div className="grid gap-4 p-5 lg:grid-cols-2">
           {candidates.length === 0 ? (
             <p className="text-sm text-[var(--muted)]">
-              No candidates yet. Import authorized scope and code, then start research to surface
-              the top 1-5 hypotheses.
+              No candidates yet.
             </p>
           ) : (
             candidates.map((candidate) => (
