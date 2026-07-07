@@ -560,6 +560,70 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_local_meth
     )
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_chained_local_alias_owner_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    services = repo / "services"
+    repositories = repo / "repositories"
+    services.mkdir()
+    repositories.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "from services.files import export_file_for_user",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    return export_file_for_user(file_id, current_user)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (services / "files.py").write_text(
+        "\n".join(
+            [
+                "from repositories.files import FileRepository",
+                "",
+                "def export_file_for_user(file_id: str, current_user):",
+                "    repository = FileRepository()",
+                "    loader = repository.load_for_user",
+                "    safe_loader = loader",
+                "    file = safe_loader(file_id, current_user)",
+                "    return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (repositories / "files.py").write_text(
+        "\n".join(
+            [
+                "class FileRepository:",
+                "    def load_for_user(self, file_id: str, current_user):",
+                "        return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency_authz(
     tmp_path,
 ):
@@ -1047,6 +1111,48 @@ def test_source_hypotheses_rank_unverified_traceable_candidates_before_refuted_o
     assert hypotheses[0].risk == "high"
     assert hypotheses[3].risk == "low"
     assert all(hypothesis.safe_verification is True for hypothesis in hypotheses)
+
+
+def test_source_hypotheses_rank_high_impact_sinks_before_lower_impact_sinks():
+    hypotheses = build_source_hypotheses(
+        [
+            CodebaseFactCandidate(
+                fact_type="authorization_gap_candidate",
+                source_path="routes.py",
+                symbol_name="preview_file",
+                route_method="GET",
+                route_path="/a/files/{file_id}/preview",
+                authz_hint="missing_handler_authz_check",
+                sensitivity_label="high",
+                payload={
+                    "handler": "preview_file",
+                    "sink_count": 1,
+                    "sink_symbols": ["send_file"],
+                },
+            ),
+            CodebaseFactCandidate(
+                fact_type="authorization_gap_candidate",
+                source_path="routes.py",
+                symbol_name="delete_user_role",
+                route_method="DELETE",
+                route_path="/z/users/{user_id}/role",
+                authz_hint="missing_handler_authz_check",
+                sensitivity_label="high",
+                payload={
+                    "handler": "delete_user_role",
+                    "sink_count": 1,
+                    "sink_symbols": ["update_role"],
+                },
+            ),
+        ],
+        [],
+    )
+
+    assert hypotheses[0].location == "DELETE /z/users/{user_id}/role"
+    assert hypotheses[0].priority_score > hypotheses[1].priority_score
+    assert "impact:privilege_or_destructive_sink" in hypotheses[0].ranking_reasons
+    assert "sink:update_role" in hypotheses[0].ranking_reasons
+    assert "impact:sensitive_data_sink" in hypotheses[1].ranking_reasons
 
 
 def test_run_source_audit_integrates_authorized_bug_bounty_plan(tmp_path):

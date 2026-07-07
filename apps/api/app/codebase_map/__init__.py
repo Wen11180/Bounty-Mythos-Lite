@@ -27,6 +27,9 @@ LOCAL_CALL_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"[A-Za-z_][A-Za-z0-9_.]*\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
+LOCAL_NAME_ALIAS_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
 AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     r"\b(?P<left>[A-Za-z_][A-Za-z0-9_.]*)\s*==\s*"
     r"(?P<right>[A-Za-z_][A-Za-z0-9_.]*)\b",
@@ -420,6 +423,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         if current_function is not None and local_alias is not None:
             alias_name, call_name = local_alias
             local_call_aliases.setdefault(current_function, {})[alias_name] = call_name
+        chained_alias = _local_name_alias(line)
+        if current_function is not None and chained_alias is not None:
+            alias_name, existing_alias = chained_alias
+            local_aliases = local_call_aliases.setdefault(current_function, {})
+            if existing_alias in local_aliases:
+                local_aliases[alias_name] = local_aliases[existing_alias]
 
         boundary_filter = _authz_boundary_filter(line)
         if current_function is not None and boundary_filter is not None:
@@ -534,16 +543,20 @@ def _authorization_gap_candidates(
         )
         if has_service_authz:
             continue
-        sink_count = sum(
-            1
-            for fact in facts
-            if fact.fact_type == "sensitive_sink"
-            and isinstance(fact.payload, dict)
-            and (
-                fact.payload.get("handler") == handler
-                or fact.payload.get("handler") in service_calls
-            )
+        sink_symbols = sorted(
+            {
+                fact.symbol_name
+                for fact in facts
+                if fact.fact_type == "sensitive_sink"
+                and isinstance(fact.payload, dict)
+                and isinstance(fact.symbol_name, str)
+                and (
+                    fact.payload.get("handler") == handler
+                    or fact.payload.get("handler") in service_calls
+                )
+            }
         )
+        sink_count = len(sink_symbols)
         if sink_count == 0:
             continue
         candidates.append(
@@ -560,6 +573,7 @@ def _authorization_gap_candidates(
                     "mapping_mode": "static_code_snippet_analysis",
                     "review_state": "needs_human_review",
                     "sink_count": sink_count,
+                    "sink_symbols": sink_symbols,
                 },
             )
         )
@@ -625,6 +639,13 @@ def _called_names(line: str) -> list[str]:
 
 def _local_call_alias(line: str) -> tuple[str, str] | None:
     match = LOCAL_CALL_ALIAS_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _local_name_alias(line: str) -> tuple[str, str] | None:
+    match = LOCAL_NAME_ALIAS_PATTERN.match(line)
     if match is None:
         return None
     return match.group(1), match.group(2)

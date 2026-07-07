@@ -1088,7 +1088,7 @@ def _ranked_hypotheses(
 
 def _fact_priority_score(fact: CodebaseFactCandidate) -> int:
     status = _fact_refutation_status(fact)
-    return _priority_score(
+    base_score = _priority_score(
         risk="high",
         refutation_status=status,
         traceable_bonus=8,
@@ -1102,10 +1102,12 @@ def _fact_priority_score(fact: CodebaseFactCandidate) -> int:
             ]
         ),
     )
+    return max(0, min(100, base_score + _fact_impact_adjustment(fact)))
 
 
 def _fact_ranking_reasons(fact: CodebaseFactCandidate) -> list[str]:
     status = _fact_refutation_status(fact)
+    sink_symbols = _fact_sink_symbols(fact)
     return [
         "traceable_source_fact",
         "broken_invariant:authorization",
@@ -1113,6 +1115,8 @@ def _fact_ranking_reasons(fact: CodebaseFactCandidate) -> list[str]:
         "false_positive_checks:present",
         f"refutation_status:{status}",
         "risk:high",
+        _fact_impact_reason(sink_symbols),
+        *[f"sink:{sink_symbol}" for sink_symbol in sink_symbols[:3]],
     ]
 
 
@@ -1137,6 +1141,47 @@ def _finding_ranking_reasons(finding: StaticFinding) -> list[str]:
         f"refutation_status:{status}",
         f"risk:{risk}",
     ]
+
+
+def _fact_sink_symbols(fact: CodebaseFactCandidate) -> list[str]:
+    payload = fact.payload if isinstance(fact.payload, dict) else {}
+    sink_symbols = payload.get("sink_symbols")
+    if not isinstance(sink_symbols, list):
+        return []
+    return sorted(
+        {
+            str(sink_symbol)
+            for sink_symbol in sink_symbols
+            if isinstance(sink_symbol, str) and sink_symbol.strip()
+        }
+    )
+
+
+def _fact_impact_adjustment(fact: CodebaseFactCandidate) -> int:
+    sink_symbols = _fact_sink_symbols(fact)
+    if any(_is_privilege_or_destructive_sink(sink_symbol) for sink_symbol in sink_symbols):
+        return 0
+    if any(_is_sensitive_data_sink(sink_symbol) for sink_symbol in sink_symbols):
+        return -4
+    return -8
+
+
+def _fact_impact_reason(sink_symbols: list[str]) -> str:
+    if any(_is_privilege_or_destructive_sink(sink_symbol) for sink_symbol in sink_symbols):
+        return "impact:privilege_or_destructive_sink"
+    if any(_is_sensitive_data_sink(sink_symbol) for sink_symbol in sink_symbols):
+        return "impact:sensitive_data_sink"
+    return "impact:unknown_sensitive_sink"
+
+
+def _is_privilege_or_destructive_sink(sink_symbol: str) -> bool:
+    normalized = sink_symbol.lower()
+    return normalized in {"delete", "delete_file", "transfer", "update_role"}
+
+
+def _is_sensitive_data_sink(sink_symbol: str) -> bool:
+    normalized = sink_symbol.lower()
+    return normalized in {"export", "export_file", "send_file", "update"}
 
 
 def _priority_score(

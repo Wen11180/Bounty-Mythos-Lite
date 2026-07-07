@@ -39,6 +39,7 @@ def export_file(file_id: str):
         "mapping_mode": "static_code_snippet_analysis",
         "review_state": "needs_human_review",
         "sink_count": 1,
+        "sink_symbols": ["send_file"],
     }
     assert "send_file(file_id)" not in str(gap.payload)
     assert "Authorization" not in str(gap.payload)
@@ -894,6 +895,61 @@ class FileRepository:
     assert "export_file_for_user" in service_calls
     assert "load_for_user" in service_calls
     assert "loader" not in service_calls
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_follows_chained_local_alias_to_repository_owner_filter():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from app.services.files import export_file_for_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    return export_file_for_user(file_id, current_user)
+""",
+                },
+                {
+                    "path": "apps/api/services/files.py",
+                    "content": """
+from app.repositories.files import FileRepository
+
+def export_file_for_user(file_id: str, current_user):
+    repository = FileRepository()
+    loader = repository.load_for_user
+    safe_loader = loader
+    file = safe_loader(file_id, current_user)
+    return send_file(file.path)
+""",
+                },
+                {
+                    "path": "apps/api/repositories/files.py",
+                    "content": """
+class FileRepository:
+    def load_for_user(self, file_id: str, current_user):
+        return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    service_calls = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "service_call"
+    ]
+
+    assert "export_file_for_user" in service_calls
+    assert "load_for_user" in service_calls
+    assert "safe_loader" not in service_calls
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
     assert "authorization_gap_candidate" not in fact_types
