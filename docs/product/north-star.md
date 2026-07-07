@@ -25,6 +25,8 @@ This stage is not a generic dashboard effort. It should prove that the system ca
 
 The preferred user experience is Mythos Studio: a local, desktop-style, chat-first research workspace. See `docs/superpowers/specs/2026-07-07-mythos-studio-design.md`.
 
+The first implementation milestone is the local `/studio` workspace plus the Electron launcher in `apps/studio`.
+
 The studio should let an operator create a local workspace, import authorized materials, direct the research agent through conversation, review candidate cards, approve or reject validation plans, attach redacted evidence, and export submission-blocked report drafts.
 
 ## Expected Inputs

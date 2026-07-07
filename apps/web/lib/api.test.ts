@@ -5,7 +5,10 @@ import {
   completeCampaignCycleReview,
   createResearchReviewPlan,
   createResearchRefutationDecision,
+  createStudioWorkspace,
   createFindingCandidate,
+  getStudioWorkspaceManifest,
+  importStudioWorkspaceArtifact,
   materializeResearchQueueTask,
   recordClaimReviewDecision,
   recordManualObservation,
@@ -114,6 +117,109 @@ test("runSourceAuditScan exposes Scope Guard block reasons", async () => {
         assert.equal((error as SourceAuditScanError).detail, "repo_not_allowlisted");
         return true;
       },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio workspace API helpers pass only local paths and manifest metadata", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ body, url });
+
+    if (url.endsWith("/mythos/studio/workspaces")) {
+      return new Response(
+        JSON.stringify({
+          path: "C:/workspaces/acme-api",
+          manifest: {
+            artifacts: [],
+            name: "acme-api",
+            runs: [],
+            safety: {
+              blocked_actions: ["execute_live_validation", "submit_report"],
+              scope_guard_status: "missing_scope",
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    if (url.includes("/mythos/studio/workspaces/manifest")) {
+      return new Response(
+        JSON.stringify({
+          artifacts: [],
+          name: "acme-api",
+          runs: [],
+          safety: { blocked_actions: [], scope_guard_status: "scope_imported" },
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    if (url.endsWith("/mythos/studio/workspaces/imports")) {
+      return new Response(
+        JSON.stringify({
+          artifacts: [
+            {
+              kind: "scope",
+              redaction_status: "not_required",
+              source_path: "C:/authorized/scope.yaml",
+            },
+          ],
+          name: "acme-api",
+          runs: [],
+          safety: { blocked_actions: [], scope_guard_status: "scope_imported" },
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    return new Response(JSON.stringify({ detail: "unexpected request" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 500,
+    });
+  };
+
+  try {
+    const workspace = await createStudioWorkspace(
+      { name: "acme-api", root_path: "C:/workspaces" },
+      null,
+    );
+    assert.equal(workspace?.path, "C:/workspaces/acme-api");
+
+    const manifest = await getStudioWorkspaceManifest("C:/workspaces/acme-api", null);
+    assert.equal(manifest?.safety?.scope_guard_status, "scope_imported");
+
+    const imported = await importStudioWorkspaceArtifact(
+      {
+        kind: "scope",
+        source_path: "C:/authorized/scope.yaml",
+        workspace_path: "C:/workspaces/acme-api",
+      },
+      null,
+    );
+    assert.equal(imported?.artifacts?.[0]?.kind, "scope");
+
+    assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+      "/mythos/studio/workspaces",
+      "/mythos/studio/workspaces/manifest",
+      "/mythos/studio/workspaces/imports",
+    ]);
+    assert.deepEqual(calls[0]?.body, { name: "acme-api", root_path: "C:/workspaces" });
+    assert.deepEqual(calls[2]?.body, {
+      kind: "scope",
+      source_path: "C:/authorized/scope.yaml",
+      workspace_path: "C:/workspaces/acme-api",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(calls),
+      /Authorization\s*[:=]|Bearer|secret-token|cookie|raw_policy/i,
     );
   } finally {
     globalThis.fetch = originalFetch;

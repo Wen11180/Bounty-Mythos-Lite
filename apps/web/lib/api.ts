@@ -9,6 +9,7 @@ import type {
   CampaignTask,
   CampaignValidationRun,
 } from "./campaigns-data";
+import type { StudioWorkspaceManifest } from "./studio-data";
 
 const API_BASE_URL =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -507,6 +508,22 @@ export type SourceAuditScanResponse = {
   hypothesis_count: number;
   submission_blocked: boolean;
   safety_notes: string[];
+};
+
+export type StudioWorkspaceCreateRequest = {
+  root_path: string;
+  name: string;
+};
+
+export type StudioWorkspaceCreateResponse = {
+  path: string;
+  manifest: StudioWorkspaceManifest;
+};
+
+export type StudioArtifactImportRequest = {
+  workspace_path: string;
+  kind: string;
+  source_path: string;
 };
 
 export type ArtifactRecord = {
@@ -1040,6 +1057,28 @@ export function runSourceAuditScan(
   fallback: SourceAuditScanResponse | null,
 ): Promise<SourceAuditScanResponse | null> {
   return runSourceAuditScanRequest(request, fallback);
+}
+
+export function createStudioWorkspace(
+  request: StudioWorkspaceCreateRequest,
+  fallback: StudioWorkspaceCreateResponse | null,
+): Promise<StudioWorkspaceCreateResponse | null> {
+  return apiPost("/mythos/studio/workspaces", request, fallback);
+}
+
+export function getStudioWorkspaceManifest(
+  workspacePath: string,
+  fallback: StudioWorkspaceManifest | null,
+): Promise<StudioWorkspaceManifest | null> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  return apiGet(`/mythos/studio/workspaces/manifest?${query}`, fallback);
+}
+
+export function importStudioWorkspaceArtifact(
+  request: StudioArtifactImportRequest,
+  fallback: StudioWorkspaceManifest | null,
+): Promise<StudioWorkspaceManifest | null> {
+  return apiPost("/mythos/studio/workspaces/imports", request, fallback);
 }
 
 async function runSourceAuditScanRequest(

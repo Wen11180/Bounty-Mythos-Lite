@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import test from "node:test";
 import { toStudioCandidateCards, toStudioWorkspaceSummary } from "./studio-data.ts";
 
@@ -53,4 +54,14 @@ test("candidate cards keep unsafe candidates visibly blocked", () => {
 
   assert.equal(card.status, "blocked");
   assert.equal(card.affectedEndpoint, "/webhook/test");
+});
+
+test("studio page exposes the four studio regions", async () => {
+  const page = await fs.readFile(new URL("../app/studio/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /Workspaces/);
+  assert.match(page, /Conversation/);
+  assert.match(page, /Candidate Board/);
+  assert.match(page, /Safety and Run Log/);
+  assert.match(page, /submission-blocked/);
 });

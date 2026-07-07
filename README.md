@@ -10,6 +10,8 @@ The long-term product target follows `私人 AI 漏洞研究系统最终方案.m
 
 The current implementation priority is A+B Autonomous Candidate Hunter: combine authorized policy/scope/API/HAR artifacts with authorized local code to produce a small set of high-quality vulnerability candidates, each with affected endpoint, affected code path, evidence needs, refutation questions, safe validation plan, and submission-blocked report readiness.
 
+Preferred local software entrypoint: Mythos Studio. During development, run it from `apps/studio` after installing API and web dependencies. The Studio launcher opens the local `/studio` workspace without making the browser dashboard the primary experience.
+
 ## Structure
 
 ```text

@@ -592,7 +592,7 @@ Expected: tests pass.
 - Modify: `apps/web/lib/api.ts`
 - Test: `apps/web/lib/studio-data.test.ts`
 
-- [ ] **Step 1: Add a static structure test for the Studio page**
+- [x] **Step 1: Add a static structure test for the Studio page**
 
 Append to `apps/web/lib/studio-data.test.ts`:
 
@@ -610,7 +610,7 @@ test("studio page exposes the four studio regions", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to confirm RED**
+- [ ] **Step 2: Run test to confirm RED** *(not rerun in this checkpoint because the page was already present when verified)*
 
 Run:
 
@@ -621,7 +621,7 @@ npm test -- lib/studio-data.test.ts
 
 Expected: FAIL because `apps/web/app/studio/page.tsx` does not exist.
 
-- [ ] **Step 3: Add the first Studio page**
+- [x] **Step 3: Add the first Studio page**
 
 Create `apps/web/app/studio/page.tsx`:
 
@@ -712,7 +712,7 @@ export default function StudioPage() {
 }
 ```
 
-- [ ] **Step 4: Run frontend tests**
+- [x] **Step 4: Run frontend tests**
 
 Run:
 
@@ -732,7 +732,7 @@ Expected: tests pass.
 - Create: `apps/studio/main.cjs`
 - Create: `apps/studio/README.md`
 
-- [ ] **Step 1: Create the Electron package**
+- [x] **Step 1: Create the Electron package**
 
 Create `apps/studio/package.json`:
 
@@ -751,7 +751,7 @@ Create `apps/studio/package.json`:
 }
 ```
 
-- [ ] **Step 2: Add the desktop launcher main process**
+- [x] **Step 2: Add the desktop launcher main process**
 
 Create `apps/studio/main.cjs`:
 
@@ -811,7 +811,7 @@ app.on("window-all-closed", () => {
 });
 ```
 
-- [ ] **Step 3: Add launcher instructions**
+- [x] **Step 3: Add launcher instructions**
 
 Create `apps/studio/README.md`:
 
@@ -839,7 +839,7 @@ npm start
 Safety boundaries remain unchanged: the launcher does not enable public-target attacks, destructive validation, real-user-data handling, raw secret storage, or automatic report submission.
 ```
 
-- [ ] **Step 4: Smoke-test package installation**
+- [x] **Step 4: Smoke-test package installation**
 
 Run:
 
@@ -858,7 +858,7 @@ Expected: `package-lock.json` is created and npm exits 0.
 - Modify: `README.md`
 - Modify: `docs/product/north-star.md`
 
-- [ ] **Step 1: Update README entrypoint**
+- [x] **Step 1: Update README entrypoint**
 
 In `README.md`, add this under `Product Direction`:
 
@@ -866,7 +866,7 @@ In `README.md`, add this under `Product Direction`:
 Preferred local software entrypoint: Mythos Studio. During development, run it from `apps/studio` after installing API and web dependencies. The Studio launcher opens the local `/studio` workspace without making the browser dashboard the primary experience.
 ```
 
-- [ ] **Step 2: Update north-star verification note**
+- [x] **Step 2: Update north-star verification note**
 
 In `docs/product/north-star.md`, add this sentence to `Preferred Product Form`:
 
@@ -874,7 +874,7 @@ In `docs/product/north-star.md`, add this sentence to `Preferred Product Form`:
 The first implementation milestone is the local `/studio` workspace plus the Electron launcher in `apps/studio`.
 ```
 
-- [ ] **Step 3: Run targeted verification**
+- [x] **Step 3: Run targeted verification**
 
 Run:
 
@@ -903,7 +903,7 @@ npm install --package-lock-only
 
 Expected: npm exits 0 and keeps the Electron package lock current.
 
-- [ ] **Step 4: Final safety grep**
+- [x] **Step 4: Final safety grep**
 
 Run:
 
