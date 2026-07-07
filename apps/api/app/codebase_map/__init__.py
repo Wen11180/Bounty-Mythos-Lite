@@ -1032,6 +1032,8 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     ):
         return normalized_field
     relation_field = _relation_boundary_field(field_name)
+    if relation_field in {"owner", "user"} and _is_principal_object_identifier(value):
+        return f"{relation_field}_id"
     if relation_field is not None and _same_relation_boundary(relation_field, value_field):
         return f"{relation_field}_id"
     relation_membership_field = _relation_membership_boundary_field(field_name)
@@ -1146,6 +1148,10 @@ def _principal_relation_id_boundary_field(identifier: str) -> str | None:
 
 def _is_principal_id_identifier(identifier: str) -> bool:
     return identifier.lower() in PRINCIPAL_ID_IDENTIFIERS
+
+
+def _is_principal_object_identifier(identifier: str) -> bool:
+    return identifier.lower() == "current_user"
 
 
 def _authz_boundary_hint(field_name: str) -> str:
