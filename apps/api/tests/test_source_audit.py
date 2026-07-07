@@ -1810,6 +1810,40 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_
     )
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_router_level_dependency_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter, Depends",
+                "router = APIRouter(dependencies=[Depends(require_user)])",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_security_authz(
     tmp_path,
 ):
@@ -1931,6 +1965,63 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_
                 "router = APIRouter()",
                 "",
                 '@router.get("/files/{file_id}/export", dependencies=[Depends(current_staff_user)])',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (repo / "dependencies.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import Depends",
+                "from auth import require_user",
+                "",
+                "def current_staff_user(user=Depends(current_user)):",
+                "    return user",
+                "",
+                "def current_user(user=Depends(require_user)):",
+                "    return user",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_decorator_dependency_wrapper_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter, Depends",
+                "from dependencies import current_staff_user",
+                "router = APIRouter()",
+                "",
+                "@router.get(",
+                '    "/files/{file_id}/export",',
+                "    dependencies=[",
+                "        Depends(",
+                "            current_staff_user,",
+                "        )",
+                "    ],",
+                ")",
                 "def export_file(file_id: str):",
                 "    return send_file(file_id)",
             ]
@@ -2244,6 +2335,61 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency
                 "",
                 '@router.get("/files/{file_id}/export")',
                 "def export_file(file_id: str, user=CurrentStaffUser):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (repo / "dependencies.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import Depends",
+                "from auth import require_user",
+                "",
+                "CurrentStaffUser = Depends(current_staff_user)",
+                "",
+                "def current_staff_user(user=Depends(current_active_user)):",
+                "    return user",
+                "",
+                "def current_active_user(user=Depends(current_user)):",
+                "    return user",
+                "",
+                "def current_user(user=Depends(require_user)):",
+                "    return user",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_dependency_alias_to_wrapper_chain_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "from dependencies import CurrentStaffUser",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export", dependencies=[CurrentStaffUser])',
+                "def export_file(file_id: str):",
                 "    return send_file(file_id)",
             ]
         ),

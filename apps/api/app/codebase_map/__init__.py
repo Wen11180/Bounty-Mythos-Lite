@@ -12,6 +12,10 @@ ROUTE_DECORATOR_START_PATTERN = re.compile(
     r"@\w+\.(get|post|put|patch|delete)\(",
     re.IGNORECASE,
 )
+ROUTE_DECORATOR_ROUTER_PATTERN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)\.")
+ROUTER_ASSIGNMENT_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*APIRouter\("
+)
 STRING_LITERAL_PATTERN = re.compile(r"[\"']([^\"']+)[\"']")
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MODEL_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
@@ -161,20 +165,32 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
 
 def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     facts: list[CodebaseFactCandidate] = []
-    pending_route: tuple[str, str, int, list[tuple[str, int]]] | None = None
-    pending_route_decorator: tuple[str, int, list[str], list[tuple[str, int]]] | None = None
+    pending_route: (
+        tuple[str, str, int, list[tuple[str, int]], list[tuple[str, int]]] | None
+    ) = None
+    pending_route_decorator: (
+        tuple[str, int, list[str], list[tuple[str, int]], list[tuple[str, int]]] | None
+    ) = None
     pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
     class_stack: list[tuple[str, int]] = []
     dependency_aliases: dict[str, str] = {}
     dependency_wrapper_aliases: dict[str, str] = {}
+    router_authz_refs: dict[str, list[tuple[str, int]]] = {}
+    router_dependency_refs: dict[str, list[tuple[str, int]]] = {}
     import_aliases: dict[str, str] = {}
     local_call_aliases: dict[str, dict[str, str]] = {}
     class_call_aliases: dict[str, dict[str, str]] = {}
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         if pending_route_decorator is not None:
-            method, decorator_line, decorator_lines, authz_calls = pending_route_decorator
+            (
+                method,
+                decorator_line,
+                decorator_lines,
+                authz_calls,
+                dependency_calls,
+            ) = pending_route_decorator
             decorator_lines = [*decorator_lines, line]
             authz_calls = [
                 *authz_calls,
@@ -182,6 +198,15 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     line,
                     line_number,
                     dependency_aliases,
+                ),
+            ]
+            dependency_calls = [
+                *dependency_calls,
+                *_dependency_wrapper_refs(
+                    line,
+                    line_number,
+                    dependency_aliases,
+                    dependency_wrapper_aliases,
                 ),
             ]
             if _route_decorator_closed(line):
@@ -195,6 +220,17 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         ),
                     ]
                 )
+                dependency_calls = _dedupe_refs(
+                    [
+                        *dependency_calls,
+                        *_dependency_wrapper_refs_from_lines(
+                            decorator_lines,
+                            decorator_line,
+                            dependency_aliases,
+                            dependency_wrapper_aliases,
+                        ),
+                    ]
+                )
                 route_path = _route_path_from_decorator_lines(decorator_lines)
                 if route_path is not None:
                     pending_route = (
@@ -202,6 +238,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         route_path,
                         decorator_line,
                         authz_calls,
+                        dependency_calls,
                     )
                 pending_route_decorator = None
             else:
@@ -210,25 +247,75 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     decorator_line,
                     decorator_lines,
                     authz_calls,
-                )
+                    dependency_calls,
+            )
             continue
+
+        router_assignment_match = ROUTER_ASSIGNMENT_PATTERN.match(line)
+        if router_assignment_match is not None and not function_stack:
+            router_name = router_assignment_match.group(1)
+            router_authz_refs[router_name] = _dependency_authz_refs(
+                line,
+                line_number,
+                dependency_aliases,
+            )
+            router_dependency_refs[router_name] = _dependency_wrapper_refs(
+                line,
+                line_number,
+                dependency_aliases,
+                dependency_wrapper_aliases,
+            )
 
         route_match = ROUTE_DECORATOR_PATTERN.search(line)
         if route_match is not None:
+            router_name = _route_decorator_router_name(line)
             pending_route = (
                 route_match.group(1).upper(),
                 route_match.group(2),
                 line_number,
-                _dependency_authz_refs(line, line_number, dependency_aliases),
+                _dedupe_refs(
+                    [
+                        *router_authz_refs.get(router_name, []),
+                        *_dependency_authz_refs(line, line_number, dependency_aliases),
+                    ]
+                ),
+                _dedupe_refs(
+                    [
+                        *router_dependency_refs.get(router_name, []),
+                        *_dependency_wrapper_refs(
+                            line,
+                            line_number,
+                            dependency_aliases,
+                            dependency_wrapper_aliases,
+                        ),
+                    ]
+                ),
             )
             continue
         route_start_match = ROUTE_DECORATOR_START_PATTERN.search(line)
         if route_start_match is not None:
+            router_name = _route_decorator_router_name(line)
             pending_route_decorator = (
                 route_start_match.group(1).upper(),
                 line_number,
                 [line],
-                _dependency_authz_refs(line, line_number, dependency_aliases),
+                _dedupe_refs(
+                    [
+                        *router_authz_refs.get(router_name, []),
+                        *_dependency_authz_refs(line, line_number, dependency_aliases),
+                    ]
+                ),
+                _dedupe_refs(
+                    [
+                        *router_dependency_refs.get(router_name, []),
+                        *_dependency_wrapper_refs(
+                            line,
+                            line_number,
+                            dependency_aliases,
+                            dependency_wrapper_aliases,
+                        ),
+                    ]
+                ),
             )
             continue
 
@@ -330,7 +417,13 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     )
                 )
         if function_match is not None and pending_route is not None:
-            method, route_path, decorator_line, decorator_authz_calls = pending_route
+            (
+                method,
+                route_path,
+                decorator_line,
+                decorator_authz_calls,
+                decorator_dependency_calls,
+            ) = pending_route
             handler_name = function_match.group(1)
             facts.append(
                 CodebaseFactCandidate(
@@ -372,12 +465,15 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         },
                     )
                 )
-            for call_name, dependency_line in _dependency_wrapper_refs(
-                line,
-                line_number,
-                dependency_aliases,
-                dependency_wrapper_aliases,
-            ):
+            for call_name, dependency_line in [
+                *decorator_dependency_calls,
+                *_dependency_wrapper_refs(
+                    line,
+                    line_number,
+                    dependency_aliases,
+                    dependency_wrapper_aliases,
+                ),
+            ]:
                 facts.append(
                     CodebaseFactCandidate(
                         fact_type="dependency_call",
@@ -834,6 +930,35 @@ def _dependency_wrapper_refs(
     return _dedupe_refs(refs)
 
 
+def _dependency_wrapper_refs_from_lines(
+    lines: list[str],
+    start_line: int,
+    dependency_aliases: dict[str, str],
+    dependency_wrapper_aliases: dict[str, str],
+) -> list[tuple[str, int]]:
+    block = "\n".join(lines)
+    authz_names = {
+        call_name
+        for call_name, _ in _dependency_authz_refs_from_lines(
+            lines,
+            start_line,
+            dependency_aliases,
+        )
+    }
+    refs = [
+        (match.group(1), start_line + block.count("\n", 0, match.start(1)))
+        for match in DEPENDENCY_CALL_PATTERN.finditer(block)
+        if match.group(1) not in authz_names
+    ]
+    refs.extend(
+        (call_name, start_line + line_index)
+        for line_index, line in enumerate(lines)
+        for alias_name, call_name in dependency_wrapper_aliases.items()
+        if _line_references_name(line, alias_name)
+    )
+    return _dedupe_refs(refs)
+
+
 def _dependency_calls(line: str) -> list[str]:
     return DEPENDENCY_CALL_PATTERN.findall(line)
 
@@ -973,6 +1098,13 @@ def _function_signature_closed(line: str) -> bool:
 
 def _route_decorator_closed(line: str) -> bool:
     return line.strip().startswith(")")
+
+
+def _route_decorator_router_name(line: str) -> str | None:
+    match = ROUTE_DECORATOR_ROUTER_PATTERN.search(line)
+    if match is None:
+        return None
+    return match.group(1)
 
 
 def _route_path_from_decorator_lines(lines: list[str]) -> str | None:
