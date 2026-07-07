@@ -15,6 +15,7 @@ ROUTE_DECORATOR_START_PATTERN = re.compile(
 STRING_LITERAL_PATTERN = re.compile(r"[\"']([^\"']+)[\"']")
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MODEL_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
+CLASS_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b")
 DEPENDENCY_CALL_PATTERN = re.compile(r"\b(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)")
 DEPENDENCY_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)"
@@ -27,9 +28,14 @@ LOCAL_CALL_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"[A-Za-z_][A-Za-z0-9_.]*\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
+SELF_CALL_ALIAS_PATTERN = re.compile(
+    r"^\s*self\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"[A-Za-z_][A-Za-z0-9_.]*\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
 LOCAL_NAME_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
+SELF_CALL_PATTERN = re.compile(r"\bself\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     r"\b(?P<left>[A-Za-z_][A-Za-z0-9_.]*)\s*==\s*"
     r"(?P<right>[A-Za-z_][A-Za-z0-9_.]*)\b",
@@ -144,9 +150,11 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     pending_route_decorator: tuple[str, int, list[str], list[tuple[str, int]]] | None = None
     pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
+    class_stack: list[tuple[str, int]] = []
     dependency_aliases: dict[str, str] = {}
     import_aliases: dict[str, str] = {}
     local_call_aliases: dict[str, dict[str, str]] = {}
+    class_call_aliases: dict[str, dict[str, str]] = {}
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         if pending_route_decorator is not None:
@@ -210,6 +218,11 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
 
         if line.strip():
             indent = _indent_width(line)
+            class_stack = [
+                (class_name, class_indent)
+                for class_name, class_indent in class_stack
+                if class_indent < indent
+            ]
             function_stack = [
                 (function_name, function_indent)
                 for function_name, function_indent in function_stack
@@ -392,6 +405,10 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             if _function_signature_closed(line):
                 pending_signature_authz = None
 
+        class_match = CLASS_PATTERN.match(line)
+        if class_match is not None:
+            class_stack.append((class_match.group(1), _indent_width(line)))
+
         model_match = MODEL_PATTERN.match(line)
         if model_match is not None and _is_model_base(model_match.group(2)):
             facts.append(
@@ -412,6 +429,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
 
         if (
             function_match is not None
+            or class_match is not None
             or model_match is not None
             or pending_signature_authz is not None
             or line.strip().startswith("@")
@@ -419,10 +437,15 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             continue
 
         current_function = _current_function(function_stack)
+        current_class = _current_class(class_stack)
         local_alias = _local_call_alias(line)
         if current_function is not None and local_alias is not None:
             alias_name, call_name = local_alias
             local_call_aliases.setdefault(current_function, {})[alias_name] = call_name
+        field_alias = _self_call_alias(line)
+        if current_class is not None and field_alias is not None:
+            alias_name, call_name = field_alias
+            class_call_aliases.setdefault(current_class, {})[alias_name] = call_name
         chained_alias = _local_name_alias(line)
         if current_function is not None and chained_alias is not None:
             alias_name, existing_alias = chained_alias
@@ -453,8 +476,11 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             call_name = _resolved_call_name(
                 raw_call_name,
                 current_function,
+                current_class,
+                _self_called_names(line),
                 import_aliases,
                 local_call_aliases,
+                class_call_aliases,
             )
             if _is_authz_call(call_name):
                 facts.append(
@@ -515,6 +541,12 @@ def _current_function(function_stack: list[tuple[str, int]]) -> str | None:
     if not function_stack:
         return None
     return function_stack[-1][0]
+
+
+def _current_class(class_stack: list[tuple[str, int]]) -> str | None:
+    if not class_stack:
+        return None
+    return class_stack[-1][0]
 
 
 def _authorization_gap_candidates(
@@ -644,6 +676,13 @@ def _local_call_alias(line: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
+def _self_call_alias(line: str) -> tuple[str, str] | None:
+    match = SELF_CALL_ALIAS_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
 def _local_name_alias(line: str) -> tuple[str, str] | None:
     match = LOCAL_NAME_ALIAS_PATTERN.match(line)
     if match is None:
@@ -654,14 +693,25 @@ def _local_name_alias(line: str) -> tuple[str, str] | None:
 def _resolved_call_name(
     call_name: str,
     current_function: str | None,
+    current_class: str | None,
+    self_called_names: set[str],
     import_aliases: dict[str, str],
     local_call_aliases: dict[str, dict[str, str]],
+    class_call_aliases: dict[str, dict[str, str]],
 ) -> str:
     if current_function is not None:
         local_aliases = local_call_aliases.get(current_function, {})
         if call_name in local_aliases:
             return local_aliases[call_name]
+    if current_class is not None and call_name in self_called_names:
+        class_aliases = class_call_aliases.get(current_class, {})
+        if call_name in class_aliases:
+            return class_aliases[call_name]
     return import_aliases.get(call_name, call_name)
+
+
+def _self_called_names(line: str) -> set[str]:
+    return set(SELF_CALL_PATTERN.findall(line))
 
 
 def _dependency_authz_calls(line: str) -> list[str]:

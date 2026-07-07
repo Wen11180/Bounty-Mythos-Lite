@@ -694,6 +694,73 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_chained_lo
     )
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_same_class_field_alias_owner_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    services = repo / "services"
+    repositories = repo / "repositories"
+    services.mkdir()
+    repositories.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "from services.files import FileExportService",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    service = FileExportService()",
+                "    return service.export_file_for_user(file_id, current_user)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (services / "files.py").write_text(
+        "\n".join(
+            [
+                "from repositories.files import FileRepository",
+                "",
+                "class FileExportService:",
+                "    def __init__(self):",
+                "        repository = FileRepository()",
+                "        self.loader = repository.load_for_user",
+                "",
+                "    def export_file_for_user(self, file_id: str, current_user):",
+                "        file = self.loader(file_id, current_user)",
+                "        return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (repositories / "files.py").write_text(
+        "\n".join(
+            [
+                "class FileRepository:",
+                "    def load_for_user(self, file_id: str, current_user):",
+                "        return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency_authz(
     tmp_path,
 ):
