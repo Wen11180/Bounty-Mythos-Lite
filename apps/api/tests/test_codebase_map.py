@@ -595,6 +595,43 @@ def export_file(file_id: str, current_user):
     }
 
 
+def test_map_authorized_code_files_treats_single_item_org_relation_id_membership_list_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    file = db.query(File).filter(File.id == file_id, File.org_id.in_([current_user.organization.id])).one()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "org_id_filter"
+    assert authz.authz_hint == "ownership_boundary_check"
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 8,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
 def test_map_authorized_code_files_treats_membership_boundary_as_authz_check():
     result = map_authorized_code_files(
         {
