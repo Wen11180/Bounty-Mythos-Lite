@@ -187,6 +187,46 @@ def export_file(file_id: str, current_user):
     }
 
 
+def test_map_authorized_code_files_treats_membership_boundary_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/invoices.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/invoices/{invoice_id}/export")
+def export_invoice(invoice_id: str, current_user):
+    invoice = db.query(Invoice).filter(
+        Invoice.id == invoice_id,
+        Invoice.tenant_id.in_(current_user.tenant_ids),
+    ).one()
+    return send_file(invoice.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "tenant_id_filter"
+    assert authz.authz_hint == "ownership_boundary_check"
+    assert authz.payload == {
+        "handler": "export_invoice",
+        "line": 10,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
 def test_map_authorized_code_files_treats_dependency_injected_authz_as_route_authz():
     result = map_authorized_code_files(
         {
@@ -701,6 +741,162 @@ def export_file_for_user(file_id: str, user_id: str):
         "line": 9,
         "mapping_mode": "static_code_snippet_analysis",
     }
+
+
+def test_map_authorized_code_files_does_not_mark_gap_when_repository_layer_has_owner_filter():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from app.services.files import export_file_for_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    return export_file_for_user(file_id, current_user)
+""",
+                },
+                {
+                    "path": "apps/api/services/files.py",
+                    "content": """
+from app.repositories.files import load_file_for_user
+
+def export_file_for_user(file_id: str, current_user):
+    file = load_file_for_user(file_id, current_user)
+    return send_file(file.path)
+""",
+                },
+                {
+                    "path": "apps/api/repositories/files.py",
+                    "content": """
+def load_file_for_user(file_id: str, current_user):
+    return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    service_calls = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "service_call"
+    ]
+
+    assert fact_types.count("route_handler") == 1
+    assert "export_file_for_user" in service_calls
+    assert "load_file_for_user" in service_calls
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_follows_imported_service_alias_to_repository_owner_filter():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from app.services.files import export_file_for_user as export_for_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    return export_for_user(file_id, current_user)
+""",
+                },
+                {
+                    "path": "apps/api/services/files.py",
+                    "content": """
+from app.repositories.files import load_file_for_user
+
+def export_file_for_user(file_id: str, current_user):
+    file = load_file_for_user(file_id, current_user)
+    return send_file(file.path)
+""",
+                },
+                {
+                    "path": "apps/api/repositories/files.py",
+                    "content": """
+def load_file_for_user(file_id: str, current_user):
+    return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    service_calls = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "service_call"
+    ]
+
+    assert "export_file_for_user" in service_calls
+    assert "export_for_user" not in service_calls
+    assert "load_file_for_user" in service_calls
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_follows_local_method_alias_to_repository_owner_filter():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from app.services.files import export_file_for_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    return export_file_for_user(file_id, current_user)
+""",
+                },
+                {
+                    "path": "apps/api/services/files.py",
+                    "content": """
+from app.repositories.files import FileRepository
+
+def export_file_for_user(file_id: str, current_user):
+    repository = FileRepository()
+    loader = repository.load_for_user
+    file = loader(file_id, current_user)
+    return send_file(file.path)
+""",
+                },
+                {
+                    "path": "apps/api/repositories/files.py",
+                    "content": """
+class FileRepository:
+    def load_for_user(self, file_id: str, current_user):
+        return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    service_calls = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "service_call"
+    ]
+
+    assert "export_file_for_user" in service_calls
+    assert "load_for_user" in service_calls
+    assert "loader" not in service_calls
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
 
 
 def test_map_authorized_code_files_preserves_tab_indented_handler_scope():

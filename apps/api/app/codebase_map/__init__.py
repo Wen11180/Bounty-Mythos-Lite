@@ -23,6 +23,10 @@ IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+i
 IMPORT_ALIAS_ITEM_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
+LOCAL_CALL_ALIAS_PATTERN = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"[A-Za-z_][A-Za-z0-9_.]*\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
 AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     r"\b(?P<left>[A-Za-z_][A-Za-z0-9_.]*)\s*==\s*"
     r"(?P<right>[A-Za-z_][A-Za-z0-9_.]*)\b",
@@ -31,6 +35,11 @@ AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
 AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
     r"\b(?P<field>owner_id|user_id|tenant_id|account_id|org_id|organization_id)\s*=\s*"
     r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\b",
+    re.IGNORECASE,
+)
+AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN = re.compile(
+    r"\b(?P<field>[A-Za-z_][A-Za-z0-9_.]*)\.in_\(\s*"
+    r"(?P<values>[A-Za-z_][A-Za-z0-9_.]*)\s*\)",
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_FIELDS = {
@@ -133,6 +142,8 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
     dependency_aliases: dict[str, str] = {}
+    import_aliases: dict[str, str] = {}
+    local_call_aliases: dict[str, dict[str, str]] = {}
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         if pending_route_decorator is not None:
@@ -202,10 +213,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 if function_indent < indent
             ]
 
-        imported_aliases = _imported_authz_aliases(line)
+        imported_aliases = _imported_aliases(line)
         if imported_aliases and not function_stack:
             for alias_name, call_name in imported_aliases:
-                dependency_aliases[alias_name] = call_name
+                import_aliases[alias_name] = call_name
+                if _is_authz_call(call_name):
+                    dependency_aliases[alias_name] = call_name
             continue
 
         alias = _dependency_alias(line)
@@ -403,6 +416,11 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             continue
 
         current_function = _current_function(function_stack)
+        local_alias = _local_call_alias(line)
+        if current_function is not None and local_alias is not None:
+            alias_name, call_name = local_alias
+            local_call_aliases.setdefault(current_function, {})[alias_name] = call_name
+
         boundary_filter = _authz_boundary_filter(line)
         if current_function is not None and boundary_filter is not None:
             symbol_name, authz_hint = boundary_filter
@@ -422,7 +440,13 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     },
                 )
             )
-        for call_name in _called_names(line):
+        for raw_call_name in _called_names(line):
+            call_name = _resolved_call_name(
+                raw_call_name,
+                current_function,
+                import_aliases,
+                local_call_aliases,
+            )
             if _is_authz_call(call_name):
                 facts.append(
                     CodebaseFactCandidate(
@@ -501,14 +525,7 @@ def _authorization_gap_candidates(
         )
         if has_authz:
             continue
-        service_calls = [
-            fact.symbol_name
-            for fact in facts
-            if fact.fact_type == "service_call"
-            and isinstance(fact.payload, dict)
-            and fact.payload.get("caller") == handler
-            and isinstance(fact.symbol_name, str)
-        ]
+        service_calls = _reachable_service_handlers(facts, handler)
         has_service_authz = any(
             fact.fact_type == "authz_check"
             and isinstance(fact.payload, dict)
@@ -549,6 +566,31 @@ def _authorization_gap_candidates(
     return candidates
 
 
+def _reachable_service_handlers(
+    facts: list[CodebaseFactCandidate],
+    handler: str,
+) -> set[str]:
+    calls_by_handler: dict[str, set[str]] = {}
+    for fact in facts:
+        if fact.fact_type != "service_call" or not isinstance(fact.payload, dict):
+            continue
+        caller = fact.payload.get("caller")
+        callee = fact.symbol_name
+        if not isinstance(caller, str) or not isinstance(callee, str):
+            continue
+        calls_by_handler.setdefault(caller, set()).add(callee)
+
+    reachable: set[str] = set()
+    pending = list(calls_by_handler.get(handler, set()))
+    while pending:
+        callee = pending.pop()
+        if callee in reachable:
+            continue
+        reachable.add(callee)
+        pending.extend(calls_by_handler.get(callee, set()) - reachable)
+    return reachable
+
+
 def _indent_width(line: str) -> int:
     expanded = line.expandtabs()
     return len(expanded) - len(expanded.lstrip(" "))
@@ -579,6 +621,26 @@ def _called_names(line: str) -> list[str]:
         if token.type == tokenize.NAME and next_token.string == "(":
             calls.append(token.string)
     return calls
+
+
+def _local_call_alias(line: str) -> tuple[str, str] | None:
+    match = LOCAL_CALL_ALIAS_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _resolved_call_name(
+    call_name: str,
+    current_function: str | None,
+    import_aliases: dict[str, str],
+    local_call_aliases: dict[str, dict[str, str]],
+) -> str:
+    if current_function is not None:
+        local_aliases = local_call_aliases.get(current_function, {})
+        if call_name in local_aliases:
+            return local_aliases[call_name]
+    return import_aliases.get(call_name, call_name)
 
 
 def _dependency_authz_calls(line: str) -> list[str]:
@@ -655,7 +717,7 @@ def _dependency_alias(line: str) -> tuple[str, str] | None:
     return alias_name, call_name
 
 
-def _imported_authz_aliases(line: str) -> list[tuple[str, str]]:
+def _imported_aliases(line: str) -> list[tuple[str, str]]:
     match = IMPORT_AUTHZ_ALIAS_PATTERN.match(line)
     if match is None:
         return []
@@ -666,8 +728,7 @@ def _imported_authz_aliases(line: str) -> list[tuple[str, str]]:
             continue
         call_name = item_match.group(1)
         alias_name = item_match.group(2)
-        if _is_authz_call(call_name):
-            aliases.append((alias_name, call_name))
+        aliases.append((alias_name, call_name))
     return aliases
 
 
@@ -813,6 +874,14 @@ def _authz_boundary_filter(line: str) -> tuple[str, str] | None:
         if field_name is None:
             continue
         return (f"{field_name}_filter", _authz_boundary_hint(field_name))
+    for match in AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN.finditer(line):
+        field_name = _authz_boundary_membership_field(
+            match.group("field"),
+            match.group("values"),
+        )
+        if field_name is None:
+            continue
+        return (f"{field_name}_filter", _authz_boundary_hint(field_name))
     return None
 
 
@@ -836,6 +905,16 @@ def _authz_boundary_kwarg_field(field_name: str, value: str) -> str | None:
     if normalized_field in {"owner_id", "user_id"} and _is_principal_id_identifier(value):
         return normalized_field
     if normalized_field == value_field and normalized_field in AUTHZ_BOUNDARY_FIELDS:
+        return normalized_field
+    return None
+
+
+def _authz_boundary_membership_field(field_name: str, values: str) -> str | None:
+    normalized_field = _identifier_leaf(field_name)
+    values_field = _identifier_leaf(values)
+    if normalized_field not in AUTHZ_BOUNDARY_FIELDS:
+        return None
+    if values_field == f"{normalized_field}s":
         return normalized_field
     return None
 
