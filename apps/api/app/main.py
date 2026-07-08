@@ -2715,8 +2715,13 @@ def _studio_benchmark_template_field(
 def _studio_candidates_for_run(record: PipelineRunRecord, manifest: dict) -> list[dict]:
     payload = record.payload if isinstance(record.payload, dict) else {}
     imported_surface_facts = _studio_imported_surface_facts(manifest)
+    authorization_context_facts = _studio_authorization_context_facts(manifest)
     return [
-        _studio_candidate_from_hypothesis(item, imported_surface_facts)
+        _studio_candidate_from_hypothesis(
+            item,
+            imported_surface_facts,
+            authorization_context_facts,
+        )
         for item in payload.get("hypotheses", [])[:5]
         if isinstance(item, dict)
     ]
@@ -2740,6 +2745,7 @@ def _studio_candidate_route_fact(hypothesis: dict) -> dict[str, str] | None:
 def _studio_candidate_from_hypothesis(
     hypothesis: dict,
     imported_surface_facts: list[dict[str, str]] | None = None,
+    authorization_context_facts: list[dict[str, str]] | None = None,
 ) -> dict:
     source_facts = hypothesis.get("source_facts", [])
     if not isinstance(source_facts, list):
@@ -2748,9 +2754,13 @@ def _studio_candidate_from_hypothesis(
     candidate_route_fact = _studio_candidate_route_fact(hypothesis)
     if candidate_route_fact is not None:
         safe_source_facts = [candidate_route_fact, *safe_source_facts]
-    candidate_source_facts = safe_source_facts + _studio_matching_surface_facts(
-        hypothesis,
-        imported_surface_facts or [],
+    candidate_source_facts = (
+        safe_source_facts
+        + (authorization_context_facts or [])
+        + _studio_matching_surface_facts(
+            hypothesis,
+            imported_surface_facts or [],
+        )
     )
     return {
         "hypothesis_id": safe_preview_text(hypothesis.get("hypothesis_id", "")),
@@ -2826,7 +2836,7 @@ def _studio_candidate_evidence_gaps(source_facts: list[dict]) -> list[dict[str, 
             "artifact_kind": artifact_kind,
             "reason": "missing_required_artifact",
         }
-        for artifact_kind in ("code", "api", "har")
+        for artifact_kind in ("scope", "policy", "code", "api", "har")
         if artifact_kind not in artifact_kinds
     ]
     has_code_path = any(
@@ -2900,6 +2910,27 @@ def _studio_safe_validation_plan(hypothesis: dict) -> list[str]:
         "Review the linked code path and imported artifact context locally.",
         "Attach sanitized observations before promoting any claim.",
         "Keep report submission blocked until human evidence review is complete.",
+    ]
+
+
+def _studio_authorization_context_facts(manifest: dict) -> list[dict[str, str]]:
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return []
+    present = {
+        artifact.get("kind")
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+        and isinstance(artifact.get("kind"), str)
+        and artifact.get("source_path")
+    }
+    return [
+        {
+            "fact_type": f"{kind}_context",
+            "artifact_kind": kind,
+        }
+        for kind in ("scope", "policy")
+        if kind in present
     ]
 
 

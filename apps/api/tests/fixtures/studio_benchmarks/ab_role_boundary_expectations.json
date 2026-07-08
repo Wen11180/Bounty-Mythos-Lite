@@ -4,6 +4,8 @@
   "fixture_metadata": {
     "risk_family": "role_boundary",
     "authorized_inputs": [
+      "scope",
+      "policy",
       "code",
       "api",
       "har"
@@ -21,6 +23,8 @@
       "route_path": "/teams/{team_id}/invite-policy",
       "vuln_type": "role_boundary_gap",
       "required_artifacts": [
+        "scope",
+        "policy",
         "code",
         "api",
         "har"

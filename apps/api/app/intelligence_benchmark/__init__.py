@@ -19,7 +19,7 @@ DEFAULT_FORBIDDEN_TEXT = [
     "access_token",
     "secret-token",
 ]
-REQUIRED_STUDIO_ARTIFACTS = ["code", "api", "har"]
+REQUIRED_STUDIO_ARTIFACTS = ["scope", "policy", "code", "api", "har"]
 UNSAFE_VALIDATION_PLAN_PATTERNS = {
     "live_outbound_request": ["send live outbound", "execute live outbound"],
     "production_target": ["against production", "production target"],
@@ -370,7 +370,11 @@ def _candidate_artifact_kinds(candidate: dict[str, Any]) -> list[str]:
         if isinstance(fact, dict) and (kind := _text(fact.get("artifact_kind")))
     }
     kinds.update(REQUIRED_STUDIO_ARTIFACTS)
-    ordered = [kind for kind in ("code", "api", "har", "sarif", "sbom") if kind in kinds]
+    ordered = [
+        kind
+        for kind in ("scope", "policy", "code", "api", "har", "sarif", "sbom")
+        if kind in kinds
+    ]
     return ordered + sorted(kinds.difference(ordered))
 
 

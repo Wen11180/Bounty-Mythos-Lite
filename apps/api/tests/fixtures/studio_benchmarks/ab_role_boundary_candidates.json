@@ -43,6 +43,14 @@
       },
       "source_facts": [
         {
+          "artifact_kind": "scope",
+          "fact_type": "scope_context"
+        },
+        {
+          "artifact_kind": "policy",
+          "fact_type": "policy_context"
+        },
+        {
           "artifact_kind": "code",
           "fact_type": "route_handler",
           "route_method": "PATCH",

@@ -4,6 +4,8 @@
   "fixture_metadata": {
     "risk_family": "money_flow_server_authority",
     "authorized_inputs": [
+      "scope",
+      "policy",
       "code",
       "api",
       "har"
@@ -21,6 +23,8 @@
       "route_path": "/checkout/{cart_id}/apply-credit",
       "vuln_type": "server_authority_gap",
       "required_artifacts": [
+        "scope",
+        "policy",
         "code",
         "api",
         "har"

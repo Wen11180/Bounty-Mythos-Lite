@@ -4,6 +4,8 @@
   "fixture_metadata": {
     "risk_family": "ssrf_egress",
     "authorized_inputs": [
+      "scope",
+      "policy",
       "code",
       "api",
       "har",
@@ -22,6 +24,8 @@
       "route_path": "/webhooks/{webhook_id}/deliveries/test",
       "vuln_type": "ssrf_egress_gap",
       "required_artifacts": [
+        "scope",
+        "policy",
         "code",
         "api",
         "har",

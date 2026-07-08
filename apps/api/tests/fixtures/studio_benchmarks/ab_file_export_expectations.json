@@ -4,6 +4,8 @@
   "fixture_metadata": {
     "risk_family": "object_access",
     "authorized_inputs": [
+      "scope",
+      "policy",
       "code",
       "api",
       "har",
@@ -23,6 +25,8 @@
       "route_path": "/files/{file_id}/export",
       "vuln_type": "authorization_gap",
       "required_artifacts": [
+        "scope",
+        "policy",
         "code",
         "api",
         "har",

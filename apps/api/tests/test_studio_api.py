@@ -51,6 +51,8 @@ def test_studio_report_candidate_guidance_includes_evidence_gap_labels():
     guidance = _studio_report_candidate_guidance(record, {})
 
     assert guidance["evidence_gaps"] == [
+        "scope: missing_required_artifact",
+        "policy: missing_required_artifact",
         "code: missing_required_artifact",
         "api: missing_required_artifact",
         "har: missing_required_artifact",
@@ -291,6 +293,13 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
             and fact.get("symbol_name") == "export_file"
             for fact in candidates[0]["source_facts"]
         )
+        assert {"scope", "policy"}.issubset(
+            {
+                fact.get("artifact_kind")
+                for fact in candidates[0]["source_facts"]
+                if fact.get("fact_type", "").endswith("_context")
+            }
+        )
         assert "send_file(file_id)" not in str(candidates)
 
         template_response = client.post(
@@ -304,6 +313,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert template_body["template"]["expected_candidates"][0]["code_path"] == (
             "routes.py:export_file"
         )
+        assert template_body["template"]["expected_candidates"][0][
+            "required_artifacts"
+        ] == ["scope", "policy", "code", "api", "har"]
         assert template_body["manifest"]["benchmark_templates"][-1][
             "draft_review_required"
         ] is True
@@ -875,6 +887,8 @@ def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
         assert template_response.status_code == 200
         template = template_response.json()["template"]
         assert template["expected_candidates"][0]["required_artifacts"] == [
+            "scope",
+            "policy",
             "code",
             "api",
             "har",

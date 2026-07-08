@@ -106,7 +106,9 @@ def test_studio_benchmark_fixtures_pass_quality_gate():
         metadata = expectations.get("fixture_metadata")
         assert isinstance(metadata, dict)
         assert metadata["risk_family"] == expected_risk_families[fixture_name]
-        assert {"code", "api", "har"}.issubset(set(metadata["authorized_inputs"]))
+        assert {"scope", "policy", "code", "api", "har"}.issubset(
+            set(metadata["authorized_inputs"])
+        )
         assert "submission_blocked" in metadata["safety_boundaries"]
 
         result = evaluate_studio_candidates(candidates_payload, expectations)
@@ -210,7 +212,7 @@ def test_build_studio_expectations_template_uses_safe_candidate_metadata_only():
             "route_method": "GET",
             "route_path": "/files/{file_id}/export",
             "vuln_type": "authorization",
-            "required_artifacts": ["code", "api", "har"],
+            "required_artifacts": ["scope", "policy", "code", "api", "har"],
             "require_code_path": True,
             "require_refutation_status": True,
             "require_security_invariant": True,
@@ -251,6 +253,8 @@ def test_build_studio_expectations_template_preserves_ab_required_artifacts():
     )
 
     assert template["expected_candidates"][0]["required_artifacts"] == [
+        "scope",
+        "policy",
         "code",
         "api",
         "har",
@@ -967,7 +971,7 @@ def test_evaluate_studio_candidates_fails_when_expectation_set_is_noisy():
             "route_method": "GET",
             "route_path": "/files/{file_id}/export",
             "vuln_type": "authorization_gap",
-            "required_artifacts": ["code", "api", "har"],
+            "required_artifacts": ["scope", "policy", "code", "api", "har"],
         }
         for index in range(6)
     ]
@@ -1600,7 +1604,7 @@ def test_cli_studio_eval_template_writes_reviewable_expectations(tmp_path, capsy
             "route_method": "GET",
             "route_path": "/files/{file_id}/export",
             "vuln_type": "authorization_gap",
-            "required_artifacts": ["code", "api", "har"],
+            "required_artifacts": ["scope", "policy", "code", "api", "har"],
             "require_code_path": True,
             "require_refutation_status": True,
             "require_security_invariant": True,

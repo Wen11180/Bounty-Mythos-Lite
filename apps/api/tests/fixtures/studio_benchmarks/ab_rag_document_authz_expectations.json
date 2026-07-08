@@ -4,6 +4,8 @@
   "fixture_metadata": {
     "risk_family": "rag_document_authorization",
     "authorized_inputs": [
+      "scope",
+      "policy",
       "code",
       "api",
       "har"
@@ -21,6 +23,8 @@
       "route_path": "/workspaces/{workspace_id}/assistant/query",
       "vuln_type": "rag_document_authz_gap",
       "required_artifacts": [
+        "scope",
+        "policy",
         "code",
         "api",
         "har"
