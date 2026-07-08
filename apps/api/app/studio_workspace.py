@@ -315,6 +315,10 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if evidence_gaps:
         lines.extend(["", "## Evidence gaps"])
         lines.extend(f"- {item}" for item in evidence_gaps)
+    advisory_signals = _markdown_list(report.get("advisory_signals"))
+    if advisory_signals:
+        lines.extend(["", "## Advisory signals"])
+        lines.extend(f"- {item}" for item in advisory_signals)
     safe_validation_plan = _markdown_list(report.get("safe_validation_plan"))
     if safe_validation_plan:
         lines.extend(["", "## Safe validation plan"])

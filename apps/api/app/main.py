@@ -2528,6 +2528,9 @@ def _studio_report_candidate_guidance(
             candidate.get("false_positive_checks", [])
         )
         evidence_gaps = _studio_report_evidence_gap_labels(candidate.get("evidence_gaps", []))
+        advisory_signals = _studio_report_advisory_signal_labels(
+            candidate.get("source_facts", [])
+        )
         safe_validation_plan = _studio_report_guidance_list(
             candidate.get("safe_validation_plan", [])
         )
@@ -2548,6 +2551,8 @@ def _studio_report_candidate_guidance(
             guidance["false_positive_checks"] = false_positive_checks
         if evidence_gaps:
             guidance["evidence_gaps"] = evidence_gaps
+        if advisory_signals:
+            guidance["advisory_signals"] = advisory_signals
         if safe_validation_plan:
             guidance["safe_validation_plan"] = safe_validation_plan
         if safety_blockers:
@@ -2657,6 +2662,67 @@ def _studio_report_evidence_gap_labels(value: object) -> list[str]:
         if artifact_kind and reason:
             labels.append(f"{artifact_kind}: {reason}")
     return labels
+
+
+def _studio_report_advisory_signal_labels(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    labels: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if _studio_report_guidance_text(item.get("advisory_only", "")).lower() != "true":
+            continue
+        fact_type = _studio_report_guidance_text(item.get("fact_type", ""))
+        if fact_type == "scanner_signal":
+            label = _studio_report_scanner_signal_label(item)
+        elif fact_type == "dependency_signal":
+            label = _studio_report_dependency_signal_label(item)
+        elif fact_type == "fuzzing_signal":
+            label = _studio_report_fuzzing_signal_label(item)
+        else:
+            label = ""
+        if label and label not in labels:
+            labels.append(label)
+    return labels[:5]
+
+
+def _studio_report_scanner_signal_label(value: dict) -> str:
+    artifact_kind = _studio_report_guidance_text(value.get("artifact_kind", "")).upper()
+    method = _studio_report_guidance_text(value.get("route_method", ""))
+    route_path = _studio_report_guidance_text(value.get("route_path", ""))
+    if not artifact_kind or not route_path:
+        return ""
+    route = f"{method} {route_path}".strip()
+    return f"{artifact_kind} scanner advisory: {route}"
+
+
+def _studio_report_dependency_signal_label(value: dict) -> str:
+    artifact_kind = _studio_report_guidance_text(value.get("artifact_kind", "")).upper()
+    package_name = _studio_report_guidance_text(value.get("package_name", ""))
+    package_version = _studio_report_guidance_text(value.get("package_version", ""))
+    vulnerability_id = _studio_report_guidance_text(value.get("vulnerability_id", ""))
+    severity = _studio_report_guidance_text(value.get("severity", ""))
+    if not artifact_kind or not package_name:
+        return ""
+    package = f"{package_name} {package_version}".strip()
+    suffix = ", ".join(item for item in (vulnerability_id, severity) if item)
+    suffix_text = f" ({suffix})" if suffix else ""
+    return f"{artifact_kind} dependency advisory: {package}{suffix_text}"
+
+
+def _studio_report_fuzzing_signal_label(value: dict) -> str:
+    target_symbol = _studio_report_guidance_text(value.get("target_symbol", ""))
+    candidate_type = _studio_report_guidance_text(value.get("candidate_type", ""))
+    harness_status = _studio_report_guidance_text(value.get("harness_status", ""))
+    fuzzer_status = _studio_report_guidance_text(value.get("fuzzer_status", ""))
+    if not target_symbol:
+        return ""
+    details = ", ".join(
+        item for item in (candidate_type, harness_status, fuzzer_status) if item
+    )
+    details_text = f" ({details})" if details else ""
+    return f"Fuzzing plan advisory: {target_symbol}{details_text}"
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:

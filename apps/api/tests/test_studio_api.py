@@ -63,6 +63,54 @@ def test_studio_report_candidate_guidance_includes_evidence_gap_labels():
     ]
 
 
+def test_studio_report_candidate_guidance_includes_advisory_signal_labels():
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "source_facts": [
+                        {
+                            "fact_type": "scanner_signal",
+                            "artifact_kind": "sarif",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "advisory_only": "true",
+                        },
+                        {
+                            "fact_type": "dependency_signal",
+                            "artifact_kind": "sbom",
+                            "package_name": "django",
+                            "package_version": "4.2.1",
+                            "vulnerability_id": "CVE-2099-0001",
+                            "severity": "high",
+                            "advisory_only": "true",
+                        },
+                        {
+                            "fact_type": "fuzzing_signal",
+                            "artifact_kind": "fuzzing",
+                            "target_symbol": "parse_export_manifest",
+                            "candidate_type": "parser",
+                            "harness_status": "planned",
+                            "fuzzer_status": "not_executed",
+                            "advisory_only": "true",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    guidance = _studio_report_candidate_guidance(record, {})
+
+    assert guidance["advisory_signals"] == [
+        "SARIF scanner advisory: GET /files/{file_id}/export",
+        "SBOM dependency advisory: django 4.2.1 (CVE-2099-0001, high)",
+        "Fuzzing plan advisory: parse_export_manifest (parser, planned, not_executed)",
+    ]
+
+
 def test_studio_fuzzing_surface_facts_ignore_executable_plans():
     facts = _studio_fuzzing_surface_facts(
         {
@@ -1181,6 +1229,27 @@ def test_studio_candidates_include_imported_fuzzing_plan_context_as_advisory(
             "har",
             "fuzzing",
         ]
+
+        export_response = client.post(
+            "/mythos/studio/workspaces/reports/export",
+            json={
+                "workspace_path": workspace_path,
+                "run_id": run_response.json()["run_id"],
+            },
+        )
+        assert export_response.status_code == 200
+        export = export_response.json()
+        assert export["report"]["advisory_signals"] == [
+            "Fuzzing plan advisory: parse_export_manifest (parser, planned, not_executed)"
+        ]
+        markdown = Path(export["report_markdown_path"]).read_text(encoding="utf-8")
+        assert "## Advisory signals" in markdown
+        assert (
+            "- Fuzzing plan advisory: parse_export_manifest (parser, planned, not_executed)"
+            in markdown
+        )
+        assert "secret-token" not in str(export)
+        assert "secret-token" not in markdown
     finally:
         app.dependency_overrides.clear()
 
