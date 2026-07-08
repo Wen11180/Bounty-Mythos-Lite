@@ -9,6 +9,10 @@ REQUIRED_SAFETY_BLOCKERS = {
     "touch_real_user_data",
     "submit_report",
 }
+ADVISORY_ARTIFACT_FACT_TYPES = {
+    "sarif": "scanner_signal",
+    "sbom": "dependency_signal",
+}
 DEFAULT_FORBIDDEN_TEXT = [
     "Authorization: Bearer",
     "Cookie",
@@ -31,6 +35,7 @@ def build_studio_expectations_template(candidates_payload: Any) -> dict:
             "route_path": route.get("route_path", ""),
             "vuln_type": _candidate_vuln_type(candidate),
             "required_artifacts": _candidate_artifact_kinds(candidate),
+            "require_code_path": True,
         }
         code_path = _candidate_code_path(candidate)
         if code_path:
@@ -201,9 +206,14 @@ def _candidate_quality_failures(
     missing_artifacts = _missing_required_artifacts(candidate, expected)
     if missing_artifacts:
         failures.append("missing_required_artifacts:" + ",".join(missing_artifacts))
+    missing_advisory_signals = _missing_advisory_signals(candidate, expected)
+    for artifact_kind in missing_advisory_signals:
+        failures.append(f"missing_advisory_signal:{artifact_kind}")
     expected_code_path = _text(expected.get("code_path"))
     if expected_code_path and not _candidate_has_code_path(candidate, expected_code_path):
         failures.append(f"missing_code_path:{expected_code_path}")
+    if expected.get("require_code_path") is True and not _candidate_has_any_code_path(candidate):
+        failures.append("missing_code_path")
     report_readiness = candidate.get("report_readiness")
     if not isinstance(report_readiness, dict):
         failures.append("missing_report_readiness")
@@ -234,6 +244,29 @@ def _missing_required_artifacts(
         if isinstance(fact, dict)
     }
     return [kind for kind in required if kind not in artifact_kinds]
+
+
+def _missing_advisory_signals(
+    candidate: dict[str, Any],
+    expected: dict[str, Any],
+) -> list[str]:
+    required = _string_list(expected.get("required_artifacts"))
+    source_facts = candidate.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        source_facts = []
+    missing = []
+    for artifact_kind, fact_type in ADVISORY_ARTIFACT_FACT_TYPES.items():
+        if artifact_kind not in required:
+            continue
+        if not any(
+            isinstance(fact, dict)
+            and _text(fact.get("artifact_kind")) == artifact_kind
+            and _text(fact.get("fact_type")) == fact_type
+            and _text(fact.get("advisory_only")).lower() == "true"
+            for fact in source_facts
+        ):
+            missing.append(artifact_kind)
+    return missing
 
 
 def _candidate_artifact_kinds(candidate: dict[str, Any]) -> list[str]:
@@ -268,6 +301,18 @@ def _candidate_has_code_path(candidate: dict[str, Any], expected_code_path: str)
         if source_path:
             return True
     return False
+
+
+def _candidate_has_any_code_path(candidate: dict[str, Any]) -> bool:
+    source_facts = candidate.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        return False
+    return any(
+        isinstance(fact, dict)
+        and _text(fact.get("artifact_kind")) == "code"
+        and bool(_normalized_path(_text(fact.get("source_path"))))
+        for fact in source_facts
+    )
 
 
 def _candidate_code_path(candidate: dict[str, Any]) -> str:

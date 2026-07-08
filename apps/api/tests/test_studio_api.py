@@ -787,6 +787,33 @@ def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
         assert "scanner.sarif" not in str(candidates)
         assert "secret-token" not in str(candidates)
         assert "Authorization: Bearer" not in str(candidates)
+
+        template_response = client.post(
+            "/mythos/studio/workspaces/benchmarks/template",
+            json={
+                "workspace_path": workspace_path,
+                "run_id": run_response.json()["run_id"],
+            },
+        )
+        assert template_response.status_code == 200
+        template = template_response.json()["template"]
+        assert template["expected_candidates"][0]["required_artifacts"] == [
+            "code",
+            "api",
+            "har",
+            "sarif",
+        ]
+
+        benchmark_response = client.post(
+            "/mythos/studio/workspaces/benchmarks/run",
+            json={
+                "workspace_path": workspace_path,
+                "run_id": run_response.json()["run_id"],
+                "expectations_path": template_response.json()["template_path"],
+            },
+        )
+        assert benchmark_response.status_code == 200
+        assert benchmark_response.json()["benchmark"]["status"] == "passed"
     finally:
         app.dependency_overrides.clear()
 
