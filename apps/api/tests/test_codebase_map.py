@@ -2942,6 +2942,40 @@ def update_invite_policy(team_id: str, current_user):
     assert "authorization_gap_candidate" not in fact_types
 
 
+def test_map_authorized_code_files_treats_project_id_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/projects.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/projects/{project_id}/exports/{export_id}")
+def download_project_export(project_id: str, export_id: str, current_user):
+    export = db.query(ProjectExport).filter(
+        ProjectExport.id == export_id,
+        ProjectExport.project_id == current_user.project_id,
+    ).one()
+    return send_file(export.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "project_id_filter" in authz_symbols
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
 def test_map_authorized_code_files_follows_imported_service_alias_to_repository_owner_filter():
     result = map_authorized_code_files(
         {

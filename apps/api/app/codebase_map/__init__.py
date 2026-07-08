@@ -75,7 +75,7 @@ AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
-    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|team|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|team_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id|team__id)(?:__in)?)\s*=\s*"
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|team|project|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|team_id|project_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id|team__id|project__id)(?:__in)?)\s*=\s*"
     r"(?:[\[({]\s*)?"
     r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*[\])}]?",
     re.IGNORECASE,
@@ -106,6 +106,7 @@ AUTHZ_BOUNDARY_FIELDS = {
     "organization_id",
     "workspace_id",
     "team_id",
+    "project_id",
 }
 PRINCIPAL_ID_IDENTIFIERS = {
     "user_id",
@@ -1985,6 +1986,7 @@ def _relation_boundary_field(field_name: str) -> str | None:
         "organization",
         "workspace",
         "team",
+        "project",
     }:
         return normalized
     return None
@@ -2004,6 +2006,7 @@ def _relation_membership_boundary_field(field_name: str) -> str | None:
         "organization",
         "workspace",
         "team",
+        "project",
     }:
         return relation
     return None
