@@ -535,6 +535,82 @@ def test_evaluate_studio_candidates_requires_repair_guidance_and_regression_test
     } in result["failures"]
 
 
+def test_evaluate_studio_candidates_requires_expected_review_keywords():
+    result = evaluate_studio_candidates(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "role_boundary_gap",
+                    "location": "PATCH /teams/{team_id}/invite-policy",
+                    "broken_invariant": "Only team administrators may change invite policy.",
+                    "impact_rationale": "Members could alter team access governance.",
+                    "repair_guidance": "Enforce an administrator role check.",
+                    "regression_test": "Add a role-matrix regression test.",
+                    "refutation_status": "unverified",
+                    "duplicate_risk_score": 10,
+                    "evidence_needed": ["Authorized local handler code"],
+                    "false_positive_checks": ["Does middleware enforce ownership?"],
+                    "safe_validation_plan": ["Use local role fixtures only"],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "touch_real_user_data",
+                        "submit_report",
+                    ],
+                    "report_readiness": {
+                        "status": "submission_blocked",
+                        "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
+                    },
+                    "source_facts": [
+                        {"artifact_kind": "scope", "fact_type": "scope_context"},
+                        {"artifact_kind": "policy", "fact_type": "policy_context"},
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "PATCH",
+                            "route_path": "/teams/{team_id}/invite-policy",
+                            "source_path": "src/team_routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "PATCH",
+                            "route_path": "/teams/{id}/invite-policy",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "PATCH",
+                            "route_path": "/teams/42/invite-policy",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "expected_candidates": [
+                {
+                    "name": "team invite policy role-boundary gap",
+                    "route_method": "PATCH",
+                    "route_path": "/teams/{team_id}/invite-policy",
+                    "vuln_type": "role_boundary_gap",
+                    "required_artifacts": ["scope", "policy", "code", "api", "har"],
+                    "required_evidence_keywords": ["invite policy"],
+                    "required_false_positive_keywords": ["administrator"],
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "name": "team invite policy role-boundary gap",
+        "reason": "missing_evidence_keyword:invite policy",
+    } in result["failures"]
+    assert {
+        "name": "team invite policy role-boundary gap",
+        "reason": "missing_false_positive_keyword:administrator",
+    } in result["failures"]
+
+
 def test_evaluate_studio_candidates_requires_invariant_and_impact_when_expected():
     result = evaluate_studio_candidates(
         {

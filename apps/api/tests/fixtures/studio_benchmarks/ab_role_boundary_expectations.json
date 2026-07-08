@@ -36,6 +36,14 @@
       "require_impact_rationale": true,
       "require_repair_guidance": true,
       "require_regression_test": true,
+      "required_evidence_keywords": [
+        "invite-policy",
+        "update"
+      ],
+      "required_false_positive_keywords": [
+        "administrator",
+        "downstream service"
+      ],
       "max_duplicate_risk_score": 49
     }
   ],

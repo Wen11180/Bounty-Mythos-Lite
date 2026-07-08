@@ -229,6 +229,20 @@ def _candidate_quality_failures(
         failures.append("missing_evidence_needed")
     if not _string_list(candidate.get("false_positive_checks")):
         failures.append("missing_false_positive_checks")
+    for keyword in _missing_required_keywords(
+        candidate,
+        "evidence_needed",
+        expected,
+        "required_evidence_keywords",
+    ):
+        failures.append(f"missing_evidence_keyword:{keyword}")
+    for keyword in _missing_required_keywords(
+        candidate,
+        "false_positive_checks",
+        expected,
+        "required_false_positive_keywords",
+    ):
+        failures.append(f"missing_false_positive_keyword:{keyword}")
     if not _string_list(candidate.get("safe_validation_plan")):
         failures.append("missing_safe_validation_plan")
     for reason in _unsafe_validation_plan_reasons(candidate):
@@ -316,6 +330,19 @@ def _missing_advisory_signals(
         ):
             missing.append(artifact_kind)
     return missing
+
+
+def _missing_required_keywords(
+    candidate: dict[str, Any],
+    candidate_field: str,
+    expected: dict[str, Any],
+    expected_field: str,
+) -> list[str]:
+    required = _string_list(expected.get(expected_field))
+    if not required:
+        return []
+    candidate_text = " ".join(_string_list(candidate.get(candidate_field))).lower()
+    return [keyword for keyword in required if keyword.lower() not in candidate_text]
 
 
 def _candidate_evidence_gaps(
