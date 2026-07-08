@@ -118,10 +118,10 @@ export function toStudioArtifactChecklist(
 
   return [
     artifactChecklistItem("scope", "Scope", true, presentKinds),
+    artifactChecklistItem("policy", "Policy", true, presentKinds),
     artifactChecklistItem("code", "Authorized code", true, presentKinds),
-    artifactChecklistItem("policy", "Policy", false, presentKinds),
-    artifactChecklistItem("api", "API", false, presentKinds),
-    artifactChecklistItem("har", "HAR", false, presentKinds),
+    artifactChecklistItem("api", "API", true, presentKinds),
+    artifactChecklistItem("har", "HAR", true, presentKinds),
     artifactChecklistItem("sbom", "SBOM", false, presentKinds),
     artifactChecklistItem("sarif", "SARIF", false, presentKinds),
   ];
@@ -141,7 +141,7 @@ export function toStudioResearchReadiness(
   const checklist = toStudioArtifactChecklist(manifest);
   const missingRequired = checklist
     .filter((item) => item.required && !item.present)
-    .map((item) => item.label.toLowerCase());
+    .map((item) => missingArtifactLabel(item));
 
   if (missingRequired.length > 0) {
     return {
@@ -152,7 +152,7 @@ export function toStudioResearchReadiness(
 
   return {
     canStart: true,
-    reason: "Scope and code are ready for local candidate research.",
+    reason: "Policy, scope, API/HAR, and code are ready for A+B candidate research.",
   };
 }
 
@@ -212,6 +212,13 @@ function reportReadinessFromCandidate(
     reportSubmissionAllowed: candidate.report_readiness?.report_submission_allowed === true,
     status: safeText(candidate.report_readiness?.status, "submission_blocked"),
   };
+}
+
+function missingArtifactLabel(item: StudioArtifactChecklistItem): string {
+  if (item.kind === "api" || item.kind === "har") {
+    return item.label;
+  }
+  return item.label.toLowerCase();
 }
 
 function endpointFromCandidate(candidate: StudioCandidateInput): string {

@@ -2284,14 +2284,14 @@ def run_mythos_studio_workspace_research(
     session: Session = Depends(get_session),
 ) -> dict:
     manifest = load_workspace_manifest(request.workspace_path)
+    if _studio_missing_ab_artifacts(manifest):
+        raise HTTPException(
+            status_code=422,
+            detail="studio_ab_artifacts_required",
+        )
     scope_path = _studio_artifact_path(manifest, "scope")
     policy_path = _studio_artifact_path(manifest, "policy")
     repo_path = _studio_artifact_path(manifest, "code")
-    if scope_path is None or repo_path is None:
-        raise HTTPException(
-            status_code=422,
-            detail="studio_scope_and_code_required",
-        )
 
     repository = DatabaseRepository(session)
     try:
@@ -2395,6 +2395,22 @@ def _studio_artifact_path(manifest: dict, kind: str) -> str | None:
         if isinstance(source_path, str) and source_path:
             return source_path
     return None
+
+
+def _studio_missing_ab_artifacts(manifest: dict) -> list[str]:
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return ["scope", "policy", "code", "api", "har"]
+    present = {
+        artifact.get("kind")
+        for artifact in artifacts
+        if isinstance(artifact, dict) and isinstance(artifact.get("kind"), str)
+    }
+    return [
+        kind
+        for kind in ("scope", "policy", "code", "api", "har")
+        if kind not in present
+    ]
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:
@@ -2573,6 +2589,7 @@ def _studio_har_surface_facts(payload: object) -> list[dict[str, str]]:
                 "artifact_kind": "har",
                 "route_method": safe_preview_text(method.upper()),
                 "route_path": safe_preview_text(route_path),
+                "advisory_only": "true",
             }
         )
     return facts

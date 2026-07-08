@@ -46,6 +46,57 @@ def studio_test_session_override():
     return _override_get_session, testing_session
 
 
+def write_policy_artifact(tmp_path: Path) -> Path:
+    policy_path = tmp_path / "policy.md"
+    policy_path.write_text(
+        "Authorized local code plus API/HAR materials only. No live validation.",
+        encoding="utf-8",
+    )
+    return policy_path
+
+
+def write_api_artifact(tmp_path: Path, *, operation_id: str = "exportFile") -> Path:
+    api_path = tmp_path / "openapi.json"
+    api_path.write_text(
+        f"""
+{{
+  "openapi": "3.0.0",
+  "paths": {{
+    "/files/{{file_id}}/export": {{
+      "get": {{
+        "operationId": "{operation_id}"
+      }}
+    }}
+  }}
+}}
+""",
+        encoding="utf-8",
+    )
+    return api_path
+
+
+def write_har_artifact(tmp_path: Path) -> Path:
+    har_path = tmp_path / "traffic.har"
+    har_path.write_text(
+        """
+{
+  "log": {
+    "entries": [
+      {
+        "request": {
+          "method": "GET",
+          "url": "https://api.example.test/files/123/export"
+        }
+      }
+    ]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    return har_path
+
+
 def test_create_workspace_and_import_scope_updates_manifest(tmp_path: Path):
     response = client.post(
         "/mythos/studio/workspaces",
@@ -113,6 +164,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
     )
     scope_path = tmp_path / "scope.yaml"
     scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
 
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -123,7 +177,13 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (("scope", scope_path), ("code", repo)):
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+        ):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -209,9 +269,10 @@ def test_studio_run_uses_imported_policy_artifact_for_audit_hash(tmp_path: Path)
     scope_path = tmp_path / "scope.yaml"
     scope_text = f"allowed_repos:\n  - {repo}\n"
     scope_path.write_text(scope_text, encoding="utf-8")
-    policy_path = tmp_path / "policy.md"
-    policy_text = "Authorized local code plus API/HAR materials only. No live validation."
-    policy_path.write_text(policy_text, encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    policy_text = policy_path.read_text(encoding="utf-8")
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
 
     session_override, testing_session = studio_test_session_override()
     app.dependency_overrides[get_session] = session_override
@@ -227,6 +288,8 @@ def test_studio_run_uses_imported_policy_artifact_for_audit_hash(tmp_path: Path)
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
         ):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
@@ -273,22 +336,9 @@ def test_studio_candidates_include_imported_api_surface_context(tmp_path: Path):
     )
     scope_path = tmp_path / "scope.yaml"
     scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
-    api_path = tmp_path / "openapi.json"
-    api_path.write_text(
-        """
-{
-  "openapi": "3.0.0",
-  "paths": {
-    "/files/{file_id}/export": {
-      "get": {
-        "operationId": "exportFile"
-      }
-    }
-  }
-}
-""",
-        encoding="utf-8",
-    )
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
 
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -299,7 +349,13 @@ def test_studio_candidates_include_imported_api_surface_context(tmp_path: Path):
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (("scope", scope_path), ("code", repo), ("api", api_path)):
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+        ):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -337,6 +393,108 @@ def test_studio_candidates_include_imported_api_surface_context(tmp_path: Path):
         app.dependency_overrides.clear()
 
 
+def test_studio_candidates_include_imported_har_context_without_secrets(
+    tmp_path: Path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = tmp_path / "session.har"
+    har_path.write_text(
+        """
+{
+  "log": {
+    "entries": [
+      {
+        "request": {
+          "method": "GET",
+          "url": "https://api.example.test/files/123/export?download_token=secret-token",
+          "headers": [
+            {"name": "Authorization", "value": "Bearer secret-token"},
+            {"name": "Cookie", "value": "session=secret-token"}
+          ]
+        }
+      }
+    ]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+
+        candidates_response = client.get(
+            "/mythos/studio/workspaces/candidates",
+            params={"workspace_path": workspace_path},
+        )
+        assert candidates_response.status_code == 200
+        candidates = candidates_response.json()["candidates"]
+        har_facts = [
+            fact
+            for candidate in candidates
+            for fact in candidate["source_facts"]
+            if fact.get("artifact_kind") == "har"
+        ]
+
+        assert har_facts
+        assert har_facts[0]["route_path"] == "/files/123/export"
+        assert har_facts[0]["route_method"] == "GET"
+        assert any(fact.get("advisory_only") == "true" for fact in har_facts)
+        assert "session.har" not in str(candidates)
+        assert "download_token" not in str(candidates)
+        assert "secret-token" not in str(candidates)
+        assert "Authorization" not in str(candidates)
+        assert "Cookie" not in str(candidates)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
     tmp_path: Path,
 ):
@@ -356,6 +514,9 @@ def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
     )
     scope_path = tmp_path / "scope.yaml"
     scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
     sarif_path = tmp_path / "scanner.sarif"
     sarif_path.write_text(
         """
@@ -389,7 +550,10 @@ def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
 
         for kind, source_path in (
             ("scope", scope_path),
+            ("policy", policy_path),
             ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
             ("sarif", sarif_path),
         ):
             import_response = client.post(
@@ -453,6 +617,9 @@ def test_studio_candidates_include_imported_sbom_dependency_context_as_advisory(
     )
     scope_path = tmp_path / "scope.yaml"
     scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
     sbom_path = tmp_path / "deps.cdx.json"
     sbom_path.write_text(
         """
@@ -491,7 +658,10 @@ def test_studio_candidates_include_imported_sbom_dependency_context_as_advisory(
 
         for kind, source_path in (
             ("scope", scope_path),
+            ("policy", policy_path),
             ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
             ("sbom", sbom_path),
         ):
             import_response = client.post(
@@ -541,7 +711,7 @@ def test_studio_candidates_include_imported_sbom_dependency_context_as_advisory(
         app.dependency_overrides.clear()
 
 
-def test_studio_run_requires_scope_and_code_artifacts(tmp_path: Path):
+def test_studio_run_requires_ab_authorized_artifacts(tmp_path: Path):
     workspace_response = client.post(
         "/mythos/studio/workspaces",
         json={"root_path": str(tmp_path), "name": "acme-api"},
@@ -554,4 +724,4 @@ def test_studio_run_requires_scope_and_code_artifacts(tmp_path: Path):
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "studio_scope_and_code_required"
+    assert response.json()["detail"] == "studio_ab_artifacts_required"

@@ -45,7 +45,7 @@ test("candidate cards map missing endpoint and code path to review fallbacks", (
   assert.equal(card.status, "needs_review");
 });
 
-test("artifact checklist marks required authorized inputs before research", () => {
+test("artifact checklist marks required A+B authorized inputs before research", () => {
   const checklist = toStudioArtifactChecklist({
     artifacts: [
       { kind: "scope", source_path: "C:/targets/scope.yaml" },
@@ -59,14 +59,16 @@ test("artifact checklist marks required authorized inputs before research", () =
       .map((item) => [item.kind, item.present, item.status]),
     [
       ["scope", true, "ready"],
+      ["policy", true, "ready"],
       ["code", false, "missing"],
+      ["api", false, "missing"],
+      ["har", false, "missing"],
     ],
   );
-  assert.equal(checklist.find((item) => item.kind === "policy")?.present, true);
-  assert.equal(checklist.find((item) => item.kind === "har")?.status, "optional");
+  assert.equal(checklist.find((item) => item.kind === "sbom")?.status, "optional");
 });
 
-test("research readiness requires a workspace plus scope and code artifacts", () => {
+test("research readiness requires a workspace plus A+B artifacts", () => {
   const missingCode = toStudioResearchReadiness("", {
     artifacts: [{ kind: "scope", source_path: "C:/targets/scope.yaml" }],
   });
@@ -77,12 +79,27 @@ test("research readiness requires a workspace plus scope and code artifacts", ()
   const ready = toStudioResearchReadiness("C:/mythos-workspaces/acme", {
     artifacts: [
       { kind: "scope", source_path: "C:/targets/scope.yaml" },
+      { kind: "policy", source_path: "C:/targets/policy.md" },
       { kind: "code", source_path: "C:/targets/repo" },
+      { kind: "api", source_path: "C:/targets/openapi.json" },
+      { kind: "har", source_path: "C:/targets/session.har" },
     ],
   });
 
   assert.equal(ready.canStart, true);
-  assert.equal(ready.reason, "Scope and code are ready for local candidate research.");
+  assert.equal(ready.reason, "Policy, scope, API/HAR, and code are ready for A+B candidate research.");
+});
+
+test("research readiness blocks source-only workspaces before A+B materials are imported", () => {
+  const readiness = toStudioResearchReadiness("C:/mythos-workspaces/acme", {
+    artifacts: [
+      { kind: "scope", source_path: "C:/targets/scope.yaml" },
+      { kind: "code", source_path: "C:/targets/repo" },
+    ],
+  });
+
+  assert.equal(readiness.canStart, false);
+  assert.equal(readiness.reason, "Import policy and API and HAR before research.");
 });
 
 test("candidate cards expose review rationale and ranking reasons", () => {
