@@ -74,6 +74,33 @@ def test_build_crs_fuzzing_plan_detects_decoder_and_validator_candidates():
     }
 
 
+def test_build_crs_fuzzing_plan_detects_protocol_handler_candidate_without_execution():
+    plan = build_crs_fuzzing_plan(
+        [
+            {
+                "path": "src/protocol.py",
+                "content": "\n".join(
+                    [
+                        "import struct",
+                        "",
+                        "def handle_frame(raw: bytes):",
+                        "    message_type, length = struct.unpack('!BH', raw[:3])",
+                        "    return message_type, raw[3:3 + length]",
+                    ]
+                ),
+            }
+        ]
+    )
+
+    assert plan.parser_candidates[0].symbol_name == "handle_frame"
+    assert plan.parser_candidates[0].candidate_type == "protocol_handler"
+    assert plan.harness_plans[0].target_symbol == "handle_frame"
+    assert plan.fuzzer_plan.status == "not_executed"
+    assert plan.fuzzer_plan.execution_allowed is False
+    assert plan.fuzzer_plan.command_preview == "not generated until local harness and human approval exist"
+    assert "no_network_access" in plan.fuzzer_plan.safety_notes
+
+
 def test_build_crs_fuzzing_plan_detects_bom_prefixed_parser_candidate():
     plan = build_crs_fuzzing_plan(
         [

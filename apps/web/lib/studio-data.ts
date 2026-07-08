@@ -42,14 +42,31 @@ export type StudioWorkspaceSummary = {
 export type StudioMissionCandidateInput = {
   affected_code_path?: string;
   affected_endpoint?: string;
+  deduplication_review_status?: string;
+  evidence_gap_count?: number;
+  evidence_need_count?: number;
+  evidence_review_status?: string;
   execution_allowed?: boolean;
+  false_positive_check_count?: number;
   hypothesis_id?: string;
+  next_report_action?: string;
+  policy_review_status?: string;
   priority_score?: number;
   provenance_artifacts?: string[];
+  provenance_review_status?: string;
+  refutation_review_status?: string;
+  refutation_status?: string;
   report_status?: string;
   risk?: string;
+  safe_validation_step_count?: number;
   validation_status?: string;
   vuln_type?: string;
+};
+
+export type StudioMissionResearchLoopStageInput = {
+  key?: string;
+  status?: string;
+  summary?: string;
 };
 
 export type StudioMissionSummary = {
@@ -57,6 +74,10 @@ export type StudioMissionSummary = {
     missing?: string[];
     present?: string[];
     required?: string[];
+  };
+  advisory_artifacts?: {
+    present?: string[];
+    supported?: string[];
   };
   blocked_actions?: string[];
   candidate_count?: number;
@@ -69,6 +90,7 @@ export type StudioMissionSummary = {
     top_candidates_limited?: boolean;
     validation_execution_allowed?: boolean;
   };
+  research_loop?: StudioMissionResearchLoopStageInput[];
   run_id?: string | null;
   scope_guard_status?: string;
   top_candidates?: StudioMissionCandidateInput[];
@@ -77,17 +99,36 @@ export type StudioMissionSummary = {
 export type StudioMissionPanelCandidate = {
   affectedCodePath: string;
   affectedEndpoint: string;
+  deduplicationReviewStatus: string;
+  evidenceGapCount: number;
+  evidenceNeedCount: number;
+  evidenceReviewStatus: string;
   executionAllowed: boolean;
+  falsePositiveCheckCount: number;
   hypothesisId: string;
+  nextReportAction: string;
+  policyReviewStatus: string;
   priorityScore: number;
   provenanceArtifacts: string[];
+  provenanceReviewStatus: string;
+  refutationReviewStatus: string;
+  refutationStatus: string;
   reportStatus: string;
   risk: string;
+  safeValidationStepCount: number;
   validationStatus: string;
   vulnType: string;
 };
 
+export type StudioMissionResearchLoopStage = {
+  key: string;
+  label: string;
+  status: string;
+  summary: string;
+};
+
 export type StudioMissionPanel = {
+  advisoryContextLabel: string;
   artifactCoverage: string;
   blockedActions: string[];
   candidateCountLabel: string;
@@ -99,6 +140,7 @@ export type StudioMissionPanel = {
     validationExecutionAllowed: boolean;
   };
   modeLabel: string;
+  researchLoopStages: StudioMissionResearchLoopStage[];
   runId: string;
   safeNextActions: string[];
   scopeGuardLabel: string;
@@ -106,7 +148,16 @@ export type StudioMissionPanel = {
 };
 
 export type StudioArtifactChecklistItem = {
-  kind: "scope" | "code" | "policy" | "api" | "har" | "sbom" | "sarif";
+  kind:
+    | "scope"
+    | "code"
+    | "policy"
+    | "api"
+    | "har"
+    | "sbom"
+    | "sarif"
+    | "fuzzing"
+    | "strategy";
   label: string;
   present: boolean;
   required: boolean;
@@ -203,8 +254,11 @@ export function toStudioWorkspaceSummary(
 export function toStudioMissionPanel(mission: StudioMissionSummary | null): StudioMissionPanel {
   const required = mission?.artifacts?.required ?? [];
   const present = mission?.artifacts?.present ?? [];
+  const advisoryPresent = mission?.advisory_artifacts?.present ?? [];
   const candidateCount = mission?.candidate_count ?? mission?.top_candidates?.length ?? 0;
   return {
+    advisoryContextLabel:
+      advisoryPresent.length > 0 ? advisoryPresent.join(", ") : "No advisory context",
     artifactCoverage: `${present.length}/${required.length} required artifacts`,
     blockedActions: mission?.blocked_actions ?? [],
     candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
@@ -220,18 +274,41 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       mission?.mode === "local_ai_vulnerability_research_workbench"
         ? "Local AI vulnerability research workbench"
         : "Local research workbench",
+    researchLoopStages: (mission?.research_loop ?? []).map((stage) => {
+      const key = safeText(stage.key, "unknown");
+      return {
+        key,
+        label: missionResearchLoopLabel(key),
+        status: safeText(stage.status, "not_started"),
+        summary: safeText(stage.summary, "Review status unavailable."),
+      };
+    }),
     runId: safeText(mission?.run_id, "No run selected"),
     safeNextActions: (mission?.next_actions ?? []).map(missionActionLabel),
     scopeGuardLabel: scopeGuardLabel(mission?.scope_guard_status),
     topCandidates: (mission?.top_candidates ?? []).slice(0, 5).map((candidate, index) => ({
       affectedCodePath: safeText(candidate.affected_code_path, "Code path needs review"),
       affectedEndpoint: safeText(candidate.affected_endpoint, "Endpoint needs review"),
+      deduplicationReviewStatus: safeText(
+        candidate.deduplication_review_status,
+        "needs_human_review",
+      ),
+      evidenceGapCount: candidate.evidence_gap_count ?? 0,
+      evidenceNeedCount: candidate.evidence_need_count ?? 0,
+      evidenceReviewStatus: safeText(candidate.evidence_review_status, "needs_human_review"),
       executionAllowed: candidate.execution_allowed === true,
+      falsePositiveCheckCount: candidate.false_positive_check_count ?? 0,
       hypothesisId: safeText(candidate.hypothesis_id, `H-${String(index + 1).padStart(3, "0")}`),
+      nextReportAction: safeText(candidate.next_report_action, "Review evidence before export."),
+      policyReviewStatus: safeText(candidate.policy_review_status, "needs_human_review"),
       priorityScore: candidate.priority_score ?? 0,
       provenanceArtifacts: candidate.provenance_artifacts ?? [],
+      provenanceReviewStatus: safeText(candidate.provenance_review_status, "needs_human_review"),
+      refutationReviewStatus: safeText(candidate.refutation_review_status, "needs_human_review"),
+      refutationStatus: safeText(candidate.refutation_status, "unverified"),
       reportStatus: safeText(candidate.report_status, "submission_blocked"),
       risk: safeText(candidate.risk, "medium"),
+      safeValidationStepCount: candidate.safe_validation_step_count ?? 0,
       validationStatus: safeText(candidate.validation_status, "needs_human_review"),
       vulnType: safeText(candidate.vuln_type, "candidate"),
     })),
@@ -255,6 +332,8 @@ export function toStudioArtifactChecklist(
     artifactChecklistItem("har", "HAR", true, presentKinds),
     artifactChecklistItem("sbom", "SBOM", false, presentKinds),
     artifactChecklistItem("sarif", "SARIF", false, presentKinds),
+    artifactChecklistItem("fuzzing", "Fuzzing plan", false, presentKinds),
+    artifactChecklistItem("strategy", "Strategy", false, presentKinds),
   ];
 }
 
@@ -418,6 +497,40 @@ function missionActionLabel(value: string): string {
     .filter(Boolean)
     .map((word, index) => (index === 0 ? word[0]?.toUpperCase() + word.slice(1) : word))
     .join(" ");
+}
+
+function missionResearchLoopLabel(value: string): string {
+  if (value === "scope_guard") {
+    return "Scope Guard";
+  }
+  if (value === "target_intake") {
+    return "Target intake";
+  }
+  if (value === "attack_surface_modeling") {
+    return "Attack-surface modeling";
+  }
+  if (value === "semantic_audit") {
+    return "Semantic audit";
+  }
+  if (value === "hypothesis_generation") {
+    return "Hypothesis generation";
+  }
+  if (value === "refutation_review") {
+    return "Refutation review";
+  }
+  if (value === "deduplication_review") {
+    return "Deduplication review";
+  }
+  if (value === "safe_validation_planning") {
+    return "Safe validation planning";
+  }
+  if (value === "evidence_review") {
+    return "Evidence review";
+  }
+  if (value === "submission_blocked_report") {
+    return "Submission-blocked report";
+  }
+  return missionActionLabel(value);
 }
 
 function safeText(value: unknown, fallback: string): string {

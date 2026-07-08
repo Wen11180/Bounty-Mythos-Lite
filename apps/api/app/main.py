@@ -2525,6 +2525,10 @@ def _studio_mission_summary(
     present = _studio_present_ab_artifacts(manifest)
     missing = [kind for kind in _studio_required_ab_artifacts() if kind not in present]
     top_candidates = candidates[:5]
+    candidate_summaries = [
+        _studio_mission_candidate_summary(candidate)
+        for candidate in top_candidates
+    ]
     return {
         "mode": "local_ai_vulnerability_research_workbench",
         "run_id": run_id,
@@ -2538,11 +2542,18 @@ def _studio_mission_summary(
             "present": present,
             "missing": missing,
         },
+        "advisory_artifacts": {
+            "supported": list(_studio_supported_advisory_artifacts()),
+            "present": _studio_present_advisory_artifacts(manifest),
+        },
         "candidate_count": len(top_candidates),
-        "top_candidates": [
-            _studio_mission_candidate_summary(candidate)
-            for candidate in top_candidates
-        ],
+        "top_candidates": candidate_summaries,
+        "research_loop": _studio_mission_research_loop(
+            present,
+            missing,
+            run_id,
+            candidate_summaries,
+        ),
         "quality_gates": {
             "top_candidates_limited": len(candidates) <= 5,
             "submission_blocked": True,
@@ -2567,6 +2578,10 @@ def _studio_required_ab_artifacts() -> tuple[str, ...]:
     return ("scope", "policy", "code", "api", "har")
 
 
+def _studio_supported_advisory_artifacts() -> tuple[str, ...]:
+    return ("sarif", "sbom", "fuzzing", "strategy")
+
+
 def _studio_present_ab_artifacts(manifest: dict) -> list[str]:
     artifacts = manifest.get("artifacts", [])
     if not isinstance(artifacts, list):
@@ -2580,8 +2595,132 @@ def _studio_present_ab_artifacts(manifest: dict) -> list[str]:
     return [kind for kind in _studio_required_ab_artifacts() if kind in present]
 
 
+def _studio_present_advisory_artifacts(manifest: dict) -> list[str]:
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return []
+    present = {
+        artifact.get("kind")
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+        and artifact.get("kind") in _studio_supported_advisory_artifacts()
+    }
+    return [kind for kind in _studio_supported_advisory_artifacts() if kind in present]
+
+
+def _studio_mission_research_loop(
+    present_artifacts: list[str],
+    missing_artifacts: list[str],
+    run_id: str | None,
+    candidates: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    has_candidates = len(candidates) > 0
+    has_endpoint = any(candidate.get("affected_endpoint") for candidate in candidates)
+    has_code_path = any(candidate.get("affected_code_path") for candidate in candidates)
+    has_refutation = any(
+        candidate.get("refutation_review_status") for candidate in candidates
+    )
+    has_deduplication = any(
+        candidate.get("deduplication_review_status") for candidate in candidates
+    )
+    has_validation_plan = any(
+        candidate.get("validation_status")
+        and isinstance(candidate.get("safe_validation_step_count"), int)
+        and candidate.get("safe_validation_step_count") > 0
+        for candidate in candidates
+    )
+    has_evidence_review = any(
+        candidate.get("evidence_review_status") for candidate in candidates
+    )
+
+    return [
+        _studio_mission_stage(
+            "scope_guard",
+            "complete" if "scope" in present_artifacts else "blocked",
+            "Scope Guard is ready for imported authorized materials."
+            if "scope" in present_artifacts
+            else "Scope artifact is required before research can start.",
+        ),
+        _studio_mission_stage(
+            "target_intake",
+            "complete" if not missing_artifacts else "blocked",
+            "Required A+B artifacts are present."
+            if not missing_artifacts
+            else "Required A+B artifacts are still missing.",
+        ),
+        _studio_mission_stage(
+            "attack_surface_modeling",
+            "complete" if has_endpoint else "not_started",
+            "API and traffic context produced affected endpoint summaries."
+            if has_endpoint
+            else "Endpoint modeling starts after a local research run.",
+        ),
+        _studio_mission_stage(
+            "semantic_audit",
+            "complete" if has_code_path else "not_started",
+            "Semantic audit produced affected code-path summaries."
+            if has_code_path
+            else "Code-path audit starts after a local research run.",
+        ),
+        _studio_mission_stage(
+            "hypothesis_generation",
+            "complete" if has_candidates else "not_started",
+            "Top candidate hypotheses are ready for review."
+            if has_candidates
+            else "Candidate generation starts after authorized intake.",
+        ),
+        _studio_mission_stage(
+            "refutation_review",
+            "needs_review" if has_refutation else "not_started",
+            "Candidate refutation questions need human review."
+            if has_refutation
+            else "Refutation review starts after candidates exist.",
+        ),
+        _studio_mission_stage(
+            "deduplication_review",
+            "needs_review" if has_deduplication else "not_started",
+            "Duplicate-risk review needs human review."
+            if has_deduplication
+            else "Deduplication review starts after candidates exist.",
+        ),
+        _studio_mission_stage(
+            "safe_validation_planning",
+            "needs_review" if has_validation_plan else "not_started",
+            "Safe validation plans are drafted but execution remains blocked."
+            if has_validation_plan
+            else "Safe validation planning starts after candidates exist.",
+        ),
+        _studio_mission_stage(
+            "evidence_review",
+            "needs_review" if has_evidence_review else "not_started",
+            "Evidence needs and gaps require human review."
+            if has_evidence_review
+            else "Evidence review starts after candidates exist.",
+        ),
+        _studio_mission_stage(
+            "submission_blocked_report",
+            "blocked" if run_id else "not_started",
+            "Submission-blocked report draft remains review-only."
+            if run_id
+            else "Report drafting starts after a local research run.",
+        ),
+    ]
+
+
+def _studio_mission_stage(key: str, status: str, summary: str) -> dict[str, str]:
+    return {
+        "key": key,
+        "status": status,
+        "summary": safe_preview_text(summary),
+    }
+
+
 def _studio_mission_candidate_summary(candidate: dict) -> dict[str, object]:
     report_readiness = candidate.get("report_readiness", {})
+    evidence_review = candidate.get("evidence_review", {})
+    deduplication_review = candidate.get("deduplication_review", {})
+    refutation_review = candidate.get("refutation_review", {})
+    policy_review = candidate.get("policy_review", {})
     validation_review = candidate.get("validation_review", {})
     provenance_review = candidate.get("provenance_review", {})
     return {
@@ -2594,14 +2733,49 @@ def _studio_mission_candidate_summary(candidate: dict) -> dict[str, object]:
         "report_status": _studio_report_guidance_text(
             report_readiness.get("status", "") if isinstance(report_readiness, dict) else ""
         ),
+        "next_report_action": _studio_report_guidance_text(
+            report_readiness.get("next_allowed_action", "")
+            if isinstance(report_readiness, dict)
+            else ""
+        ),
+        "evidence_review_status": _studio_report_guidance_text(
+            evidence_review.get("status", "") if isinstance(evidence_review, dict) else ""
+        ),
+        "deduplication_review_status": _studio_report_guidance_text(
+            deduplication_review.get("status", "")
+            if isinstance(deduplication_review, dict)
+            else ""
+        ),
+        "refutation_status": _studio_report_guidance_text(candidate.get("refutation_status", "")),
+        "refutation_review_status": _studio_report_guidance_text(
+            refutation_review.get("status", "") if isinstance(refutation_review, dict) else ""
+        ),
+        "policy_review_status": _studio_report_guidance_text(
+            policy_review.get("status", "") if isinstance(policy_review, dict) else ""
+        ),
         "validation_status": _studio_report_guidance_text(
             validation_review.get("status", "") if isinstance(validation_review, dict) else ""
+        ),
+        "provenance_review_status": _studio_report_guidance_text(
+            provenance_review.get("status", "") if isinstance(provenance_review, dict) else ""
         ),
         "execution_allowed": False,
         "provenance_artifacts": _studio_report_guidance_list(
             provenance_review.get("artifact_kinds", [])
             if isinstance(provenance_review, dict)
             else []
+        ),
+        "evidence_need_count": len(
+            _studio_report_guidance_list(candidate.get("evidence_needed", []))
+        ),
+        "false_positive_check_count": len(
+            _studio_report_guidance_list(candidate.get("false_positive_checks", []))
+        ),
+        "evidence_gap_count": len(
+            _studio_report_evidence_gap_labels(candidate.get("evidence_gaps", []))
+        ),
+        "safe_validation_step_count": len(
+            _studio_report_guidance_list(candidate.get("safe_validation_plan", []))
         ),
     }
 

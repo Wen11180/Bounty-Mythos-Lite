@@ -53,6 +53,10 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       present: ["scope", "policy", "code", "api", "har"],
       required: ["scope", "policy", "code", "api", "har"],
     },
+    advisory_artifacts: {
+      present: ["strategy"],
+      supported: ["sarif", "sbom", "fuzzing", "strategy"],
+    },
     blocked_actions: [
       "execute_live_validation",
       "touch_real_user_data",
@@ -74,16 +78,49 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     },
     run_id: "pipeline_run_1",
     scope_guard_status: "scope_imported",
+    research_loop: [
+      {
+        key: "scope_guard",
+        status: "complete",
+        summary: "Scope Guard is ready for imported authorized materials.",
+      },
+      {
+        key: "target_intake",
+        status: "complete",
+        summary: "Required A+B artifacts are present.",
+      },
+      {
+        key: "refutation_review",
+        status: "needs_review",
+        summary: "Candidate refutation questions need human review.",
+      },
+      {
+        key: "submission_blocked_report",
+        status: "blocked",
+        summary: "Submission-blocked report draft remains review-only.",
+      },
+    ],
     top_candidates: [
       {
         affected_code_path: "routes.py:export_file",
         affected_endpoint: "GET /files/{file_id}/export",
+        deduplication_review_status: "needs_human_review",
+        evidence_gap_count: 0,
+        evidence_need_count: 2,
+        evidence_review_status: "needs_human_review",
         execution_allowed: false,
+        false_positive_check_count: 2,
         hypothesis_id: "H-001",
+        next_report_action: "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
+        policy_review_status: "needs_human_review",
         priority_score: 80,
         provenance_artifacts: ["scope", "policy", "code", "api", "har"],
+        provenance_review_status: "needs_human_review",
+        refutation_review_status: "needs_human_review",
+        refutation_status: "unverified",
         report_status: "submission_blocked",
         risk: "high",
+        safe_validation_step_count: 3,
         validation_status: "needs_human_approval",
         vuln_type: "authorization_gap",
       },
@@ -93,6 +130,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.equal(panel.modeLabel, "Local AI vulnerability research workbench");
   assert.equal(panel.scopeGuardLabel, "Scope imported");
   assert.equal(panel.artifactCoverage, "5/5 required artifacts");
+  assert.equal(panel.advisoryContextLabel, "strategy");
   assert.equal(panel.candidateCountLabel, "1 Top candidate");
   assert.deepEqual(panel.safeNextActions, [
     "Review top candidates",
@@ -108,9 +146,49 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.equal(panel.gates.reportSubmissionAllowed, false);
   assert.equal(panel.gates.validationExecutionAllowed, false);
   assert.equal(panel.gates.humanReviewRequired, true);
+  assert.deepEqual(panel.researchLoopStages, [
+    {
+      key: "scope_guard",
+      label: "Scope Guard",
+      status: "complete",
+      summary: "Scope Guard is ready for imported authorized materials.",
+    },
+    {
+      key: "target_intake",
+      label: "Target intake",
+      status: "complete",
+      summary: "Required A+B artifacts are present.",
+    },
+    {
+      key: "refutation_review",
+      label: "Refutation review",
+      status: "needs_review",
+      summary: "Candidate refutation questions need human review.",
+    },
+    {
+      key: "submission_blocked_report",
+      label: "Submission-blocked report",
+      status: "blocked",
+      summary: "Submission-blocked report draft remains review-only.",
+    },
+  ]);
   assert.equal(panel.topCandidates[0]?.reportStatus, "submission_blocked");
+  assert.equal(
+    panel.topCandidates[0]?.nextReportAction,
+    "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
+  );
+  assert.equal(panel.topCandidates[0]?.evidenceReviewStatus, "needs_human_review");
+  assert.equal(panel.topCandidates[0]?.deduplicationReviewStatus, "needs_human_review");
+  assert.equal(panel.topCandidates[0]?.refutationStatus, "unverified");
+  assert.equal(panel.topCandidates[0]?.refutationReviewStatus, "needs_human_review");
+  assert.equal(panel.topCandidates[0]?.policyReviewStatus, "needs_human_review");
   assert.equal(panel.topCandidates[0]?.validationStatus, "needs_human_approval");
+  assert.equal(panel.topCandidates[0]?.provenanceReviewStatus, "needs_human_review");
   assert.equal(panel.topCandidates[0]?.executionAllowed, false);
+  assert.equal(panel.topCandidates[0]?.evidenceNeedCount, 2);
+  assert.equal(panel.topCandidates[0]?.falsePositiveCheckCount, 2);
+  assert.equal(panel.topCandidates[0]?.evidenceGapCount, 0);
+  assert.equal(panel.topCandidates[0]?.safeValidationStepCount, 3);
   assert.deepEqual(panel.topCandidates[0]?.provenanceArtifacts, [
     "scope",
     "policy",
@@ -142,6 +220,34 @@ test("artifact checklist marks required A+B authorized inputs before research", 
     ],
   );
   assert.equal(checklist.find((item) => item.kind === "sbom")?.status, "optional");
+  assert.equal(checklist.find((item) => item.kind === "strategy")?.status, "optional");
+  assert.equal(checklist.find((item) => item.kind === "fuzzing")?.status, "optional");
+});
+
+test("artifact checklist treats strategy notes as optional advisory context", () => {
+  const checklist = toStudioArtifactChecklist({
+    artifacts: [
+      { kind: "scope", source_path: "C:/targets/scope.yaml" },
+      { kind: "policy", source_path: "C:/targets/policy.md" },
+      { kind: "code", source_path: "C:/targets/repo" },
+      { kind: "api", source_path: "C:/targets/openapi.json" },
+      { kind: "har", source_path: "C:/targets/session.har" },
+      { kind: "strategy", source_path: "C:/targets/strategy.md" },
+    ],
+  });
+
+  assert.equal(checklist.find((item) => item.kind === "strategy")?.present, true);
+  assert.equal(checklist.find((item) => item.kind === "strategy")?.status, "ready");
+  assert.equal(toStudioResearchReadiness("C:/mythos-workspaces/acme", {
+    artifacts: [
+      { kind: "scope", source_path: "C:/targets/scope.yaml" },
+      { kind: "policy", source_path: "C:/targets/policy.md" },
+      { kind: "code", source_path: "C:/targets/repo" },
+      { kind: "api", source_path: "C:/targets/openapi.json" },
+      { kind: "har", source_path: "C:/targets/session.har" },
+      { kind: "strategy", source_path: "C:/targets/strategy.md" },
+    ],
+  }).canStart, true);
 });
 
 test("research readiness requires a workspace plus A+B artifacts", () => {
@@ -400,10 +506,12 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /toStudioMissionPanel/);
   assert.match(workbench, /missionPanel/);
   assert.match(workbench, /Mission control/);
+  assert.match(workbench, /Research loop/);
   assert.match(workbench, /missionPanel\.artifactCoverage/);
+  assert.match(workbench, /missionPanel\.researchLoopStages/);
   assert.match(workbench, /missionPanel\.safeNextActions/);
   assert.match(workbench, /missionPanel\.topCandidates/);
-  assert.doesNotMatch(workbench, /executeValidation|submitReport/);
+  assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer/);
 });
 
 test("studio workbench imports policy as a first-class authorized artifact", async () => {
@@ -442,6 +550,29 @@ test("studio workbench imports SBOM and SARIF as optional local context", async 
   assert.match(workbench, /kind: "sarif"/);
   assert.match(workbench, /setSbomPath/);
   assert.match(workbench, /setSarifPath/);
+});
+
+test("studio workbench imports strategy and fuzzing plans as optional advisory context", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /strategyPath/);
+  assert.match(workbench, /fuzzingPath/);
+  assert.match(workbench, /Strategy file/);
+  assert.match(workbench, /Fuzzing plan/);
+  assert.match(workbench, /kind: "strategy"/);
+  assert.match(workbench, /kind: "fuzzing"/);
+  assert.match(workbench, /setStrategyPath/);
+  assert.match(workbench, /setFuzzingPath/);
+  assert.match(workbench, /missionPanel\.advisoryContextLabel/);
+  assert.match(workbench, /candidate\.evidenceReviewStatus/);
+  assert.match(workbench, /candidate\.refutationReviewStatus/);
+  assert.match(workbench, /candidate\.provenanceReviewStatus/);
+  assert.match(workbench, /candidate\.deduplicationReviewStatus/);
+  assert.match(workbench, /candidate\.safeValidationStepCount/);
+  assert.doesNotMatch(workbench, /executeFuzzing|runFuzzer|executeValidation|submitReport/);
 });
 
 test("studio workbench shows artifact readiness before research", async () => {

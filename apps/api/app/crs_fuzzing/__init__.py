@@ -184,13 +184,14 @@ def detect_parser_candidates(authorized_code_files: list[dict[str, str]]) -> lis
         content = content.lstrip("\ufeff")
         for function_name in _function_names(content):
             candidate_type = _candidate_type(function_name)
-            if candidate_type is None and not _body_has_protocol_marker(content, function_name):
+            has_protocol_marker = _body_has_protocol_marker(content, function_name)
+            if candidate_type is None and not has_protocol_marker:
                 continue
             candidates.append(
                 ParserCandidate(
                     source_path=source_path,
                     symbol_name=function_name,
-                    candidate_type=candidate_type or "parser",
+                    candidate_type=candidate_type or "protocol_handler",
                     reason="parser_decoder_validator_candidate",
                 )
             )

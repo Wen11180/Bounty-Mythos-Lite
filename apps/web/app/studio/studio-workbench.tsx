@@ -61,6 +61,8 @@ export function StudioWorkbench() {
   const [harPath, setHarPath] = useState("");
   const [sbomPath, setSbomPath] = useState("");
   const [sarifPath, setSarifPath] = useState("");
+  const [fuzzingPath, setFuzzingPath] = useState("");
+  const [strategyPath, setStrategyPath] = useState("");
   const [expectationsPath, setExpectationsPath] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [manifest, setManifest] = useState<StudioWorkspaceManifest>(emptyManifest);
@@ -217,6 +219,8 @@ export function StudioWorkbench() {
         { kind: "har", source_path: harPath },
         { kind: "sbom", source_path: sbomPath },
         { kind: "sarif", source_path: sarifPath },
+        { kind: "fuzzing", source_path: fuzzingPath },
+        { kind: "strategy", source_path: strategyPath },
       ]) {
         if (!artifact.source_path.trim()) {
           continue;
@@ -628,6 +632,32 @@ export function StudioWorkbench() {
                 value={sarifPath}
                 onChange={setSarifPath}
               />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="Fuzzing plan"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setFuzzingPath,
+                    title: "Select fuzzing plan",
+                  })
+                }
+                value={fuzzingPath}
+                onChange={setFuzzingPath}
+              />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="Strategy file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setStrategyPath,
+                    title: "Select strategy notes",
+                  })
+                }
+                value={strategyPath}
+                onChange={setStrategyPath}
+              />
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
               <p className="font-semibold">Artifact readiness</p>
@@ -754,6 +784,7 @@ export function StudioWorkbench() {
                 <StatusRow label="Run" value={missionPanel.runId} />
                 <StatusRow label="Scope Guard" value={missionPanel.scopeGuardLabel} warning />
                 <StatusRow label="Artifact coverage" value={missionPanel.artifactCoverage} />
+                <StatusRow label="Advisory context" value={missionPanel.advisoryContextLabel} />
                 <StatusRow label="Candidates" value={missionPanel.candidateCountLabel} />
                 <StatusRow
                   label="Report gate"
@@ -770,13 +801,16 @@ export function StudioWorkbench() {
                   warning
                 />
               </dl>
+              <ListBlock
+                title="Research loop"
+                items={missionPanel.researchLoopStages.map(
+                  (stage) => `${stage.label}: ${stage.status} - ${stage.summary}`,
+                )}
+              />
               <ListBlock title="Safe next actions" items={missionPanel.safeNextActions} />
               <ListBlock
                 title="Mission Top candidates"
-                items={missionPanel.topCandidates.map(
-                  (candidate) =>
-                    `${candidate.hypothesisId}: ${candidate.affectedEndpoint} -> ${candidate.affectedCodePath}`,
-                )}
+                items={missionPanel.topCandidates.map(missionCandidateLine)}
               />
             </div>
             <p className="font-semibold text-[var(--warning)]">submission-blocked</p>
@@ -982,6 +1016,20 @@ function ListBlock({ items, title }: { items: string[]; title: string }) {
       )}
     </div>
   );
+}
+
+function missionCandidateLine(
+  candidate: ReturnType<typeof toStudioMissionPanel>["topCandidates"][number],
+): string {
+  return [
+    `${candidate.hypothesisId}: ${candidate.affectedEndpoint} -> ${candidate.affectedCodePath}`,
+    `evidence ${candidate.evidenceReviewStatus}/${candidate.evidenceNeedCount}`,
+    `refutation ${candidate.refutationStatus}/${candidate.refutationReviewStatus}`,
+    `provenance ${candidate.provenanceReviewStatus}`,
+    `dedup ${candidate.deduplicationReviewStatus}`,
+    `validation ${candidate.validationStatus}/${candidate.safeValidationStepCount}`,
+    `report ${candidate.reportStatus}`,
+  ].join("; ");
 }
 
 function logTone(tone: LogEntry["tone"]): string {

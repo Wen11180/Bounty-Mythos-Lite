@@ -649,11 +649,146 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert candidate["affected_endpoint"] == "GET /files/{file_id}/export"
         assert candidate["affected_code_path"] == "routes.py:export_file"
         assert candidate["report_status"] == "submission_blocked"
+        assert candidate["next_report_action"].startswith("Review evidence")
+        assert "report preview" in candidate["next_report_action"]
+        assert candidate["evidence_review_status"] == "needs_human_review"
+        assert candidate["deduplication_review_status"] == "needs_human_review"
+        assert candidate["refutation_status"] == "unverified"
+        assert candidate["refutation_review_status"] == "needs_human_review"
+        assert candidate["policy_review_status"] == "needs_human_review"
         assert candidate["validation_status"] == "needs_human_approval"
+        assert candidate["provenance_review_status"] == "needs_human_review"
         assert candidate["execution_allowed"] is False
         assert candidate["provenance_artifacts"] == ["scope", "policy", "code", "api", "har"]
+        assert candidate["evidence_need_count"] >= 1
+        assert candidate["false_positive_check_count"] >= 1
+        assert candidate["evidence_gap_count"] == 0
+        assert candidate["safe_validation_step_count"] >= 1
+        research_loop = mission["research_loop"]
+        assert [stage["key"] for stage in research_loop] == [
+            "scope_guard",
+            "target_intake",
+            "attack_surface_modeling",
+            "semantic_audit",
+            "hypothesis_generation",
+            "refutation_review",
+            "deduplication_review",
+            "safe_validation_planning",
+            "evidence_review",
+            "submission_blocked_report",
+        ]
+        stage_statuses = {stage["key"]: stage["status"] for stage in research_loop}
+        assert stage_statuses == {
+            "scope_guard": "complete",
+            "target_intake": "complete",
+            "attack_surface_modeling": "complete",
+            "semantic_audit": "complete",
+            "hypothesis_generation": "complete",
+            "refutation_review": "needs_review",
+            "deduplication_review": "needs_review",
+            "safe_validation_planning": "needs_review",
+            "evidence_review": "needs_review",
+            "submission_blocked_report": "blocked",
+        }
+        assert all(
+            stage["status"] in {"complete", "needs_review", "blocked", "not_started"}
+            for stage in research_loop
+        )
+        assert "send_file(file_id)" not in str(research_loop)
+        assert str(repo) not in str(research_loop)
+        assert "execute_live_validation" not in str(research_loop)
+        assert "submit_report" not in str(research_loop)
         assert "send_file(file_id)" not in str(mission)
         assert str(repo) not in str(mission)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_mission_summary_exposes_strategy_as_advisory_context(tmp_path: Path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+    strategy_path = tmp_path / "strategy-notes.md"
+    strategy_path.write_text(
+        """
+# Strategy
+focus: authorization boundaries
+risk_family: object_access
+note: Prioritize export endpoints with policy and code provenance.
+Authorization: Bearer secret-token
+""",
+        encoding="utf-8",
+    )
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+            ("strategy", strategy_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+        mission_response = client.get(
+            "/mythos/studio/workspaces/mission",
+            params={"workspace_path": workspace_path},
+        )
+
+        assert mission_response.status_code == 200
+        mission = mission_response.json()
+        assert mission["artifacts"] == {
+            "required": ["scope", "policy", "code", "api", "har"],
+            "present": ["scope", "policy", "code", "api", "har"],
+            "missing": [],
+        }
+        assert mission["advisory_artifacts"] == {
+            "supported": ["sarif", "sbom", "fuzzing", "strategy"],
+            "present": ["strategy"],
+        }
+        assert mission["quality_gates"]["validation_execution_allowed"] is False
+        assert mission["quality_gates"]["report_submission_allowed"] is False
+        assert "strategy-notes.md" not in str(mission)
+        assert "secret-token" not in str(mission)
+        assert "Authorization: Bearer" not in str(mission)
     finally:
         app.dependency_overrides.clear()
 
