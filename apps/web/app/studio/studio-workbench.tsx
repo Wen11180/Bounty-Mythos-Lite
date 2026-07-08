@@ -807,6 +807,10 @@ export function StudioWorkbench() {
                   (stage) => `${stage.label}: ${stage.status} - ${stage.summary}`,
                 )}
               />
+              <ListBlock
+                title="Agent queue"
+                items={missionPanel.agentQueue.map(agentQueueLine)}
+              />
               <ListBlock title="Safe next actions" items={missionPanel.safeNextActions} />
               <ListBlock
                 title="Mission Top candidates"
@@ -1030,6 +1034,13 @@ function missionCandidateLine(
     `validation ${candidate.validationStatus}/${candidate.safeValidationStepCount}`,
     `report ${candidate.reportStatus}`,
   ].join("; ");
+}
+
+function agentQueueLine(task: ReturnType<typeof toStudioMissionPanel>["agentQueue"][number]): string {
+  const inputs = task.inputRefs.length > 0 ? task.inputRefs.join(", ") : "no refs";
+  const candidates =
+    task.targetCandidates.length > 0 ? `; candidates ${task.targetCandidates.join(", ")}` : "";
+  return `${task.taskId}: ${task.agent} - ${task.status}; gate ${task.safetyGate}; inputs ${inputs}${candidates}; ${task.nextAction}`;
 }
 
 function logTone(tone: LogEntry["tone"]): string {

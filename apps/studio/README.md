@@ -9,7 +9,7 @@ page instead of a blank window.
 
 The Studio window consumes the local mission summary from
 `/mythos/studio/workspaces/mission` to show Scope Guard state, A+B artifact
-coverage, read-only research-loop stages, Top candidate summaries, blocked actions, and safe next actions in a
+coverage, read-only research-loop stages, a review-only agent queue, Top candidate summaries, blocked actions, and safe next actions in a
 Mission control panel. Strategy notes and fuzzing plans can be imported as
 optional advisory context; they can influence review focus but do not grant
 validation execution, fuzzer execution, or report submission permission. It

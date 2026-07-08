@@ -64,6 +64,35 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     ],
     candidate_count: 1,
     mode: "local_ai_vulnerability_research_workbench",
+    agent_queue: [
+      {
+        task_id: "scope_guard_intake",
+        agent: "Scope Guard",
+        status: "complete",
+        safety_gate: "authorized_artifacts_only",
+        input_refs: ["scope"],
+        target_candidates: [],
+        next_action: "Review scope and policy coverage.",
+      },
+      {
+        task_id: "semantic_candidate_hunt",
+        agent: "Semantic Auditor",
+        status: "complete",
+        safety_gate: "local_static_analysis_only",
+        input_refs: ["code", "api", "har"],
+        target_candidates: ["H-001"],
+        next_action: "Review top candidate invariants.",
+      },
+      {
+        task_id: "report_draft_review",
+        agent: "Report Draft Builder",
+        status: "blocked",
+        safety_gate: "submission_blocked",
+        input_refs: ["policy", "code", "api", "har"],
+        target_candidates: ["H-001"],
+        next_action: "Export a submission-blocked draft for human review.",
+      },
+    ],
     next_actions: [
       "review_top_candidates",
       "create_benchmark_template",
@@ -146,6 +175,35 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.equal(panel.gates.reportSubmissionAllowed, false);
   assert.equal(panel.gates.validationExecutionAllowed, false);
   assert.equal(panel.gates.humanReviewRequired, true);
+  assert.deepEqual(panel.agentQueue, [
+    {
+      taskId: "scope_guard_intake",
+      agent: "Scope Guard",
+      status: "complete",
+      safetyGate: "authorized_artifacts_only",
+      inputRefs: ["scope"],
+      targetCandidates: [],
+      nextAction: "Review scope and policy coverage.",
+    },
+    {
+      taskId: "semantic_candidate_hunt",
+      agent: "Semantic Auditor",
+      status: "complete",
+      safetyGate: "local_static_analysis_only",
+      inputRefs: ["code", "api", "har"],
+      targetCandidates: ["H-001"],
+      nextAction: "Review top candidate invariants.",
+    },
+    {
+      taskId: "report_draft_review",
+      agent: "Report Draft Builder",
+      status: "blocked",
+      safetyGate: "submission_blocked",
+      inputRefs: ["policy", "code", "api", "har"],
+      targetCandidates: ["H-001"],
+      nextAction: "Export a submission-blocked draft for human review.",
+    },
+  ]);
   assert.deepEqual(panel.researchLoopStages, [
     {
       key: "scope_guard",
@@ -507,7 +565,9 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel/);
   assert.match(workbench, /Mission control/);
   assert.match(workbench, /Research loop/);
+  assert.match(workbench, /Agent queue/);
   assert.match(workbench, /missionPanel\.artifactCoverage/);
+  assert.match(workbench, /missionPanel\.agentQueue/);
   assert.match(workbench, /missionPanel\.researchLoopStages/);
   assert.match(workbench, /missionPanel\.safeNextActions/);
   assert.match(workbench, /missionPanel\.topCandidates/);

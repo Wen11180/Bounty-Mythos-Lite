@@ -69,7 +69,18 @@ export type StudioMissionResearchLoopStageInput = {
   summary?: string;
 };
 
+export type StudioMissionAgentTaskInput = {
+  agent?: string;
+  input_refs?: string[];
+  next_action?: string;
+  safety_gate?: string;
+  status?: string;
+  target_candidates?: string[];
+  task_id?: string;
+};
+
 export type StudioMissionSummary = {
+  agent_queue?: StudioMissionAgentTaskInput[];
   artifacts?: {
     missing?: string[];
     present?: string[];
@@ -127,8 +138,19 @@ export type StudioMissionResearchLoopStage = {
   summary: string;
 };
 
+export type StudioMissionAgentTask = {
+  agent: string;
+  inputRefs: string[];
+  nextAction: string;
+  safetyGate: string;
+  status: string;
+  targetCandidates: string[];
+  taskId: string;
+};
+
 export type StudioMissionPanel = {
   advisoryContextLabel: string;
+  agentQueue: StudioMissionAgentTask[];
   artifactCoverage: string;
   blockedActions: string[];
   candidateCountLabel: string;
@@ -259,6 +281,15 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
   return {
     advisoryContextLabel:
       advisoryPresent.length > 0 ? advisoryPresent.join(", ") : "No advisory context",
+    agentQueue: (mission?.agent_queue ?? []).map((task) => ({
+      agent: safeText(task.agent, "Review agent"),
+      inputRefs: task.input_refs ?? [],
+      nextAction: safeText(task.next_action, "Review required."),
+      safetyGate: safeText(task.safety_gate, "human_review_required"),
+      status: safeText(task.status, "needs_review"),
+      targetCandidates: task.target_candidates ?? [],
+      taskId: safeText(task.task_id, "agent_task"),
+    })),
     artifactCoverage: `${present.length}/${required.length} required artifacts`,
     blockedActions: mission?.blocked_actions ?? [],
     candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,

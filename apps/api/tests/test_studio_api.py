@@ -698,6 +698,42 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert str(repo) not in str(research_loop)
         assert "execute_live_validation" not in str(research_loop)
         assert "submit_report" not in str(research_loop)
+        agent_queue = mission["agent_queue"]
+        assert [task["task_id"] for task in agent_queue] == [
+            "scope_guard_intake",
+            "artifact_intake",
+            "surface_modeling",
+            "semantic_candidate_hunt",
+            "refutation_dedup_review",
+            "evidence_validation_plan_review",
+            "report_draft_review",
+        ]
+        queue_statuses = {task["task_id"]: task["status"] for task in agent_queue}
+        assert queue_statuses == {
+            "scope_guard_intake": "complete",
+            "artifact_intake": "complete",
+            "surface_modeling": "complete",
+            "semantic_candidate_hunt": "complete",
+            "refutation_dedup_review": "needs_review",
+            "evidence_validation_plan_review": "needs_review",
+            "report_draft_review": "blocked",
+        }
+        assert agent_queue[0]["agent"] == "Scope Guard"
+        assert agent_queue[0]["input_refs"] == ["scope"]
+        assert agent_queue[3]["target_candidates"] == [
+            candidate["hypothesis_id"]
+            for candidate in mission["top_candidates"]
+        ]
+        assert all(task["safety_gate"] for task in agent_queue)
+        assert all(
+            task["status"] in {"complete", "needs_review", "blocked", "not_started"}
+            for task in agent_queue
+        )
+        assert "send_file(file_id)" not in str(agent_queue)
+        assert str(repo) not in str(agent_queue)
+        assert "execute_live_validation" not in str(agent_queue)
+        assert "submit_report" not in str(agent_queue)
+        assert "run_fuzzer" not in str(agent_queue)
         assert "send_file(file_id)" not in str(mission)
         assert str(repo) not in str(mission)
     finally:

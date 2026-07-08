@@ -2546,6 +2546,12 @@ def _studio_mission_summary(
             "supported": list(_studio_supported_advisory_artifacts()),
             "present": _studio_present_advisory_artifacts(manifest),
         },
+        "agent_queue": _studio_mission_agent_queue(
+            present,
+            missing,
+            run_id,
+            candidate_summaries,
+        ),
         "candidate_count": len(top_candidates),
         "top_candidates": candidate_summaries,
         "research_loop": _studio_mission_research_loop(
@@ -2606,6 +2612,119 @@ def _studio_present_advisory_artifacts(manifest: dict) -> list[str]:
         and artifact.get("kind") in _studio_supported_advisory_artifacts()
     }
     return [kind for kind in _studio_supported_advisory_artifacts() if kind in present]
+
+
+def _studio_mission_agent_queue(
+    present_artifacts: list[str],
+    missing_artifacts: list[str],
+    run_id: str | None,
+    candidates: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    has_candidates = len(candidates) > 0
+    has_endpoint = any(candidate.get("affected_endpoint") for candidate in candidates)
+    has_code_path = any(candidate.get("affected_code_path") for candidate in candidates)
+    has_review_plan = any(
+        candidate.get("evidence_review_status")
+        or candidate.get("validation_status")
+        or candidate.get("safe_validation_step_count")
+        for candidate in candidates
+    )
+    candidate_ids = [
+        str(candidate["hypothesis_id"])
+        for candidate in candidates
+        if isinstance(candidate.get("hypothesis_id"), str)
+        and str(candidate.get("hypothesis_id")).strip()
+    ]
+
+    return [
+        _studio_mission_agent_task(
+            "scope_guard_intake",
+            "Scope Guard",
+            "complete" if "scope" in present_artifacts else "blocked",
+            "authorized_artifacts_only",
+            ["scope"],
+            [],
+            "Review scope and policy coverage.",
+        ),
+        _studio_mission_agent_task(
+            "artifact_intake",
+            "Artifact Intake",
+            "complete" if not missing_artifacts else "blocked",
+            "redacted_local_artifacts_only",
+            list(_studio_required_ab_artifacts()),
+            [],
+            "Review imported A+B artifact coverage."
+            if not missing_artifacts
+            else "Import missing authorized A+B artifacts.",
+        ),
+        _studio_mission_agent_task(
+            "surface_modeling",
+            "Attack Surface Mapper",
+            "complete" if has_endpoint else "not_started",
+            "normalized_api_har_only",
+            ["api", "har"],
+            candidate_ids,
+            "Review modeled endpoints and traffic facts.",
+        ),
+        _studio_mission_agent_task(
+            "semantic_candidate_hunt",
+            "Semantic Auditor",
+            "complete" if has_candidates and has_code_path else "not_started",
+            "local_static_analysis_only",
+            ["code", "api", "har"],
+            candidate_ids,
+            "Review top candidate invariants.",
+        ),
+        _studio_mission_agent_task(
+            "refutation_dedup_review",
+            "Refutation Reviewer",
+            "needs_review" if has_candidates else "not_started",
+            "human_review_required",
+            ["policy", "code", "api", "har"],
+            candidate_ids,
+            "Review refutation questions and duplicate-risk signals.",
+        ),
+        _studio_mission_agent_task(
+            "evidence_validation_plan_review",
+            "Evidence Planner",
+            "needs_review" if has_review_plan else "not_started",
+            "non_destructive_plan_only",
+            ["scope", "policy", "code", "api", "har"],
+            candidate_ids,
+            "Review evidence needs and safe validation plans.",
+        ),
+        _studio_mission_agent_task(
+            "report_draft_review",
+            "Report Draft Builder",
+            "blocked" if run_id else "not_started",
+            "submission_blocked",
+            ["policy", "code", "api", "har"],
+            candidate_ids,
+            "Export a submission-blocked draft for human review."
+            if run_id
+            else "Report drafting starts after a local research run.",
+        ),
+    ]
+
+
+def _studio_mission_agent_task(
+    task_id: str,
+    agent: str,
+    status: str,
+    safety_gate: str,
+    input_refs: list[str],
+    target_candidates: list[str],
+    next_action: str,
+) -> dict[str, object]:
+    return {
+        "task_id": task_id,
+        "agent": safe_preview_text(agent),
+        "status": status,
+        "safety_gate": safety_gate,
+        "input_refs": input_refs,
+        "target_candidates": target_candidates,
+        "next_action": safe_preview_text(next_action),
+    }
 
 
 def _studio_mission_research_loop(
