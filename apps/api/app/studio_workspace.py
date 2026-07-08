@@ -213,6 +213,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
     ]
     if summary:
         lines.extend(["", "## Summary", "", summary])
+    lines.extend(_studio_context_markdown_lines(report.get("studio_context")))
     sections = report.get("sections")
     if isinstance(sections, dict):
         for key, heading in (
@@ -242,6 +243,44 @@ def _report_markdown(report: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _studio_context_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    lines: list[str] = []
+    required = _markdown_list(value.get("required_artifacts"))
+    if required:
+        lines.extend(["", "## Studio A+B context", ""])
+        lines.append(f"- Required artifacts: {', '.join(required)}")
+    for fact in _studio_context_surface_lines(value.get("surface_facts")):
+        if not lines:
+            lines.extend(["", "## Studio A+B context", ""])
+        lines.append(f"- {fact}")
+    notes = _markdown_list(value.get("safety_notes"))
+    for note in notes:
+        if not lines:
+            lines.extend(["", "## Studio A+B context", ""])
+        lines.append(f"- {note}")
+    return lines
+
+
+def _studio_context_surface_lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        artifact_kind = _markdown_text(item.get("artifact_kind"), "").upper()
+        method = _markdown_text(item.get("route_method"), "")
+        route_path = _markdown_text(item.get("route_path"), "")
+        if not artifact_kind or not method or not route_path:
+            continue
+        line = f"{artifact_kind} {method} {route_path}"
+        if not _secret_like_text(line):
+            lines.append(line)
+    return lines
 
 
 def _markdown_text(value: Any, fallback: str) -> str:

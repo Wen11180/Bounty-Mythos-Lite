@@ -246,6 +246,26 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert export["manifest"]["runs"][-1]["report_markdown_path"].endswith(
             "-report-draft.md"
         )
+        studio_context = export["report"]["studio_context"]
+        assert studio_context["required_artifacts"] == [
+            "scope",
+            "policy",
+            "code",
+            "api",
+            "har",
+        ]
+        assert {
+            (fact.get("artifact_kind"), fact.get("route_method"), fact.get("route_path"))
+            for fact in studio_context["surface_facts"]
+        } >= {
+            ("api", "GET", "/files/{file_id}/export"),
+            ("har", "GET", "/files/123/export"),
+        }
+        markdown = Path(export["report_markdown_path"]).read_text(encoding="utf-8")
+        assert "## Studio A+B context" in markdown
+        assert "- Required artifacts: scope, policy, code, api, har" in markdown
+        assert "- API GET /files/{file_id}/export" in markdown
+        assert "- HAR GET /files/123/export" in markdown
         assert "send_file(file_id)" not in str(export)
     finally:
         app.dependency_overrides.clear()
@@ -491,6 +511,129 @@ def test_studio_candidates_include_imported_har_context_without_secrets(
         assert "secret-token" not in str(candidates)
         assert "Authorization" not in str(candidates)
         assert "Cookie" not in str(candidates)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_candidates_match_imported_api_and_har_template_routes(
+    tmp_path: Path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = tmp_path / "openapi.json"
+    api_path.write_text(
+        """
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/files/{id}/export": {
+      "get": {
+        "operationId": "exportFile"
+      }
+    }
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    har_path = tmp_path / "traffic.har"
+    har_path.write_text(
+        """
+{
+  "log": {
+    "entries": [
+      {
+        "request": {
+          "method": "GET",
+          "url": "https://api.example.test/files/123/export"
+        }
+      },
+      {
+        "request": {
+          "method": "GET",
+          "url": "https://api.example.test/admin/users"
+        }
+      }
+    ]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+
+        candidates_response = client.get(
+            "/mythos/studio/workspaces/candidates",
+            params={"workspace_path": workspace_path},
+        )
+        assert candidates_response.status_code == 200
+        candidates = candidates_response.json()["candidates"]
+        matched_candidate = next(
+            candidate
+            for candidate in candidates
+            if candidate["location"] == "GET /files/{file_id}/export"
+        )
+        matched_facts = matched_candidate["source_facts"]
+
+        assert any(
+            fact.get("artifact_kind") == "api"
+            and fact.get("route_path") == "/files/{id}/export"
+            for fact in matched_facts
+        )
+        assert any(
+            fact.get("artifact_kind") == "har"
+            and fact.get("route_path") == "/files/123/export"
+            for fact in matched_facts
+        )
+        assert not any(
+            fact.get("route_path") == "/admin/users" for fact in matched_facts
+        )
     finally:
         app.dependency_overrides.clear()
 

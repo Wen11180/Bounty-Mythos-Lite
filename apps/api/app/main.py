@@ -2364,6 +2364,7 @@ def export_mythos_studio_workspace_report(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     preview = _build_report_preview_response_or_404(record)
     report = preview.model_dump(mode="json")
+    report["studio_context"] = _studio_report_context(manifest)
     updated_manifest = record_workspace_report_export(
         request.workspace_path,
         run_id=request.run_id,
@@ -2413,6 +2414,22 @@ def _studio_missing_ab_artifacts(manifest: dict) -> list[str]:
     ]
 
 
+def _studio_report_context(manifest: dict) -> dict[str, object]:
+    surface_facts = [
+        fact
+        for fact in _studio_imported_surface_facts(manifest)
+        if fact.get("artifact_kind") in {"api", "har"} and fact.get("route_path")
+    ][:10]
+    return {
+        "required_artifacts": ["scope", "policy", "code", "api", "har"],
+        "surface_facts": surface_facts,
+        "safety_notes": [
+            "Imported API and HAR context is advisory and normalized.",
+            "Raw artifact paths, headers, cookies, query tokens, and bodies are not included.",
+        ],
+    }
+
+
 def _latest_studio_run_id(manifest: dict) -> str | None:
     runs = manifest.get("runs", [])
     if not isinstance(runs, list):
@@ -2438,6 +2455,21 @@ def _studio_run_field(manifest: dict, run_id: str, field_name: str) -> str | Non
     return None
 
 
+def _studio_candidate_route_fact(hypothesis: dict) -> dict[str, str] | None:
+    location = hypothesis.get("location")
+    if not isinstance(location, str) or not location:
+        return None
+    parts = location.split(maxsplit=1)
+    if len(parts) != 2 or not parts[1].startswith("/"):
+        return None
+    return {
+        "fact_type": "candidate_route",
+        "artifact_kind": "code",
+        "route_method": safe_preview_text(parts[0].upper()),
+        "route_path": safe_preview_text(parts[1]),
+    }
+
+
 def _studio_candidate_from_hypothesis(
     hypothesis: dict,
     imported_surface_facts: list[dict[str, str]] | None = None,
@@ -2446,6 +2478,9 @@ def _studio_candidate_from_hypothesis(
     if not isinstance(source_facts, list):
         source_facts = []
     safe_source_facts = [fact for fact in source_facts if isinstance(fact, dict)]
+    candidate_route_fact = _studio_candidate_route_fact(hypothesis)
+    if candidate_route_fact is not None:
+        safe_source_facts = [candidate_route_fact, *safe_source_facts]
     return {
         "hypothesis_id": safe_preview_text(hypothesis.get("hypothesis_id", "")),
         "vuln_type": safe_preview_text(hypothesis.get("vuln_type", "candidate")),
@@ -2719,16 +2754,56 @@ def _studio_matching_surface_facts(
     route_facts = [
         fact
         for fact in imported_surface_facts
-        if fact.get("route_path") in route_hints
+        if _studio_surface_fact_matches_route_hints(fact, route_hints)
     ][:3]
     return (route_facts + global_facts)[:3]
+
+
+def _studio_surface_fact_matches_route_hints(
+    fact: dict[str, str],
+    route_hints: set[str],
+) -> bool:
+    route_path = fact.get("route_path")
+    if not isinstance(route_path, str) or not route_path:
+        return False
+    return any(_studio_route_paths_match(route_hint, route_path) for route_hint in route_hints)
+
+
+def _studio_route_paths_match(route_hint: str, route_path: str) -> bool:
+    hint_segments = _studio_route_segments(route_hint)
+    path_segments = _studio_route_segments(route_path)
+    if len(hint_segments) != len(path_segments):
+        return False
+    return all(
+        _studio_route_segment_matches(hint_segment, path_segment)
+        or _studio_route_segment_matches(path_segment, hint_segment)
+        for hint_segment, path_segment in zip(hint_segments, path_segments, strict=True)
+    )
+
+
+def _studio_route_segments(route_path: str) -> list[str]:
+    return [segment for segment in route_path.strip("/").split("/") if segment]
+
+
+def _studio_route_segment_matches(pattern: str, value: str) -> bool:
+    if pattern == value:
+        return True
+    return (
+        (pattern.startswith("{") and pattern.endswith("}"))
+        or (pattern.startswith("<") and pattern.endswith(">"))
+        or pattern.startswith(":")
+    )
 
 
 def _studio_candidate_route_hints(hypothesis: dict) -> set[str]:
     hints: set[str] = set()
     location = hypothesis.get("location")
-    if isinstance(location, str) and location.startswith("/"):
-        hints.add(location)
+    if isinstance(location, str):
+        if location.startswith("/"):
+            hints.add(location)
+        parts = location.split(maxsplit=1)
+        if len(parts) == 2 and parts[1].startswith("/"):
+            hints.add(parts[1])
     source_facts = hypothesis.get("source_facts", [])
     if not isinstance(source_facts, list):
         return hints
