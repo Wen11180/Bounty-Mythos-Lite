@@ -72,23 +72,31 @@ def test_evaluate_studio_candidates_passes_on_traceable_ab_candidate():
     assert result["safety"]["forbidden_text_present"] == []
 
 
-def test_ab_file_export_benchmark_fixture_passes_quality_gate():
-    candidates_payload = json.loads(
-        (FIXTURE_ROOT / "ab_file_export_candidates.json").read_text(encoding="utf-8")
-    )
-    expectations = json.loads(
-        (FIXTURE_ROOT / "ab_file_export_expectations.json").read_text(encoding="utf-8")
+def test_studio_benchmark_fixtures_pass_quality_gate():
+    fixture_names = sorted(
+        path.name.removesuffix("_candidates.json")
+        for path in FIXTURE_ROOT.glob("*_candidates.json")
     )
 
-    result = evaluate_studio_candidates(candidates_payload, expectations)
+    assert fixture_names == ["ab_file_export", "ab_role_boundary"]
 
-    assert result["status"] == "passed"
-    assert result["candidate_count"] == 1
-    assert result["expected_count"] == 1
-    assert result["matched"] == 1
-    assert result["failures"] == []
-    assert result["evidence_gaps"] == []
-    assert result["safety"]["forbidden_text_present"] == []
+    for fixture_name in fixture_names:
+        candidates_payload = json.loads(
+            (FIXTURE_ROOT / f"{fixture_name}_candidates.json").read_text(encoding="utf-8")
+        )
+        expectations = json.loads(
+            (FIXTURE_ROOT / f"{fixture_name}_expectations.json").read_text(encoding="utf-8")
+        )
+
+        result = evaluate_studio_candidates(candidates_payload, expectations)
+
+        assert result["status"] == "passed", fixture_name
+        assert result["candidate_count"] == 1
+        assert result["expected_count"] == 1
+        assert result["matched"] == 1
+        assert result["failures"] == []
+        assert result["evidence_gaps"] == []
+        assert result["safety"]["forbidden_text_present"] == []
 
 
 def test_evaluate_studio_candidates_fails_without_expected_candidates():

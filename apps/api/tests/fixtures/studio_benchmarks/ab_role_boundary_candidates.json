@@ -1,0 +1,70 @@
+{
+  "candidates": [
+    {
+      "hypothesis_id": "H-AB-002",
+      "vuln_type": "role_boundary_gap",
+      "location": "PATCH /teams/{team_id}/invite-policy",
+      "reason": "The route, API contract, and authorized traffic describe a team invite-policy update that should be restricted to administrators.",
+      "broken_invariant": "Only team administrators may change organization-level invite policy.",
+      "impact_rationale": "A member-level policy change could weaken invite controls and alter team access governance.",
+      "repair_guidance": "Enforce an administrator role check in the policy update handler or service before persisting invite-policy changes.",
+      "regression_test": "Add a local non-destructive role-matrix test proving members cannot update invite policy while administrators can.",
+      "refutation_status": "unverified",
+      "duplicate_risk_score": 18,
+      "evidence_needed": [
+        "Authorized local handler or service code showing where invite policy is persisted.",
+        "OpenAPI route metadata for the invite-policy update.",
+        "Redacted HAR route metadata showing the update route exists in authorized traffic."
+      ],
+      "false_positive_checks": [
+        "Does a router dependency or middleware require an administrator role?",
+        "Is the policy scoped only to the caller's own preferences instead of team policy?",
+        "Does a downstream service reject non-admin role updates before persistence?"
+      ],
+      "ranking_reasons": [
+        "impact:role_boundary_change",
+        "traceable_source_fact",
+        "refutation_status:unverified"
+      ],
+      "safe_validation_plan": [
+        "Use local role fixtures or explicitly approved test accounts only.",
+        "Review role checks without changing live invite settings.",
+        "Keep the report draft submission-blocked until sanitized evidence is reviewed."
+      ],
+      "safety_blockers": [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report"
+      ],
+      "report_readiness": {
+        "status": "submission_blocked",
+        "report_submission_allowed": false,
+        "next_allowed_action": "Review role-boundary evidence, refutation checks, repair guidance, and safety blockers before exporting a report preview."
+      },
+      "source_facts": [
+        {
+          "artifact_kind": "code",
+          "fact_type": "route_handler",
+          "route_method": "PATCH",
+          "route_path": "/teams/{team_id}/invite-policy",
+          "source_path": "src/team_routes.py",
+          "symbol_name": "update_invite_policy"
+        },
+        {
+          "artifact_kind": "api",
+          "fact_type": "openapi_route",
+          "route_method": "PATCH",
+          "route_path": "/teams/{id}/invite-policy",
+          "operation_id": "updateInvitePolicy"
+        },
+        {
+          "artifact_kind": "har",
+          "fact_type": "traffic_route",
+          "route_method": "PATCH",
+          "route_path": "/teams/42/invite-policy",
+          "advisory_only": "true"
+        }
+      ]
+    }
+  ]
+}

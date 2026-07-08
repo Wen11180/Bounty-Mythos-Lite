@@ -1,0 +1,35 @@
+{
+  "draft_review_required": true,
+  "max_candidates": 5,
+  "expected_candidates": [
+    {
+      "name": "team invite policy role-boundary gap",
+      "route_method": "PATCH",
+      "route_path": "/teams/{team_id}/invite-policy",
+      "vuln_type": "role_boundary_gap",
+      "required_artifacts": [
+        "code",
+        "api",
+        "har"
+      ],
+      "require_code_path": true,
+      "code_path": "team_routes.py:update_invite_policy",
+      "require_refutation_status": true,
+      "require_security_invariant": true,
+      "require_impact_rationale": true,
+      "require_repair_guidance": true,
+      "require_regression_test": true,
+      "max_duplicate_risk_score": 49
+    }
+  ],
+  "forbidden_text": [
+    "Authorization: Bearer",
+    "Cookie",
+    "access_token",
+    "secret-token"
+  ],
+  "notes": [
+    "Synthetic authorized A+B role-boundary benchmark fixture.",
+    "All validation remains local, non-destructive, and human-review gated."
+  ]
+}
