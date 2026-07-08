@@ -30,7 +30,7 @@
       ],
       "safe_validation_plan": [
         "Review only local code and sanitized route metadata before any validation.",
-        "Use local unit fixtures for blocked URL categories instead of sending live outbound requests.",
+        "Use local unit fixtures for blocked URL categories without network dispatch.",
         "Keep any report draft submission-blocked until human evidence and redaction review."
       ],
       "safety_blockers": [

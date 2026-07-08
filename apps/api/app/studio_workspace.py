@@ -279,6 +279,14 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if summary:
         lines.extend(["", "## Summary", "", summary])
     lines.extend(_studio_context_markdown_lines(report.get("studio_context")))
+    candidate_summary = _markdown_list(report.get("candidate_summary"))
+    if candidate_summary:
+        lines.extend(["", "## Candidate summary"])
+        lines.extend(f"- {item}" for item in candidate_summary)
+    ranking_reasons = _markdown_list(report.get("ranking_reasons"))
+    if ranking_reasons:
+        lines.extend(["", "## Ranking reasons"])
+        lines.extend(f"- {item}" for item in ranking_reasons)
     sections = report.get("sections")
     if isinstance(sections, dict):
         for key, heading in (

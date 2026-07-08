@@ -81,6 +81,7 @@ def test_studio_benchmark_fixtures_pass_quality_gate():
     assert fixture_names == [
         "ab_file_export",
         "ab_money_flow",
+        "ab_rag_document_authz",
         "ab_role_boundary",
         "ab_webhook_egress",
     ]
@@ -769,6 +770,79 @@ def test_evaluate_studio_candidates_fails_closed_on_missing_quality_and_secret_l
         "secret-token",
         "Authorization: Bearer",
     ]
+
+
+def test_evaluate_studio_candidates_rejects_unsafe_validation_plan_language():
+    result = evaluate_studio_candidates(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "ssrf_egress_gap",
+                    "location": "POST /webhooks/{webhook_id}/deliveries/test",
+                    "evidence_needed": ["Authorized local webhook dispatcher code"],
+                    "false_positive_checks": ["Does URL validation deny internal ranges?"],
+                    "safe_validation_plan": [
+                        "Send live outbound requests against production webhooks.",
+                        "Inspect real user data to confirm impact.",
+                    ],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "touch_real_user_data",
+                        "submit_report",
+                    ],
+                    "report_readiness": {
+                        "status": "submission_blocked",
+                        "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
+                    },
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "POST",
+                            "route_path": "/webhooks/{webhook_id}/deliveries/test",
+                            "source_path": "src/webhook_routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "POST",
+                            "route_path": "/webhooks/{id}/deliveries/test",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "POST",
+                            "route_path": "/webhooks/42/deliveries/test",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "expected_candidates": [
+                {
+                    "name": "webhook SSRF gap",
+                    "route_method": "POST",
+                    "route_path": "/webhooks/{webhook_id}/deliveries/test",
+                    "vuln_type": "ssrf_egress_gap",
+                    "required_artifacts": ["code", "api", "har"],
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "name": "webhook SSRF gap",
+        "reason": "unsafe_validation_plan:live_outbound_request",
+    } in result["failures"]
+    assert {
+        "name": "webhook SSRF gap",
+        "reason": "unsafe_validation_plan:production_target",
+    } in result["failures"]
+    assert {
+        "name": "webhook SSRF gap",
+        "reason": "unsafe_validation_plan:real_user_data",
+    } in result["failures"]
 
 
 def test_evaluate_studio_candidates_fails_when_candidate_set_is_noisy():

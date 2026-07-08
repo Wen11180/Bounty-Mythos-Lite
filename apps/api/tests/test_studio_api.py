@@ -371,6 +371,12 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "- Required artifacts: scope, policy, code, api, har" in markdown
         assert "- API GET /files/{file_id}/export" in markdown
         assert "- HAR GET /files/123/export" in markdown
+        assert "## Candidate summary" in markdown
+        assert "- Affected endpoint: GET /files/{file_id}/export" in markdown
+        assert "- Affected code path: routes.py:export_file" in markdown
+        assert candidates[0]["broken_invariant"] in markdown
+        assert "## Ranking reasons" in markdown
+        assert candidates[0]["ranking_reasons"][0] in markdown
         assert "## Evidence needs" in markdown
         assert candidates[0]["evidence_needed"][0] in markdown
         assert "## False-positive checks" in markdown

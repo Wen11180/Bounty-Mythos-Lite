@@ -399,6 +399,41 @@ def test_report_export_markdown_includes_validation_plan_and_safety_blockers(
     assert "Authorization: Bearer" not in markdown
 
 
+def test_report_export_markdown_includes_candidate_summary_and_ranking_reasons(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "candidate_summary": [
+                "Affected endpoint: GET /files/{file_id}/export",
+                "Affected code path: routes.py:export_file",
+                "Authorization: Bearer secret-token",
+            ],
+            "ranking_reasons": [
+                "impact:sensitive_data_sink",
+                "Cookie: session=secret-token",
+            ],
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Candidate summary" in markdown
+    assert "- Affected endpoint: GET /files/{file_id}/export" in markdown
+    assert "- Affected code path: routes.py:export_file" in markdown
+    assert "## Ranking reasons" in markdown
+    assert "- impact:sensitive_data_sink" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
 def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
 

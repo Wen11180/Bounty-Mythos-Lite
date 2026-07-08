@@ -2532,7 +2532,13 @@ def _studio_report_candidate_guidance(
             candidate.get("safe_validation_plan", [])
         )
         safety_blockers = _studio_report_guidance_list(candidate.get("safety_blockers", []))
+        candidate_summary = _studio_report_candidate_summary(candidate)
+        ranking_reasons = _studio_report_guidance_list(candidate.get("ranking_reasons", []))
         guidance: dict[str, object] = {}
+        if candidate_summary:
+            guidance["candidate_summary"] = candidate_summary
+        if ranking_reasons:
+            guidance["ranking_reasons"] = ranking_reasons
         if evidence_needed:
             guidance["evidence_needed"] = evidence_needed
         if false_positive_checks:
@@ -2555,6 +2561,60 @@ def _studio_report_candidate_guidance(
 def _studio_report_guidance_text(value: object) -> str:
     text = safe_preview_text(value)
     return "" if text == "[REDACTED]" else text.strip()
+
+
+def _studio_report_candidate_summary(candidate: dict) -> list[str]:
+    summary: list[str] = []
+    _append_studio_summary(summary, "Vulnerability type", candidate.get("vuln_type", ""))
+    _append_studio_summary(summary, "Risk", candidate.get("risk", ""))
+    _append_studio_summary(summary, "Affected endpoint", _studio_report_endpoint(candidate))
+    _append_studio_summary(summary, "Affected code path", _studio_report_code_path(candidate))
+    _append_studio_summary(summary, "Broken invariant", candidate.get("broken_invariant", ""))
+    _append_studio_summary(summary, "Refutation status", candidate.get("refutation_status", ""))
+    priority_score = candidate.get("priority_score")
+    if isinstance(priority_score, int):
+        _append_studio_summary(summary, "Priority score", str(priority_score))
+    duplicate_risk_score = candidate.get("duplicate_risk_score")
+    if isinstance(duplicate_risk_score, int):
+        _append_studio_summary(summary, "Duplicate risk score", str(duplicate_risk_score))
+    return summary
+
+
+def _append_studio_summary(summary: list[str], label: str, value: object) -> None:
+    text = _studio_report_guidance_text(value)
+    if text:
+        summary.append(f"{label}: {text}")
+
+
+def _studio_report_endpoint(candidate: dict) -> str:
+    source_facts = candidate.get("source_facts", [])
+    if isinstance(source_facts, list):
+        for fact in source_facts:
+            if not isinstance(fact, dict):
+                continue
+            route_path = _studio_report_guidance_text(fact.get("route_path", ""))
+            if route_path:
+                method = _studio_report_guidance_text(fact.get("route_method", ""))
+                return f"{method} {route_path}".strip()
+    return _studio_report_guidance_text(candidate.get("location", ""))
+
+
+def _studio_report_code_path(candidate: dict) -> str:
+    source_facts = candidate.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        return ""
+    for fact in source_facts:
+        if not isinstance(fact, dict):
+            continue
+        if _studio_report_guidance_text(fact.get("artifact_kind", "")) != "code":
+            continue
+        source_path = _studio_report_guidance_text(fact.get("source_path", ""))
+        if not source_path:
+            continue
+        source_name = source_path.replace("\\", "/").split("/")[-1]
+        symbol_name = _studio_report_guidance_text(fact.get("symbol_name", ""))
+        return f"{source_name}:{symbol_name}" if symbol_name else source_name
+    return ""
 
 
 def _studio_report_guidance_list(value: object) -> list[str]:

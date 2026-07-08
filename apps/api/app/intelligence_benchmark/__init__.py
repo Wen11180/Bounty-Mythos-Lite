@@ -20,6 +20,11 @@ DEFAULT_FORBIDDEN_TEXT = [
     "secret-token",
 ]
 REQUIRED_STUDIO_ARTIFACTS = ["code", "api", "har"]
+UNSAFE_VALIDATION_PLAN_PATTERNS = {
+    "live_outbound_request": ["send live outbound", "execute live outbound"],
+    "production_target": ["against production", "production target"],
+    "real_user_data": ["inspect real user data", "collect real user data"],
+}
 
 
 def build_studio_expectations_template(candidates_payload: Any) -> dict:
@@ -222,6 +227,8 @@ def _candidate_quality_failures(
         failures.append("missing_false_positive_checks")
     if not _string_list(candidate.get("safe_validation_plan")):
         failures.append("missing_safe_validation_plan")
+    for reason in _unsafe_validation_plan_reasons(candidate):
+        failures.append(f"unsafe_validation_plan:{reason}")
     missing_artifacts = _missing_required_artifacts(candidate, expected)
     if missing_artifacts:
         failures.append("missing_required_artifacts:" + ",".join(missing_artifacts))
@@ -437,6 +444,17 @@ def _candidate_regression_test(candidate: dict[str, Any]) -> str:
         or _first_string(candidate.get("regression_tests"))
         or _first_string(candidate.get("test_recommendations"))
     )
+
+
+def _unsafe_validation_plan_reasons(candidate: dict[str, Any]) -> list[str]:
+    plan_text = " ".join(_string_list(candidate.get("safe_validation_plan"))).lower()
+    if not plan_text:
+        return []
+    return [
+        reason
+        for reason, patterns in UNSAFE_VALIDATION_PLAN_PATTERNS.items()
+        if any(pattern in plan_text for pattern in patterns)
+    ]
 
 
 def _candidate_code_path(candidate: dict[str, Any]) -> str:

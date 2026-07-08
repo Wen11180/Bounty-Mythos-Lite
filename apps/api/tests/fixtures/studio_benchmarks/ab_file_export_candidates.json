@@ -28,7 +28,7 @@
       ],
       "safe_validation_plan": [
         "Use only local fixtures or explicitly approved test accounts.",
-        "Compare ownership checks without touching real user data.",
+        "Compare ownership checks with synthetic fixture records only.",
         "Keep any report draft submission-blocked until human evidence review."
       ],
       "safety_blockers": [

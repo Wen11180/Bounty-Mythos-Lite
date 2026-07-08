@@ -1,0 +1,70 @@
+{
+  "candidates": [
+    {
+      "hypothesis_id": "H-AB-005",
+      "vuln_type": "rag_document_authz_gap",
+      "location": "POST /workspaces/{workspace_id}/assistant/query",
+      "reason": "The route, API contract, and authorized traffic describe an assistant query path where retrieved documents must be filtered by workspace membership and document permissions.",
+      "broken_invariant": "RAG retrieval must only use documents the requesting principal is authorized to read.",
+      "impact_rationale": "Cross-workspace or private-document retrieval could leak sensitive knowledge-base content through assistant answers.",
+      "repair_guidance": "Apply workspace, tenant, and document ACL filters before retrieval and again before answer synthesis.",
+      "regression_test": "Add a local non-destructive retrieval test proving a user cannot retrieve or summarize documents outside their workspace or ACL.",
+      "refutation_status": "unverified",
+      "duplicate_risk_score": 20,
+      "evidence_needed": [
+        "Authorized local retriever or assistant route code showing how document filters are built.",
+        "OpenAPI route metadata for the assistant query endpoint.",
+        "Redacted HAR route metadata showing the query endpoint exists in authorized traffic."
+      ],
+      "false_positive_checks": [
+        "Does the retriever apply workspace and document ACL filters before vector search?",
+        "Does answer synthesis discard retrieved chunks that fail a second authorization check?",
+        "Is the endpoint limited to a single private workspace with no cross-tenant corpus?"
+      ],
+      "ranking_reasons": [
+        "impact:rag_document_authorization",
+        "traceable_source_fact",
+        "refutation_status:unverified"
+      ],
+      "safe_validation_plan": [
+        "Use local synthetic documents and role fixtures only.",
+        "Use only fixture corpora and sanitized document labels for review.",
+        "Keep any report draft submission-blocked until human evidence and redaction review."
+      ],
+      "safety_blockers": [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report"
+      ],
+      "report_readiness": {
+        "status": "submission_blocked",
+        "report_submission_allowed": false,
+        "next_allowed_action": "Review document-authorization evidence, refutation checks, repair guidance, and safety blockers before exporting a report preview."
+      },
+      "source_facts": [
+        {
+          "artifact_kind": "code",
+          "fact_type": "route_handler",
+          "route_method": "POST",
+          "route_path": "/workspaces/{workspace_id}/assistant/query",
+          "source_path": "src/assistant_routes.py",
+          "symbol_name": "query_workspace_assistant"
+        },
+        {
+          "artifact_kind": "api",
+          "fact_type": "openapi_route",
+          "route_method": "POST",
+          "route_path": "/workspaces/{id}/assistant/query",
+          "operation_id": "queryWorkspaceAssistant"
+        },
+        {
+          "artifact_kind": "har",
+          "fact_type": "traffic_route",
+          "route_method": "POST",
+          "route_path": "/workspaces/123/assistant/query",
+          "advisory_only": "true"
+        }
+      ]
+    }
+  ]
+}
