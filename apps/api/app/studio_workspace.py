@@ -226,6 +226,22 @@ def record_workspace_mission_dossier(
             "timeline_pending_stage_count": len(
                 agent_queue_audit["studio_timeline_summary"]["pending_stage_ids"]
             ),
+            "candidate_review_packet_count": len(
+                agent_queue_audit["candidate_review_packets"]
+            ),
+            "candidate_review_ready_packet_count": len(
+                [
+                    packet
+                    for packet in agent_queue_audit["candidate_review_packets"]
+                    if packet.get("status") == "review_ready"
+                ]
+            ),
+            "agent_handoff_item_count": agent_queue_audit[
+                "agent_handoff_pack"
+            ].get("handoff_item_count", 0),
+            "agent_handoff_status": agent_queue_audit["agent_handoff_pack"].get(
+                "status", "needs_review"
+            ),
             "candidate_hunter_backlog_count": len(
                 agent_queue_audit["candidate_hunter_backlog"]
             ),
@@ -474,6 +490,12 @@ def _mission_dossier_markdown(mission: dict[str, Any]) -> str:
         )
     )
     lines.extend(_studio_timeline_summary_markdown_lines(_mission_timeline_summary(mission)))
+    lines.extend(
+        _candidate_review_packets_markdown_lines(
+            mission.get("candidate_review_packets")
+        )
+    )
+    lines.extend(_agent_handoff_pack_markdown_lines(mission.get("agent_handoff_pack")))
     lines.extend(_mission_agent_queue_markdown_lines(mission.get("agent_queue")))
     lines.extend(_mission_hallucination_guard_markdown_lines(mission.get("top_candidates")))
     lines.extend(_mission_candidate_quality_markdown_lines(mission.get("top_candidates")))
@@ -543,6 +565,15 @@ def _agent_queue_audit(run_id: str | None, mission: dict[str, Any]) -> dict[str,
         "agent_queue": agent_queue,
         "task_timeline": task_timeline,
         "studio_timeline_summary": timeline_summary,
+        "candidate_review_packets": _safe_candidate_review_packets(
+            mission.get("candidate_review_packets")
+        ),
+        "agent_handoff_pack": _safe_agent_handoff_pack(
+            mission.get("agent_handoff_pack"),
+            mission.get("candidate_hunter_backlog"),
+            mission.get("candidate_hunter_iteration"),
+            timeline_summary,
+        ),
         "candidate_hunter_backlog": _safe_candidate_hunter_backlog_items(
             mission.get("candidate_hunter_backlog")
         ),
@@ -672,6 +703,226 @@ def _safe_candidate_hunter_iteration(value: Any) -> dict[str, Any]:
     }
 
 
+def _safe_agent_handoff_pack(
+    value: Any,
+    backlog_value: Any,
+    iteration_value: Any,
+    timeline_summary: dict[str, Any],
+) -> dict[str, Any]:
+    iteration = _safe_candidate_hunter_iteration(iteration_value)
+    if isinstance(value, dict):
+        handoff_items = _safe_agent_handoff_items(value.get("handoff_items"))
+        pack_id = _queue_safe_text(value.get("pack_id")) or "studio:agent_handoff:next_review"
+        status = _queue_safe_text(value.get("status")) or iteration["status"]
+        next_review_agent = (
+            _queue_safe_text(value.get("next_review_agent"))
+            or iteration["next_review_agent"]
+        )
+        priority_order = _queue_safe_list(value.get("priority_order"))
+        review_focus = _queue_safe_list(value.get("review_focus"))
+        success_criteria = _queue_safe_list(value.get("success_criteria"))
+        agent_queue_refs = _queue_safe_list(value.get("agent_queue_refs"))
+        timeline_gate_counts = _safe_timeline_gate_counts(
+            value.get("timeline_gate_counts")
+        )
+    else:
+        handoff_items = [
+            _agent_handoff_item_from_backlog(item)
+            for item in _safe_candidate_hunter_backlog_items(backlog_value)[:5]
+        ]
+        pack_id = "studio:agent_handoff:next_review"
+        status = iteration["status"]
+        next_review_agent = iteration["next_review_agent"]
+        priority_order = iteration["priority_order"]
+        review_focus = iteration["review_focus"]
+        success_criteria = iteration["success_criteria"]
+        agent_queue_refs = []
+        timeline_gate_counts = _safe_timeline_gate_counts(
+            timeline_summary.get("gate_decision_counts")
+        )
+    return {
+        "pack_id": pack_id,
+        "status": status,
+        "handoff_item_count": len(handoff_items),
+        "next_review_agent": next_review_agent,
+        "priority_order": priority_order,
+        "review_focus": review_focus,
+        "success_criteria": success_criteria,
+        "handoff_items": handoff_items,
+        "agent_queue_refs": agent_queue_refs,
+        "timeline_gate_counts": timeline_gate_counts,
+        "safety_gate": "review_only_no_execution",
+        "completion_gate": "human_review_required",
+        "blocked_actions": [
+            "execute_live_validation",
+            "run_fuzzer",
+            "submit_report",
+        ],
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _safe_agent_handoff_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        work_item_id = _queue_safe_text(item.get("work_item_id"))
+        if not work_item_id:
+            continue
+        items.append(
+            {
+                "handoff_id": _queue_safe_text(item.get("handoff_id"))
+                or f"handoff:{work_item_id}",
+                "work_item_id": work_item_id,
+                "candidate_id": _queue_safe_text(item.get("candidate_id")),
+                "status": _queue_safe_text(item.get("status")) or "needs_review",
+                "assigned_agent": _queue_safe_text(item.get("assigned_agent"))
+                or _agent_for_candidate_gap(_queue_safe_text(item.get("gap"))),
+                "gap": _queue_safe_text(item.get("gap")),
+                "input_refs": _queue_safe_list(item.get("input_refs")),
+                "review_focus": _queue_safe_list(item.get("review_focus")),
+                "required_evidence": _queue_safe_list(item.get("required_evidence")),
+                "success_criteria": _queue_safe_list(item.get("success_criteria")),
+                "next_action": _queue_safe_text(item.get("next_action")),
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items[:5]
+
+
+def _agent_handoff_item_from_backlog(item: dict[str, Any]) -> dict[str, Any]:
+    work_item_id = _queue_safe_text(item.get("work_item_id"))
+    gap = _queue_safe_text(item.get("gap"))
+    return {
+        "handoff_id": f"handoff:{work_item_id}",
+        "work_item_id": work_item_id,
+        "candidate_id": _queue_safe_text(item.get("candidate_id")),
+        "status": _queue_safe_text(item.get("status")) or "needs_review",
+        "assigned_agent": _agent_for_candidate_gap(gap),
+        "gap": gap,
+        "input_refs": ["scope", "policy", "code", "api", "har"],
+        "review_focus": _queue_safe_list(item.get("review_focus")),
+        "required_evidence": _queue_safe_list(item.get("required_evidence")),
+        "success_criteria": _agent_handoff_success_criteria(item),
+        "next_action": _queue_safe_text(item.get("next_action")),
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _agent_handoff_success_criteria(item: dict[str, Any]) -> list[str]:
+    work_item_id = _queue_safe_text(item.get("work_item_id")) or "candidate_work_item"
+    required = _queue_safe_list(item.get("required_evidence"))
+    criteria = [
+        f"{work_item_id} is reviewed against authorized local artifacts.",
+        "Reviewer records a human decision before promotion.",
+    ]
+    if required:
+        criteria.append("Evidence refs required: " + ", ".join(required) + ".")
+    criteria.append("No validation, fuzzing, or report submission is executed.")
+    return criteria
+
+
+def _agent_for_candidate_gap(gap: str) -> str:
+    by_gap = {
+        "missing_endpoint_or_code_trace": "Semantic Auditor",
+        "missing_provenance_review": "Semantic Auditor",
+        "missing_refutation_checks": "Refutation Reviewer",
+        "missing_deduplication_review": "Refutation Reviewer",
+        "missing_safe_validation_plan": "Evidence Planner",
+        "missing_submission_blocked_report": "Report Draft Builder",
+        "missing_cross_validation_consensus": "Refutation Reviewer",
+        "evidence_gaps_need_review": "Evidence Planner",
+    }
+    return by_gap.get(gap, "Human Reviewer")
+
+
+def _safe_timeline_gate_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    counts: dict[str, int] = {}
+    for key, count in value.items():
+        safe_key = _queue_safe_text(key)
+        if safe_key and isinstance(count, int) and count >= 0:
+            counts[safe_key] = count
+    return counts
+
+
+def _safe_candidate_review_packets(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    packets: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        packets.append(
+            {
+                "candidate_id": candidate_id,
+                "status": _queue_safe_text(item.get("status")) or "needs_review",
+                "completed_items": _queue_safe_list(item.get("completed_items")),
+                "missing_items": _queue_safe_list(item.get("missing_items")),
+                "checklist": _safe_candidate_review_checklist(item.get("checklist")),
+                "next_human_action": _queue_safe_text(item.get("next_human_action")),
+                "safety_gate": _queue_safe_text(item.get("safety_gate"))
+                or "human_review_required",
+                "evidence_need_count": _queue_safe_int(item.get("evidence_need_count")),
+                "false_positive_check_count": _queue_safe_int(
+                    item.get("false_positive_check_count")
+                ),
+                "safe_validation_step_count": _queue_safe_int(
+                    item.get("safe_validation_step_count")
+                ),
+                "report_status": _queue_safe_text(item.get("report_status"))
+                or "submission_blocked",
+                "hallucination_guard_status": _queue_safe_text(
+                    item.get("hallucination_guard_status")
+                )
+                or "needs_review",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return packets[:5]
+
+
+def _safe_candidate_review_checklist(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        key = _queue_safe_text(item.get("key"))
+        if not key:
+            continue
+        items.append(
+            {
+                "key": key,
+                "status": _queue_safe_text(item.get("status")) or "needs_review",
+                "label": _queue_safe_text(item.get("label")),
+            }
+        )
+    return items[:12]
+
+
+def _queue_safe_int(value: Any) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
 def _agent_task_timeline_items(agent_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     timeline: list[dict[str, Any]] = []
     for item in agent_queue:
@@ -783,6 +1034,8 @@ def _agent_queue_audit_markdown(audit: dict[str, Any]) -> str:
         )
     )
     lines.extend(_studio_timeline_summary_markdown_lines(audit.get("studio_timeline_summary")))
+    lines.extend(_candidate_review_packets_markdown_lines(audit.get("candidate_review_packets")))
+    lines.extend(_agent_handoff_pack_markdown_lines(audit.get("agent_handoff_pack")))
     lines.extend(_mission_agent_queue_markdown_lines(audit.get("agent_queue")))
     lines.extend(_agent_task_timeline_markdown_lines(audit.get("task_timeline")))
     return "\n".join(lines) + "\n"
@@ -818,6 +1071,131 @@ def _studio_timeline_summary_markdown_lines(value: Any) -> list[str]:
     next_actions = _markdown_list(value.get("next_human_actions"))
     if next_actions:
         lines.append("- Next human actions: " + "; ".join(next_actions))
+    return lines
+
+
+def _candidate_review_packets_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Candidate review packets"]
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _markdown_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        status = _markdown_safe_text(item.get("status")) or "needs_review"
+        missing = _markdown_list(item.get("missing_items"))
+        completed = _markdown_list(item.get("completed_items"))
+        next_action = _markdown_safe_text(item.get("next_human_action"))
+        safety_gate = _markdown_safe_text(item.get("safety_gate"))
+        lines.append(
+            f"- {candidate_id}: {status}; completed: {len(completed)}; missing: {', '.join(missing) if missing else 'none'}; gate: {safety_gate}; execution allowed: false; validation allowed: false; report submission allowed: false"
+        )
+        if next_action:
+            lines.append(f"  - Next human action: {next_action}")
+        checklist = _candidate_review_checklist_markdown_items(item.get("checklist"))
+        if checklist:
+            lines.append("  - Checklist: " + "; ".join(checklist))
+    return lines
+
+
+def _candidate_review_checklist_markdown_items(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        key = _markdown_safe_text(item.get("key"))
+        status = _markdown_safe_text(item.get("status")) or "needs_review"
+        if key:
+            items.append(f"{key}={status}")
+    return items[:12]
+
+
+def _agent_handoff_pack_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    pack_id = _markdown_safe_text(value.get("pack_id"))
+    if not pack_id:
+        return []
+    status = _markdown_safe_text(value.get("status")) or "needs_review"
+    next_review_agent = (
+        _markdown_safe_text(value.get("next_review_agent")) or "Human Reviewer"
+    )
+    handoff_item_count = _markdown_summary_value(value.get("handoff_item_count"))
+    safety_gate = _markdown_safe_text(value.get("safety_gate"))
+    completion_gate = _markdown_safe_text(value.get("completion_gate"))
+    lines = [
+        "",
+        "## Agent handoff pack",
+        f"- {pack_id}: {status}; next reviewer: {next_review_agent}; handoff items: {handoff_item_count}",
+        f"- Gates: {safety_gate}; completion: {completion_gate}; execution allowed: false; validation allowed: false; report submission allowed: false",
+    ]
+    priority = _markdown_list(value.get("priority_order"))
+    if priority:
+        lines.append("- Priority order: " + ", ".join(priority))
+    focus = _markdown_list(value.get("review_focus"))
+    if focus:
+        lines.append("- Review focus: " + ", ".join(focus))
+    criteria = _markdown_list(value.get("success_criteria"))
+    if criteria:
+        lines.append("- Success criteria: " + "; ".join(criteria))
+    gate_counts = _agent_handoff_gate_count_markdown_items(
+        value.get("timeline_gate_counts")
+    )
+    if gate_counts:
+        lines.append("- Timeline gates: " + ", ".join(gate_counts))
+    items = _agent_handoff_item_markdown_lines(value.get("handoff_items"))
+    if items:
+        lines.extend(items)
+    return lines
+
+
+def _agent_handoff_gate_count_markdown_items(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    items: list[str] = []
+    for key, count in value.items():
+        safe_key = _markdown_safe_text(key)
+        if safe_key:
+            items.append(f"{safe_key}: {_markdown_summary_value(count)}")
+    return items[:10]
+
+
+def _agent_handoff_item_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    lines: list[str] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        work_item_id = _markdown_safe_text(item.get("work_item_id"))
+        if not work_item_id:
+            continue
+        status = _markdown_safe_text(item.get("status")) or "needs_review"
+        assigned_agent = _markdown_safe_text(item.get("assigned_agent"))
+        gap = _markdown_safe_text(item.get("gap"))
+        candidate_id = _markdown_safe_text(item.get("candidate_id"))
+        focus = ", ".join(_markdown_list(item.get("review_focus")))
+        required_evidence = ", ".join(_markdown_list(item.get("required_evidence")))
+        next_action = _markdown_safe_text(item.get("next_action"))
+        line = (
+            f"- {work_item_id}: {status}; candidate: {candidate_id}; "
+            f"agent: {assigned_agent}; gap: {gap}; execution allowed: false; "
+            "validation allowed: false; report submission allowed: false"
+        )
+        if focus:
+            line += f"; focus: {focus}"
+        if required_evidence:
+            line += f"; evidence: {required_evidence}"
+        lines.append(line)
+        criteria = _markdown_list(item.get("success_criteria"))
+        if criteria:
+            lines.append("  - Success criteria: " + "; ".join(criteria))
+        if next_action:
+            lines.append(f"  - Next action: {next_action}")
     return lines
 
 

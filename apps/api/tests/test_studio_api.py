@@ -108,6 +108,9 @@ def test_studio_report_candidate_guidance_includes_advisory_signal_labels():
                             "pattern_id": "WEB-IDOR-001",
                             "vuln_type": "authorization_gap",
                             "source": "local_milvus",
+                            "cve_id": "CVE-2024-12345",
+                            "framework": "fastapi",
+                            "similarity_score": "0.92",
                             "advisory_only": "true",
                         },
                     ],
@@ -122,7 +125,7 @@ def test_studio_report_candidate_guidance_includes_advisory_signal_labels():
         "SARIF scanner advisory: GET /files/{file_id}/export",
         "SBOM dependency advisory: django 4.2.1 (CVE-2099-0001, high)",
         "Fuzzing plan advisory: parse_export_manifest (parser, planned, not_executed)",
-        "Knowledge advisory: WEB-IDOR-001 (authorization_gap) from local_milvus",
+        "Knowledge advisory: WEB-IDOR-001 (authorization_gap) from local_milvus; fastapi, CVE-2024-12345, similarity 0.92",
     ]
 
 
@@ -452,6 +455,12 @@ def test_studio_knowledge_surface_facts_are_advisory_few_shot_context():
                     "pattern_id": "WEB-IDOR-001",
                     "vuln_type": "authorization_gap",
                     "source": "local_milvus",
+                    "cve_id": "CVE-2024-12345",
+                    "framework": "fastapi",
+                    "case_title": "Historical object export authorization bypass",
+                    "similarity_score": 0.923,
+                    "retrieval_rank": "1",
+                    "exploit_code": "requests.get('https://target.example/private')",
                 },
                 {
                     "pattern_id": "Authorization: Bearer secret-token",
@@ -468,11 +477,18 @@ def test_studio_knowledge_surface_facts_are_advisory_few_shot_context():
             "artifact_kind": "knowledge",
             "advisory_only": "true",
             "model_input_role": "few_shot_context_only",
+            "exploit_code_allowed": "false",
             "source": "local_milvus",
             "pattern_id": "WEB-IDOR-001",
             "vuln_type": "authorization_gap",
+            "cve_id": "CVE-2024-12345",
+            "framework": "fastapi",
+            "case_title": "Historical object export authorization bypass",
+            "similarity_score": "0.92",
+            "retrieval_rank": "1",
         }
     ]
+    assert "requests.get" not in str(facts)
     assert "secret-token" not in str(facts)
     assert "Authorization: Bearer" not in str(facts)
 
@@ -1036,6 +1052,17 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "validation_allowed": False,
             "report_submission_allowed": False,
         }
+        handoff_pack = mission["agent_handoff_pack"]
+        assert handoff_pack["pack_id"] == "studio:agent_handoff:next_review"
+        assert handoff_pack["status"] == "ready_for_human_review"
+        assert handoff_pack["handoff_item_count"] == 0
+        assert handoff_pack["next_review_agent"] == "Human Reviewer"
+        assert handoff_pack["handoff_items"] == []
+        assert handoff_pack["safety_gate"] == "review_only_no_execution"
+        assert handoff_pack["completion_gate"] == "human_review_required"
+        assert handoff_pack["execution_allowed"] is False
+        assert handoff_pack["validation_allowed"] is False
+        assert handoff_pack["report_submission_allowed"] is False
         assert mission["blocked_actions"] == [
             "execute_live_validation",
             "touch_real_user_data",
@@ -1088,6 +1115,20 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "refutation_checks_present" in candidate["quality_reasons"]
         assert "safe_validation_plan_present" in candidate["quality_reasons"]
         assert "hallucination_guard_cross_checked" in candidate["quality_reasons"]
+        review_packet = mission["candidate_review_packets"][0]
+        assert review_packet["candidate_id"] == candidate["hypothesis_id"]
+        assert review_packet["status"] == "review_ready"
+        assert review_packet["missing_items"] == []
+        assert "evidence_needs" in review_packet["completed_items"]
+        assert "refutation_checks" in review_packet["completed_items"]
+        assert "safe_validation_plan" in review_packet["completed_items"]
+        assert "submission_blocked_report" in review_packet["completed_items"]
+        assert "independent_cross_check" in review_packet["completed_items"]
+        assert review_packet["next_human_action"].startswith("Review evidence")
+        assert review_packet["safety_gate"] == "human_review_required"
+        assert review_packet["execution_allowed"] is False
+        assert review_packet["validation_allowed"] is False
+        assert review_packet["report_submission_allowed"] is False
         research_loop = mission["research_loop"]
         assert [stage["key"] for stage in research_loop] == [
             "scope_guard",
@@ -1228,6 +1269,21 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             ]
             >= 1
         )
+        assert dossier["manifest"]["agent_queue_audits"][-1][
+            "candidate_review_packet_count"
+        ] == mission["candidate_count"]
+        assert dossier["manifest"]["agent_queue_audits"][-1][
+            "candidate_review_ready_packet_count"
+        ] == mission["candidate_count"]
+        assert (
+            dossier["manifest"]["agent_queue_audits"][-1][
+                "agent_handoff_item_count"
+            ]
+            == 0
+        )
+        assert dossier["manifest"]["agent_queue_audits"][-1][
+            "agent_handoff_status"
+        ] == "ready_for_human_review"
         assert (
             dossier["manifest"]["agent_queue_audits"][-1]["agent_queue_markdown_path"]
             == dossier["agent_queue_markdown_path"]
@@ -1254,6 +1310,11 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         )
         assert dossier_json["agent_queue"][0]["task_id"] == "scope_guard_intake"
         assert dossier_json["quality_summary"]["top_candidate_quality_gate"] == "passed"
+        assert dossier_json["candidate_review_packets"][0]["status"] == "review_ready"
+        assert (
+            dossier_json["candidate_review_packets"][0]["report_submission_allowed"]
+            is False
+        )
         assert dossier_json["studio_timeline_summary"]["blocked_stage_ids"]
         assert (
             dossier_json["studio_timeline_summary"]["validation_execution_allowed"]
@@ -1263,6 +1324,12 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "ready_for_human_review"
         )
         assert dossier_json["candidate_hunter_iteration"]["execution_allowed"] is False
+        assert dossier_json["agent_handoff_pack"]["handoff_item_count"] == 0
+        assert dossier_json["agent_handoff_pack"]["execution_allowed"] is False
+        assert dossier_json["agent_handoff_pack"]["validation_allowed"] is False
+        assert (
+            dossier_json["agent_handoff_pack"]["report_submission_allowed"] is False
+        )
         assert queue_json["agent_queue"][0]["task_id"] == "scope_guard_intake"
         assert queue_json["agent_queue"][3]["review_focus"] == [
             "security_invariants",
@@ -1278,6 +1345,8 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert queue_json["task_timeline"][3]["report_submission_allowed"] is False
         assert queue_json["task_timeline"][3]["validation_execution_allowed"] is False
         assert queue_json["quality_summary"]["top_candidate_quality_gate"] == "passed"
+        assert queue_json["candidate_review_packets"][0]["status"] == "review_ready"
+        assert queue_json["candidate_review_packets"][0]["validation_allowed"] is False
         assert queue_json["candidate_hunter_backlog"] == []
         assert queue_json["studio_timeline_summary"]["total_stages"] == len(
             queue_json["task_timeline"]
@@ -1288,11 +1357,24 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "ready_for_human_review"
         )
         assert queue_json["candidate_hunter_iteration"]["validation_allowed"] is False
+        assert queue_json["agent_handoff_pack"]["status"] == (
+            "ready_for_human_review"
+        )
+        assert queue_json["agent_handoff_pack"]["handoff_item_count"] == 0
+        assert queue_json["agent_handoff_pack"]["handoff_items"] == []
+        assert queue_json["agent_handoff_pack"]["execution_allowed"] is False
+        assert queue_json["agent_handoff_pack"]["validation_allowed"] is False
+        assert (
+            queue_json["agent_handoff_pack"]["report_submission_allowed"] is False
+        )
         assert "# Mythos Studio agent queue audit" in queue_markdown
         assert "## Mission quality" in queue_markdown
         assert "## Candidate hunter iteration" in queue_markdown
         assert "candidate_hunter:next_review" in queue_markdown
         assert "## Studio timeline summary" in queue_markdown
+        assert "## Candidate review packets" in queue_markdown
+        assert "## Agent handoff pack" in queue_markdown
+        assert "handoff items: 0" in queue_markdown
         assert "## Agent queue" in queue_markdown
         assert "## Agent task timeline" in queue_markdown
         assert "agent_queue:semantic_candidate_hunt" in queue_markdown
@@ -1303,6 +1385,8 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "Top candidate quality gate: passed" in dossier_markdown
         assert "## Candidate hunter iteration" in dossier_markdown
         assert "## Studio timeline summary" in dossier_markdown
+        assert "## Candidate review packets" in dossier_markdown
+        assert "## Agent handoff pack" in dossier_markdown
         assert "## Agent queue" in dossier_markdown
         assert "## Hallucination guard" in dossier_markdown
         assert "unverified_claim_not_fact" in dossier_markdown

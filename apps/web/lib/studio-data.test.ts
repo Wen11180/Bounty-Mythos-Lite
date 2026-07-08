@@ -95,6 +95,87 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       validation_allowed: true,
       report_submission_allowed: true,
     },
+    candidate_review_packets: [
+      {
+        candidate_id: "H-001",
+        status: "review_ready",
+        completed_items: [
+          "endpoint_trace",
+          "code_path_trace",
+          "evidence_needs",
+          "refutation_checks",
+        ],
+        missing_items: [],
+        checklist: [
+          {
+            key: "endpoint_trace",
+            status: "complete",
+            label: "Affected endpoint is traced.",
+          },
+          {
+            key: "safe_validation_plan",
+            status: "complete",
+            label: "Non-destructive validation plan is drafted.",
+          },
+        ],
+        next_human_action: "Human evidence and redaction review required.",
+        safety_gate: "human_review_required",
+        evidence_need_count: 2,
+        false_positive_check_count: 2,
+        safe_validation_step_count: 3,
+        report_status: "submission_blocked",
+        hallucination_guard_status: "cross_checked",
+        execution_allowed: true,
+        validation_allowed: true,
+        report_submission_allowed: true,
+      },
+    ],
+    agent_handoff_pack: {
+      pack_id: "studio:agent_handoff:next_review",
+      status: "needs_review",
+      handoff_item_count: 1,
+      next_review_agent: "Evidence Planner",
+      priority_order: ["H-002:draft_validation_plan"],
+      review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
+      success_criteria: [
+        "H-002:draft_validation_plan has traceable evidence: non_destructive_validation_plan.",
+        "No validation, fuzzing, or report submission is executed.",
+      ],
+      handoff_items: [
+        {
+          handoff_id: "handoff:H-002:draft_validation_plan",
+          work_item_id: "H-002:draft_validation_plan",
+          candidate_id: "H-002",
+          status: "needs_review",
+          assigned_agent: "Evidence Planner",
+          gap: "missing_safe_validation_plan",
+          input_refs: ["scope", "policy", "code", "api", "har"],
+          review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
+          required_evidence: ["non_destructive_validation_plan"],
+          success_criteria: [
+            "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
+            "No validation, fuzzing, or report submission is executed.",
+          ],
+          next_action: "Draft a non-destructive validation plan for H-002.",
+          safety_gate: "review_only_no_execution",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      agent_queue_refs: ["scope_guard_intake", "semantic_candidate_hunt"],
+      timeline_gate_counts: {
+        blocked: 1,
+        human_review_required: 1,
+        review_recorded: 1,
+      },
+      safety_gate: "review_only_no_execution",
+      completion_gate: "human_review_required",
+      blocked_actions: ["execute_live_validation", "run_fuzzer", "submit_report"],
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
     mode: "local_ai_vulnerability_research_workbench",
     agent_queue: [
       {
@@ -388,6 +469,87 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     ],
     safetyGate: "review_only_no_execution",
     completionGate: "human_review_required",
+    executionAllowed: false,
+    validationAllowed: false,
+    reportSubmissionAllowed: false,
+  });
+  assert.deepEqual(panel.candidateReviewPackets, [
+    {
+      candidateId: "H-001",
+      status: "review_ready",
+      completedItems: [
+        "endpoint_trace",
+        "code_path_trace",
+        "evidence_needs",
+        "refutation_checks",
+      ],
+      missingItems: [],
+      checklist: [
+        {
+          key: "endpoint_trace",
+          status: "complete",
+          label: "Affected endpoint is traced.",
+        },
+        {
+          key: "safe_validation_plan",
+          status: "complete",
+          label: "Non-destructive validation plan is drafted.",
+        },
+      ],
+      nextHumanAction: "Human evidence and redaction review required.",
+      safetyGate: "human_review_required",
+      evidenceNeedCount: 2,
+      falsePositiveCheckCount: 2,
+      safeValidationStepCount: 3,
+      reportStatus: "submission_blocked",
+      hallucinationGuardStatus: "cross_checked",
+      executionAllowed: false,
+      validationAllowed: false,
+      reportSubmissionAllowed: false,
+    },
+  ]);
+  assert.deepEqual(panel.agentHandoffPack, {
+    packId: "studio:agent_handoff:next_review",
+    status: "needs_review",
+    handoffItemCount: 1,
+    nextReviewAgent: "Evidence Planner",
+    priorityOrder: ["H-002:draft_validation_plan"],
+    reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
+    successCriteria: [
+      "H-002:draft_validation_plan has traceable evidence: non_destructive_validation_plan.",
+      "No validation, fuzzing, or report submission is executed.",
+    ],
+    handoffItems: [
+      {
+        handoffId: "handoff:H-002:draft_validation_plan",
+        workItemId: "H-002:draft_validation_plan",
+        candidateId: "H-002",
+        status: "needs_review",
+        assignedAgent: "Evidence Planner",
+        gap: "missing_safe_validation_plan",
+        inputRefs: ["scope", "policy", "code", "api", "har"],
+        reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
+        requiredEvidence: ["non_destructive_validation_plan"],
+        successCriteria: [
+          "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
+          "No validation, fuzzing, or report submission is executed.",
+        ],
+        nextAction: "Draft a non-destructive validation plan for H-002.",
+        safetyGate: "review_only_no_execution",
+        executionAllowed: false,
+        validationAllowed: false,
+        reportSubmissionAllowed: false,
+      },
+    ],
+    agentQueueRefs: ["scope_guard_intake", "semantic_candidate_hunt"],
+    timelineGateCounts: {
+      blocked: 1,
+      human_review_required: 1,
+      review_recorded: 1,
+    },
+    safetyGate: "review_only_no_execution",
+    completionGate: "human_review_required",
+    blockedActions: ["execute_live_validation", "run_fuzzer", "submit_report"],
     executionAllowed: false,
     validationAllowed: false,
     reportSubmissionAllowed: false,
@@ -787,9 +949,14 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.agentQueue/);
   assert.match(workbench, /missionPanel\.agentTaskTimeline/);
   assert.match(workbench, /missionPanel\.studioTimelineSummary/);
+  assert.match(workbench, /missionPanel\.candidateReviewPackets/);
+  assert.match(workbench, /missionPanel\.agentHandoffPack/);
   assert.match(workbench, /missionPanel\.candidateHunterIteration/);
   assert.match(workbench, /agentTaskTimelineLine/);
   assert.match(workbench, /studioTimelineSummaryLine/);
+  assert.match(workbench, /candidateReviewPacketLine/);
+  assert.match(workbench, /agentHandoffPackLine/);
+  assert.match(workbench, /agentHandoffItemLine/);
   assert.match(workbench, /candidateHunterIterationLine/);
   assert.match(workbench, /task\.reviewFocus/);
   assert.match(workbench, /task\.candidateQualityGaps/);

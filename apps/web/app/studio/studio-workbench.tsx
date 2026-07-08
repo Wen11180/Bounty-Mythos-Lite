@@ -890,6 +890,18 @@ export function StudioWorkbench() {
                 items={[studioTimelineSummaryLine(missionPanel.studioTimelineSummary)]}
               />
               <ListBlock
+                title="Candidate review packets"
+                items={missionPanel.candidateReviewPackets.map(candidateReviewPacketLine)}
+              />
+              <ListBlock
+                title="Agent handoff pack"
+                items={[agentHandoffPackLine(missionPanel.agentHandoffPack)]}
+              />
+              <ListBlock
+                title="Agent handoff items"
+                items={missionPanel.agentHandoffPack.handoffItems.map(agentHandoffItemLine)}
+              />
+              <ListBlock
                 title="Agent task timeline"
                 items={missionPanel.agentTaskTimeline.map(agentTaskTimelineLine)}
               />
@@ -1187,6 +1199,58 @@ function studioTimelineSummaryLine(
     summary.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
   ].join(", ");
   return `stages ${summary.totalStages}; gates ${counts}; blocked ${blocked}; needs review ${needsReview}; pending ${pending}; safety ${summary.safetyGate}; next ${nextActions}; ${gates}`;
+}
+
+function candidateReviewPacketLine(
+  packet: ReturnType<typeof toStudioMissionPanel>["candidateReviewPackets"][number],
+): string {
+  const missing =
+    packet.missingItems.length > 0 ? packet.missingItems.join(", ") : "none";
+  const completed =
+    packet.completedItems.length > 0 ? packet.completedItems.join(", ") : "none";
+  const gates = [
+    packet.executionAllowed ? "execution allowed" : "execution blocked",
+    packet.validationAllowed ? "validation allowed" : "validation blocked",
+    packet.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${packet.candidateId}: ${packet.status}; completed ${completed}; missing ${missing}; evidence ${packet.evidenceNeedCount}; refutation ${packet.falsePositiveCheckCount}; validation steps ${packet.safeValidationStepCount}; hallucination ${packet.hallucinationGuardStatus}; report ${packet.reportStatus}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
+}
+
+function agentHandoffPackLine(
+  pack: ReturnType<typeof toStudioMissionPanel>["agentHandoffPack"],
+): string {
+  const priority = pack.priorityOrder.length > 0 ? pack.priorityOrder.join(", ") : "none";
+  const focus = pack.reviewFocus.length > 0 ? pack.reviewFocus.join(", ") : "review";
+  const queueRefs =
+    pack.agentQueueRefs.length > 0 ? pack.agentQueueRefs.join(", ") : "agent queue";
+  const counts = Object.entries(pack.timelineGateCounts)
+    .map(([gate, count]) => `${gate} ${count}`)
+    .join(", ") || "no timeline gates";
+  const blocked =
+    pack.blockedActions.length > 0 ? pack.blockedActions.join(", ") : "no blocked actions";
+  const gates = [
+    pack.executionAllowed ? "execution allowed" : "execution blocked",
+    pack.validationAllowed ? "validation allowed" : "validation blocked",
+    pack.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${pack.packId}: ${pack.status}; next ${pack.nextReviewAgent}; items ${pack.handoffItemCount}; priority ${priority}; focus ${focus}; queue ${queueRefs}; timeline ${counts}; gate ${pack.safetyGate}/${pack.completionGate}; blocked ${blocked}; ${gates}`;
+}
+
+function agentHandoffItemLine(
+  item: ReturnType<typeof toStudioMissionPanel>["agentHandoffPack"]["handoffItems"][number],
+): string {
+  const refs = item.inputRefs.length > 0 ? item.inputRefs.join(", ") : "no refs";
+  const focus = item.reviewFocus.length > 0 ? item.reviewFocus.join(", ") : "review";
+  const evidence =
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+  const criteria =
+    item.successCriteria.length > 0 ? item.successCriteria.join("; ") : "human decision";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${item.handoffId}: ${item.assignedAgent} handles ${item.workItemId} (${item.status}/${item.gap}); refs ${refs}; focus ${focus}; evidence ${evidence}; success ${criteria}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
 }
 
 function candidateHunterBacklogLine(

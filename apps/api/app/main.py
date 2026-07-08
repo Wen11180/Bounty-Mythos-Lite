@@ -2592,6 +2592,7 @@ def _studio_mission_summary(
         candidate_summaries,
         missing,
     )
+    candidate_review_packets = _studio_candidate_review_packets(candidate_summaries)
     candidate_hunter_iteration = _studio_candidate_hunter_iteration(
         candidate_hunter_backlog,
         quality_summary,
@@ -2603,6 +2604,13 @@ def _studio_mission_summary(
         candidate_summaries,
     )
     agent_task_timeline = _studio_mission_agent_task_timeline(agent_queue)
+    studio_timeline_summary = _studio_mission_timeline_summary(agent_task_timeline)
+    agent_handoff_pack = _studio_agent_handoff_pack(
+        candidate_hunter_backlog,
+        candidate_hunter_iteration,
+        agent_queue,
+        studio_timeline_summary,
+    )
     return {
         "mode": "local_ai_vulnerability_research_workbench",
         "run_id": run_id,
@@ -2622,11 +2630,11 @@ def _studio_mission_summary(
         },
         "agent_queue": agent_queue,
         "agent_task_timeline": agent_task_timeline,
-        "studio_timeline_summary": _studio_mission_timeline_summary(
-            agent_task_timeline
-        ),
+        "studio_timeline_summary": studio_timeline_summary,
+        "agent_handoff_pack": agent_handoff_pack,
         "candidate_count": len(top_candidates),
         "top_candidates": candidate_summaries,
+        "candidate_review_packets": candidate_review_packets,
         "quality_summary": quality_summary,
         "candidate_hunter_backlog": candidate_hunter_backlog,
         "candidate_hunter_iteration": candidate_hunter_iteration,
@@ -2933,6 +2941,145 @@ def _studio_mission_timeline_summary(
         "report_submission_allowed": False,
         "validation_execution_allowed": False,
     }
+
+
+def _studio_candidate_review_packets(
+    candidates: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [_studio_candidate_review_packet(candidate) for candidate in candidates[:5]]
+
+
+def _studio_candidate_review_packet(candidate: dict[str, object]) -> dict[str, object]:
+    candidate_id = safe_preview_text(candidate.get("hypothesis_id", "candidate"))
+    checklist = [
+        _studio_candidate_review_item(
+            "endpoint_trace",
+            bool(candidate.get("affected_endpoint")),
+            "Affected endpoint is traced.",
+        ),
+        _studio_candidate_review_item(
+            "code_path_trace",
+            bool(candidate.get("affected_code_path")),
+            "Affected code path is traced.",
+        ),
+        _studio_candidate_review_item(
+            "evidence_needs",
+            _studio_nonnegative_int(candidate.get("evidence_need_count")) > 0,
+            "Evidence needs are listed.",
+        ),
+        _studio_candidate_review_item(
+            "refutation_checks",
+            _studio_nonnegative_int(candidate.get("false_positive_check_count")) > 0,
+            "False-positive checks are listed.",
+        ),
+        _studio_candidate_review_item(
+            "deduplication_review",
+            bool(candidate.get("deduplication_review_status")),
+            "Deduplication review status is recorded.",
+        ),
+        _studio_candidate_review_item(
+            "safe_validation_plan",
+            _studio_nonnegative_int(candidate.get("safe_validation_step_count")) > 0,
+            "Non-destructive validation plan is drafted.",
+        ),
+        _studio_candidate_review_item(
+            "submission_blocked_report",
+            candidate.get("report_status") == "submission_blocked",
+            "Report draft remains submission-blocked.",
+        ),
+        _studio_candidate_review_item(
+            "independent_cross_check",
+            _studio_hallucination_guard_cross_checked(candidate),
+            "Independent static or fuzzing challenge is present.",
+        ),
+    ]
+    completed_items = [
+        safe_preview_text(item.get("key", ""))
+        for item in checklist
+        if item.get("status") == "complete"
+    ]
+    missing_items = [
+        safe_preview_text(item.get("key", ""))
+        for item in checklist
+        if item.get("status") != "complete"
+    ]
+    return {
+        "candidate_id": candidate_id,
+        "status": "review_ready" if not missing_items else "needs_review",
+        "completed_items": completed_items,
+        "missing_items": missing_items,
+        "checklist": checklist,
+        "next_human_action": _studio_candidate_review_next_action(
+            missing_items,
+            candidate,
+        ),
+        "safety_gate": "human_review_required",
+        "evidence_need_count": _studio_nonnegative_int(
+            candidate.get("evidence_need_count")
+        ),
+        "false_positive_check_count": _studio_nonnegative_int(
+            candidate.get("false_positive_check_count")
+        ),
+        "safe_validation_step_count": _studio_nonnegative_int(
+            candidate.get("safe_validation_step_count")
+        ),
+        "report_status": safe_preview_text(
+            candidate.get("report_status", "submission_blocked")
+        ),
+        "hallucination_guard_status": _studio_candidate_hallucination_guard_status(
+            candidate
+        ),
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_candidate_review_item(
+    key: str,
+    complete: bool,
+    label: str,
+) -> dict[str, str]:
+    return {
+        "key": key,
+        "status": "complete" if complete else "needs_review",
+        "label": safe_preview_text(label),
+    }
+
+
+def _studio_hallucination_guard_cross_checked(candidate: dict[str, object]) -> bool:
+    guard = candidate.get("hallucination_guard")
+    return isinstance(guard, dict) and guard.get("status") == "cross_checked"
+
+
+def _studio_candidate_hallucination_guard_status(
+    candidate: dict[str, object],
+) -> str:
+    guard = candidate.get("hallucination_guard")
+    if not isinstance(guard, dict):
+        return "needs_review"
+    return safe_preview_text(guard.get("status", "needs_review"))
+
+
+def _studio_candidate_review_next_action(
+    missing_items: list[str],
+    candidate: dict[str, object],
+) -> str:
+    by_gap = {
+        "endpoint_trace": "Map the affected endpoint from authorized API or HAR artifacts.",
+        "code_path_trace": "Trace the affected code path in authorized local code.",
+        "evidence_needs": "List concrete evidence needed for human review.",
+        "refutation_checks": "Add false-positive checks before validation planning.",
+        "deduplication_review": "Record duplicate-risk and prior-finding review.",
+        "safe_validation_plan": "Draft a non-destructive validation plan for approval.",
+        "submission_blocked_report": "Export only a submission-blocked report draft.",
+        "independent_cross_check": "Add SARIF or fuzzing challenge evidence before high confidence.",
+    }
+    for item in missing_items:
+        if item in by_gap:
+            return by_gap[item]
+    next_report_action = safe_preview_text(candidate.get("next_report_action", ""))
+    return next_report_action or "Human evidence and redaction review required."
 
 
 def _studio_agent_label_list(values: list[str]) -> list[str]:
@@ -3242,6 +3389,91 @@ def _studio_candidate_hunter_success_criteria(
             )
         else:
             criteria.append(f"{work_item_id} has review notes and a human decision.")
+    criteria.append("No validation, fuzzing, or report submission is executed.")
+    return _studio_agent_label_list(criteria)
+
+
+def _studio_agent_handoff_pack(
+    backlog: list[dict[str, object]],
+    iteration: dict[str, object],
+    agent_queue: list[dict[str, object]],
+    timeline_summary: dict[str, object],
+) -> dict[str, object]:
+    handoff_items = [
+        _studio_agent_handoff_item(item)
+        for item in backlog[:5]
+        if safe_preview_text(item.get("work_item_id", ""))
+    ]
+    return {
+        "pack_id": "studio:agent_handoff:next_review",
+        "status": safe_preview_text(iteration.get("status", "needs_review")),
+        "handoff_item_count": len(handoff_items),
+        "next_review_agent": safe_preview_text(
+            iteration.get("next_review_agent", "Human Reviewer")
+        ),
+        "priority_order": _studio_agent_string_list(
+            iteration.get("priority_order", [])
+        ),
+        "review_focus": _studio_agent_string_list(iteration.get("review_focus", [])),
+        "success_criteria": _studio_agent_string_list(
+            iteration.get("success_criteria", [])
+        ),
+        "handoff_items": handoff_items,
+        "agent_queue_refs": [
+            safe_preview_text(task.get("task_id", ""))
+            for task in agent_queue[:10]
+            if safe_preview_text(task.get("task_id", ""))
+        ],
+        "timeline_gate_counts": timeline_summary.get("gate_decision_counts", {})
+        if isinstance(timeline_summary.get("gate_decision_counts"), dict)
+        else {},
+        "safety_gate": "review_only_no_execution",
+        "completion_gate": "human_review_required",
+        "blocked_actions": [
+            "execute_live_validation",
+            "run_fuzzer",
+            "submit_report",
+        ],
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_agent_handoff_item(item: dict[str, object]) -> dict[str, object]:
+    work_item_id = safe_preview_text(item.get("work_item_id", ""))
+    return {
+        "handoff_id": f"handoff:{work_item_id}",
+        "work_item_id": work_item_id,
+        "candidate_id": safe_preview_text(item.get("candidate_id", "")),
+        "status": safe_preview_text(item.get("status", "needs_review")),
+        "assigned_agent": _studio_candidate_hunter_next_agent(
+            safe_preview_text(item.get("gap", ""))
+        ),
+        "gap": safe_preview_text(item.get("gap", "")),
+        "input_refs": ["scope", "policy", "code", "api", "har"],
+        "review_focus": _studio_agent_string_list(item.get("review_focus", [])),
+        "required_evidence": _studio_agent_string_list(
+            item.get("required_evidence", [])
+        ),
+        "success_criteria": _studio_agent_handoff_item_success(item),
+        "next_action": safe_preview_text(item.get("next_action", "")),
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_agent_handoff_item_success(item: dict[str, object]) -> list[str]:
+    work_item_id = safe_preview_text(item.get("work_item_id", "candidate_work_item"))
+    required = _studio_agent_string_list(item.get("required_evidence", []))
+    criteria = [
+        f"{work_item_id} is reviewed against authorized local artifacts.",
+        "Reviewer records a human decision before promotion.",
+    ]
+    if required:
+        criteria.append("Evidence refs required: " + ", ".join(required) + ".")
     criteria.append("No validation, fuzzing, or report submission is executed.")
     return _studio_agent_label_list(criteria)
 
@@ -4116,11 +4348,20 @@ def _studio_report_knowledge_signal_label(value: dict) -> str:
     pattern_id = _studio_report_guidance_text(value.get("pattern_id", ""))
     vuln_type = _studio_report_guidance_text(value.get("vuln_type", ""))
     source = _studio_report_guidance_text(value.get("source", "local_knowledge"))
+    cve_id = _studio_report_guidance_text(value.get("cve_id", ""))
+    framework = _studio_report_guidance_text(value.get("framework", ""))
+    similarity = _studio_report_guidance_text(value.get("similarity_score", ""))
     if not pattern_id and not vuln_type:
         return ""
     subject = pattern_id or vuln_type
     suffix = f" ({vuln_type})" if pattern_id and vuln_type else ""
-    return f"Knowledge advisory: {subject}{suffix} from {source}"
+    details = ", ".join(
+        item
+        for item in (framework, cve_id, f"similarity {similarity}" if similarity else "")
+        if item
+    )
+    details_text = f"; {details}" if details else ""
+    return f"Knowledge advisory: {subject}{suffix} from {source}{details_text}"
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:
@@ -4841,7 +5082,18 @@ def _studio_knowledge_surface_facts(payload: object) -> list[dict[str, str]]:
         pattern_id = safe_preview_text(entry.get("pattern_id", entry.get("id", "")))
         vuln_type = safe_preview_text(entry.get("vuln_type", entry.get("category", "")))
         source = safe_preview_text(entry.get("source", "local_knowledge"))
-        if pattern_id == "[REDACTED]" or vuln_type == "[REDACTED]":
+        cve_id = safe_preview_text(entry.get("cve_id", entry.get("cve", "")))
+        framework = safe_preview_text(entry.get("framework", entry.get("ecosystem", "")))
+        case_title = safe_preview_text(entry.get("case_title", entry.get("title", "")))
+        similarity_score = _studio_knowledge_similarity_score(entry.get("similarity_score"))
+        retrieval_rank = _studio_knowledge_retrieval_rank(entry.get("retrieval_rank"))
+        if (
+            pattern_id == "[REDACTED]"
+            or vuln_type == "[REDACTED]"
+            or cve_id == "[REDACTED]"
+            or framework == "[REDACTED]"
+            or case_title == "[REDACTED]"
+        ):
             continue
         if not pattern_id and not vuln_type:
             continue
@@ -4850,14 +5102,48 @@ def _studio_knowledge_surface_facts(payload: object) -> list[dict[str, str]]:
             "artifact_kind": "knowledge",
             "advisory_only": "true",
             "model_input_role": "few_shot_context_only",
+            "exploit_code_allowed": "false",
             "source": source or "local_knowledge",
         }
         if pattern_id:
             fact["pattern_id"] = pattern_id
         if vuln_type:
             fact["vuln_type"] = vuln_type
+        if cve_id:
+            fact["cve_id"] = cve_id
+        if framework:
+            fact["framework"] = framework
+        if case_title:
+            fact["case_title"] = case_title
+        if similarity_score:
+            fact["similarity_score"] = similarity_score
+        if retrieval_rank:
+            fact["retrieval_rank"] = retrieval_rank
         facts.append(fact)
     return facts[:5]
+
+
+def _studio_knowledge_similarity_score(value: object) -> str:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        bounded = max(0.0, min(1.0, float(value)))
+        return f"{bounded:.2f}"
+    if isinstance(value, str):
+        try:
+            bounded = max(0.0, min(1.0, float(value.strip())))
+        except ValueError:
+            return ""
+        return f"{bounded:.2f}"
+    return ""
+
+
+def _studio_knowledge_retrieval_rank(value: object) -> str:
+    if isinstance(value, int) and value > 0:
+        return str(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        rank = int(value.strip())
+        if rank > 0:
+            return str(rank)
+    return ""
 
 
 def _studio_purl_ecosystem(purl: str) -> str:

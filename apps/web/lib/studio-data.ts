@@ -151,8 +151,66 @@ export type StudioTimelineSummaryInput = {
   validation_execution_allowed?: boolean;
 };
 
+export type StudioCandidateReviewPacketInput = {
+  candidate_id?: string;
+  checklist?: Array<{
+    key?: string;
+    label?: string;
+    status?: string;
+  }>;
+  completed_items?: string[];
+  evidence_need_count?: number;
+  execution_allowed?: boolean;
+  false_positive_check_count?: number;
+  hallucination_guard_status?: string;
+  missing_items?: string[];
+  next_human_action?: string;
+  report_status?: string;
+  report_submission_allowed?: boolean;
+  safe_validation_step_count?: number;
+  safety_gate?: string;
+  status?: string;
+  validation_allowed?: boolean;
+};
+
+export type StudioAgentHandoffPackInput = {
+  agent_queue_refs?: string[];
+  blocked_actions?: string[];
+  completion_gate?: string;
+  execution_allowed?: boolean;
+  handoff_item_count?: number;
+  handoff_items?: Array<{
+    assigned_agent?: string;
+    candidate_id?: string;
+    execution_allowed?: boolean;
+    gap?: string;
+    handoff_id?: string;
+    input_refs?: string[];
+    next_action?: string;
+    report_submission_allowed?: boolean;
+    required_evidence?: string[];
+    review_focus?: string[];
+    safety_gate?: string;
+    status?: string;
+    success_criteria?: string[];
+    validation_allowed?: boolean;
+    work_item_id?: string;
+  }>;
+  next_review_agent?: string;
+  pack_id?: string;
+  priority_order?: string[];
+  report_submission_allowed?: boolean;
+  review_focus?: string[];
+  safety_gate?: string;
+  status?: string;
+  success_criteria?: string[];
+  timeline_gate_counts?: Record<string, number>;
+  validation_allowed?: boolean;
+};
+
 export type StudioMissionSummary = {
   agent_queue?: StudioMissionAgentTaskInput[];
+  agent_handoff_pack?: StudioAgentHandoffPackInput;
   agent_task_timeline?: StudioMissionAgentTaskTimelineInput[];
   artifacts?: {
     missing?: string[];
@@ -167,6 +225,7 @@ export type StudioMissionSummary = {
   candidate_count?: number;
   candidate_hunter_backlog?: StudioCandidateHunterBacklogInput[];
   candidate_hunter_iteration?: StudioCandidateHunterIterationInput;
+  candidate_review_packets?: StudioCandidateReviewPacketInput[];
   mode?: string;
   next_actions?: string[];
   quality_summary?: {
@@ -309,14 +368,73 @@ export type StudioTimelineSummary = {
   validationExecutionAllowed: boolean;
 };
 
+export type StudioCandidateReviewPacket = {
+  candidateId: string;
+  checklist: Array<{
+    key: string;
+    label: string;
+    status: string;
+  }>;
+  completedItems: string[];
+  evidenceNeedCount: number;
+  executionAllowed: boolean;
+  falsePositiveCheckCount: number;
+  hallucinationGuardStatus: string;
+  missingItems: string[];
+  nextHumanAction: string;
+  reportStatus: string;
+  reportSubmissionAllowed: boolean;
+  safeValidationStepCount: number;
+  safetyGate: string;
+  status: string;
+  validationAllowed: boolean;
+};
+
+export type StudioAgentHandoffPack = {
+  agentQueueRefs: string[];
+  blockedActions: string[];
+  completionGate: string;
+  executionAllowed: boolean;
+  handoffItemCount: number;
+  handoffItems: Array<{
+    assignedAgent: string;
+    candidateId: string;
+    executionAllowed: boolean;
+    gap: string;
+    handoffId: string;
+    inputRefs: string[];
+    nextAction: string;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    reviewFocus: string[];
+    safetyGate: string;
+    status: string;
+    successCriteria: string[];
+    validationAllowed: boolean;
+    workItemId: string;
+  }>;
+  nextReviewAgent: string;
+  packId: string;
+  priorityOrder: string[];
+  reportSubmissionAllowed: boolean;
+  reviewFocus: string[];
+  safetyGate: string;
+  status: string;
+  successCriteria: string[];
+  timelineGateCounts: Record<string, number>;
+  validationAllowed: boolean;
+};
+
 export type StudioMissionPanel = {
   advisoryContextLabel: string;
+  agentHandoffPack: StudioAgentHandoffPack;
   agentQueue: StudioMissionAgentTask[];
   agentTaskTimeline: StudioMissionAgentTaskTimelineItem[];
   artifactCoverage: string;
   blockedActions: string[];
   candidateHunterBacklog: StudioCandidateHunterBacklogItem[];
   candidateHunterIteration: StudioCandidateHunterIteration;
+  candidateReviewPackets: StudioCandidateReviewPacket[];
   candidateCountLabel: string;
   gates: {
     humanReviewRequired: boolean;
@@ -458,6 +576,52 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
   return {
     advisoryContextLabel:
       advisoryPresent.length > 0 ? advisoryPresent.join(", ") : "No advisory context",
+    agentHandoffPack: {
+      agentQueueRefs: mission?.agent_handoff_pack?.agent_queue_refs ?? [],
+      blockedActions: mission?.agent_handoff_pack?.blocked_actions ?? [],
+      completionGate: safeText(
+        mission?.agent_handoff_pack?.completion_gate,
+        "human_review_required",
+      ),
+      executionAllowed: false,
+      handoffItemCount: mission?.agent_handoff_pack?.handoff_item_count ?? 0,
+      handoffItems: (mission?.agent_handoff_pack?.handoff_items ?? []).map((item) => ({
+        assignedAgent: safeText(item.assigned_agent, "Human Reviewer"),
+        candidateId: safeText(item.candidate_id, "candidate"),
+        executionAllowed: false,
+        gap: safeText(item.gap, "needs_review"),
+        handoffId: safeText(item.handoff_id, "handoff:candidate"),
+        inputRefs: item.input_refs ?? [],
+        nextAction: safeText(item.next_action, "Human review required."),
+        reportSubmissionAllowed: false,
+        requiredEvidence: item.required_evidence ?? [],
+        reviewFocus: item.review_focus ?? [],
+        safetyGate: safeText(item.safety_gate, "review_only_no_execution"),
+        status: safeText(item.status, "needs_review"),
+        successCriteria: item.success_criteria ?? [],
+        validationAllowed: false,
+        workItemId: safeText(item.work_item_id, "candidate_work_item"),
+      })),
+      nextReviewAgent: safeText(
+        mission?.agent_handoff_pack?.next_review_agent,
+        "Human Reviewer",
+      ),
+      packId: safeText(
+        mission?.agent_handoff_pack?.pack_id,
+        "studio:agent_handoff:next_review",
+      ),
+      priorityOrder: mission?.agent_handoff_pack?.priority_order ?? [],
+      reportSubmissionAllowed: false,
+      reviewFocus: mission?.agent_handoff_pack?.review_focus ?? [],
+      safetyGate: safeText(
+        mission?.agent_handoff_pack?.safety_gate,
+        "review_only_no_execution",
+      ),
+      status: safeText(mission?.agent_handoff_pack?.status, "needs_review"),
+      successCriteria: mission?.agent_handoff_pack?.success_criteria ?? [],
+      timelineGateCounts: mission?.agent_handoff_pack?.timeline_gate_counts ?? {},
+      validationAllowed: false,
+    },
     agentQueue: (mission?.agent_queue ?? []).map((task) => ({
       agent: safeText(task.agent, "Review agent"),
       candidateQualityGaps: task.candidate_quality_gaps ?? [],
@@ -524,6 +688,30 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       validationAllowed: false,
       workItemCount: mission?.candidate_hunter_iteration?.work_item_count ?? 0,
     },
+    candidateReviewPackets: (mission?.candidate_review_packets ?? []).map((packet) => ({
+      candidateId: safeText(packet.candidate_id, "candidate"),
+      checklist: (packet.checklist ?? []).map((item) => ({
+        key: safeText(item.key, "review_item"),
+        label: safeText(item.label, "Review item"),
+        status: safeText(item.status, "needs_review"),
+      })),
+      completedItems: packet.completed_items ?? [],
+      evidenceNeedCount: packet.evidence_need_count ?? 0,
+      executionAllowed: false,
+      falsePositiveCheckCount: packet.false_positive_check_count ?? 0,
+      hallucinationGuardStatus: safeText(
+        packet.hallucination_guard_status,
+        "needs_review",
+      ),
+      missingItems: packet.missing_items ?? [],
+      nextHumanAction: safeText(packet.next_human_action, "Human review required."),
+      reportStatus: safeText(packet.report_status, "submission_blocked"),
+      reportSubmissionAllowed: false,
+      safeValidationStepCount: packet.safe_validation_step_count ?? 0,
+      safetyGate: safeText(packet.safety_gate, "human_review_required"),
+      status: safeText(packet.status, "needs_review"),
+      validationAllowed: false,
+    })),
     candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
     gates: {
       humanReviewRequired: mission?.quality_gates?.human_review_required === true,

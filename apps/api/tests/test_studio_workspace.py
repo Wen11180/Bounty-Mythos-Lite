@@ -384,6 +384,80 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
                 "validation_allowed": True,
                 "report_submission_allowed": True,
             },
+            "agent_handoff_pack": {
+                "pack_id": "studio:agent_handoff:next_review",
+                "status": "needs_review",
+                "handoff_item_count": 1,
+                "next_review_agent": "Evidence Planner",
+                "priority_order": ["H-002:draft_validation_plan"],
+                "review_focus": ["safe_validation_plan"],
+                "success_criteria": [
+                    "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
+                ],
+                "handoff_items": [
+                    {
+                        "handoff_id": "handoff:H-002:draft_validation_plan",
+                        "work_item_id": "H-002:draft_validation_plan",
+                        "candidate_id": "H-002",
+                        "status": "needs_review",
+                        "assigned_agent": "Evidence Planner",
+                        "gap": "missing_safe_validation_plan",
+                        "input_refs": ["scope", "policy", "code", "api", "har"],
+                        "review_focus": ["safe_validation_plan"],
+                        "required_evidence": ["non_destructive_validation_plan"],
+                        "success_criteria": [
+                            "No validation, fuzzing, or report submission is executed.",
+                        ],
+                        "next_action": "Draft a non-destructive validation plan for H-002.",
+                        "safety_gate": "review_only_no_execution",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "agent_queue_refs": ["semantic_candidate_hunt"],
+                "timeline_gate_counts": {"review_recorded": 1},
+                "safety_gate": "unsafe_override",
+                "completion_gate": "unsafe_override",
+                "blocked_actions": [
+                    "execute_live_validation",
+                    "run_fuzzer",
+                    "submit_report",
+                ],
+                "execution_allowed": True,
+                "validation_allowed": True,
+                "report_submission_allowed": True,
+            },
+            "candidate_review_packets": [
+                {
+                    "candidate_id": "H-001",
+                    "status": "needs_review",
+                    "completed_items": ["endpoint_trace", "code_path_trace"],
+                    "missing_items": ["safe_validation_plan"],
+                    "checklist": [
+                        {
+                            "key": "endpoint_trace",
+                            "status": "complete",
+                            "label": "Affected endpoint is traced.",
+                        },
+                        {
+                            "key": "safe_validation_plan",
+                            "status": "needs_review",
+                            "label": "Non-destructive validation plan is drafted.",
+                        },
+                    ],
+                    "next_human_action": "Draft a non-destructive validation plan.",
+                    "safety_gate": "human_review_required",
+                    "evidence_need_count": 2,
+                    "false_positive_check_count": 1,
+                    "safe_validation_step_count": 0,
+                    "report_status": "submission_blocked",
+                    "hallucination_guard_status": "needs_review",
+                    "execution_allowed": True,
+                    "validation_allowed": True,
+                    "report_submission_allowed": True,
+                }
+            ],
             "top_candidates": [
                 {
                     "hypothesis_id": "H-001",
@@ -429,6 +503,10 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert queue_audit["timeline_blocked_stage_count"] == 0
     assert queue_audit["timeline_needs_review_stage_count"] == 0
     assert queue_audit["timeline_pending_stage_count"] == 0
+    assert queue_audit["candidate_review_packet_count"] == 1
+    assert queue_audit["candidate_review_ready_packet_count"] == 0
+    assert queue_audit["agent_handoff_item_count"] == 1
+    assert queue_audit["agent_handoff_status"] == "needs_review"
     assert queue_audit["report_submission_allowed"] is False
     assert queue_audit["validation_execution_allowed"] is False
     assert updated["runs"][0]["mission_dossier_path"] == dossier["dossier_path"]
@@ -455,6 +533,43 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert queue_json["candidate_hunter_iteration"]["execution_allowed"] is False
     assert queue_json["candidate_hunter_iteration"]["validation_allowed"] is False
     assert queue_json["candidate_hunter_iteration"]["report_submission_allowed"] is False
+    assert queue_json["agent_handoff_pack"]["status"] == "needs_review"
+    assert queue_json["agent_handoff_pack"]["handoff_item_count"] == 1
+    assert queue_json["agent_handoff_pack"]["safety_gate"] == (
+        "review_only_no_execution"
+    )
+    assert queue_json["agent_handoff_pack"]["completion_gate"] == (
+        "human_review_required"
+    )
+    assert queue_json["agent_handoff_pack"]["execution_allowed"] is False
+    assert queue_json["agent_handoff_pack"]["validation_allowed"] is False
+    assert queue_json["agent_handoff_pack"]["report_submission_allowed"] is False
+    assert queue_json["agent_handoff_pack"]["handoff_items"][0]["work_item_id"] == (
+        "H-002:draft_validation_plan"
+    )
+    assert (
+        queue_json["agent_handoff_pack"]["handoff_items"][0]["execution_allowed"]
+        is False
+    )
+    assert (
+        queue_json["agent_handoff_pack"]["handoff_items"][0]["validation_allowed"]
+        is False
+    )
+    assert (
+        queue_json["agent_handoff_pack"]["handoff_items"][0][
+            "report_submission_allowed"
+        ]
+        is False
+    )
+    assert queue_json["candidate_review_packets"][0]["candidate_id"] == "H-001"
+    assert queue_json["candidate_review_packets"][0]["missing_items"] == [
+        "safe_validation_plan"
+    ]
+    assert queue_json["candidate_review_packets"][0]["execution_allowed"] is False
+    assert queue_json["candidate_review_packets"][0]["validation_allowed"] is False
+    assert (
+        queue_json["candidate_review_packets"][0]["report_submission_allowed"] is False
+    )
     assert queue_json["studio_timeline_summary"] == {
         "total_stages": 1,
         "gate_decision_counts": {"review_recorded": 1},
@@ -488,6 +603,11 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "H-002:draft_validation_plan" in queue_markdown
     assert "## Candidate hunter iteration" in queue_markdown
     assert "## Studio timeline summary" in queue_markdown
+    assert "## Candidate review packets" in queue_markdown
+    assert "## Agent handoff pack" in queue_markdown
+    assert "handoff items: 1" in queue_markdown
+    assert "agent: Evidence Planner" in queue_markdown
+    assert "safe_validation_plan=needs_review" in queue_markdown
     assert "review_recorded: 1" in queue_markdown
     assert "execution allowed: false" in queue_markdown
     assert "quality gaps: H-002:missing_safe_validation_plan" in queue_markdown
@@ -498,6 +618,8 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "## Agent queue" in markdown
     assert "## Candidate hunter iteration" in markdown
     assert "## Studio timeline summary" in markdown
+    assert "## Candidate review packets" in markdown
+    assert "## Agent handoff pack" in markdown
     assert "semantic_candidate_hunt: Semantic Auditor" in markdown
     assert "focus: security_invariants, affected_code_paths, candidate_quality" in markdown
     assert "quality gaps: H-002:missing_safe_validation_plan" in markdown
