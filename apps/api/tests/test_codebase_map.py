@@ -118,6 +118,91 @@ def export_file(file_id: str):
     }
 
 
+def test_map_authorized_code_files_marks_flask_method_view_without_authz_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from flask import Flask, send_file
+from flask.views import MethodView
+
+app = Flask(__name__)
+
+class FileExport(MethodView):
+    def get(self, file_id: str):
+        return send_file(file_id)
+
+app.add_url_rule(
+    "/files/<file_id>/export",
+    view_func=FileExport.as_view("export_file"),
+)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert fact_types.count("authorization_gap_candidate") == 1
+    assert gap.symbol_name == "FileExport.get"
+    assert gap.route_method == "GET"
+    assert gap.route_path == "/files/<file_id>/export"
+    assert gap.authz_hint == "missing_handler_authz_check"
+    assert gap.sensitivity_label == "high"
+
+
+def test_map_authorized_code_files_treats_flask_method_view_decorator_as_route_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from flask import Flask, send_file
+from flask.views import MethodView
+from flask_login import login_required
+
+app = Flask(__name__)
+
+class FileExport(MethodView):
+    decorators = [login_required]
+
+    def get(self, file_id: str):
+        return send_file(file_id)
+
+app.add_url_rule(
+    "/files/<file_id>/export",
+    view_func=FileExport.as_view("export_file"),
+)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "login_required"
+    assert authz.payload == {
+        "handler": "FileExport.get",
+        "line": 9,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
 def test_map_authorized_code_files_does_not_mark_gap_when_handler_has_authz():
     result = map_authorized_code_files(
         {
@@ -1975,6 +2060,42 @@ from fastapi import APIRouter, Depends
 
 router = APIRouter()
 CurrentUser = Depends(require_user)
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=CurrentUser):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "require_user"
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 8,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
+def test_map_authorized_code_files_treats_keyword_dependency_alias_in_signature_as_route_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+CurrentUser = Depends(dependency=require_user)
 
 @router.get("/files/{file_id}/export")
 def export_file(file_id: str, user=CurrentUser):

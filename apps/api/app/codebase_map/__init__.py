@@ -20,6 +20,11 @@ FLASK_ROUTE_METHOD_PATTERN = re.compile(
     r"methods\s*=\s*\[[^\]]*[\"']([A-Za-z]+)[\"']",
     re.IGNORECASE,
 )
+FLASK_ADD_URL_RULE_PATTERN = re.compile(r"\.add_url_rule\(")
+FLASK_METHOD_VIEW_PATTERN = re.compile(
+    r"view_func\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.as_view\(",
+)
+METHOD_VIEW_DECORATORS_PATTERN = re.compile(r"\bdecorators\s*=\s*\[([^\]]+)\]")
 ROUTE_DECORATOR_ROUTER_PATTERN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)\.")
 AUTHZ_DECORATOR_PATTERN = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b")
 ROUTER_ASSIGNMENT_PATTERN = re.compile(
@@ -35,7 +40,8 @@ DEPENDENCY_CALL_PATTERN = re.compile(
     r"\b(?:Depends|Security)\(\s*(?:dependency\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)"
 )
 DEPENDENCY_ALIAS_PATTERN = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)"
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"(?:Depends|Security)\(\s*(?:dependency\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)"
 )
 IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(.+)$")
 IMPORT_ALIAS_ITEM_PATTERN = re.compile(
@@ -114,6 +120,7 @@ SENSITIVE_SINK_NAMES = {
     "update",
     "update_role",
 }
+HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
 
 
 @dataclass(frozen=True)
@@ -190,6 +197,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         tuple[str, int, list[str], list[tuple[str, int]], list[tuple[str, int]]] | None
     ) = None
     pending_router_assignment: tuple[str, int, list[str], str] | None = None
+    pending_add_url_rule: tuple[int, list[str]] | None = None
     pending_signature_authz: tuple[str, int] | None = None
     function_stack: list[tuple[str, int]] = []
     class_stack: list[tuple[str, int]] = []
@@ -202,8 +210,29 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     local_call_aliases: dict[str, dict[str, str]] = {}
     class_call_aliases: dict[str, dict[str, str]] = {}
     principal_id_aliases: dict[str, dict[str, str]] = {}
+    method_view_classes: set[str] = set()
+    method_view_methods: dict[str, set[str]] = {}
+    method_view_authz_refs: dict[str, list[tuple[str, int]]] = {}
 
     for line_number, line in enumerate(content.splitlines(), start=1):
+        if pending_add_url_rule is not None:
+            add_url_rule_line, add_url_rule_lines = pending_add_url_rule
+            add_url_rule_lines = [*add_url_rule_lines, line]
+            if _flask_add_url_rule_closed(add_url_rule_lines):
+                facts.extend(
+                    _flask_method_view_route_facts(
+                        source_path,
+                        add_url_rule_lines,
+                        add_url_rule_line,
+                        method_view_methods,
+                        method_view_authz_refs,
+                    )
+                )
+                pending_add_url_rule = None
+            else:
+                pending_add_url_rule = (add_url_rule_line, add_url_rule_lines)
+            continue
+
         if pending_router_assignment is not None:
             (
                 router_name,
@@ -483,8 +512,31 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 )
             continue
 
+        if FLASK_ADD_URL_RULE_PATTERN.search(line) is not None and not function_stack:
+            if _flask_add_url_rule_closed([line]):
+                facts.extend(
+                    _flask_method_view_route_facts(
+                        source_path,
+                        [line],
+                        line_number,
+                        method_view_methods,
+                        method_view_authz_refs,
+                    )
+                )
+            else:
+                pending_add_url_rule = (line_number, [line])
+            continue
+
         function_match = FUNCTION_PATTERN.match(line)
         if function_match is not None:
+            class_name = _current_class(class_stack)
+            if (
+                class_name in method_view_classes
+                and function_match.group(1).lower() in HTTP_METHOD_NAMES
+            ):
+                method_view_methods.setdefault(class_name, set()).add(
+                    function_match.group(1).lower()
+                )
             function_stack.append((function_match.group(1), _indent_width(line)))
         if function_match is not None and pending_route is None:
             function_name = function_match.group(1)
@@ -662,6 +714,8 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             class_stack.append((class_match.group(1), _indent_width(line)))
 
         model_match = MODEL_PATTERN.match(line)
+        if model_match is not None and _is_method_view_base(model_match.group(2)):
+            method_view_classes.add(model_match.group(1))
         if model_match is not None and _is_model_base(model_match.group(2)):
             facts.append(
                 CodebaseFactCandidate(
@@ -688,8 +742,23 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         ):
             continue
 
-        current_function = _current_function(function_stack)
         current_class = _current_class(class_stack)
+        current_function = _qualified_method_view_function(
+            _current_function(function_stack),
+            current_class,
+            method_view_classes,
+        )
+        if current_class in method_view_classes:
+            method_view_authz_refs[current_class] = _dedupe_refs(
+                [
+                    *method_view_authz_refs.get(current_class, []),
+                    *_method_view_decorator_authz_refs(
+                        line,
+                        line_number,
+                        import_aliases,
+                    ),
+                ]
+            )
         local_alias = _local_call_alias(line)
         if current_function is not None and local_alias is not None:
             alias_name, call_name = local_alias
@@ -813,6 +882,20 @@ def _current_class(class_stack: list[tuple[str, int]]) -> str | None:
     if not class_stack:
         return None
     return class_stack[-1][0]
+
+
+def _qualified_method_view_function(
+    function_name: str | None,
+    class_name: str | None,
+    method_view_classes: set[str],
+) -> str | None:
+    if (
+        function_name is not None
+        and class_name in method_view_classes
+        and function_name.lower() in HTTP_METHOD_NAMES
+    ):
+        return f"{class_name}.{function_name.lower()}"
+    return function_name
 
 
 def _authorization_gap_candidates(
@@ -1293,6 +1376,100 @@ def _flask_route_method(line: str) -> str:
     return match.group(1).upper()
 
 
+def _flask_add_url_rule_closed(lines: list[str]) -> bool:
+    block = "\n".join(lines)
+    start = block.find("add_url_rule")
+    if start == -1:
+        return False
+
+    depth = 0
+    saw_open = False
+    try:
+        tokens = tokenize.generate_tokens(StringIO(block[start:]).readline)
+        for token in tokens:
+            if token.type != tokenize.OP:
+                continue
+            if token.string == "(":
+                depth += 1
+                saw_open = True
+            elif token.string == ")" and saw_open:
+                depth -= 1
+                if depth == 0:
+                    return True
+    except tokenize.TokenError:
+        return False
+    return False
+
+
+def _flask_method_view_route_facts(
+    source_path: str,
+    lines: list[str],
+    start_line: int,
+    method_view_methods: dict[str, set[str]],
+    method_view_authz_refs: dict[str, list[tuple[str, int]]],
+) -> list[CodebaseFactCandidate]:
+    block = "\n".join(lines)
+    route_path = _route_path_from_decorator_lines(lines)
+    view_match = FLASK_METHOD_VIEW_PATTERN.search(block)
+    if route_path is None or view_match is None:
+        return []
+
+    class_name = view_match.group(1)
+    facts: list[CodebaseFactCandidate] = []
+    for method_name in sorted(method_view_methods.get(class_name, set())):
+        handler_name = f"{class_name}.{method_name}"
+        facts.append(
+            CodebaseFactCandidate(
+                fact_type="route_handler",
+                source_path=source_path,
+                symbol_name=handler_name,
+                route_method=method_name.upper(),
+                route_path=route_path,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "handler": handler_name,
+                    "line": start_line,
+                    "mapping_mode": "static_code_snippet_analysis",
+                },
+            )
+        )
+        for call_name, authz_line in method_view_authz_refs.get(class_name, []):
+            facts.append(
+                CodebaseFactCandidate(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=call_name,
+                    route_method=None,
+                    route_path=None,
+                    authz_hint=_authz_hint(call_name),
+                    sensitivity_label="low",
+                    payload={
+                        "handler": handler_name,
+                        "line": authz_line,
+                        "mapping_mode": "static_code_snippet_analysis",
+                    },
+                )
+            )
+    return facts
+
+
+def _method_view_decorator_authz_refs(
+    line: str,
+    line_number: int,
+    import_aliases: dict[str, str],
+) -> list[tuple[str, int]]:
+    match = METHOD_VIEW_DECORATORS_PATTERN.search(line)
+    if match is None:
+        return []
+    refs: list[tuple[str, int]] = []
+    for call_name in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group(1)):
+        resolved_name = import_aliases.get(call_name, call_name)
+        if _is_authz_call(resolved_name):
+            refs.append((resolved_name, line_number))
+    return _dedupe_refs(refs)
+
+
 def _authz_decorator_ref(
     line: str,
     line_number: int,
@@ -1305,6 +1482,10 @@ def _authz_decorator_ref(
     if not _is_authz_call(call_name):
         return None
     return call_name, line_number
+
+
+def _is_method_view_base(base_list: str) -> bool:
+    return any(base.strip().endswith("MethodView") for base in base_list.split(","))
 
 
 def _is_model_base(base_list: str) -> bool:
