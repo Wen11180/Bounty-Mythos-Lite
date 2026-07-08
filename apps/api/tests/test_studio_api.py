@@ -1129,6 +1129,18 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert review_packet["execution_allowed"] is False
         assert review_packet["validation_allowed"] is False
         assert review_packet["report_submission_allowed"] is False
+        report_summary = mission["submission_blocked_report_summary"]
+        assert report_summary["status"] == "ready_for_redaction_review"
+        assert report_summary["candidate_count"] == mission["candidate_count"]
+        assert report_summary["ready_candidate_ids"] == [
+            candidate["hypothesis_id"]
+        ]
+        assert report_summary["needs_review_candidate_ids"] == []
+        assert report_summary["missing_review_items"] == {}
+        assert report_summary["redaction_review_required"] is True
+        assert report_summary["safety_gate"] == "submission_blocked_human_review"
+        assert report_summary["report_submission_allowed"] is False
+        assert report_summary["validation_execution_allowed"] is False
         research_loop = mission["research_loop"]
         assert [stage["key"] for stage in research_loop] == [
             "scope_guard",
@@ -1237,6 +1249,29 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert timeline_summary["report_submission_allowed"] is False
         assert timeline_summary["validation_execution_allowed"] is False
 
+        handoff_response = client.get(
+            "/mythos/studio/workspaces/mission/handoff",
+            params={"workspace_path": workspace_path, "run_id": run_id},
+        )
+        assert handoff_response.status_code == 200
+        handoff = handoff_response.json()
+        assert handoff["run_id"] == run_id
+        assert handoff["scope_guard_status"] == "scope_imported"
+        assert handoff["candidate_count"] == mission["candidate_count"]
+        assert handoff["artifacts"] == mission["artifacts"]
+        assert handoff["quality_summary"]["top_candidate_quality_gate"] == "passed"
+        assert handoff["agent_handoff_pack"] == mission["agent_handoff_pack"]
+        assert handoff["safety_gate"] == "review_only_no_execution"
+        assert handoff["completion_gate"] == "human_review_required"
+        assert handoff["execution_allowed"] is False
+        assert handoff["validation_allowed"] is False
+        assert handoff["report_submission_allowed"] is False
+        handoff_manifest = json.loads(
+            (Path(workspace_path) / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert handoff_manifest.get("mission_dossiers", []) == []
+        assert handoff_manifest.get("agent_queue_audits", []) == []
+
         dossier_response = client.post(
             "/mythos/studio/workspaces/mission/export",
             json={"workspace_path": workspace_path, "run_id": run_id},
@@ -1274,6 +1309,12 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         ] == mission["candidate_count"]
         assert dossier["manifest"]["agent_queue_audits"][-1][
             "candidate_review_ready_packet_count"
+        ] == mission["candidate_count"]
+        assert dossier["manifest"]["agent_queue_audits"][-1][
+            "submission_blocked_report_status"
+        ] == "ready_for_redaction_review"
+        assert dossier["manifest"]["agent_queue_audits"][-1][
+            "submission_blocked_report_ready_candidate_count"
         ] == mission["candidate_count"]
         assert (
             dossier["manifest"]["agent_queue_audits"][-1][
@@ -1315,6 +1356,15 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             dossier_json["candidate_review_packets"][0]["report_submission_allowed"]
             is False
         )
+        assert dossier_json["submission_blocked_report_summary"]["status"] == (
+            "ready_for_redaction_review"
+        )
+        assert (
+            dossier_json["submission_blocked_report_summary"][
+                "report_submission_allowed"
+            ]
+            is False
+        )
         assert dossier_json["studio_timeline_summary"]["blocked_stage_ids"]
         assert (
             dossier_json["studio_timeline_summary"]["validation_execution_allowed"]
@@ -1347,6 +1397,15 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert queue_json["quality_summary"]["top_candidate_quality_gate"] == "passed"
         assert queue_json["candidate_review_packets"][0]["status"] == "review_ready"
         assert queue_json["candidate_review_packets"][0]["validation_allowed"] is False
+        assert queue_json["submission_blocked_report_summary"]["ready_candidate_ids"] == [
+            candidate["hypothesis_id"]
+        ]
+        assert (
+            queue_json["submission_blocked_report_summary"][
+                "validation_execution_allowed"
+            ]
+            is False
+        )
         assert queue_json["candidate_hunter_backlog"] == []
         assert queue_json["studio_timeline_summary"]["total_stages"] == len(
             queue_json["task_timeline"]
@@ -1373,6 +1432,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "candidate_hunter:next_review" in queue_markdown
         assert "## Studio timeline summary" in queue_markdown
         assert "## Candidate review packets" in queue_markdown
+        assert "## Submission-blocked report summary" in queue_markdown
         assert "## Agent handoff pack" in queue_markdown
         assert "handoff items: 0" in queue_markdown
         assert "## Agent queue" in queue_markdown
@@ -1386,6 +1446,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "## Candidate hunter iteration" in dossier_markdown
         assert "## Studio timeline summary" in dossier_markdown
         assert "## Candidate review packets" in dossier_markdown
+        assert "## Submission-blocked report summary" in dossier_markdown
         assert "## Agent handoff pack" in dossier_markdown
         assert "## Agent queue" in dossier_markdown
         assert "## Hallucination guard" in dossier_markdown

@@ -14,6 +14,7 @@ import {
   exportStudioWorkspaceReport,
   listStudioWorkspaceCandidates,
   getStudioWorkspaceMission,
+  getStudioWorkspaceMissionHandoff,
   materializeResearchQueueTask,
   recordClaimReviewDecision,
   recordManualObservation,
@@ -598,6 +599,101 @@ test("studio mission API helper reads the local workbench state without unsafe c
     ]);
     assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("workspace_path"), "C:/workspaces/acme-api");
     assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("run_id"), "pipeline_run_1");
+    assert.deepEqual(calls[0]?.body, null);
+    assert.doesNotMatch(
+      JSON.stringify(calls),
+      /executeValidation|approveValidation|submitReport|Authorization\s*[:=]|secret-token|send_file/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio mission handoff helper reads the review-only handoff pack", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ body, url });
+
+    if (url.includes("/mythos/studio/workspaces/mission/handoff")) {
+      return new Response(
+        JSON.stringify({
+          agent_handoff_pack: {
+            execution_allowed: true,
+            handoff_item_count: 1,
+            handoff_items: [
+              {
+                assigned_agent: "Evidence Planner",
+                execution_allowed: true,
+                handoff_id: "handoff:H-002:draft_validation_plan",
+                report_submission_allowed: true,
+                validation_allowed: true,
+                work_item_id: "H-002:draft_validation_plan",
+              },
+            ],
+            pack_id: "studio:agent_handoff:next_review",
+            report_submission_allowed: true,
+            status: "needs_review",
+            validation_allowed: true,
+          },
+          artifacts: {
+            missing: [],
+            present: ["scope", "policy", "code", "api", "har"],
+            required: ["scope", "policy", "code", "api", "har"],
+          },
+          candidate_count: 1,
+          completion_gate: "human_review_required",
+          execution_allowed: false,
+          quality_summary: {
+            status: "needs_review",
+            top_candidate_quality_gate: "needs_review",
+          },
+          report_submission_allowed: false,
+          run_id: "pipeline_run_1",
+          safety_gate: "review_only_no_execution",
+          scope_guard_status: "scope_imported",
+          validation_allowed: false,
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    return new Response(JSON.stringify({ detail: "unexpected request" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 500,
+    });
+  };
+
+  try {
+    const handoff = await getStudioWorkspaceMissionHandoff(
+      "C:/workspaces/acme-api",
+      "pipeline_run_1",
+      null,
+    );
+
+    assert.equal(handoff?.run_id, "pipeline_run_1");
+    assert.equal(handoff?.scope_guard_status, "scope_imported");
+    assert.equal(handoff?.safety_gate, "review_only_no_execution");
+    assert.equal(handoff?.completion_gate, "human_review_required");
+    assert.equal(handoff?.execution_allowed, false);
+    assert.equal(handoff?.validation_allowed, false);
+    assert.equal(handoff?.report_submission_allowed, false);
+    assert.equal(handoff?.agent_handoff_pack.pack_id, "studio:agent_handoff:next_review");
+    assert.equal(handoff?.agent_handoff_pack.handoff_item_count, 1);
+    assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+      "/mythos/studio/workspaces/mission/handoff",
+    ]);
+    assert.equal(
+      new URL(calls[0]?.url ?? "").searchParams.get("workspace_path"),
+      "C:/workspaces/acme-api",
+    );
+    assert.equal(
+      new URL(calls[0]?.url ?? "").searchParams.get("run_id"),
+      "pipeline_run_1",
+    );
     assert.deepEqual(calls[0]?.body, null);
     assert.doesNotMatch(
       JSON.stringify(calls),

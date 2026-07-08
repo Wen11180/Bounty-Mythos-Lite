@@ -10,6 +10,7 @@ import type {
   CampaignValidationRun,
 } from "./campaigns-data";
 import type {
+  StudioAgentHandoffPackInput,
   StudioCandidateInput,
   StudioMissionSummary,
   StudioWorkspaceManifest,
@@ -549,6 +550,20 @@ export type StudioWorkspaceCandidatesResponse = {
 };
 
 export type StudioWorkspaceMissionResponse = StudioMissionSummary;
+
+export type StudioWorkspaceMissionHandoffResponse = {
+  run_id: string | null;
+  scope_guard_status: string;
+  candidate_count: number;
+  quality_summary: StudioMissionSummary["quality_summary"];
+  artifacts: StudioMissionSummary["artifacts"];
+  agent_handoff_pack: StudioAgentHandoffPackInput;
+  safety_gate: string;
+  completion_gate: string;
+  execution_allowed: false;
+  validation_allowed: false;
+  report_submission_allowed: false;
+};
 
 export type StudioReportExportRequest = {
   workspace_path: string;
@@ -1199,6 +1214,18 @@ export function getStudioWorkspaceMission(
     query.set("run_id", runId);
   }
   return apiGet(`/mythos/studio/workspaces/mission?${query}`, fallback);
+}
+
+export function getStudioWorkspaceMissionHandoff(
+  workspacePath: string,
+  runId: string | null,
+  fallback: StudioWorkspaceMissionHandoffResponse | null,
+): Promise<StudioWorkspaceMissionHandoffResponse | null> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  return apiGet(`/mythos/studio/workspaces/mission/handoff?${query}`, fallback);
 }
 
 export function exportStudioWorkspaceReport(

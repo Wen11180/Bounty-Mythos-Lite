@@ -505,6 +505,8 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert queue_audit["timeline_pending_stage_count"] == 0
     assert queue_audit["candidate_review_packet_count"] == 1
     assert queue_audit["candidate_review_ready_packet_count"] == 0
+    assert queue_audit["submission_blocked_report_status"] == "needs_human_review"
+    assert queue_audit["submission_blocked_report_ready_candidate_count"] == 0
     assert queue_audit["agent_handoff_item_count"] == 1
     assert queue_audit["agent_handoff_status"] == "needs_review"
     assert queue_audit["report_submission_allowed"] is False
@@ -570,6 +572,18 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert (
         queue_json["candidate_review_packets"][0]["report_submission_allowed"] is False
     )
+    assert queue_json["submission_blocked_report_summary"] == {
+        "status": "needs_human_review",
+        "candidate_count": 1,
+        "ready_candidate_ids": [],
+        "needs_review_candidate_ids": ["H-001"],
+        "missing_review_items": {"H-001": ["safe_validation_plan"]},
+        "next_human_actions": ["Draft a non-destructive validation plan."],
+        "safety_gate": "submission_blocked_human_review",
+        "redaction_review_required": True,
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+    }
     assert queue_json["studio_timeline_summary"] == {
         "total_stages": 1,
         "gate_decision_counts": {"review_recorded": 1},
@@ -604,6 +618,8 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "## Candidate hunter iteration" in queue_markdown
     assert "## Studio timeline summary" in queue_markdown
     assert "## Candidate review packets" in queue_markdown
+    assert "## Submission-blocked report summary" in queue_markdown
+    assert "H-001: safe_validation_plan" in queue_markdown
     assert "## Agent handoff pack" in queue_markdown
     assert "handoff items: 1" in queue_markdown
     assert "agent: Evidence Planner" in queue_markdown
@@ -619,6 +635,7 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "## Candidate hunter iteration" in markdown
     assert "## Studio timeline summary" in markdown
     assert "## Candidate review packets" in markdown
+    assert "## Submission-blocked report summary" in markdown
     assert "## Agent handoff pack" in markdown
     assert "semantic_candidate_hunt: Semantic Auditor" in markdown
     assert "focus: security_invariants, affected_code_paths, candidate_quality" in markdown

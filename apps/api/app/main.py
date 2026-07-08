@@ -2355,6 +2355,39 @@ def get_mythos_studio_workspace_mission(
     run_id: str | None = None,
     session: Session = Depends(get_session),
 ) -> dict:
+    return _studio_workspace_mission(workspace_path, run_id, session)
+
+
+@app.get("/mythos/studio/workspaces/mission/handoff")
+def get_mythos_studio_workspace_mission_handoff(
+    workspace_path: str,
+    run_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    mission = _studio_workspace_mission(workspace_path, run_id, session)
+    handoff_pack = mission.get("agent_handoff_pack")
+    if not isinstance(handoff_pack, dict):
+        handoff_pack = {}
+    return {
+        "run_id": mission.get("run_id"),
+        "scope_guard_status": mission.get("scope_guard_status"),
+        "candidate_count": mission.get("candidate_count", 0),
+        "quality_summary": mission.get("quality_summary", {}),
+        "artifacts": mission.get("artifacts", {}),
+        "agent_handoff_pack": handoff_pack,
+        "safety_gate": "review_only_no_execution",
+        "completion_gate": "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_workspace_mission(
+    workspace_path: str,
+    run_id: str | None,
+    session: Session,
+) -> dict:
     manifest = load_workspace_manifest(workspace_path)
     selected_run_id = run_id or _latest_studio_run_id(manifest)
     if selected_run_id is None:
@@ -2593,6 +2626,9 @@ def _studio_mission_summary(
         missing,
     )
     candidate_review_packets = _studio_candidate_review_packets(candidate_summaries)
+    submission_blocked_report_summary = _studio_submission_blocked_report_summary(
+        candidate_review_packets
+    )
     candidate_hunter_iteration = _studio_candidate_hunter_iteration(
         candidate_hunter_backlog,
         quality_summary,
@@ -2635,6 +2671,7 @@ def _studio_mission_summary(
         "candidate_count": len(top_candidates),
         "top_candidates": candidate_summaries,
         "candidate_review_packets": candidate_review_packets,
+        "submission_blocked_report_summary": submission_blocked_report_summary,
         "quality_summary": quality_summary,
         "candidate_hunter_backlog": candidate_hunter_backlog,
         "candidate_hunter_iteration": candidate_hunter_iteration,
@@ -2947,6 +2984,46 @@ def _studio_candidate_review_packets(
     candidates: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     return [_studio_candidate_review_packet(candidate) for candidate in candidates[:5]]
+
+
+def _studio_submission_blocked_report_summary(
+    packets: list[dict[str, object]],
+) -> dict[str, object]:
+    ready_candidate_ids: list[str] = []
+    needs_review_candidate_ids: list[str] = []
+    missing_review_items: dict[str, list[str]] = {}
+    next_human_actions: list[str] = []
+
+    for packet in packets[:5]:
+        candidate_id = safe_preview_text(packet.get("candidate_id", ""))
+        if not candidate_id:
+            continue
+        missing = _studio_agent_string_list(packet.get("missing_items", []))
+        if packet.get("status") == "review_ready" and not missing:
+            ready_candidate_ids.append(candidate_id)
+        else:
+            needs_review_candidate_ids.append(candidate_id)
+            missing_review_items[candidate_id] = missing
+        next_action = safe_preview_text(packet.get("next_human_action", ""))
+        if next_action and next_action not in next_human_actions:
+            next_human_actions.append(next_action)
+
+    return {
+        "status": (
+            "ready_for_redaction_review"
+            if ready_candidate_ids and not needs_review_candidate_ids
+            else "needs_human_review"
+        ),
+        "candidate_count": len(packets),
+        "ready_candidate_ids": ready_candidate_ids,
+        "needs_review_candidate_ids": needs_review_candidate_ids,
+        "missing_review_items": missing_review_items,
+        "next_human_actions": next_human_actions[:5],
+        "safety_gate": "submission_blocked_human_review",
+        "redaction_review_required": True,
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+    }
 
 
 def _studio_candidate_review_packet(candidate: dict[str, object]) -> dict[str, object]:

@@ -236,6 +236,15 @@ def record_workspace_mission_dossier(
                     if packet.get("status") == "review_ready"
                 ]
             ),
+            "submission_blocked_report_status": agent_queue_audit[
+                "submission_blocked_report_summary"
+            ].get("status", "needs_human_review"),
+            "submission_blocked_report_ready_candidate_count": len(
+                agent_queue_audit["submission_blocked_report_summary"].get(
+                    "ready_candidate_ids",
+                    [],
+                )
+            ),
             "agent_handoff_item_count": agent_queue_audit[
                 "agent_handoff_pack"
             ].get("handoff_item_count", 0),
@@ -495,6 +504,14 @@ def _mission_dossier_markdown(mission: dict[str, Any]) -> str:
             mission.get("candidate_review_packets")
         )
     )
+    lines.extend(
+        _submission_blocked_report_summary_markdown_lines(
+            _safe_submission_blocked_report_summary(
+                mission.get("submission_blocked_report_summary"),
+                mission.get("candidate_review_packets"),
+            )
+        )
+    )
     lines.extend(_agent_handoff_pack_markdown_lines(mission.get("agent_handoff_pack")))
     lines.extend(_mission_agent_queue_markdown_lines(mission.get("agent_queue")))
     lines.extend(_mission_hallucination_guard_markdown_lines(mission.get("top_candidates")))
@@ -567,6 +584,10 @@ def _agent_queue_audit(run_id: str | None, mission: dict[str, Any]) -> dict[str,
         "studio_timeline_summary": timeline_summary,
         "candidate_review_packets": _safe_candidate_review_packets(
             mission.get("candidate_review_packets")
+        ),
+        "submission_blocked_report_summary": _safe_submission_blocked_report_summary(
+            mission.get("submission_blocked_report_summary"),
+            mission.get("candidate_review_packets"),
         ),
         "agent_handoff_pack": _safe_agent_handoff_pack(
             mission.get("agent_handoff_pack"),
@@ -899,6 +920,74 @@ def _safe_candidate_review_packets(value: Any) -> list[dict[str, Any]]:
     return packets[:5]
 
 
+def _safe_submission_blocked_report_summary(
+    value: Any,
+    packets_value: Any,
+) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {
+            "status": _queue_safe_text(value.get("status")) or "needs_human_review",
+            "candidate_count": _queue_safe_int(value.get("candidate_count")),
+            "ready_candidate_ids": _queue_safe_list(value.get("ready_candidate_ids")),
+            "needs_review_candidate_ids": _queue_safe_list(
+                value.get("needs_review_candidate_ids")
+            ),
+            "missing_review_items": _safe_missing_review_items(
+                value.get("missing_review_items")
+            ),
+            "next_human_actions": _queue_safe_list(value.get("next_human_actions")),
+            "safety_gate": _queue_safe_text(value.get("safety_gate"))
+            or "submission_blocked_human_review",
+            "redaction_review_required": True,
+            "report_submission_allowed": False,
+            "validation_execution_allowed": False,
+        }
+
+    packets = _safe_candidate_review_packets(packets_value)
+    ready_candidate_ids: list[str] = []
+    needs_review_candidate_ids: list[str] = []
+    missing_review_items: dict[str, list[str]] = {}
+    next_human_actions: list[str] = []
+    for packet in packets:
+        candidate_id = _queue_safe_text(packet.get("candidate_id"))
+        if not candidate_id:
+            continue
+        missing = _queue_safe_list(packet.get("missing_items"))
+        if packet.get("status") == "review_ready" and not missing:
+            ready_candidate_ids.append(candidate_id)
+        else:
+            needs_review_candidate_ids.append(candidate_id)
+            missing_review_items[candidate_id] = missing
+        next_action = _queue_safe_text(packet.get("next_human_action"))
+        if next_action and next_action not in next_human_actions:
+            next_human_actions.append(next_action)
+    return {
+        "status": "ready_for_redaction_review"
+        if ready_candidate_ids and not needs_review_candidate_ids
+        else "needs_human_review",
+        "candidate_count": len(packets),
+        "ready_candidate_ids": ready_candidate_ids,
+        "needs_review_candidate_ids": needs_review_candidate_ids,
+        "missing_review_items": missing_review_items,
+        "next_human_actions": next_human_actions[:5],
+        "safety_gate": "submission_blocked_human_review",
+        "redaction_review_required": True,
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+    }
+
+
+def _safe_missing_review_items(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    items: dict[str, list[str]] = {}
+    for key, raw_items in value.items():
+        safe_key = _queue_safe_text(key)
+        if safe_key:
+            items[safe_key] = _queue_safe_list(raw_items)
+    return items
+
+
 def _safe_candidate_review_checklist(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -1035,6 +1124,11 @@ def _agent_queue_audit_markdown(audit: dict[str, Any]) -> str:
     )
     lines.extend(_studio_timeline_summary_markdown_lines(audit.get("studio_timeline_summary")))
     lines.extend(_candidate_review_packets_markdown_lines(audit.get("candidate_review_packets")))
+    lines.extend(
+        _submission_blocked_report_summary_markdown_lines(
+            audit.get("submission_blocked_report_summary")
+        )
+    )
     lines.extend(_agent_handoff_pack_markdown_lines(audit.get("agent_handoff_pack")))
     lines.extend(_mission_agent_queue_markdown_lines(audit.get("agent_queue")))
     lines.extend(_agent_task_timeline_markdown_lines(audit.get("task_timeline")))
@@ -1098,6 +1192,45 @@ def _candidate_review_packets_markdown_lines(value: Any) -> list[str]:
         if checklist:
             lines.append("  - Checklist: " + "; ".join(checklist))
     return lines
+
+
+def _submission_blocked_report_summary_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    status = _markdown_safe_text(value.get("status")) or "needs_human_review"
+    candidate_count = _markdown_summary_value(value.get("candidate_count"))
+    safety_gate = _markdown_safe_text(value.get("safety_gate"))
+    ready = _markdown_list(value.get("ready_candidate_ids"))
+    needs_review = _markdown_list(value.get("needs_review_candidate_ids"))
+    lines = [
+        "",
+        "## Submission-blocked report summary",
+        f"- Status: {status}; candidates: {candidate_count}; ready: {len(ready)}; needs review: {len(needs_review)}",
+        f"- Safety gate: {safety_gate}; redaction review required: true; validation allowed: false; report submission allowed: false",
+    ]
+    if ready:
+        lines.append("- Ready candidates: " + ", ".join(ready))
+    if needs_review:
+        lines.append("- Needs review candidates: " + ", ".join(needs_review))
+    missing_items = _missing_review_items_markdown(value.get("missing_review_items"))
+    if missing_items:
+        lines.append("- Missing review items: " + "; ".join(missing_items))
+    next_actions = _markdown_list(value.get("next_human_actions"))
+    if next_actions:
+        lines.append("- Next human actions: " + "; ".join(next_actions))
+    return lines
+
+
+def _missing_review_items_markdown(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    items: list[str] = []
+    for key, raw_items in value.items():
+        safe_key = _markdown_safe_text(key)
+        missing = _markdown_list(raw_items)
+        if safe_key and missing:
+            items.append(f"{safe_key}: {', '.join(missing)}")
+    return items[:10]
 
 
 def _candidate_review_checklist_markdown_items(value: Any) -> list[str]:

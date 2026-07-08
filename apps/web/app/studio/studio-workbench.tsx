@@ -894,6 +894,14 @@ export function StudioWorkbench() {
                 items={missionPanel.candidateReviewPackets.map(candidateReviewPacketLine)}
               />
               <ListBlock
+                title="Submission-blocked report summary"
+                items={[
+                  submissionBlockedReportSummaryLine(
+                    missionPanel.submissionBlockedReportSummary,
+                  ),
+                ]}
+              />
+              <ListBlock
                 title="Agent handoff pack"
                 items={[agentHandoffPackLine(missionPanel.agentHandoffPack)]}
               />
@@ -1214,6 +1222,29 @@ function candidateReviewPacketLine(
     packet.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
   ].join(", ");
   return `${packet.candidateId}: ${packet.status}; completed ${completed}; missing ${missing}; evidence ${packet.evidenceNeedCount}; refutation ${packet.falsePositiveCheckCount}; validation steps ${packet.safeValidationStepCount}; hallucination ${packet.hallucinationGuardStatus}; report ${packet.reportStatus}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
+}
+
+function submissionBlockedReportSummaryLine(
+  summary: ReturnType<typeof toStudioMissionPanel>["submissionBlockedReportSummary"],
+): string {
+  const ready =
+    summary.readyCandidateIds.length > 0 ? summary.readyCandidateIds.join(", ") : "none";
+  const needsReview =
+    summary.needsReviewCandidateIds.length > 0
+      ? summary.needsReviewCandidateIds.join(", ")
+      : "none";
+  const missing = Object.entries(summary.missingReviewItems)
+    .map(([candidateId, items]) => `${candidateId}: ${items.join(", ")}`)
+    .join("; ") || "none";
+  const nextActions =
+    summary.nextHumanActions.length > 0
+      ? summary.nextHumanActions.join("; ")
+      : "Human redaction review required.";
+  const gates = [
+    summary.validationExecutionAllowed ? "validation allowed" : "validation blocked",
+    summary.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${summary.status}; candidates ${summary.candidateCount}; ready ${ready}; needs review ${needsReview}; missing ${missing}; gate ${summary.safetyGate}; redaction review ${summary.redactionReviewRequired ? "required" : "missing"}; next ${nextActions}; ${gates}`;
 }
 
 function agentHandoffPackLine(

@@ -173,6 +173,19 @@ export type StudioCandidateReviewPacketInput = {
   validation_allowed?: boolean;
 };
 
+export type StudioSubmissionBlockedReportSummaryInput = {
+  candidate_count?: number;
+  missing_review_items?: Record<string, string[]>;
+  needs_review_candidate_ids?: string[];
+  next_human_actions?: string[];
+  ready_candidate_ids?: string[];
+  redaction_review_required?: boolean;
+  report_submission_allowed?: boolean;
+  safety_gate?: string;
+  status?: string;
+  validation_execution_allowed?: boolean;
+};
+
 export type StudioAgentHandoffPackInput = {
   agent_queue_refs?: string[];
   blocked_actions?: string[];
@@ -252,6 +265,7 @@ export type StudioMissionSummary = {
   run_id?: string | null;
   scope_guard_status?: string;
   studio_timeline_summary?: StudioTimelineSummaryInput;
+  submission_blocked_report_summary?: StudioSubmissionBlockedReportSummaryInput;
   top_candidates?: StudioMissionCandidateInput[];
 };
 
@@ -425,6 +439,19 @@ export type StudioAgentHandoffPack = {
   validationAllowed: boolean;
 };
 
+export type StudioSubmissionBlockedReportSummary = {
+  candidateCount: number;
+  missingReviewItems: Record<string, string[]>;
+  needsReviewCandidateIds: string[];
+  nextHumanActions: string[];
+  readyCandidateIds: string[];
+  redactionReviewRequired: boolean;
+  reportSubmissionAllowed: boolean;
+  safetyGate: string;
+  status: string;
+  validationExecutionAllowed: boolean;
+};
+
 export type StudioMissionPanel = {
   advisoryContextLabel: string;
   agentHandoffPack: StudioAgentHandoffPack;
@@ -460,6 +487,7 @@ export type StudioMissionPanel = {
   safeNextActions: string[];
   scopeGuardLabel: string;
   studioTimelineSummary: StudioTimelineSummary;
+  submissionBlockedReportSummary: StudioSubmissionBlockedReportSummary;
   topCandidates: StudioMissionPanelCandidate[];
 };
 
@@ -763,6 +791,28 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         "review_only_no_execution",
       ),
       totalStages: mission?.studio_timeline_summary?.total_stages ?? 0,
+      validationExecutionAllowed: false,
+    },
+    submissionBlockedReportSummary: {
+      candidateCount: mission?.submission_blocked_report_summary?.candidate_count ?? 0,
+      missingReviewItems:
+        mission?.submission_blocked_report_summary?.missing_review_items ?? {},
+      needsReviewCandidateIds:
+        mission?.submission_blocked_report_summary?.needs_review_candidate_ids ?? [],
+      nextHumanActions:
+        mission?.submission_blocked_report_summary?.next_human_actions ?? [],
+      readyCandidateIds:
+        mission?.submission_blocked_report_summary?.ready_candidate_ids ?? [],
+      redactionReviewRequired: true,
+      reportSubmissionAllowed: false,
+      safetyGate: safeText(
+        mission?.submission_blocked_report_summary?.safety_gate,
+        "submission_blocked_human_review",
+      ),
+      status: safeText(
+        mission?.submission_blocked_report_summary?.status,
+        "needs_human_review",
+      ),
       validationExecutionAllowed: false,
     },
     topCandidates: (mission?.top_candidates ?? []).slice(0, 5).map((candidate, index) => ({

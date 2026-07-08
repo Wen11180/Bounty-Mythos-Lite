@@ -130,6 +130,18 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         report_submission_allowed: true,
       },
     ],
+    submission_blocked_report_summary: {
+      status: "ready_for_redaction_review",
+      candidate_count: 1,
+      ready_candidate_ids: ["H-001"],
+      needs_review_candidate_ids: [],
+      missing_review_items: {},
+      next_human_actions: ["Human evidence and redaction review required."],
+      safety_gate: "submission_blocked_human_review",
+      redaction_review_required: true,
+      report_submission_allowed: true,
+      validation_execution_allowed: true,
+    },
     agent_handoff_pack: {
       pack_id: "studio:agent_handoff:next_review",
       status: "needs_review",
@@ -508,6 +520,18 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       reportSubmissionAllowed: false,
     },
   ]);
+  assert.deepEqual(panel.submissionBlockedReportSummary, {
+    candidateCount: 1,
+    missingReviewItems: {},
+    needsReviewCandidateIds: [],
+    nextHumanActions: ["Human evidence and redaction review required."],
+    readyCandidateIds: ["H-001"],
+    redactionReviewRequired: true,
+    reportSubmissionAllowed: false,
+    safetyGate: "submission_blocked_human_review",
+    status: "ready_for_redaction_review",
+    validationExecutionAllowed: false,
+  });
   assert.deepEqual(panel.agentHandoffPack, {
     packId: "studio:agent_handoff:next_review",
     status: "needs_review",
@@ -949,11 +973,13 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.agentQueue/);
   assert.match(workbench, /missionPanel\.agentTaskTimeline/);
   assert.match(workbench, /missionPanel\.studioTimelineSummary/);
+  assert.match(workbench, /missionPanel\.submissionBlockedReportSummary/);
   assert.match(workbench, /missionPanel\.candidateReviewPackets/);
   assert.match(workbench, /missionPanel\.agentHandoffPack/);
   assert.match(workbench, /missionPanel\.candidateHunterIteration/);
   assert.match(workbench, /agentTaskTimelineLine/);
   assert.match(workbench, /studioTimelineSummaryLine/);
+  assert.match(workbench, /submissionBlockedReportSummaryLine/);
   assert.match(workbench, /candidateReviewPacketLine/);
   assert.match(workbench, /agentHandoffPackLine/);
   assert.match(workbench, /agentHandoffItemLine/);
