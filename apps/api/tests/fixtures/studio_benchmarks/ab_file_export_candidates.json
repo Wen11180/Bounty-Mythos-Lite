@@ -1,0 +1,84 @@
+{
+  "candidates": [
+    {
+      "hypothesis_id": "H-AB-001",
+      "vuln_type": "authorization_gap",
+      "location": "GET /files/{file_id}/export",
+      "reason": "The route, API surface, and authorized traffic all point to a file export path that needs an ownership boundary review.",
+      "broken_invariant": "Private file exports must enforce object ownership before returning file content.",
+      "impact_rationale": "Cross-account file export would expose private document content.",
+      "repair_guidance": "Enforce ownership in the service or repository layer before returning exported file content.",
+      "regression_test": "Add a local non-destructive test proving account B cannot export account A files.",
+      "refutation_status": "unverified",
+      "duplicate_risk_score": 12,
+      "evidence_needed": [
+        "Authorized local code path proving the handler reaches the export sink.",
+        "OpenAPI route metadata for the export endpoint.",
+        "Redacted HAR route metadata showing the endpoint is reachable in authorized traffic."
+      ],
+      "false_positive_checks": [
+        "Does middleware or the service layer enforce ownership before export?",
+        "Is the file intentionally public or limited to self-impact?",
+        "Does the route require a role that already implies access to the file?"
+      ],
+      "ranking_reasons": [
+        "impact:sensitive_data_sink",
+        "traceable_source_fact",
+        "refutation_status:unverified"
+      ],
+      "safe_validation_plan": [
+        "Use only local fixtures or explicitly approved test accounts.",
+        "Compare ownership checks without touching real user data.",
+        "Keep any report draft submission-blocked until human evidence review."
+      ],
+      "safety_blockers": [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report"
+      ],
+      "report_readiness": {
+        "status": "submission_blocked",
+        "report_submission_allowed": false,
+        "next_allowed_action": "Review evidence, refutation checks, repair guidance, and safety blockers before exporting a report preview."
+      },
+      "source_facts": [
+        {
+          "artifact_kind": "code",
+          "fact_type": "route_handler",
+          "route_method": "GET",
+          "route_path": "/files/{file_id}/export",
+          "source_path": "src/routes.py",
+          "symbol_name": "export_file"
+        },
+        {
+          "artifact_kind": "api",
+          "fact_type": "openapi_route",
+          "route_method": "GET",
+          "route_path": "/files/{id}/export",
+          "operation_id": "exportFile"
+        },
+        {
+          "artifact_kind": "har",
+          "fact_type": "traffic_route",
+          "route_method": "GET",
+          "route_path": "/files/123/export",
+          "advisory_only": "true"
+        },
+        {
+          "artifact_kind": "sarif",
+          "fact_type": "scanner_signal",
+          "route_method": "GET",
+          "route_path": "/files/{file_id}/export",
+          "advisory_only": "true"
+        },
+        {
+          "artifact_kind": "sbom",
+          "fact_type": "dependency_signal",
+          "package_name": "example-web-framework",
+          "package_version": "1.2.3",
+          "advisory_only": "true"
+        }
+      ]
+    }
+  ]
+}

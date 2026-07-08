@@ -1,10 +1,14 @@
 import json
+from pathlib import Path
 
 from app.cli import main as cli_main
 from app.intelligence_benchmark import (
     build_studio_expectations_template,
     evaluate_studio_candidates,
 )
+
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "studio_benchmarks"
 
 
 def test_evaluate_studio_candidates_passes_on_traceable_ab_candidate():
@@ -65,6 +69,25 @@ def test_evaluate_studio_candidates_passes_on_traceable_ab_candidate():
     assert result["status"] == "passed"
     assert result["matched"] == 1
     assert result["failures"] == []
+    assert result["safety"]["forbidden_text_present"] == []
+
+
+def test_ab_file_export_benchmark_fixture_passes_quality_gate():
+    candidates_payload = json.loads(
+        (FIXTURE_ROOT / "ab_file_export_candidates.json").read_text(encoding="utf-8")
+    )
+    expectations = json.loads(
+        (FIXTURE_ROOT / "ab_file_export_expectations.json").read_text(encoding="utf-8")
+    )
+
+    result = evaluate_studio_candidates(candidates_payload, expectations)
+
+    assert result["status"] == "passed"
+    assert result["candidate_count"] == 1
+    assert result["expected_count"] == 1
+    assert result["matched"] == 1
+    assert result["failures"] == []
+    assert result["evidence_gaps"] == []
     assert result["safety"]["forbidden_text_present"] == []
 
 

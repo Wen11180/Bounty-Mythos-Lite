@@ -2449,6 +2449,7 @@ def export_mythos_studio_workspace_report(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     preview = _build_report_preview_response_or_404(record)
     report = preview.model_dump(mode="json")
+    report.update(_studio_report_candidate_guidance(record, manifest))
     report["studio_context"] = _studio_report_context(manifest)
     updated_manifest = record_workspace_report_export(
         request.workspace_path,
@@ -2513,6 +2514,28 @@ def _studio_report_context(manifest: dict) -> dict[str, object]:
             "Raw artifact paths, headers, cookies, query tokens, and bodies are not included.",
         ],
     }
+
+
+def _studio_report_candidate_guidance(
+    record: PipelineRunRecord,
+    manifest: dict,
+) -> dict[str, str]:
+    for candidate in _studio_candidates_for_run(record, manifest):
+        suggested_fix = _studio_report_guidance_text(candidate.get("suggested_fix", ""))
+        regression_test = _studio_report_guidance_text(candidate.get("regression_test", ""))
+        guidance: dict[str, str] = {}
+        if suggested_fix:
+            guidance["suggested_fix"] = suggested_fix
+        if regression_test:
+            guidance["regression_test"] = regression_test
+        if guidance:
+            return guidance
+    return {}
+
+
+def _studio_report_guidance_text(value: object) -> str:
+    text = safe_preview_text(value)
+    return "" if text == "[REDACTED]" else text.strip()
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:

@@ -1,5 +1,6 @@
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -7,11 +8,28 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
-from app.main import app
+from app.main import app, _studio_report_candidate_guidance
 from app.repository import DatabaseRepository
 
 
 client = TestClient(app)
+
+
+def test_studio_report_candidate_guidance_skips_redacted_values():
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "suggested_fix": "Rotate Authorization: Bearer secret-token",
+                    "regression_test": "Store cookie: session=secret-token in a fixture",
+                }
+            ]
+        }
+    )
+
+    assert _studio_report_candidate_guidance(record, {}) == {}
 
 
 def override_session():
@@ -328,6 +346,10 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "- Required artifacts: scope, policy, code, api, har" in markdown
         assert "- API GET /files/{file_id}/export" in markdown
         assert "- HAR GET /files/123/export" in markdown
+        assert "## Suggested fix" in markdown
+        assert candidates[0]["suggested_fix"] in markdown
+        assert "## Regression test" in markdown
+        assert candidates[0]["regression_test"] in markdown
         assert "send_file(file_id)" not in str(export)
     finally:
         app.dependency_overrides.clear()
