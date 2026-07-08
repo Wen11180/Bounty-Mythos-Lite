@@ -112,6 +112,25 @@
           "Can the affected endpoint and code path be reached under the authorized scope?",
           "Does a local two-account or role-fixture check refute the suspected impact?"
         ]
+      },
+      "policy_review": {
+        "status": "needs_human_review",
+        "policy_risk": "low",
+        "policy_risk_score": 10,
+        "review_items": [
+          "Confirm the candidate remains inside the imported policy and scope artifacts.",
+          "Check that the validation plan avoids prohibited actions before any execution.",
+          "Keep report submission blocked until policy, evidence, and redaction review are complete."
+        ]
+      },
+      "validation_review": {
+        "status": "needs_human_approval",
+        "execution_allowed": false,
+        "review_items": [
+          "Confirm Scope Guard allows the exact asset, route, and validation mode.",
+          "Confirm validation remains non-destructive and uses only authorized test data.",
+          "Record human approval before executing any validation step."
+        ]
       }
     }
   ]

@@ -2544,6 +2544,10 @@ def _studio_report_candidate_guidance(
         refutation_review = _studio_report_refutation_review(
             candidate.get("refutation_review", {})
         )
+        policy_review = _studio_report_policy_review(candidate.get("policy_review", {}))
+        validation_review = _studio_report_validation_review(
+            candidate.get("validation_review", {})
+        )
         report_readiness = _studio_report_readiness(candidate.get("report_readiness", {}))
         guidance: dict[str, object] = {}
         if candidate_summary:
@@ -2558,6 +2562,10 @@ def _studio_report_candidate_guidance(
             guidance["deduplication_review"] = deduplication_review
         if refutation_review:
             guidance["refutation_review"] = refutation_review
+        if policy_review:
+            guidance["policy_review"] = policy_review
+        if validation_review:
+            guidance["validation_review"] = validation_review
         if evidence_needed:
             guidance["evidence_needed"] = evidence_needed
         if false_positive_checks:
@@ -2638,6 +2646,40 @@ def _studio_report_refutation_review(value: object) -> dict[str, object]:
     questions = _studio_report_guidance_list(value.get("questions", []))
     if questions:
         review["questions"] = questions
+    return review
+
+
+def _studio_report_policy_review(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    review: dict[str, object] = {}
+    status = _studio_report_guidance_text(value.get("status", ""))
+    if status:
+        review["status"] = status
+    policy_risk = _studio_report_guidance_text(value.get("policy_risk", ""))
+    if policy_risk:
+        review["policy_risk"] = policy_risk
+    policy_risk_score = value.get("policy_risk_score")
+    if isinstance(policy_risk_score, int):
+        review["policy_risk_score"] = max(0, min(100, policy_risk_score))
+    review_items = _studio_report_guidance_list(value.get("review_items", []))
+    if review_items:
+        review["review_items"] = review_items
+    return review
+
+
+def _studio_report_validation_review(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    review: dict[str, object] = {}
+    status = _studio_report_guidance_text(value.get("status", ""))
+    if status:
+        review["status"] = status
+    if value.get("execution_allowed") is False:
+        review["execution_allowed"] = False
+    review_items = _studio_report_guidance_list(value.get("review_items", []))
+    if review_items:
+        review["review_items"] = review_items
     return review
 
 
@@ -2901,6 +2943,8 @@ def _studio_candidate_from_hypothesis(
         )
     )
     duplicate_risk_score = _studio_duplicate_risk_score(hypothesis)
+    policy_risk = _studio_policy_risk(hypothesis)
+    policy_risk_score = _studio_policy_risk_score(hypothesis)
     return {
         "hypothesis_id": safe_preview_text(hypothesis.get("hypothesis_id", "")),
         "vuln_type": safe_preview_text(hypothesis.get("vuln_type", "candidate")),
@@ -2920,6 +2964,7 @@ def _studio_candidate_from_hypothesis(
         "regression_test": _studio_regression_test(hypothesis),
         "validation_mode": safe_preview_text(hypothesis.get("validation_mode", "manual_review")),
         "safe_validation_plan": _studio_safe_validation_plan(hypothesis),
+        "validation_review": _studio_validation_review(),
         "safety_blockers": [
             "execute_live_validation",
             "touch_real_user_data",
@@ -2938,8 +2983,9 @@ def _studio_candidate_from_hypothesis(
         "refutation_review": _studio_refutation_review(),
         "duplicate_risk_score": duplicate_risk_score,
         "deduplication_review": _studio_deduplication_review(duplicate_risk_score),
-        "policy_risk": _studio_policy_risk(hypothesis),
-        "policy_risk_score": _studio_policy_risk_score(hypothesis),
+        "policy_risk": policy_risk,
+        "policy_risk_score": policy_risk_score,
+        "policy_review": _studio_policy_review(policy_risk, policy_risk_score),
         "evidence_gaps": _studio_candidate_evidence_gaps(candidate_source_facts),
         "evidence_review": _studio_evidence_review(candidate_source_facts),
         "source_facts": candidate_source_facts,
@@ -3031,6 +3077,31 @@ def _studio_refutation_review() -> dict[str, object]:
             "Does an upstream middleware or policy layer already enforce the claimed boundary?",
             "Can the affected endpoint and code path be reached under the authorized scope?",
             "Does a local two-account or role-fixture check refute the suspected impact?",
+        ],
+    }
+
+
+def _studio_policy_review(policy_risk: str, policy_risk_score: int) -> dict[str, object]:
+    return {
+        "status": "needs_human_review",
+        "policy_risk": policy_risk,
+        "policy_risk_score": max(0, min(100, policy_risk_score)),
+        "review_items": [
+            "Confirm the candidate remains inside the imported policy and scope artifacts.",
+            "Check that the validation plan avoids prohibited actions before any execution.",
+            "Keep report submission blocked until policy, evidence, and redaction review are complete.",
+        ],
+    }
+
+
+def _studio_validation_review() -> dict[str, object]:
+    return {
+        "status": "needs_human_approval",
+        "execution_allowed": False,
+        "review_items": [
+            "Confirm Scope Guard allows the exact asset, route, and validation mode.",
+            "Confirm validation remains non-destructive and uses only authorized test data.",
+            "Record human approval before executing any validation step.",
         ],
     }
 

@@ -54,9 +54,11 @@ def build_studio_expectations_template(candidates_payload: Any) -> dict:
             "require_repair_guidance": True,
             "require_regression_test": True,
             "require_policy_risk": True,
+            "require_policy_review": True,
             "require_evidence_review": True,
             "require_deduplication_review": True,
             "require_refutation_review": True,
+            "require_validation_review": True,
             "max_duplicate_risk_score": 49,
             "max_policy_risk_score": 49,
         }
@@ -278,12 +280,16 @@ def _candidate_quality_failures(
         failures.append("missing_regression_test")
     if expected.get("require_policy_risk") is True and not _candidate_policy_risk(candidate):
         failures.append("missing_policy_risk")
+    if expected.get("require_policy_review") is True and not _candidate_policy_review_gate(candidate):
+        failures.append("missing_policy_review")
     if expected.get("require_evidence_review") is True and not _candidate_evidence_review_gate(candidate):
         failures.append("missing_evidence_review")
     if expected.get("require_deduplication_review") is True and not _candidate_deduplication_review_gate(candidate):
         failures.append("missing_deduplication_review")
     if expected.get("require_refutation_review") is True and not _candidate_refutation_review_gate(candidate):
         failures.append("missing_refutation_review")
+    if expected.get("require_validation_review") is True and not _candidate_validation_review_gate(candidate):
+        failures.append("missing_validation_review")
     max_duplicate_risk_score = expected.get("max_duplicate_risk_score")
     if isinstance(max_duplicate_risk_score, int):
         duplicate_risk_score = _candidate_duplicate_risk_score(candidate)
@@ -529,6 +535,13 @@ def _candidate_policy_risk_score(candidate: dict[str, Any]) -> int | None:
     return max(0, min(100, value))
 
 
+def _candidate_policy_review_gate(candidate: dict[str, Any]) -> bool:
+    review = candidate.get("policy_review")
+    if not isinstance(review, dict):
+        return False
+    return bool(_text(review.get("status"))) and bool(_string_list(review.get("review_items")))
+
+
 def _candidate_evidence_review_gate(candidate: dict[str, Any]) -> bool:
     evidence_review = candidate.get("evidence_review")
     if not isinstance(evidence_review, dict):
@@ -560,6 +573,17 @@ def _candidate_refutation_review_gate(candidate: dict[str, Any]) -> bool:
     if not isinstance(review, dict):
         return False
     return bool(_text(review.get("status"))) and bool(_string_list(review.get("questions")))
+
+
+def _candidate_validation_review_gate(candidate: dict[str, Any]) -> bool:
+    review = candidate.get("validation_review")
+    if not isinstance(review, dict):
+        return False
+    return (
+        bool(_text(review.get("status")))
+        and review.get("execution_allowed") is False
+        and bool(_string_list(review.get("review_items")))
+    )
 
 
 def _candidate_security_invariant(candidate: dict[str, Any]) -> str:

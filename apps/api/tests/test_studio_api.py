@@ -355,6 +355,16 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         }
         assert candidates[0]["policy_risk"] == "low"
         assert candidates[0]["policy_risk_score"] == 10
+        assert candidates[0]["policy_review"] == {
+            "status": "needs_human_review",
+            "policy_risk": "low",
+            "policy_risk_score": 10,
+            "review_items": [
+                "Confirm the candidate remains inside the imported policy and scope artifacts.",
+                "Check that the validation plan avoids prohibited actions before any execution.",
+                "Keep report submission blocked until policy, evidence, and redaction review are complete.",
+            ],
+        }
         assert candidates[0]["evidence_gaps"] == []
         assert candidates[0]["evidence_review"] == {
             "status": "needs_human_review",
@@ -376,6 +386,15 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
             "Confirm the target object belongs to account A before any access comparison.",
             "Have a human reviewer approve any non-destructive role or ownership check before execution.",
         ]
+        assert candidates[0]["validation_review"] == {
+            "status": "needs_human_approval",
+            "execution_allowed": False,
+            "review_items": [
+                "Confirm Scope Guard allows the exact asset, route, and validation mode.",
+                "Confirm validation remains non-destructive and uses only authorized test data.",
+                "Record human approval before executing any validation step.",
+            ],
+        }
         assert candidates[0]["safety_blockers"] == [
             "execute_live_validation",
             "touch_real_user_data",
@@ -493,6 +512,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "## Refutation review" in markdown
         assert "- Status: needs_human_review" in markdown
         assert candidates[0]["refutation_review"]["questions"][0] in markdown
+        assert "## Policy review" in markdown
+        assert "- Policy risk: low" in markdown
+        assert candidates[0]["policy_review"]["review_items"][0] in markdown
         assert "## Report readiness" in markdown
         assert "- Status: submission_blocked" in markdown
         assert candidates[0]["report_readiness"]["next_allowed_action"] in markdown
@@ -512,6 +534,10 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["regression_test"] in markdown
         assert "## Safe validation plan" in markdown
         assert candidates[0]["safe_validation_plan"][0] in markdown
+        assert "## Validation review" in markdown
+        assert "- Status: needs_human_approval" in markdown
+        assert "- Execution allowed: false" in markdown
+        assert candidates[0]["validation_review"]["review_items"][0] in markdown
         assert "## Safety blockers" in markdown
         assert "- execute_live_validation" in markdown
         assert "- submit_report" in markdown

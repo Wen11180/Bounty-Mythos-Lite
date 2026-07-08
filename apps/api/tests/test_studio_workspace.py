@@ -581,6 +581,70 @@ def test_report_export_markdown_includes_refutation_review_questions(tmp_path: P
     assert "Authorization: Bearer" not in markdown
 
 
+def test_report_export_markdown_includes_validation_review_items(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "validation_review": {
+                "status": "needs_human_approval",
+                "execution_allowed": False,
+                "review_items": [
+                    "Confirm Scope Guard allows this validation mode.",
+                    "Review Authorization: Bearer secret-token before sharing.",
+                ],
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Validation review" in markdown
+    assert "- Status: needs_human_approval" in markdown
+    assert "- Execution allowed: false" in markdown
+    assert "- Confirm Scope Guard allows this validation mode." in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
+def test_report_export_markdown_includes_policy_review_items(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "policy_review": {
+                "status": "needs_human_review",
+                "policy_risk": "low",
+                "policy_risk_score": 10,
+                "review_items": [
+                    "Confirm candidate remains inside imported scope and policy.",
+                    "Review Authorization: Bearer secret-token before sharing.",
+                ],
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Policy review" in markdown
+    assert "- Status: needs_human_review" in markdown
+    assert "- Policy risk: low" in markdown
+    assert "- Policy risk score: 10" in markdown
+    assert "- Confirm candidate remains inside imported scope and policy." in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
 def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
 
