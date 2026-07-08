@@ -12,7 +12,16 @@ ROUTE_DECORATOR_START_PATTERN = re.compile(
     r"@\w+\.(get|post|put|patch|delete)\(",
     re.IGNORECASE,
 )
+FLASK_ROUTE_DECORATOR_PATTERN = re.compile(
+    r"@\w+\.route\(\s*[\"']([^\"']+)[\"']",
+    re.IGNORECASE,
+)
+FLASK_ROUTE_METHOD_PATTERN = re.compile(
+    r"methods\s*=\s*\[[^\]]*[\"']([A-Za-z]+)[\"']",
+    re.IGNORECASE,
+)
 ROUTE_DECORATOR_ROUTER_PATTERN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)\.")
+AUTHZ_DECORATOR_PATTERN = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b")
 ROUTER_ASSIGNMENT_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"(?:(?P<module>[A-Za-z_][A-Za-z0-9_]*)\.)?"
@@ -22,7 +31,9 @@ STRING_LITERAL_PATTERN = re.compile(r"[\"']([^\"']+)[\"']")
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MODEL_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
 CLASS_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b")
-DEPENDENCY_CALL_PATTERN = re.compile(r"\b(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)")
+DEPENDENCY_CALL_PATTERN = re.compile(
+    r"\b(?:Depends|Security)\(\s*(?:dependency\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)"
+)
 DEPENDENCY_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:Depends|Security)\(\s*([A-Za-z_][A-Za-z0-9_]*)"
 )
@@ -91,6 +102,7 @@ AUTHZ_NAME_MARKERS = (
     "require_role",
     "require_user",
     "owner_or_admin",
+    "login_required",
 )
 SENSITIVE_SINK_NAMES = {
     "delete",
@@ -173,6 +185,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     pending_route: (
         tuple[str, str, int, list[tuple[str, int]], list[tuple[str, int]]] | None
     ) = None
+    pending_decorator_authz_refs: list[tuple[str, int]] = []
     pending_route_decorator: (
         tuple[str, int, list[str], list[tuple[str, int]], list[tuple[str, int]]] | None
     ) = None
@@ -290,7 +303,30 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     decorator_lines,
                     authz_calls,
                     dependency_calls,
-            )
+                )
+            continue
+
+        authz_decorator_ref = _authz_decorator_ref(line, line_number, import_aliases)
+        if authz_decorator_ref is not None:
+            if pending_route is not None:
+                (
+                    method,
+                    route_path,
+                    decorator_line,
+                    authz_calls,
+                    dependency_calls,
+                ) = pending_route
+                pending_route = (
+                    method,
+                    route_path,
+                    decorator_line,
+                    _dedupe_refs([*authz_calls, authz_decorator_ref]),
+                    dependency_calls,
+                )
+            else:
+                pending_decorator_authz_refs = _dedupe_refs(
+                    [*pending_decorator_authz_refs, authz_decorator_ref]
+                )
             continue
 
         router_assignment_match = ROUTER_ASSIGNMENT_PATTERN.match(line)
@@ -335,6 +371,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 line_number,
                 _dedupe_refs(
                     [
+                        *pending_decorator_authz_refs,
                         *router_authz_refs.get(router_name, []),
                         *_dependency_authz_refs(line, line_number, dependency_aliases),
                     ]
@@ -351,6 +388,18 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     ]
                 ),
             )
+            pending_decorator_authz_refs = []
+            continue
+        flask_route_match = FLASK_ROUTE_DECORATOR_PATTERN.search(line)
+        if flask_route_match is not None:
+            pending_route = (
+                _flask_route_method(line),
+                flask_route_match.group(1),
+                line_number,
+                pending_decorator_authz_refs,
+                [],
+            )
+            pending_decorator_authz_refs = []
             continue
         route_start_match = ROUTE_DECORATOR_START_PATTERN.search(line)
         if route_start_match is not None:
@@ -361,6 +410,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 [line],
                 _dedupe_refs(
                     [
+                        *pending_decorator_authz_refs,
                         *router_authz_refs.get(router_name, []),
                         *_dependency_authz_refs(line, line_number, dependency_aliases),
                     ]
@@ -377,9 +427,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     ]
                 ),
             )
+            pending_decorator_authz_refs = []
             continue
 
         if line.strip():
+            if not line.strip().startswith("@"):
+                pending_decorator_authz_refs = []
             indent = _indent_width(line)
             class_stack = [
                 (class_name, class_indent)
@@ -1231,6 +1284,27 @@ def _route_path_from_decorator_lines(lines: list[str]) -> str | None:
         if match is not None:
             return match.group(1)
     return None
+
+
+def _flask_route_method(line: str) -> str:
+    match = FLASK_ROUTE_METHOD_PATTERN.search(line)
+    if match is None:
+        return "GET"
+    return match.group(1).upper()
+
+
+def _authz_decorator_ref(
+    line: str,
+    line_number: int,
+    import_aliases: dict[str, str],
+) -> tuple[str, int] | None:
+    match = AUTHZ_DECORATOR_PATTERN.match(line)
+    if match is None:
+        return None
+    call_name = import_aliases.get(match.group(1), match.group(1))
+    if not _is_authz_call(call_name):
+        return None
+    return call_name, line_number
 
 
 def _is_model_base(base_list: str) -> bool:

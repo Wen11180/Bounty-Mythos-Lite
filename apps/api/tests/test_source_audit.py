@@ -184,6 +184,41 @@ def test_run_source_audit_reads_allowed_local_repo_and_builds_markdown_report(tm
     assert "## CRS + Fuzzing" in result.report_markdown
 
 
+def test_run_source_audit_raises_authorization_hypothesis_for_flask_sensitive_route_without_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from flask import Flask, send_file",
+                "",
+                "app = Flask(__name__)",
+                "",
+                '@app.route("/files/<file_id>/export", methods=["GET"])',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
+    assert result.hypotheses[0].location == "GET /files/<file_id>/export"
+    assert "traceable_source_fact" in result.hypotheses[0].ranking_reasons
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_service_layer_authz(
     tmp_path,
 ):
@@ -1791,6 +1826,40 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency
                 "",
                 '@router.get("/files/{file_id}/export")',
                 "def export_file(file_id: str, user=Depends(require_user)):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_keyword_dependency_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter, Depends",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, user=Depends(dependency=require_user)):",
                 "    return send_file(file_id)",
             ]
         ),

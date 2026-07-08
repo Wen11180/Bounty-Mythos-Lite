@@ -46,6 +46,78 @@ def export_file(file_id: str):
     assert "Bearer" not in str(gap.payload)
 
 
+def test_map_authorized_code_files_marks_flask_sensitive_route_without_authz_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from flask import Flask, send_file
+
+app = Flask(__name__)
+
+@app.route("/files/<file_id>/export", methods=["GET"])
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert fact_types.count("authorization_gap_candidate") == 1
+    assert gap.symbol_name == "export_file"
+    assert gap.route_method == "GET"
+    assert gap.route_path == "/files/<file_id>/export"
+    assert gap.authz_hint == "missing_handler_authz_check"
+    assert gap.sensitivity_label == "high"
+
+
+def test_map_authorized_code_files_treats_flask_login_required_as_route_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from flask import Flask, send_file
+from flask_login import login_required
+
+app = Flask(__name__)
+
+@app.route("/files/<file_id>/export", methods=["GET"])
+@login_required
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "login_required"
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 8,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
 def test_map_authorized_code_files_does_not_mark_gap_when_handler_has_authz():
     result = map_authorized_code_files(
         {
@@ -1318,6 +1390,41 @@ router = APIRouter()
 
 @router.get("/files/{file_id}/export")
 def export_file(file_id: str, user=Depends(require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+    assert authz.symbol_name == "require_user"
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 7,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
+def test_map_authorized_code_files_treats_keyword_dependency_authz_as_route_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=Depends(dependency=require_user)):
     return send_file(file_id)
 """,
                 }
