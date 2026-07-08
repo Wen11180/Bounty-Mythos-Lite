@@ -8,7 +8,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
-from app.main import app, _studio_report_candidate_guidance
+from app.main import (
+    app,
+    _studio_fuzzing_surface_facts,
+    _studio_report_candidate_guidance,
+)
 from app.repository import DatabaseRepository
 
 
@@ -57,6 +61,27 @@ def test_studio_report_candidate_guidance_includes_evidence_gap_labels():
         "api: missing_required_artifact",
         "har: missing_required_artifact",
     ]
+
+
+def test_studio_fuzzing_surface_facts_ignore_executable_plans():
+    facts = _studio_fuzzing_surface_facts(
+        {
+            "execution_mode": "approved_local_run",
+            "parser_candidates": [
+                {
+                    "symbol_name": "parse_export_manifest",
+                    "candidate_type": "parser",
+                }
+            ],
+            "fuzzer_plan": {
+                "engine": "libFuzzer",
+                "status": "ready",
+                "execution_allowed": True,
+            },
+        }
+    )
+
+    assert facts == []
 
 
 def override_session():
@@ -1018,6 +1043,144 @@ def test_studio_candidates_include_imported_sbom_dependency_context_as_advisory(
         assert "deps.cdx.json" not in str(candidates)
         assert "secret-token" not in str(candidates)
         assert "Authorization: Bearer" not in str(candidates)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_candidates_include_imported_fuzzing_plan_context_as_advisory(
+    tmp_path: Path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+    fuzzing_path = tmp_path / "fuzz-plan.json"
+    fuzzing_path.write_text(
+        """
+{
+  "stage": "v1_crs_fuzzing",
+  "execution_mode": "plan_only",
+  "parser_candidates": [
+    {
+      "source_path": "src/parser.py",
+      "symbol_name": "parse_export_manifest",
+      "candidate_type": "parser",
+      "reason": "Authorization: Bearer secret-token should not leak"
+    }
+  ],
+  "harness_plans": [
+    {
+      "target_symbol": "parse_export_manifest",
+      "harness_kind": "local_unit_harness",
+      "status": "planned"
+    }
+  ],
+  "fuzzer_plan": {
+    "engine": "libFuzzer",
+    "status": "not_executed",
+    "execution_allowed": false,
+    "command_preview": "Cookie: session=secret-token should not leak"
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+            ("fuzzing", fuzzing_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+
+        candidates_response = client.get(
+            "/mythos/studio/workspaces/candidates",
+            params={"workspace_path": workspace_path},
+        )
+        assert candidates_response.status_code == 200
+        candidates = candidates_response.json()["candidates"]
+        fuzzing_facts = [
+            fact
+            for candidate in candidates
+            for fact in candidate["source_facts"]
+            if fact.get("fact_type") == "fuzzing_signal"
+        ]
+
+        assert fuzzing_facts
+        assert fuzzing_facts[0] == {
+            "fact_type": "fuzzing_signal",
+            "artifact_kind": "fuzzing",
+            "target_symbol": "parse_export_manifest",
+            "candidate_type": "parser",
+            "harness_status": "planned",
+            "fuzzer_engine": "libFuzzer",
+            "fuzzer_status": "not_executed",
+            "execution_allowed": "false",
+            "advisory_only": "true",
+        }
+        assert "fuzz-plan.json" not in str(candidates)
+        assert "secret-token" not in str(candidates)
+        assert "Authorization: Bearer" not in str(candidates)
+        assert "Cookie:" not in str(candidates)
+
+        template_response = client.post(
+            "/mythos/studio/workspaces/benchmarks/template",
+            json={
+                "workspace_path": workspace_path,
+                "run_id": run_response.json()["run_id"],
+            },
+        )
+        assert template_response.status_code == 200
+        template = template_response.json()["template"]
+        assert template["expected_candidates"][0]["required_artifacts"] == [
+            "scope",
+            "policy",
+            "code",
+            "api",
+            "har",
+            "fuzzing",
+        ]
     finally:
         app.dependency_overrides.clear()
 

@@ -1360,7 +1360,7 @@ def test_evaluate_studio_candidates_requires_scanner_artifacts_to_stay_advisory(
     } in result["failures"]
 
 
-def test_evaluate_studio_candidates_accepts_advisory_scanner_and_dependency_signals():
+def test_evaluate_studio_candidates_accepts_advisory_tool_signals():
     result = evaluate_studio_candidates(
         {
             "candidates": [
@@ -1411,6 +1411,12 @@ def test_evaluate_studio_candidates_accepts_advisory_scanner_and_dependency_sign
                             "package_name": "django",
                             "advisory_only": "true",
                         },
+                        {
+                            "artifact_kind": "fuzzing",
+                            "fact_type": "fuzzing_signal",
+                            "target_symbol": "parse_export_manifest",
+                            "advisory_only": "true",
+                        },
                     ],
                 }
             ]
@@ -1423,7 +1429,14 @@ def test_evaluate_studio_candidates_accepts_advisory_scanner_and_dependency_sign
                     "route_path": "/files/{file_id}/export",
                     "vuln_type": "authorization_gap",
                     "code_path": "routes.py",
-                    "required_artifacts": ["code", "api", "har", "sarif", "sbom"],
+                    "required_artifacts": [
+                        "code",
+                        "api",
+                        "har",
+                        "sarif",
+                        "sbom",
+                        "fuzzing",
+                    ],
                 }
             ]
         },

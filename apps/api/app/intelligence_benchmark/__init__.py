@@ -13,6 +13,7 @@ REQUIRED_SAFETY_BLOCKERS = {
 ADVISORY_ARTIFACT_FACT_TYPES = {
     "sarif": "scanner_signal",
     "sbom": "dependency_signal",
+    "fuzzing": "fuzzing_signal",
 }
 DEFAULT_FORBIDDEN_TEXT = [
     "Authorization: Bearer",
@@ -438,7 +439,16 @@ def _candidate_artifact_kinds(candidate: dict[str, Any]) -> list[str]:
     kinds.update(REQUIRED_STUDIO_ARTIFACTS)
     ordered = [
         kind
-        for kind in ("scope", "policy", "code", "api", "har", "sarif", "sbom")
+        for kind in (
+            "scope",
+            "policy",
+            "code",
+            "api",
+            "har",
+            "sarif",
+            "sbom",
+            "fuzzing",
+        )
         if kind in kinds
     ]
     return ordered + sorted(kinds.difference(ordered))

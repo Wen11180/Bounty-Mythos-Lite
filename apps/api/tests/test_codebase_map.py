@@ -3040,6 +3040,38 @@ def run_agent_tool(agent_id: str, tool_name: str, current_user):
     assert gap.route_path == "/agents/{agent_id}/tools/execute"
 
 
+def test_map_authorized_code_files_marks_agent_tool_dispatch_without_authz_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/agents.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/agents/{agent_id}/tools/dispatch")
+def dispatch_tool(agent_id: str, tool_name: str, current_user):
+    return dispatch_agent_tool(agent_id, tool_name)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    sink = next(fact for fact in result.facts if fact.fact_type == "sensitive_sink")
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert fact_types.count("route_handler") == 1
+    assert sink.symbol_name == "dispatch_agent_tool"
+    assert gap.route_method == "POST"
+    assert gap.route_path == "/agents/{agent_id}/tools/dispatch"
+
+
 def test_map_authorized_code_files_treats_agent_id_filter_as_authz_check():
     result = map_authorized_code_files(
         {

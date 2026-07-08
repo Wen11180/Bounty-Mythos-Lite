@@ -131,6 +131,7 @@ AUTHZ_NAME_MARKERS = (
 SENSITIVE_SINK_NAMES = {
     "delete",
     "delete_file",
+    "dispatch_agent_tool",
     "export",
     "export_file",
     "execute_agent_tool",

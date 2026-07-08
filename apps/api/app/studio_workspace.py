@@ -14,6 +14,7 @@ WORKSPACE_DIRS = (
     "code",
     "sbom",
     "sarif",
+    "fuzzing",
     "evidence",
     "benchmarks",
     "reports",

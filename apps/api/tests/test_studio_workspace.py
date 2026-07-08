@@ -33,6 +33,7 @@ def test_create_workspace_creates_local_artifact_directories(tmp_path: Path):
         "code",
         "sbom",
         "sarif",
+        "fuzzing",
         "evidence",
         "reports",
         "runs",

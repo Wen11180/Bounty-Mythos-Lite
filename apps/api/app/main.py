@@ -2942,7 +2942,7 @@ def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
     for artifact in artifacts:
         if (
             not isinstance(artifact, dict)
-            or artifact.get("kind") not in {"api", "har", "sarif", "sbom"}
+            or artifact.get("kind") not in {"api", "har", "sarif", "sbom", "fuzzing"}
         ):
             continue
         source_path = artifact.get("source_path")
@@ -2965,6 +2965,8 @@ def _studio_surface_facts_from_file(kind: str, source_path: str) -> list[dict[st
         return _studio_sarif_surface_facts(payload)
     if kind == "sbom":
         return _studio_sbom_surface_facts(payload)
+    if kind == "fuzzing":
+        return _studio_fuzzing_surface_facts(payload)
     return []
 
 
@@ -3131,6 +3133,64 @@ def _studio_sbom_vulnerability_severity(vulnerability: dict) -> str:
     return ""
 
 
+def _studio_fuzzing_surface_facts(payload: object) -> list[dict[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+    plan = (
+        payload.get("crs_fuzzing")
+        if isinstance(payload.get("crs_fuzzing"), dict)
+        else payload
+    )
+    fuzzer_plan = plan.get("fuzzer_plan")
+    if not isinstance(fuzzer_plan, dict):
+        return []
+    if plan.get("execution_mode") != "plan_only":
+        return []
+    if fuzzer_plan.get("execution_allowed") is True:
+        return []
+    parser_candidates = plan.get("parser_candidates")
+    if not isinstance(parser_candidates, list):
+        return []
+    harness_status_by_symbol = _studio_fuzzing_harness_status_by_symbol(plan)
+    facts: list[dict[str, str]] = []
+    for candidate in parser_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        symbol_name = candidate.get("symbol_name")
+        if not isinstance(symbol_name, str) or not symbol_name:
+            continue
+        fact = {
+            "fact_type": "fuzzing_signal",
+            "artifact_kind": "fuzzing",
+            "target_symbol": safe_preview_text(symbol_name),
+            "candidate_type": safe_preview_text(candidate.get("candidate_type", "")),
+            "harness_status": safe_preview_text(
+                harness_status_by_symbol.get(symbol_name, "")
+            ),
+            "fuzzer_engine": safe_preview_text(fuzzer_plan.get("engine", "")),
+            "fuzzer_status": safe_preview_text(fuzzer_plan.get("status", "")),
+            "execution_allowed": "false",
+            "advisory_only": "true",
+        }
+        facts.append({key: value for key, value in fact.items() if value})
+    return facts[:3]
+
+
+def _studio_fuzzing_harness_status_by_symbol(plan: dict) -> dict[str, str]:
+    harness_plans = plan.get("harness_plans")
+    if not isinstance(harness_plans, list):
+        return {}
+    status_by_symbol: dict[str, str] = {}
+    for harness_plan in harness_plans:
+        if not isinstance(harness_plan, dict):
+            continue
+        target_symbol = harness_plan.get("target_symbol")
+        status = harness_plan.get("status")
+        if isinstance(target_symbol, str) and isinstance(status, str):
+            status_by_symbol[target_symbol] = status
+    return status_by_symbol
+
+
 def _studio_purl_ecosystem(purl: str) -> str:
     if not purl.startswith("pkg:"):
         return ""
@@ -3145,16 +3205,16 @@ def _studio_matching_surface_facts(
         fact
         for fact in imported_surface_facts
         if not fact.get("route_path")
-    ][:3]
+    ][:5]
     route_hints = _studio_candidate_route_hints(hypothesis)
     if not route_hints:
-        return imported_surface_facts[:3]
+        return imported_surface_facts[:5]
     route_facts = [
         fact
         for fact in imported_surface_facts
         if _studio_surface_fact_matches_route_hints(fact, route_hints)
-    ][:3]
-    return (route_facts + global_facts)[:3]
+    ][:5]
+    return (route_facts + global_facts)[:5]
 
 
 def _studio_surface_fact_matches_route_hints(

@@ -846,6 +846,39 @@ def test_run_source_audit_raises_authorization_hypothesis_for_agent_tool_executi
     assert result.hypotheses[0].location == "POST /agents/{agent_id}/tools/execute"
 
 
+def test_run_source_audit_raises_authorization_hypothesis_for_agent_tool_dispatch_without_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.post("/agents/{agent_id}/tools/dispatch")',
+                "def dispatch_tool(agent_id: str, tool_name: str, current_user):",
+                "    return dispatch_agent_tool(agent_id, tool_name)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
+    assert result.hypotheses[0].location == "POST /agents/{agent_id}/tools/dispatch"
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_agent_id_filter(
     tmp_path,
 ):
