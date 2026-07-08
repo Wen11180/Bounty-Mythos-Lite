@@ -14,6 +14,7 @@ import {
   materializeResearchQueueTask,
   recordClaimReviewDecision,
   recordManualObservation,
+  runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
   reviewValidationFeedbackForFindingPromotion,
   runSourceAuditScan,
@@ -296,6 +297,36 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       );
     }
 
+    if (url.endsWith("/mythos/studio/workspaces/benchmarks/run")) {
+      return new Response(
+        JSON.stringify({
+          benchmark: {
+            candidate_count: 1,
+            expected_count: 1,
+            failures: [],
+            matched: 1,
+            safety: { forbidden_text_present: [] },
+            status: "passed",
+          },
+          benchmark_path:
+            "C:/workspaces/acme-api/benchmarks/pipeline_run_1-benchmark-result.json",
+          manifest: {
+            benchmarks: [
+              {
+                benchmark_path:
+                  "C:/workspaces/acme-api/benchmarks/pipeline_run_1-benchmark-result.json",
+                run_id: "pipeline_run_1",
+                status: "passed",
+              },
+            ],
+            runs: [{ benchmark_status: "passed", run_id: "pipeline_run_1" }],
+          },
+          run_id: "pipeline_run_1",
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
     return new Response(JSON.stringify({ detail: "unexpected request" }), {
       headers: { "Content-Type": "application/json" },
       status: 500,
@@ -327,11 +358,31 @@ test("studio research API helpers keep reports submission-blocked", async () => 
     );
     assert.equal(exported?.submission_blocked, true);
 
+    const benchmark = await runStudioWorkspaceBenchmark(
+      {
+        expectations_path: "C:/authorized/studio-expectations.json",
+        run_id: "pipeline_run_1",
+        workspace_path: "C:/workspaces/acme-api",
+      },
+      null,
+    );
+    assert.equal(benchmark?.benchmark.status, "passed");
+    assert.equal(
+      benchmark?.benchmark_path,
+      "C:/workspaces/acme-api/benchmarks/pipeline_run_1-benchmark-result.json",
+    );
+
     assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
       "/mythos/studio/workspaces/runs",
       "/mythos/studio/workspaces/candidates",
       "/mythos/studio/workspaces/reports/export",
+      "/mythos/studio/workspaces/benchmarks/run",
     ]);
+    assert.deepEqual(calls[3]?.body, {
+      expectations_path: "C:/authorized/studio-expectations.json",
+      run_id: "pipeline_run_1",
+      workspace_path: "C:/workspaces/acme-api",
+    });
     assert.doesNotMatch(
       JSON.stringify(calls),
       /Authorization\s*[:=]|Bearer|secret-token|cookie|send_file\(file_id\)|submitReport/i,

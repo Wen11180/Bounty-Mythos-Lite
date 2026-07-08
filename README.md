@@ -121,6 +121,9 @@ python -m app studio-eval `
   --output studio-eval-result.json
 ```
 
+The Studio API also exposes `/mythos/studio/workspaces/benchmarks/run` for
+benchmarking a workspace run directly from the local app shell.
+
 All of these CLI paths stay inside the project safety boundary: no public-target
 scanning, no destructive validation, no credential collection, no automatic
 approval, and no automatic report submission.

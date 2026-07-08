@@ -31,6 +31,7 @@ from app.campaign_orchestrator import tick_campaign
 from app.hunter_intelligence import (
     HunterIntelligence,
 )
+from app.intelligence_benchmark import evaluate_studio_candidates
 from app.llm.base import LLMRequest, LLMResponse
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
@@ -98,6 +99,7 @@ from app.studio_workspace import (
     create_workspace,
     import_workspace_artifact,
     load_workspace_manifest,
+    record_workspace_benchmark_result,
     record_workspace_report_export,
     record_workspace_run,
 )
@@ -181,6 +183,12 @@ class StudioWorkspaceRunRequest(BaseModel):
 class StudioReportExportRequest(BaseModel):
     workspace_path: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+
+
+class StudioBenchmarkRunRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    expectations_path: str = Field(min_length=1)
 
 
 class ArtifactResponse(BaseModel):
@@ -2339,14 +2347,49 @@ def list_mythos_studio_workspace_candidates(
     record = DatabaseRepository(session).get_pipeline_run(selected_run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    payload = record.payload if isinstance(record.payload, dict) else {}
-    imported_surface_facts = _studio_imported_surface_facts(manifest)
-    candidates = [
-        _studio_candidate_from_hypothesis(item, imported_surface_facts)
-        for item in payload.get("hypotheses", [])[:5]
-        if isinstance(item, dict)
-    ]
+    candidates = _studio_candidates_for_run(record, manifest)
     return {"run_id": selected_run_id, "candidates": candidates}
+
+
+@app.post("/mythos/studio/workspaces/benchmarks/run")
+def run_mythos_studio_workspace_benchmark(
+    request: StudioBenchmarkRunRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    manifest = load_workspace_manifest(request.workspace_path)
+    if request.run_id not in {
+        run.get("run_id") for run in manifest.get("runs", []) if isinstance(run, dict)
+    }:
+        raise HTTPException(status_code=404, detail="workspace_run_not_found")
+    expectations_path = Path(request.expectations_path)
+    if not expectations_path.exists():
+        raise HTTPException(status_code=404, detail="benchmark_expectations_not_found")
+    try:
+        expectations = json.loads(expectations_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="invalid_benchmark_expectations") from exc
+    record = DatabaseRepository(session).get_pipeline_run(request.run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    result = evaluate_studio_candidates(
+        {"candidates": _studio_candidates_for_run(record, manifest)},
+        expectations,
+    )
+    updated_manifest = record_workspace_benchmark_result(
+        request.workspace_path,
+        run_id=request.run_id,
+        result=result,
+    )
+    return {
+        "run_id": request.run_id,
+        "benchmark": result,
+        "benchmark_path": _studio_benchmark_field(
+            updated_manifest,
+            request.run_id,
+            "benchmark_path",
+        ),
+        "manifest": updated_manifest,
+    }
 
 
 @app.post("/mythos/studio/workspaces/reports/export")
@@ -2453,6 +2496,28 @@ def _studio_run_field(manifest: dict, run_id: str, field_name: str) -> str | Non
         value = run.get(field_name)
         return value if isinstance(value, str) else None
     return None
+
+
+def _studio_benchmark_field(manifest: dict, run_id: str, field_name: str) -> str | None:
+    benchmarks = manifest.get("benchmarks", [])
+    if not isinstance(benchmarks, list):
+        return None
+    for benchmark in reversed(benchmarks):
+        if not isinstance(benchmark, dict) or benchmark.get("run_id") != run_id:
+            continue
+        value = benchmark.get(field_name)
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _studio_candidates_for_run(record: PipelineRunRecord, manifest: dict) -> list[dict]:
+    payload = record.payload if isinstance(record.payload, dict) else {}
+    imported_surface_facts = _studio_imported_surface_facts(manifest)
+    return [
+        _studio_candidate_from_hypothesis(item, imported_surface_facts)
+        for item in payload.get("hypotheses", [])[:5]
+        if isinstance(item, dict)
+    ]
 
 
 def _studio_candidate_route_fact(hypothesis: dict) -> dict[str, str] | None:

@@ -238,6 +238,46 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         )
         assert "send_file(file_id)" not in str(candidates)
 
+        expectations_path = tmp_path / "expectations.json"
+        expectations_path.write_text(
+            """
+{
+  "expected_candidates": [
+    {
+      "name": "file export authorization gap",
+      "route_method": "GET",
+      "route_path": "/files/{file_id}/export",
+      "vuln_type": "authorization",
+      "required_artifacts": ["code", "api", "har"]
+    }
+  ],
+  "forbidden_text": ["send_file(file_id)", "secret-token"]
+}
+""",
+            encoding="utf-8",
+        )
+        benchmark_response = client.post(
+            "/mythos/studio/workspaces/benchmarks/run",
+            json={
+                "workspace_path": workspace_path,
+                "run_id": run_body["run_id"],
+                "expectations_path": str(expectations_path),
+            },
+        )
+        assert benchmark_response.status_code == 200
+        benchmark = benchmark_response.json()
+        assert benchmark["benchmark"]["status"] == "passed"
+        assert benchmark["benchmark"]["matched"] == 1
+        assert benchmark["benchmark"]["failures"] == []
+        assert benchmark["benchmark_path"].endswith("-benchmark-result.json")
+        assert benchmark["manifest"]["benchmarks"][-1]["status"] == "passed"
+        assert benchmark["manifest"]["runs"][-1]["benchmark_status"] == "passed"
+        persisted_benchmark = Path(benchmark["benchmark_path"]).read_text(
+            encoding="utf-8"
+        )
+        assert '"status": "passed"' in persisted_benchmark
+        assert "send_file(file_id)" not in persisted_benchmark
+
         export_response = client.post(
             "/mythos/studio/workspaces/reports/export",
             json={"workspace_path": workspace_path, "run_id": run_body["run_id"]},

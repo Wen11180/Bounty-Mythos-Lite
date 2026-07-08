@@ -154,6 +154,9 @@ def _candidate_quality_failures(
     missing_artifacts = _missing_required_artifacts(candidate, expected)
     if missing_artifacts:
         failures.append("missing_required_artifacts:" + ",".join(missing_artifacts))
+    expected_code_path = _text(expected.get("code_path"))
+    if expected_code_path and not _candidate_has_code_path(candidate, expected_code_path):
+        failures.append(f"missing_code_path:{expected_code_path}")
     report_readiness = candidate.get("report_readiness")
     if not isinstance(report_readiness, dict):
         failures.append("missing_report_readiness")
@@ -162,6 +165,8 @@ def _candidate_quality_failures(
             failures.append("report_not_submission_blocked")
         if report_readiness.get("report_submission_allowed") is not False:
             failures.append("report_submission_allowed")
+        if not _text(report_readiness.get("next_allowed_action")):
+            failures.append("missing_report_next_allowed_action")
     blockers = set(_string_list(candidate.get("safety_blockers")))
     if not REQUIRED_SAFETY_BLOCKERS.issubset(blockers):
         failures.append("missing_safety_blockers")
@@ -184,11 +189,39 @@ def _missing_required_artifacts(
     return [kind for kind in required if kind not in artifact_kinds]
 
 
+def _candidate_has_code_path(candidate: dict[str, Any], expected_code_path: str) -> bool:
+    expected_path, expected_symbol = _split_expected_code_path(expected_code_path)
+    source_facts = candidate.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        return False
+    for fact in source_facts:
+        if not isinstance(fact, dict):
+            continue
+        if _text(fact.get("artifact_kind")) != "code":
+            continue
+        source_path = _normalized_path(_text(fact.get("source_path")))
+        if source_path != expected_path and not source_path.endswith("/" + expected_path):
+            continue
+        if expected_symbol and _text(fact.get("symbol_name")) != expected_symbol:
+            continue
+        if source_path:
+            return True
+    return False
+
+
+def _split_expected_code_path(value: str) -> tuple[str, str]:
+    path, separator, symbol = value.rpartition(":")
+    if separator and path:
+        return _normalized_path(path), symbol.strip()
+    return _normalized_path(value), ""
+
+
 def _forbidden_text_present(payload: Any, forbidden_text: list[str]) -> list[str]:
     if not forbidden_text:
         return []
     serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    return [text for text in forbidden_text if text and text in serialized]
+    serialized_lower = serialized.lower()
+    return [text for text in forbidden_text if text and text.lower() in serialized_lower]
 
 
 def _max_candidates(expectations: Any) -> int:
@@ -228,6 +261,10 @@ def _route_segment_matches(pattern: str, value: str) -> bool:
 
 def _candidate_vuln_type(candidate: dict[str, Any]) -> str:
     return _text(candidate.get("vuln_type"))
+
+
+def _normalized_path(value: str) -> str:
+    return value.replace("\\", "/").strip("/").lower()
 
 
 def _expected_name(expected: dict[str, Any]) -> str:

@@ -15,6 +15,7 @@ WORKSPACE_DIRS = (
     "sbom",
     "sarif",
     "evidence",
+    "benchmarks",
     "reports",
     "runs",
 )
@@ -160,6 +161,38 @@ def record_workspace_report_export(
                 "recorded_at": _utc_now(),
             }
         )
+    _write_manifest(path, manifest)
+    return manifest
+
+
+def record_workspace_benchmark_result(
+    workspace_path: str | Path,
+    *,
+    run_id: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    path = Path(workspace_path)
+    manifest = load_workspace_manifest(path)
+    benchmark_dir = path / "benchmarks"
+    benchmark_dir.mkdir(exist_ok=True)
+    benchmark_path = benchmark_dir / f"{_safe_name(run_id)}-benchmark-result.json"
+    benchmark_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    benchmark_ref = _safe_path_ref(str(benchmark_path))
+    manifest.setdefault("benchmarks", []).append(
+        {
+            "run_id": run_id,
+            "status": _markdown_text(result.get("status"), "unknown"),
+            "benchmark_path": benchmark_ref,
+            "matched": result.get("matched", 0),
+            "expected_count": result.get("expected_count", 0),
+            "recorded_at": _utc_now(),
+        }
+    )
+    for run in manifest.get("runs", []):
+        if isinstance(run, dict) and run.get("run_id") == run_id:
+            run["benchmark_status"] = _markdown_text(result.get("status"), "unknown")
+            run["benchmark_path"] = benchmark_ref
+            break
     _write_manifest(path, manifest)
     return manifest
 
@@ -328,6 +361,7 @@ __all__ = [
     "create_workspace",
     "import_workspace_artifact",
     "load_workspace_manifest",
+    "record_workspace_benchmark_result",
     "record_workspace_report_export",
     "record_workspace_run",
 ]

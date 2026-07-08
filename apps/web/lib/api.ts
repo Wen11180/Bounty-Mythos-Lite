@@ -549,6 +549,26 @@ export type StudioReportExportRequest = {
   run_id: string;
 };
 
+export type StudioBenchmarkRunRequest = {
+  workspace_path: string;
+  run_id: string;
+  expectations_path: string;
+};
+
+export type StudioBenchmarkRunResponse = {
+  run_id: string;
+  benchmark: {
+    status?: string;
+    candidate_count?: number;
+    expected_count?: number;
+    matched?: number;
+    failures?: Array<{ name?: string; reason?: string }>;
+    safety?: { forbidden_text_present?: string[] };
+  };
+  benchmark_path: string | null;
+  manifest: StudioWorkspaceManifest;
+};
+
 export type StudioReportExportResponse = {
   run_id: string;
   title: string;
@@ -1138,6 +1158,13 @@ export function exportStudioWorkspaceReport(
   fallback: StudioReportExportResponse | null,
 ): Promise<StudioReportExportResponse | null> {
   return apiPost("/mythos/studio/workspaces/reports/export", request, fallback);
+}
+
+export function runStudioWorkspaceBenchmark(
+  request: StudioBenchmarkRunRequest,
+  fallback: StudioBenchmarkRunResponse | null,
+): Promise<StudioBenchmarkRunResponse | null> {
+  return apiPost("/mythos/studio/workspaces/benchmarks/run", request, fallback);
 }
 
 async function runSourceAuditScanRequest(

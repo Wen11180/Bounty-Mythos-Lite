@@ -9,6 +9,15 @@ export type StudioWorkspaceManifest = {
     run_id?: string;
     status?: string;
     candidate_count?: number;
+    benchmark_status?: string;
+    benchmark_path?: string;
+  }>;
+  benchmarks?: Array<{
+    run_id?: string;
+    status?: string;
+    benchmark_path?: string;
+    matched?: number;
+    expected_count?: number;
   }>;
   safety?: {
     scope_guard_status?: string;
