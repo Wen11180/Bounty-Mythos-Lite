@@ -336,6 +336,14 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["regression_test"]
         assert candidates[0]["ranking_reasons"]
         assert candidates[0]["refutation_status"] == "unverified"
+        assert candidates[0]["refutation_review"] == {
+            "status": "needs_human_review",
+            "questions": [
+                "Does an upstream middleware or policy layer already enforce the claimed boundary?",
+                "Can the affected endpoint and code path be reached under the authorized scope?",
+                "Does a local two-account or role-fixture check refute the suspected impact?",
+            ],
+        }
         assert candidates[0]["duplicate_risk_score"] <= 49
         assert candidates[0]["deduplication_review"] == {
             "status": "needs_human_review",
@@ -482,6 +490,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "- Policy risk score: 10" in markdown
         assert "## Ranking reasons" in markdown
         assert candidates[0]["ranking_reasons"][0] in markdown
+        assert "## Refutation review" in markdown
+        assert "- Status: needs_human_review" in markdown
+        assert candidates[0]["refutation_review"]["questions"][0] in markdown
         assert "## Report readiness" in markdown
         assert "- Status: submission_blocked" in markdown
         assert candidates[0]["report_readiness"]["next_allowed_action"] in markdown

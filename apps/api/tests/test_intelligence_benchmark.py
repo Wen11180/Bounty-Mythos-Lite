@@ -222,6 +222,7 @@ def test_build_studio_expectations_template_uses_safe_candidate_metadata_only():
             "require_policy_risk": True,
             "require_evidence_review": True,
             "require_deduplication_review": True,
+            "require_refutation_review": True,
             "max_duplicate_risk_score": 49,
             "max_policy_risk_score": 49,
             "code_path": "routes.py:export_file",
@@ -272,6 +273,7 @@ def test_build_studio_expectations_template_preserves_ab_required_artifacts():
     assert template["expected_candidates"][0]["require_policy_risk"] is True
     assert template["expected_candidates"][0]["require_evidence_review"] is True
     assert template["expected_candidates"][0]["require_deduplication_review"] is True
+    assert template["expected_candidates"][0]["require_refutation_review"] is True
     assert template["expected_candidates"][0]["max_duplicate_risk_score"] == 49
     assert template["expected_candidates"][0]["max_policy_risk_score"] == 49
 
@@ -975,6 +977,177 @@ def test_evaluate_studio_candidates_accepts_deduplication_review_items():
                     "vuln_type": "authorization_gap",
                     "required_artifacts": ["code", "api", "har"],
                     "require_deduplication_review": True,
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "passed"
+    assert result["matched"] == 1
+
+
+def test_evaluate_studio_candidates_requires_refutation_review_when_marked_required():
+    result = evaluate_studio_candidates(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "broken_invariant": "Private files require ownership checks.",
+                    "impact_rationale": "Cross-account file export can expose data.",
+                    "repair_guidance": "Enforce ownership before export.",
+                    "regression_test": "Add a two-account ownership regression test.",
+                    "refutation_status": "unverified",
+                    "duplicate_risk_score": 10,
+                    "deduplication_review": {
+                        "status": "needs_human_review",
+                        "duplicate_risk_score": 10,
+                        "review_items": [
+                            "Compare endpoint and invariant against prior submissions."
+                        ],
+                    },
+                    "policy_risk": "low",
+                    "policy_risk_score": 10,
+                    "evidence_review": {
+                        "status": "needs_human_review",
+                        "required_items": [
+                            "Confirm the affected endpoint and code path using authorized local artifacts."
+                        ],
+                    },
+                    "evidence_needed": ["Two authorized test accounts"],
+                    "false_positive_checks": ["Does the service enforce ownership?"],
+                    "safe_validation_plan": ["Use local test accounts only"],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "touch_real_user_data",
+                        "submit_report",
+                    ],
+                    "report_readiness": {
+                        "status": "submission_blocked",
+                        "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
+                    },
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "source_path": "src/routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "expected_candidates": [
+                {
+                    "name": "file export authz gap",
+                    "route_method": "GET",
+                    "route_path": "/files/{file_id}/export",
+                    "vuln_type": "authorization_gap",
+                    "required_artifacts": ["code", "api", "har"],
+                    "require_refutation_review": True,
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "name": "file export authz gap",
+        "reason": "missing_refutation_review",
+    } in result["failures"]
+
+
+def test_evaluate_studio_candidates_accepts_refutation_review_questions():
+    result = evaluate_studio_candidates(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "broken_invariant": "Private files require ownership checks.",
+                    "impact_rationale": "Cross-account file export can expose data.",
+                    "repair_guidance": "Enforce ownership before export.",
+                    "regression_test": "Add a two-account ownership regression test.",
+                    "refutation_status": "unverified",
+                    "refutation_review": {
+                        "status": "needs_human_review",
+                        "questions": [
+                            "Does middleware already enforce this boundary?"
+                        ],
+                    },
+                    "duplicate_risk_score": 10,
+                    "deduplication_review": {
+                        "status": "needs_human_review",
+                        "duplicate_risk_score": 10,
+                        "review_items": [
+                            "Compare endpoint and invariant against prior submissions."
+                        ],
+                    },
+                    "policy_risk": "low",
+                    "policy_risk_score": 10,
+                    "evidence_review": {
+                        "status": "needs_human_review",
+                        "required_items": [
+                            "Confirm the affected endpoint and code path using authorized local artifacts."
+                        ],
+                    },
+                    "evidence_needed": ["Two authorized test accounts"],
+                    "false_positive_checks": ["Does the service enforce ownership?"],
+                    "safe_validation_plan": ["Use local test accounts only"],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "touch_real_user_data",
+                        "submit_report",
+                    ],
+                    "report_readiness": {
+                        "status": "submission_blocked",
+                        "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
+                    },
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "source_path": "src/routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "expected_candidates": [
+                {
+                    "name": "file export authz gap",
+                    "route_method": "GET",
+                    "route_path": "/files/{file_id}/export",
+                    "vuln_type": "authorization_gap",
+                    "required_artifacts": ["code", "api", "har"],
+                    "require_refutation_review": True,
                 }
             ]
         },
@@ -2370,6 +2543,7 @@ def test_cli_studio_eval_template_writes_reviewable_expectations(tmp_path, capsy
             "require_policy_risk": True,
             "require_evidence_review": True,
             "require_deduplication_review": True,
+            "require_refutation_review": True,
             "max_duplicate_risk_score": 49,
             "max_policy_risk_score": 49,
             "code_path": "routes.py:export_file",

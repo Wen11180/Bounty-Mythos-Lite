@@ -90,6 +90,14 @@
           "Compare endpoint, code path, invariant, and impact against prior submissions.",
           "Treat similar scanner, dependency, fuzzing, or strategy signals as advisory until novelty is reviewed."
         ]
+      },
+      "refutation_review": {
+        "status": "needs_human_review",
+        "questions": [
+          "Does an upstream middleware or policy layer already enforce the claimed boundary?",
+          "Can the affected endpoint and code path be reached under the authorized scope?",
+          "Does a local two-account or role-fixture check refute the suspected impact?"
+        ]
       }
     }
   ]

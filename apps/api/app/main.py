@@ -2541,6 +2541,9 @@ def _studio_report_candidate_guidance(
         deduplication_review = _studio_report_deduplication_review(
             candidate.get("deduplication_review", {})
         )
+        refutation_review = _studio_report_refutation_review(
+            candidate.get("refutation_review", {})
+        )
         report_readiness = _studio_report_readiness(candidate.get("report_readiness", {}))
         guidance: dict[str, object] = {}
         if candidate_summary:
@@ -2553,6 +2556,8 @@ def _studio_report_candidate_guidance(
             guidance["evidence_review"] = evidence_review
         if deduplication_review:
             guidance["deduplication_review"] = deduplication_review
+        if refutation_review:
+            guidance["refutation_review"] = refutation_review
         if evidence_needed:
             guidance["evidence_needed"] = evidence_needed
         if false_positive_checks:
@@ -2620,6 +2625,19 @@ def _studio_report_deduplication_review(value: object) -> dict[str, object]:
     review_items = _studio_report_guidance_list(value.get("review_items", []))
     if review_items:
         review["review_items"] = review_items
+    return review
+
+
+def _studio_report_refutation_review(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    review: dict[str, object] = {}
+    status = _studio_report_guidance_text(value.get("status", ""))
+    if status:
+        review["status"] = status
+    questions = _studio_report_guidance_list(value.get("questions", []))
+    if questions:
+        review["questions"] = questions
     return review
 
 
@@ -2917,6 +2935,7 @@ def _studio_candidate_from_hypothesis(
         "safe_verification": hypothesis.get("validation_mode") != "blocked",
         "priority_score": hypothesis.get("priority_score", 0),
         "refutation_status": safe_preview_text(hypothesis.get("refutation_status", "")),
+        "refutation_review": _studio_refutation_review(),
         "duplicate_risk_score": duplicate_risk_score,
         "deduplication_review": _studio_deduplication_review(duplicate_risk_score),
         "policy_risk": _studio_policy_risk(hypothesis),
@@ -3001,6 +3020,17 @@ def _studio_deduplication_review(duplicate_risk_score: int) -> dict[str, object]
         "review_items": [
             "Compare endpoint, code path, invariant, and impact against prior submissions.",
             "Treat similar scanner, dependency, fuzzing, or strategy signals as advisory until novelty is reviewed.",
+        ],
+    }
+
+
+def _studio_refutation_review() -> dict[str, object]:
+    return {
+        "status": "needs_human_review",
+        "questions": [
+            "Does an upstream middleware or policy layer already enforce the claimed boundary?",
+            "Can the affected endpoint and code path be reached under the authorized scope?",
+            "Does a local two-account or role-fixture check refute the suspected impact?",
         ],
     }
 

@@ -552,6 +552,35 @@ def test_report_export_markdown_includes_deduplication_review_items(tmp_path: Pa
     assert "Authorization: Bearer" not in markdown
 
 
+def test_report_export_markdown_includes_refutation_review_questions(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "refutation_review": {
+                "status": "needs_human_review",
+                "questions": [
+                    "Does middleware already enforce this boundary?",
+                    "Review Authorization: Bearer secret-token before sharing.",
+                ],
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Refutation review" in markdown
+    assert "- Status: needs_human_review" in markdown
+    assert "- Does middleware already enforce this boundary?" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
 def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
 

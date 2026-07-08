@@ -292,6 +292,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
     lines.extend(_report_readiness_markdown_lines(report.get("report_readiness")))
     lines.extend(_evidence_review_markdown_lines(report.get("evidence_review")))
     lines.extend(_deduplication_review_markdown_lines(report.get("deduplication_review")))
+    lines.extend(_refutation_review_markdown_lines(report.get("refutation_review")))
     sections = report.get("sections")
     if isinstance(sections, dict):
         for key, heading in (
@@ -397,6 +398,20 @@ def _deduplication_review_markdown_lines(value: Any) -> list[str]:
     if not items:
         return []
     return ["", "## Deduplication review", *[f"- {item}" for item in items]]
+
+
+def _refutation_review_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    items: list[str] = []
+    status = _markdown_safe_text(value.get("status"))
+    if status:
+        items.append(f"Status: {status}")
+    questions = _markdown_list(value.get("questions"))
+    items.extend(questions)
+    if not items:
+        return []
+    return ["", "## Refutation review", *[f"- {item}" for item in items]]
 
 
 def _studio_context_markdown_lines(value: Any) -> list[str]:
