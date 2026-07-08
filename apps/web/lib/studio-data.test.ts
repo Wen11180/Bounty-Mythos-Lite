@@ -110,6 +110,8 @@ test("candidate cards expose review rationale and ranking reasons", () => {
       risk: "high",
       reason: "Authenticated users can request object ids without proven ownership.",
       broken_invariant: "Private object access must enforce ownership.",
+      repair_guidance: "Enforce ownership before returning file content.",
+      regression_test: "Assert account B cannot export account A files.",
       ranking_reasons: ["impact:sensitive_data_sink", "traceable_source_fact"],
       safe_verification: true,
       source_facts: [{ route_path: "/files/{file_id}", source_path: "routes.py" }],
@@ -125,6 +127,8 @@ test("candidate cards expose review rationale and ranking reasons", () => {
     "traceable_source_fact",
   ]);
   assert.equal(card.brokenInvariant, "Private object access must enforce ownership.");
+  assert.equal(card.repairGuidance, "Enforce ownership before returning file content.");
+  assert.equal(card.regressionTest, "Assert account B cannot export account A files.");
   assert.equal(card.status, "needs_evidence");
 });
 
@@ -196,6 +200,52 @@ test("candidate cards expose artifact evidence gaps", () => {
     "code: missing_code_path",
     "har: missing_required_artifact",
   ]);
+});
+
+test("candidate report next action names evidence gaps before export", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-007",
+      vuln_type: "authorization",
+      risk: "high",
+      evidence_gaps: [
+        {
+          artifact_kind: "code",
+          reason: "missing_code_path",
+        },
+        {
+          artifact_kind: "har",
+          reason: "missing_required_artifact",
+        },
+      ],
+      report_readiness: {
+        status: "submission_blocked",
+        report_submission_allowed: false,
+        next_allowed_action: "Review evidence before exporting a report preview.",
+      },
+      safe_verification: true,
+    },
+  ]);
+
+  assert.equal(
+    card.reportReadiness.nextAllowedAction,
+    "Resolve candidate evidence gaps before exporting a report preview: code: missing_code_path; har: missing_required_artifact.",
+  );
+});
+
+test("candidate cards expose repair guidance and regression tests", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-008",
+      vuln_type: "authorization",
+      suggested_fix: "Enforce ownership in the service layer.",
+      regression_test: "Add a local test for cross-object denial.",
+      safe_verification: true,
+    },
+  ]);
+
+  assert.equal(card.repairGuidance, "Enforce ownership in the service layer.");
+  assert.equal(card.regressionTest, "Add a local test for cross-object denial.");
 });
 
 test("candidate cards keep unsafe candidates visibly blocked", () => {

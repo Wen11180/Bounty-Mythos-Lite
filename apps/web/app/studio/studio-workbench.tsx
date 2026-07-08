@@ -785,6 +785,14 @@ export function StudioWorkbench() {
                   <p className="mt-2 text-[var(--muted)]">{candidate.brokenInvariant}</p>
                 </div>
                 <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Repair guidance</p>
+                  <p className="mt-2 text-[var(--muted)]">{candidate.repairGuidance}</p>
+                </div>
+                <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Regression test</p>
+                  <p className="mt-2 text-[var(--muted)]">{candidate.regressionTest}</p>
+                </div>
+                <div className="mt-4">
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">Next report action</p>
                   <p className="mt-2 text-[var(--muted)]">
                     {candidate.reportReadiness.nextAllowedAction}

@@ -39,6 +39,8 @@ def build_studio_expectations_template(candidates_payload: Any) -> dict:
             "require_refutation_status": True,
             "require_security_invariant": True,
             "require_impact_rationale": True,
+            "require_repair_guidance": True,
+            "require_regression_test": True,
             "max_duplicate_risk_score": 49,
         }
         code_path = _candidate_code_path(candidate)
@@ -79,6 +81,13 @@ def evaluate_studio_candidates(candidates_payload: Any, expectations: Any) -> di
             {
                 "name": "candidate_set",
                 "reason": f"too_many_candidates:{len(candidates)}",
+            }
+        )
+    if len(expected_candidates) > max_candidates:
+        failures.append(
+            {
+                "name": "expected_candidate_set",
+                "reason": f"too_many_expected_candidates:{len(expected_candidates)}",
             }
         )
 
@@ -230,6 +239,10 @@ def _candidate_quality_failures(
         failures.append("missing_security_invariant")
     if expected.get("require_impact_rationale") is True and not _candidate_impact_rationale(candidate):
         failures.append("missing_impact_rationale")
+    if expected.get("require_repair_guidance") is True and not _candidate_repair_guidance(candidate):
+        failures.append("missing_repair_guidance")
+    if expected.get("require_regression_test") is True and not _candidate_regression_test(candidate):
+        failures.append("missing_regression_test")
     max_duplicate_risk_score = expected.get("max_duplicate_risk_score")
     if isinstance(max_duplicate_risk_score, int):
         duplicate_risk_score = _candidate_duplicate_risk_score(candidate)
@@ -409,6 +422,23 @@ def _candidate_impact_rationale(candidate: dict[str, Any]) -> str:
     return ""
 
 
+def _candidate_repair_guidance(candidate: dict[str, Any]) -> str:
+    return (
+        _text(candidate.get("repair_guidance"))
+        or _text(candidate.get("suggested_fix"))
+        or _text(candidate.get("remediation"))
+        or _first_string(candidate.get("repair_steps"))
+    )
+
+
+def _candidate_regression_test(candidate: dict[str, Any]) -> str:
+    return (
+        _text(candidate.get("regression_test"))
+        or _first_string(candidate.get("regression_tests"))
+        or _first_string(candidate.get("test_recommendations"))
+    )
+
+
 def _candidate_code_path(candidate: dict[str, Any]) -> str:
     source_facts = candidate.get("source_facts", [])
     if not isinstance(source_facts, list):
@@ -493,6 +523,11 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [text for item in value if (text := _text(item))]
+
+
+def _first_string(value: Any) -> str:
+    values = _string_list(value)
+    return values[0] if values else ""
 
 
 def _text(value: Any) -> str:

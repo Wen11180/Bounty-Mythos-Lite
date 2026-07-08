@@ -214,10 +214,18 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["hypothesis_id"].startswith("H-")
         assert candidates[0]["safe_verification"] is True
         assert candidates[0]["broken_invariant"]
+        assert candidates[0]["repair_guidance"]
+        assert candidates[0]["regression_test"]
         assert candidates[0]["ranking_reasons"]
         assert candidates[0]["refutation_status"] == "unverified"
         assert candidates[0]["duplicate_risk_score"] <= 49
         assert candidates[0]["evidence_gaps"] == []
+        assert candidates[0]["suggested_fix"] == (
+            "Enforce the affected authorization or input boundary in the backend service layer before returning sensitive data or performing state changes."
+        )
+        assert candidates[0]["regression_test"] == (
+            "Add a non-destructive local regression test proving the protected boundary rejects unauthorized cross-object access."
+        )
         assert candidates[0]["validation_mode"] == "two_account_authorization_check"
         assert candidates[0]["safe_validation_plan"] == [
             "Prepare two authorized test accounts in a local or explicitly approved test environment.",

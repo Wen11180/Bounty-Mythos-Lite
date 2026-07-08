@@ -2617,11 +2617,14 @@ def _studio_candidate_from_hypothesis(
         "location": safe_preview_text(hypothesis.get("location", "")),
         "reason": safe_preview_text(hypothesis.get("hypothesis", "")),
         "broken_invariant": _studio_broken_invariant(hypothesis),
+        "repair_guidance": _studio_repair_guidance(hypothesis),
         "evidence_needed": safe_preview_lines(hypothesis.get("evidence_needed", [])),
         "false_positive_checks": safe_preview_lines(
             hypothesis.get("false_positive_checks", [])
         ),
         "ranking_reasons": safe_preview_lines(hypothesis.get("ranking_reasons", [])),
+        "suggested_fix": _studio_suggested_fix(hypothesis),
+        "regression_test": _studio_regression_test(hypothesis),
         "validation_mode": safe_preview_text(hypothesis.get("validation_mode", "manual_review")),
         "safe_validation_plan": _studio_safe_validation_plan(hypothesis),
         "safety_blockers": [
@@ -2656,6 +2659,18 @@ def _studio_broken_invariant(hypothesis: dict) -> str:
     return "Candidate security invariant requires human review before validation."
 
 
+def _studio_repair_guidance(hypothesis: dict) -> str:
+    explicit = safe_preview_text(
+        hypothesis.get("repair_guidance", hypothesis.get("suggested_fix", ""))
+    )
+    if explicit:
+        return explicit
+    vuln_type = safe_preview_text(hypothesis.get("vuln_type", "candidate"))
+    if "authorization" in vuln_type.lower():
+        return "Review the route, service, and data-access ownership checks before allowing this object action."
+    return "Review the affected security boundary and add the smallest confirmed fix after human evidence review."
+
+
 def _studio_candidate_evidence_gaps(source_facts: list[dict]) -> list[dict[str, str]]:
     artifact_kinds = {
         safe_preview_text(fact.get("artifact_kind"))
@@ -2684,6 +2699,32 @@ def _studio_candidate_evidence_gaps(source_facts: list[dict]) -> list[dict[str, 
             }
         )
     return gaps
+
+
+def _studio_suggested_fix(hypothesis: dict) -> str:
+    explicit = safe_preview_text(hypothesis.get("suggested_fix", ""))
+    if explicit:
+        return explicit
+    return (
+        "Enforce the affected authorization or input boundary in the backend service layer "
+        "before returning sensitive data or performing state changes."
+    )
+
+
+def _studio_regression_test(hypothesis: dict) -> str:
+    explicit = safe_preview_text(hypothesis.get("regression_test", ""))
+    if explicit:
+        return explicit
+    vuln_type = safe_preview_text(hypothesis.get("vuln_type", ""))
+    if "authorization" in vuln_type.lower():
+        return (
+            "Add a non-destructive local regression test proving the protected boundary "
+            "rejects unauthorized cross-object access."
+        )
+    return (
+        "Add a non-destructive local regression test proving the reviewed security "
+        "invariant remains enforced."
+    )
 
 
 def _studio_duplicate_risk_score(hypothesis: dict) -> int:

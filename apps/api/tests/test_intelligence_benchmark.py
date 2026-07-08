@@ -163,6 +163,8 @@ def test_build_studio_expectations_template_uses_safe_candidate_metadata_only():
             "require_refutation_status": True,
             "require_security_invariant": True,
             "require_impact_rationale": True,
+            "require_repair_guidance": True,
+            "require_regression_test": True,
             "max_duplicate_risk_score": 49,
             "code_path": "routes.py:export_file",
         }
@@ -205,6 +207,8 @@ def test_build_studio_expectations_template_preserves_ab_required_artifacts():
     assert template["expected_candidates"][0]["require_refutation_status"] is True
     assert template["expected_candidates"][0]["require_security_invariant"] is True
     assert template["expected_candidates"][0]["require_impact_rationale"] is True
+    assert template["expected_candidates"][0]["require_repair_guidance"] is True
+    assert template["expected_candidates"][0]["require_regression_test"] is True
     assert template["expected_candidates"][0]["max_duplicate_risk_score"] == 49
 
 
@@ -400,6 +404,78 @@ def test_evaluate_studio_candidates_requires_duplicate_risk_score_when_expected(
     assert {
         "name": "file export authz gap",
         "reason": "missing_duplicate_risk_score",
+    } in result["failures"]
+
+
+def test_evaluate_studio_candidates_requires_repair_guidance_and_regression_test_when_expected():
+    result = evaluate_studio_candidates(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "broken_invariant": "Private files require ownership checks.",
+                    "impact_rationale": "Cross-user file export can expose sensitive data.",
+                    "refutation_status": "unverified",
+                    "duplicate_risk_score": 10,
+                    "evidence_needed": ["Two authorized test accounts"],
+                    "false_positive_checks": ["Does the service enforce ownership?"],
+                    "safe_validation_plan": ["Use local test accounts only"],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "touch_real_user_data",
+                        "submit_report",
+                    ],
+                    "report_readiness": {
+                        "status": "submission_blocked",
+                        "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
+                    },
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "source_path": "src/routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "expected_candidates": [
+                {
+                    "name": "file export authz gap",
+                    "route_method": "GET",
+                    "route_path": "/files/{file_id}/export",
+                    "vuln_type": "authorization_gap",
+                    "required_artifacts": ["code", "api", "har"],
+                    "require_repair_guidance": True,
+                    "require_regression_test": True,
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "name": "file export authz gap",
+        "reason": "missing_repair_guidance",
+    } in result["failures"]
+    assert {
+        "name": "file export authz gap",
+        "reason": "missing_regression_test",
     } in result["failures"]
 
 
@@ -719,6 +795,91 @@ def test_evaluate_studio_candidates_fails_when_candidate_set_is_noisy():
     assert result["failures"].count(
         {"name": "candidate_set", "reason": "too_many_candidates:6"}
     ) == 1
+
+
+def test_evaluate_studio_candidates_fails_when_expectation_set_is_noisy():
+    candidate = {
+        "hypothesis_id": "H-001",
+        "vuln_type": "authorization_gap",
+        "location": "GET /files/{file_id}/export",
+        "broken_invariant": "Private files require ownership checks.",
+        "evidence_needed": ["Two authorized test accounts"],
+        "false_positive_checks": ["Does the service enforce ownership?"],
+        "ranking_reasons": ["impact:sensitive_data_sink"],
+        "safe_validation_plan": ["Use local test accounts only"],
+        "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+        ],
+        "report_readiness": {
+            "status": "submission_blocked",
+            "report_submission_allowed": False,
+            "next_allowed_action": "Review evidence and safety blockers before export.",
+        },
+        "source_facts": [
+            {
+                "artifact_kind": "code",
+                "route_method": "GET",
+                "route_path": "/files/{file_id}/export",
+                "source_path": "routes.py",
+            },
+            {
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": "/files/{id}/export",
+            },
+            {
+                "artifact_kind": "har",
+                "route_method": "GET",
+                "route_path": "/files/123/export",
+            },
+        ],
+    }
+    expected_candidates = [
+        {
+            "name": f"expected authz gap {index}",
+            "route_method": "GET",
+            "route_path": "/files/{file_id}/export",
+            "vuln_type": "authorization_gap",
+            "required_artifacts": ["code", "api", "har"],
+        }
+        for index in range(6)
+    ]
+
+    result = evaluate_studio_candidates(
+        {"candidates": [candidate]},
+        {"expected_candidates": expected_candidates},
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "name": "expected_candidate_set",
+        "reason": "too_many_expected_candidates:6",
+    } in result["failures"]
+
+
+def test_evaluate_studio_candidates_applies_lower_expectation_max_candidates():
+    expected_candidates = [
+        {
+            "name": f"expected authz gap {index}",
+            "route_method": "GET",
+            "route_path": f"/files/{index}/export",
+            "vuln_type": "authorization_gap",
+            "required_artifacts": ["code", "api", "har"],
+        }
+        for index in range(4)
+    ]
+
+    result = evaluate_studio_candidates(
+        {"candidates": []},
+        {"max_candidates": 3, "expected_candidates": expected_candidates},
+    )
+
+    assert {
+        "name": "expected_candidate_set",
+        "reason": "too_many_expected_candidates:4",
+    } in result["failures"]
 
 
 def test_evaluate_studio_candidates_requires_expected_code_path():
@@ -1252,6 +1413,8 @@ def test_cli_studio_eval_template_writes_reviewable_expectations(tmp_path, capsy
             "require_refutation_status": True,
             "require_security_invariant": True,
             "require_impact_rationale": True,
+            "require_repair_guidance": True,
+            "require_regression_test": True,
             "max_duplicate_risk_score": 49,
             "code_path": "routes.py:export_file",
         }

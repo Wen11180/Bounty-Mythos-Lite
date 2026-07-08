@@ -59,6 +59,7 @@ export type StudioCandidateInput = {
   location?: string;
   reason?: string;
   broken_invariant?: string;
+  repair_guidance?: string;
   evidence_needed?: string[];
   false_positive_checks?: string[];
   ranking_reasons?: string[];
@@ -71,6 +72,8 @@ export type StudioCandidateInput = {
     artifact_kind?: string;
     reason?: string;
   }>;
+  suggested_fix?: string;
+  regression_test?: string;
   safe_validation_plan?: string[];
   safe_verification?: boolean;
   safety_blockers?: string[];
@@ -105,6 +108,8 @@ export type StudioCandidateCard = {
   refutationQuestions: string[];
   rankingReasons: string[];
   brokenInvariant: string;
+  repairGuidance: string;
+  regressionTest: string;
   reason: string;
   reportReadiness: {
     nextAllowedAction: string;
@@ -199,6 +204,11 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       refutationQuestions: candidate.false_positive_checks ?? [],
       rankingReasons: candidate.ranking_reasons ?? [],
       brokenInvariant: safeText(candidate.broken_invariant, "Security invariant needs review."),
+      repairGuidance: safeText(
+        candidate.repair_guidance,
+        safeText(candidate.suggested_fix, "Repair guidance needs review."),
+      ),
+      regressionTest: safeText(candidate.regression_test, "Regression test needs review."),
       reason: safeText(candidate.reason, "Review rationale unavailable."),
       reportReadiness: reportReadinessFromCandidate(candidate),
       safeValidationPlan: candidate.safe_validation_plan ?? [],
@@ -228,11 +238,16 @@ function artifactChecklistItem(
 function reportReadinessFromCandidate(
   candidate: StudioCandidateInput,
 ): StudioCandidateCard["reportReadiness"] {
+  const evidenceGaps = evidenceGapsFromCandidate(candidate);
+  const nextAllowedAction = evidenceGaps.length > 0
+    ? `Resolve candidate evidence gaps before exporting a report preview: ${evidenceGaps.join("; ")}.`
+    : safeText(
+        candidate.report_readiness?.next_allowed_action,
+        "Review evidence and safety blockers before exporting a report preview.",
+      );
+
   return {
-    nextAllowedAction: safeText(
-      candidate.report_readiness?.next_allowed_action,
-      "Review evidence and safety blockers before exporting a report preview.",
-    ),
+    nextAllowedAction,
     reportSubmissionAllowed: candidate.report_readiness?.report_submission_allowed === true,
     status: safeText(candidate.report_readiness?.status, "submission_blocked"),
   };
