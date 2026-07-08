@@ -367,6 +367,23 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
                     "report_submission_allowed": True,
                 }
             ],
+            "candidate_hunter_iteration": {
+                "iteration_id": "candidate_hunter:next_review",
+                "status": "needs_review",
+                "work_item_count": 1,
+                "priority_order": ["H-002:draft_validation_plan"],
+                "next_review_agent": "Evidence Planner",
+                "review_focus": ["safe_validation_plan"],
+                "success_criteria": [
+                    "H-002:draft_validation_plan has traceable evidence: non_destructive_validation_plan.",
+                    "No validation, fuzzing, or report submission is executed.",
+                ],
+                "safety_gate": "review_only_no_execution",
+                "completion_gate": "human_review_required",
+                "execution_allowed": True,
+                "validation_allowed": True,
+                "report_submission_allowed": True,
+            },
             "top_candidates": [
                 {
                     "hypothesis_id": "H-001",
@@ -409,6 +426,9 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert dossier["agent_queue_markdown_path"] == queue_audit["agent_queue_markdown_path"]
     assert queue_audit["task_count"] == 1
     assert queue_audit["timeline_stage_count"] == 1
+    assert queue_audit["timeline_blocked_stage_count"] == 0
+    assert queue_audit["timeline_needs_review_stage_count"] == 0
+    assert queue_audit["timeline_pending_stage_count"] == 0
     assert queue_audit["report_submission_allowed"] is False
     assert queue_audit["validation_execution_allowed"] is False
     assert updated["runs"][0]["mission_dossier_path"] == dossier["dossier_path"]
@@ -428,6 +448,24 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert queue_json["candidate_hunter_backlog"][0]["execution_allowed"] is False
     assert queue_json["candidate_hunter_backlog"][0]["validation_allowed"] is False
     assert queue_json["candidate_hunter_backlog"][0]["report_submission_allowed"] is False
+    assert queue_json["candidate_hunter_iteration"]["status"] == "needs_review"
+    assert queue_json["candidate_hunter_iteration"]["priority_order"] == [
+        "H-002:draft_validation_plan",
+    ]
+    assert queue_json["candidate_hunter_iteration"]["execution_allowed"] is False
+    assert queue_json["candidate_hunter_iteration"]["validation_allowed"] is False
+    assert queue_json["candidate_hunter_iteration"]["report_submission_allowed"] is False
+    assert queue_json["studio_timeline_summary"] == {
+        "total_stages": 1,
+        "gate_decision_counts": {"review_recorded": 1},
+        "blocked_stage_ids": [],
+        "needs_review_stage_ids": [],
+        "pending_stage_ids": [],
+        "next_human_actions": ["Review top candidate invariants."],
+        "safety_gate": "review_only_no_execution",
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+    }
     assert queue_json["task_timeline"][0] == {
         "stage_id": "agent_queue:semantic_candidate_hunt",
         "task_id": "semantic_candidate_hunt",
@@ -448,12 +486,18 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "# Mythos Studio agent queue audit" in queue_markdown
     assert "## Candidate hunter backlog" in queue_markdown
     assert "H-002:draft_validation_plan" in queue_markdown
+    assert "## Candidate hunter iteration" in queue_markdown
+    assert "## Studio timeline summary" in queue_markdown
+    assert "review_recorded: 1" in queue_markdown
+    assert "execution allowed: false" in queue_markdown
     assert "quality gaps: H-002:missing_safe_validation_plan" in queue_markdown
     assert "## Mission quality" in queue_markdown
     assert "## Agent task timeline" in queue_markdown
     assert "agent_queue:semantic_candidate_hunt" in queue_markdown
     assert "gate: review_recorded" in queue_markdown
     assert "## Agent queue" in markdown
+    assert "## Candidate hunter iteration" in markdown
+    assert "## Studio timeline summary" in markdown
     assert "semantic_candidate_hunt: Semantic Auditor" in markdown
     assert "focus: security_invariants, affected_code_paths, candidate_quality" in markdown
     assert "quality gaps: H-002:missing_safe_validation_plan" in markdown

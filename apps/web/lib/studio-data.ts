@@ -53,6 +53,7 @@ export type StudioMissionCandidateInput = {
     blockers?: string[];
     cross_validation_sources?: string[];
     high_confidence_allowed?: boolean;
+    independent_cross_check_sources?: string[];
     local_evidence_sources?: string[];
     model_output_status?: string;
     required_consensus?: string[];
@@ -108,8 +109,51 @@ export type StudioCandidateHunterBacklogInput = {
   work_item_id?: string;
 };
 
+export type StudioCandidateHunterIterationInput = {
+  completion_gate?: string;
+  execution_allowed?: boolean;
+  iteration_id?: string;
+  next_review_agent?: string;
+  priority_order?: string[];
+  report_submission_allowed?: boolean;
+  review_focus?: string[];
+  safety_gate?: string;
+  status?: string;
+  success_criteria?: string[];
+  validation_allowed?: boolean;
+  work_item_count?: number;
+};
+
+export type StudioMissionAgentTaskTimelineInput = {
+  agent?: string;
+  attempt?: number;
+  gate_decision?: string;
+  input_summary?: string;
+  next_human_action?: string;
+  output_summary?: string;
+  report_submission_allowed?: boolean;
+  safety_gate?: string;
+  stage_id?: string;
+  status?: string;
+  task_id?: string;
+  validation_execution_allowed?: boolean;
+};
+
+export type StudioTimelineSummaryInput = {
+  blocked_stage_ids?: string[];
+  gate_decision_counts?: Record<string, number>;
+  needs_review_stage_ids?: string[];
+  next_human_actions?: string[];
+  pending_stage_ids?: string[];
+  report_submission_allowed?: boolean;
+  safety_gate?: string;
+  total_stages?: number;
+  validation_execution_allowed?: boolean;
+};
+
 export type StudioMissionSummary = {
   agent_queue?: StudioMissionAgentTaskInput[];
+  agent_task_timeline?: StudioMissionAgentTaskTimelineInput[];
   artifacts?: {
     missing?: string[];
     present?: string[];
@@ -122,6 +166,7 @@ export type StudioMissionSummary = {
   blocked_actions?: string[];
   candidate_count?: number;
   candidate_hunter_backlog?: StudioCandidateHunterBacklogInput[];
+  candidate_hunter_iteration?: StudioCandidateHunterIterationInput;
   mode?: string;
   next_actions?: string[];
   quality_summary?: {
@@ -147,6 +192,7 @@ export type StudioMissionSummary = {
   research_loop?: StudioMissionResearchLoopStageInput[];
   run_id?: string | null;
   scope_guard_status?: string;
+  studio_timeline_summary?: StudioTimelineSummaryInput;
   top_candidates?: StudioMissionCandidateInput[];
 };
 
@@ -164,6 +210,7 @@ export type StudioMissionPanelCandidate = {
     blockers: string[];
     crossValidationSources: string[];
     highConfidenceAllowed: boolean;
+    independentCrossCheckSources: string[];
     localEvidenceSources: string[];
     modelOutputStatus: string;
     requiredConsensus: string[];
@@ -220,12 +267,56 @@ export type StudioCandidateHunterBacklogItem = {
   workItemId: string;
 };
 
+export type StudioCandidateHunterIteration = {
+  completionGate: string;
+  executionAllowed: boolean;
+  iterationId: string;
+  nextReviewAgent: string;
+  priorityOrder: string[];
+  reportSubmissionAllowed: boolean;
+  reviewFocus: string[];
+  safetyGate: string;
+  status: string;
+  successCriteria: string[];
+  validationAllowed: boolean;
+  workItemCount: number;
+};
+
+export type StudioMissionAgentTaskTimelineItem = {
+  agent: string;
+  attempt: number;
+  gateDecision: string;
+  inputSummary: string;
+  nextHumanAction: string;
+  outputSummary: string;
+  reportSubmissionAllowed: boolean;
+  safetyGate: string;
+  stageId: string;
+  status: string;
+  taskId: string;
+  validationExecutionAllowed: boolean;
+};
+
+export type StudioTimelineSummary = {
+  blockedStageIds: string[];
+  gateDecisionCounts: Record<string, number>;
+  needsReviewStageIds: string[];
+  nextHumanActions: string[];
+  pendingStageIds: string[];
+  reportSubmissionAllowed: boolean;
+  safetyGate: string;
+  totalStages: number;
+  validationExecutionAllowed: boolean;
+};
+
 export type StudioMissionPanel = {
   advisoryContextLabel: string;
   agentQueue: StudioMissionAgentTask[];
+  agentTaskTimeline: StudioMissionAgentTaskTimelineItem[];
   artifactCoverage: string;
   blockedActions: string[];
   candidateHunterBacklog: StudioCandidateHunterBacklogItem[];
+  candidateHunterIteration: StudioCandidateHunterIteration;
   candidateCountLabel: string;
   gates: {
     humanReviewRequired: boolean;
@@ -250,6 +341,7 @@ export type StudioMissionPanel = {
   runId: string;
   safeNextActions: string[];
   scopeGuardLabel: string;
+  studioTimelineSummary: StudioTimelineSummary;
   topCandidates: StudioMissionPanelCandidate[];
 };
 
@@ -377,6 +469,20 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       targetCandidates: task.target_candidates ?? [],
       taskId: safeText(task.task_id, "agent_task"),
     })),
+    agentTaskTimeline: (mission?.agent_task_timeline ?? []).map((stage) => ({
+      agent: safeText(stage.agent, "Review agent"),
+      attempt: stage.attempt ?? 1,
+      gateDecision: safeText(stage.gate_decision, "human_review_required"),
+      inputSummary: safeText(stage.input_summary, "Input refs require review."),
+      nextHumanAction: safeText(stage.next_human_action, "Review required."),
+      outputSummary: safeText(stage.output_summary, "Output summary requires review."),
+      reportSubmissionAllowed: false,
+      safetyGate: safeText(stage.safety_gate, "human_review_required"),
+      stageId: safeText(stage.stage_id, "agent_queue:stage"),
+      status: safeText(stage.status, "needs_review"),
+      taskId: safeText(stage.task_id, "agent_task"),
+      validationExecutionAllowed: false,
+    })),
     artifactCoverage: `${present.length}/${required.length} required artifacts`,
     blockedActions: mission?.blocked_actions ?? [],
     candidateHunterBacklog: (mission?.candidate_hunter_backlog ?? []).map((item) => ({
@@ -392,6 +498,32 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       validationAllowed: false,
       workItemId: safeText(item.work_item_id, "candidate_hunter_work_item"),
     })),
+    candidateHunterIteration: {
+      completionGate: safeText(
+        mission?.candidate_hunter_iteration?.completion_gate,
+        "human_review_required",
+      ),
+      executionAllowed: false,
+      iterationId: safeText(
+        mission?.candidate_hunter_iteration?.iteration_id,
+        "candidate_hunter:next_review",
+      ),
+      nextReviewAgent: safeText(
+        mission?.candidate_hunter_iteration?.next_review_agent,
+        "Human Reviewer",
+      ),
+      priorityOrder: mission?.candidate_hunter_iteration?.priority_order ?? [],
+      reportSubmissionAllowed: false,
+      reviewFocus: mission?.candidate_hunter_iteration?.review_focus ?? [],
+      safetyGate: safeText(
+        mission?.candidate_hunter_iteration?.safety_gate,
+        "review_only_no_execution",
+      ),
+      status: safeText(mission?.candidate_hunter_iteration?.status, "needs_review"),
+      successCriteria: mission?.candidate_hunter_iteration?.success_criteria ?? [],
+      validationAllowed: false,
+      workItemCount: mission?.candidate_hunter_iteration?.work_item_count ?? 0,
+    },
     candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
     gates: {
       humanReviewRequired: mission?.quality_gates?.human_review_required === true,
@@ -431,6 +563,20 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
     runId: safeText(mission?.run_id, "No run selected"),
     safeNextActions: (mission?.next_actions ?? []).map(missionActionLabel),
     scopeGuardLabel: scopeGuardLabel(mission?.scope_guard_status),
+    studioTimelineSummary: {
+      blockedStageIds: mission?.studio_timeline_summary?.blocked_stage_ids ?? [],
+      gateDecisionCounts: mission?.studio_timeline_summary?.gate_decision_counts ?? {},
+      needsReviewStageIds: mission?.studio_timeline_summary?.needs_review_stage_ids ?? [],
+      nextHumanActions: mission?.studio_timeline_summary?.next_human_actions ?? [],
+      pendingStageIds: mission?.studio_timeline_summary?.pending_stage_ids ?? [],
+      reportSubmissionAllowed: false,
+      safetyGate: safeText(
+        mission?.studio_timeline_summary?.safety_gate,
+        "review_only_no_execution",
+      ),
+      totalStages: mission?.studio_timeline_summary?.total_stages ?? 0,
+      validationExecutionAllowed: false,
+    },
     topCandidates: (mission?.top_candidates ?? []).slice(0, 5).map((candidate, index) => ({
       affectedCodePath: safeText(candidate.affected_code_path, "Code path needs review"),
       affectedEndpoint: safeText(candidate.affected_endpoint, "Endpoint needs review"),
@@ -448,6 +594,8 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         blockers: candidate.hallucination_guard?.blockers ?? [],
         crossValidationSources: candidate.hallucination_guard?.cross_validation_sources ?? [],
         highConfidenceAllowed: candidate.hallucination_guard?.high_confidence_allowed === true,
+        independentCrossCheckSources:
+          candidate.hallucination_guard?.independent_cross_check_sources ?? [],
         localEvidenceSources: candidate.hallucination_guard?.local_evidence_sources ?? [],
         modelOutputStatus: safeText(
           candidate.hallucination_guard?.model_output_status,

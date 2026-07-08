@@ -872,6 +872,10 @@ export function StudioWorkbench() {
                 items={missionPanel.candidateHunterBacklog.map(candidateHunterBacklogLine)}
               />
               <ListBlock
+                title="Candidate hunter iteration"
+                items={[candidateHunterIterationLine(missionPanel.candidateHunterIteration)]}
+              />
+              <ListBlock
                 title="Research loop"
                 items={missionPanel.researchLoopStages.map(
                   (stage) => `${stage.label}: ${stage.status} - ${stage.summary}`,
@@ -880,6 +884,14 @@ export function StudioWorkbench() {
               <ListBlock
                 title="Agent queue"
                 items={missionPanel.agentQueue.map(agentQueueLine)}
+              />
+              <ListBlock
+                title="Studio timeline summary"
+                items={[studioTimelineSummaryLine(missionPanel.studioTimelineSummary)]}
+              />
+              <ListBlock
+                title="Agent task timeline"
+                items={missionPanel.agentTaskTimeline.map(agentTaskTimelineLine)}
               />
               <ListBlock title="Safe next actions" items={missionPanel.safeNextActions} />
               <ListBlock
@@ -1115,6 +1127,8 @@ function missionCandidateLine(
   candidate: ReturnType<typeof toStudioMissionPanel>["topCandidates"][number],
 ): string {
   const qualityReasons = candidate.qualityReasons.join(", ") || "needs_review";
+  const crossChecks =
+    candidate.hallucinationGuard.independentCrossCheckSources.join(", ") || "none";
   return [
     `${candidate.hypothesisId}: ${candidate.affectedEndpoint} -> ${candidate.affectedCodePath}`,
     `evidence ${candidate.evidenceReviewStatus}/${candidate.evidenceNeedCount}`,
@@ -1124,6 +1138,7 @@ function missionCandidateLine(
     `validation ${candidate.validationStatus}/${candidate.safeValidationStepCount}`,
     `quality ${candidate.qualityStatus}/${candidate.qualityScore} (${qualityReasons})`,
     `hallucination ${candidate.hallucinationGuard.status}/${candidate.hallucinationGuard.modelOutputStatus}`,
+    `independent challenge ${crossChecks}`,
     `report ${candidate.reportStatus}`,
   ].join("; ");
 }
@@ -1143,6 +1158,37 @@ function agentQueueLine(
   return `${prefix}; gate ${task.safetyGate}; inputs ${inputs}${focus}${candidates}${gaps}; ${task.nextAction}`;
 }
 
+function agentTaskTimelineLine(
+  stage: ReturnType<typeof toStudioMissionPanel>["agentTaskTimeline"][number],
+): string {
+  return `${stage.stageId}: ${stage.status}/${stage.gateDecision}; ${stage.inputSummary}; ${stage.outputSummary}; next ${stage.nextHumanAction}`;
+}
+
+function studioTimelineSummaryLine(
+  summary: ReturnType<typeof toStudioMissionPanel>["studioTimelineSummary"],
+): string {
+  const counts = Object.entries(summary.gateDecisionCounts)
+    .map(([gate, count]) => `${gate} ${count}`)
+    .join(", ") || "no stages";
+  const blocked =
+    summary.blockedStageIds.length > 0 ? summary.blockedStageIds.join(", ") : "none";
+  const needsReview =
+    summary.needsReviewStageIds.length > 0
+      ? summary.needsReviewStageIds.join(", ")
+      : "none";
+  const pending =
+    summary.pendingStageIds.length > 0 ? summary.pendingStageIds.join(", ") : "none";
+  const nextActions =
+    summary.nextHumanActions.length > 0
+      ? summary.nextHumanActions.join("; ")
+      : "Review required.";
+  const gates = [
+    summary.validationExecutionAllowed ? "validation allowed" : "validation blocked",
+    summary.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `stages ${summary.totalStages}; gates ${counts}; blocked ${blocked}; needs review ${needsReview}; pending ${pending}; safety ${summary.safetyGate}; next ${nextActions}; ${gates}`;
+}
+
 function candidateHunterBacklogLine(
   item: ReturnType<typeof toStudioMissionPanel>["candidateHunterBacklog"][number],
 ): string {
@@ -1155,6 +1201,25 @@ function candidateHunterBacklogLine(
     item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
   ].join(", ");
   return `${item.workItemId}: ${item.gap} - ${item.status}; gate ${item.safetyGate}; focus ${focus}; evidence ${evidence}; ${gates}; ${item.nextAction}`;
+}
+
+function candidateHunterIterationLine(
+  iteration: ReturnType<typeof toStudioMissionPanel>["candidateHunterIteration"],
+): string {
+  const priority =
+    iteration.priorityOrder.length > 0 ? iteration.priorityOrder.join(", ") : "no backlog";
+  const focus =
+    iteration.reviewFocus.length > 0 ? iteration.reviewFocus.join(", ") : "candidate_quality";
+  const criteria =
+    iteration.successCriteria.length > 0
+      ? iteration.successCriteria.join("; ")
+      : "human review required";
+  const gates = [
+    iteration.executionAllowed ? "execution allowed" : "execution blocked",
+    iteration.validationAllowed ? "validation allowed" : "validation blocked",
+    iteration.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${iteration.iterationId}: ${iteration.status}; next ${iteration.nextReviewAgent}; work items ${iteration.workItemCount}; gate ${iteration.safetyGate}/${iteration.completionGate}; priority ${priority}; focus ${focus}; success ${criteria}; ${gates}`;
 }
 
 function logTone(tone: LogEntry["tone"]): string {

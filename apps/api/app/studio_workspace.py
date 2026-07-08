@@ -217,9 +217,21 @@ def record_workspace_mission_dossier(
             "agent_queue_markdown_path": agent_queue_markdown_ref,
             "task_count": len(agent_queue_audit["agent_queue"]),
             "timeline_stage_count": len(agent_queue_audit["task_timeline"]),
+            "timeline_blocked_stage_count": len(
+                agent_queue_audit["studio_timeline_summary"]["blocked_stage_ids"]
+            ),
+            "timeline_needs_review_stage_count": len(
+                agent_queue_audit["studio_timeline_summary"]["needs_review_stage_ids"]
+            ),
+            "timeline_pending_stage_count": len(
+                agent_queue_audit["studio_timeline_summary"]["pending_stage_ids"]
+            ),
             "candidate_hunter_backlog_count": len(
                 agent_queue_audit["candidate_hunter_backlog"]
             ),
+            "candidate_hunter_iteration_status": agent_queue_audit[
+                "candidate_hunter_iteration"
+            ].get("status", "unknown"),
             "top_candidate_quality_gate": agent_queue_audit["quality_summary"].get(
                 "top_candidate_quality_gate",
                 "unknown",
@@ -456,6 +468,12 @@ def _mission_dossier_markdown(mission: dict[str, Any]) -> str:
             mission.get("candidate_hunter_backlog")
         )
     )
+    lines.extend(
+        _candidate_hunter_iteration_markdown_lines(
+            mission.get("candidate_hunter_iteration")
+        )
+    )
+    lines.extend(_studio_timeline_summary_markdown_lines(_mission_timeline_summary(mission)))
     lines.extend(_mission_agent_queue_markdown_lines(mission.get("agent_queue")))
     lines.extend(_mission_hallucination_guard_markdown_lines(mission.get("top_candidates")))
     lines.extend(_mission_candidate_quality_markdown_lines(mission.get("top_candidates")))
@@ -507,15 +525,29 @@ def _mission_agent_queue_markdown_lines(value: Any) -> list[str]:
     return lines
 
 
+def _mission_timeline_summary(mission: dict[str, Any]) -> dict[str, Any]:
+    summary = mission.get("studio_timeline_summary")
+    if isinstance(summary, dict):
+        return summary
+    agent_queue = _safe_agent_queue_items(mission.get("agent_queue"))
+    return _studio_timeline_summary(_agent_task_timeline_items(agent_queue))
+
+
 def _agent_queue_audit(run_id: str | None, mission: dict[str, Any]) -> dict[str, Any]:
     quality_summary = mission.get("quality_summary")
     agent_queue = _safe_agent_queue_items(mission.get("agent_queue"))
+    task_timeline = _agent_task_timeline_items(agent_queue)
+    timeline_summary = _studio_timeline_summary(task_timeline)
     return {
         "run_id": run_id,
         "agent_queue": agent_queue,
-        "task_timeline": _agent_task_timeline_items(agent_queue),
+        "task_timeline": task_timeline,
+        "studio_timeline_summary": timeline_summary,
         "candidate_hunter_backlog": _safe_candidate_hunter_backlog_items(
             mission.get("candidate_hunter_backlog")
+        ),
+        "candidate_hunter_iteration": _safe_candidate_hunter_iteration(
+            mission.get("candidate_hunter_iteration")
         ),
         "quality_summary": _safe_quality_summary(quality_summary),
         "report_submission_allowed": False,
@@ -602,6 +634,44 @@ def _safe_candidate_hunter_backlog_items(value: Any) -> list[dict[str, Any]]:
     return items[:10]
 
 
+def _safe_candidate_hunter_iteration(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "iteration_id": "candidate_hunter:next_review",
+            "status": "needs_review",
+            "work_item_count": 0,
+            "priority_order": [],
+            "next_review_agent": "Human Reviewer",
+            "review_focus": [],
+            "success_criteria": [],
+            "safety_gate": "review_only_no_execution",
+            "completion_gate": "human_review_required",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    return {
+        "iteration_id": _queue_safe_text(value.get("iteration_id"))
+        or "candidate_hunter:next_review",
+        "status": _queue_safe_text(value.get("status")) or "needs_review",
+        "work_item_count": value.get("work_item_count")
+        if isinstance(value.get("work_item_count"), int)
+        else 0,
+        "priority_order": _queue_safe_list(value.get("priority_order")),
+        "next_review_agent": _queue_safe_text(value.get("next_review_agent"))
+        or "Human Reviewer",
+        "review_focus": _queue_safe_list(value.get("review_focus")),
+        "success_criteria": _queue_safe_list(value.get("success_criteria")),
+        "safety_gate": _queue_safe_text(value.get("safety_gate"))
+        or "review_only_no_execution",
+        "completion_gate": _queue_safe_text(value.get("completion_gate"))
+        or "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
 def _agent_task_timeline_items(agent_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     timeline: list[dict[str, Any]] = []
     for item in agent_queue:
@@ -625,6 +695,40 @@ def _agent_task_timeline_items(agent_queue: list[dict[str, Any]]) -> list[dict[s
             }
         )
     return timeline[:10]
+
+
+def _studio_timeline_summary(timeline: list[dict[str, Any]]) -> dict[str, Any]:
+    gate_counts: dict[str, int] = {}
+    blocked_stage_ids: list[str] = []
+    needs_review_stage_ids: list[str] = []
+    pending_stage_ids: list[str] = []
+    next_human_actions: list[str] = []
+    for item in timeline:
+        stage_id = _queue_safe_text(item.get("stage_id"))
+        gate_decision = _queue_safe_text(item.get("gate_decision")) or "pending"
+        if not stage_id:
+            continue
+        gate_counts[gate_decision] = gate_counts.get(gate_decision, 0) + 1
+        if gate_decision == "blocked":
+            blocked_stage_ids.append(stage_id)
+        elif gate_decision == "human_review_required":
+            needs_review_stage_ids.append(stage_id)
+        elif gate_decision == "pending":
+            pending_stage_ids.append(stage_id)
+        next_action = _queue_safe_text(item.get("next_human_action"))
+        if next_action and next_action not in next_human_actions:
+            next_human_actions.append(next_action)
+    return {
+        "total_stages": len(timeline),
+        "gate_decision_counts": gate_counts,
+        "blocked_stage_ids": blocked_stage_ids,
+        "needs_review_stage_ids": needs_review_stage_ids,
+        "pending_stage_ids": pending_stage_ids,
+        "next_human_actions": next_human_actions[:5],
+        "safety_gate": "review_only_no_execution",
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+    }
 
 
 def _agent_task_gate_decision(item: dict[str, Any]) -> str:
@@ -673,9 +777,48 @@ def _agent_queue_audit_markdown(audit: dict[str, Any]) -> str:
             audit.get("candidate_hunter_backlog")
         )
     )
+    lines.extend(
+        _candidate_hunter_iteration_markdown_lines(
+            audit.get("candidate_hunter_iteration")
+        )
+    )
+    lines.extend(_studio_timeline_summary_markdown_lines(audit.get("studio_timeline_summary")))
     lines.extend(_mission_agent_queue_markdown_lines(audit.get("agent_queue")))
     lines.extend(_agent_task_timeline_markdown_lines(audit.get("task_timeline")))
     return "\n".join(lines) + "\n"
+
+
+def _studio_timeline_summary_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    total_stages = _markdown_summary_value(value.get("total_stages"))
+    safety_gate = _markdown_safe_text(value.get("safety_gate"))
+    gate_counts = value.get("gate_decision_counts")
+    count_parts: list[str] = []
+    if isinstance(gate_counts, dict):
+        for key, count in gate_counts.items():
+            name = _markdown_safe_text(key)
+            if name:
+                count_parts.append(f"{name}: {_markdown_summary_value(count)}")
+    lines = [
+        "",
+        "## Studio timeline summary",
+        f"- Stages: {total_stages}; gates: {', '.join(count_parts) if count_parts else 'none'}",
+        f"- Safety gate: {safety_gate}; execution allowed: false; validation allowed: false; report submission allowed: false",
+    ]
+    blocked = _markdown_list(value.get("blocked_stage_ids"))
+    if blocked:
+        lines.append("- Blocked stages: " + ", ".join(blocked))
+    needs_review = _markdown_list(value.get("needs_review_stage_ids"))
+    if needs_review:
+        lines.append("- Needs review stages: " + ", ".join(needs_review))
+    pending = _markdown_list(value.get("pending_stage_ids"))
+    if pending:
+        lines.append("- Pending stages: " + ", ".join(pending))
+    next_actions = _markdown_list(value.get("next_human_actions"))
+    if next_actions:
+        lines.append("- Next human actions: " + "; ".join(next_actions))
+    return lines
 
 
 def _agent_task_timeline_markdown_lines(value: Any) -> list[str]:
@@ -765,6 +908,35 @@ def _candidate_hunter_backlog_markdown_lines(value: Any) -> list[str]:
             line += f"; next: {next_action}"
         lines.append(line)
     return lines if len(lines) > 2 else []
+
+
+def _candidate_hunter_iteration_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    iteration_id = _markdown_safe_text(value.get("iteration_id"))
+    if not iteration_id:
+        return []
+    status = _markdown_safe_text(value.get("status"))
+    next_review_agent = _markdown_safe_text(value.get("next_review_agent"))
+    safety_gate = _markdown_safe_text(value.get("safety_gate"))
+    completion_gate = _markdown_safe_text(value.get("completion_gate"))
+    work_item_count = _markdown_summary_value(value.get("work_item_count"))
+    lines = [
+        "",
+        "## Candidate hunter iteration",
+        f"- {iteration_id}: {status}; next reviewer: {next_review_agent}; work items: {work_item_count}",
+        f"- Gates: {safety_gate}; completion: {completion_gate}; execution allowed: false; validation allowed: false; report submission allowed: false",
+    ]
+    priority = _markdown_list(value.get("priority_order"))
+    if priority:
+        lines.append("- Priority order: " + ", ".join(priority))
+    focus = _markdown_list(value.get("review_focus"))
+    if focus:
+        lines.append("- Review focus: " + ", ".join(focus))
+    criteria = _markdown_list(value.get("success_criteria"))
+    if criteria:
+        lines.append("- Success criteria: " + "; ".join(criteria))
+    return lines
 
 
 def _markdown_summary_value(value: Any) -> str:

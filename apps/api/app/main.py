@@ -2592,6 +2592,17 @@ def _studio_mission_summary(
         candidate_summaries,
         missing,
     )
+    candidate_hunter_iteration = _studio_candidate_hunter_iteration(
+        candidate_hunter_backlog,
+        quality_summary,
+    )
+    agent_queue = _studio_mission_agent_queue(
+        present,
+        missing,
+        run_id,
+        candidate_summaries,
+    )
+    agent_task_timeline = _studio_mission_agent_task_timeline(agent_queue)
     return {
         "mode": "local_ai_vulnerability_research_workbench",
         "run_id": run_id,
@@ -2609,16 +2620,16 @@ def _studio_mission_summary(
             "supported": list(_studio_supported_advisory_artifacts()),
             "present": _studio_present_advisory_artifacts(manifest),
         },
-        "agent_queue": _studio_mission_agent_queue(
-            present,
-            missing,
-            run_id,
-            candidate_summaries,
+        "agent_queue": agent_queue,
+        "agent_task_timeline": agent_task_timeline,
+        "studio_timeline_summary": _studio_mission_timeline_summary(
+            agent_task_timeline
         ),
         "candidate_count": len(top_candidates),
         "top_candidates": candidate_summaries,
         "quality_summary": quality_summary,
         "candidate_hunter_backlog": candidate_hunter_backlog,
+        "candidate_hunter_iteration": candidate_hunter_iteration,
         "research_loop": _studio_mission_research_loop(
             present,
             missing,
@@ -2813,6 +2824,114 @@ def _studio_mission_agent_task(
         "review_focus": _studio_agent_label_list(review_focus),
         "candidate_quality_gaps": _studio_agent_label_list(candidate_quality_gaps),
         "next_action": safe_preview_text(next_action),
+    }
+
+
+def _studio_mission_agent_task_timeline(
+    agent_queue: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    timeline: list[dict[str, object]] = []
+    for task in agent_queue[:10]:
+        task_id = safe_preview_text(task.get("task_id", ""))
+        if not task_id:
+            continue
+        timeline.append(
+            {
+                "stage_id": f"agent_queue:{task_id}",
+                "task_id": task_id,
+                "attempt": 1,
+                "agent": safe_preview_text(task.get("agent", "")),
+                "status": safe_preview_text(task.get("status", "")),
+                "safety_gate": safe_preview_text(task.get("safety_gate", "")),
+                "gate_decision": _studio_agent_task_gate_decision(task),
+                "input_summary": _studio_agent_task_input_summary(task),
+                "output_summary": _studio_agent_task_output_summary(task),
+                "next_human_action": safe_preview_text(task.get("next_action", "")),
+                "report_submission_allowed": False,
+                "validation_execution_allowed": False,
+            }
+        )
+    return timeline
+
+
+def _studio_agent_task_gate_decision(task: dict[str, object]) -> str:
+    status = safe_preview_text(task.get("status", ""))
+    if status == "complete":
+        return "review_recorded"
+    if status == "needs_review":
+        return "human_review_required"
+    if status == "blocked":
+        return "blocked"
+    return "pending"
+
+
+def _studio_agent_task_input_summary(task: dict[str, object]) -> str:
+    refs = _studio_agent_string_list(task.get("input_refs", []))
+    if not refs:
+        return "No input refs recorded."
+    return "Input refs: " + ", ".join(refs)
+
+
+def _studio_agent_task_output_summary(task: dict[str, object]) -> str:
+    candidates = _studio_agent_string_list(task.get("target_candidates", []))
+    focus = _studio_agent_string_list(task.get("review_focus", []))
+    gaps = _studio_agent_string_list(task.get("candidate_quality_gaps", []))
+    parts: list[str] = []
+    if candidates:
+        parts.append("candidates: " + ", ".join(candidates))
+    if focus:
+        parts.append("focus: " + ", ".join(focus))
+    if gaps:
+        parts.append("quality gaps: " + ", ".join(gaps))
+    return "; ".join(parts) if parts else "No output summary recorded."
+
+
+def _studio_agent_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        text
+        for item in value
+        if (text := safe_preview_text(item)) and text != "[REDACTED]"
+    ][:10]
+
+
+def _studio_mission_timeline_summary(
+    timeline: list[dict[str, object]],
+) -> dict[str, object]:
+    gate_counts: dict[str, int] = {}
+    blocked_stage_ids: list[str] = []
+    needs_review_stage_ids: list[str] = []
+    pending_stage_ids: list[str] = []
+    next_human_actions: list[str] = []
+
+    for stage in timeline[:10]:
+        stage_id = safe_preview_text(stage.get("stage_id", ""))
+        gate_decision = safe_preview_text(stage.get("gate_decision", "pending"))
+        if not stage_id:
+            continue
+        gate_counts[gate_decision] = gate_counts.get(gate_decision, 0) + 1
+        if gate_decision == "blocked":
+            blocked_stage_ids.append(stage_id)
+        elif gate_decision == "human_review_required":
+            needs_review_stage_ids.append(stage_id)
+        elif gate_decision == "pending":
+            pending_stage_ids.append(stage_id)
+
+        next_action = safe_preview_text(stage.get("next_human_action", ""))
+        if next_action and next_action not in next_human_actions:
+            next_human_actions.append(next_action)
+
+    return {
+        "total_stages": len(timeline),
+        "gate_decision_counts": gate_counts,
+        "blocked_stage_ids": blocked_stage_ids,
+        "needs_review_stage_ids": needs_review_stage_ids,
+        "pending_stage_ids": pending_stage_ids,
+        "next_human_actions": next_human_actions[:5],
+        "safety_gate": "review_only_no_execution",
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
     }
 
 
@@ -3037,6 +3156,94 @@ def _studio_candidate_hunter_work_item(
         "validation_allowed": False,
         "report_submission_allowed": False,
     }
+
+
+def _studio_candidate_hunter_iteration(
+    backlog: list[dict[str, object]],
+    quality_summary: dict[str, object],
+) -> dict[str, object]:
+    priority_order = [
+        work_item_id
+        for item in backlog[:10]
+        if (work_item_id := safe_preview_text(item.get("work_item_id", "")))
+    ]
+    first_gap = safe_preview_text(backlog[0].get("gap", "")) if backlog else ""
+    quality_gate = safe_preview_text(
+        quality_summary.get("top_candidate_quality_gate", "")
+    )
+    if first_gap == "missing_ab_artifacts":
+        status = "blocked"
+    elif priority_order:
+        status = "needs_review"
+    elif quality_gate == "passed":
+        status = "ready_for_human_review"
+    else:
+        status = "needs_review"
+
+    review_focus: list[str] = []
+    for item in backlog[:3]:
+        review_focus.extend(_studio_agent_string_list(item.get("review_focus", [])))
+
+    return {
+        "iteration_id": "candidate_hunter:next_review",
+        "status": status,
+        "work_item_count": len(backlog),
+        "priority_order": priority_order,
+        "next_review_agent": _studio_candidate_hunter_next_agent(first_gap),
+        "review_focus": _studio_agent_label_list(review_focus),
+        "success_criteria": _studio_candidate_hunter_success_criteria(
+            backlog,
+            quality_gate,
+        ),
+        "safety_gate": "review_only_no_execution",
+        "completion_gate": "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_candidate_hunter_next_agent(gap: str) -> str:
+    by_gap = {
+        "missing_ab_artifacts": "Artifact Intake",
+        "missing_endpoint": "Attack Surface Mapper",
+        "missing_code_path": "Semantic Auditor",
+        "missing_provenance_review": "Scope Guard",
+        "missing_evidence_needs": "Evidence Planner",
+        "missing_refutation_checks": "Refutation Reviewer",
+        "missing_deduplication_review": "Refutation Reviewer",
+        "missing_safe_validation_plan": "Evidence Planner",
+        "missing_submission_blocked_report": "Report Draft Builder",
+        "missing_cross_validation_consensus": "Refutation Reviewer",
+        "evidence_gaps_need_review": "Evidence Planner",
+    }
+    return by_gap.get(gap, "Human Reviewer")
+
+
+def _studio_candidate_hunter_success_criteria(
+    backlog: list[dict[str, object]],
+    quality_gate: str,
+) -> list[str]:
+    if not backlog and quality_gate == "passed":
+        return [
+            "Top candidates remain review-ready after human evidence review.",
+            "Submission-blocked report draft is ready for redaction review.",
+        ]
+
+    criteria: list[str] = []
+    for item in backlog[:3]:
+        work_item_id = safe_preview_text(item.get("work_item_id", ""))
+        required = _studio_agent_string_list(item.get("required_evidence", []))
+        if not work_item_id:
+            continue
+        if required:
+            criteria.append(
+                f"{work_item_id} has traceable evidence: {', '.join(required)}."
+            )
+        else:
+            criteria.append(f"{work_item_id} has review notes and a human decision.")
+    criteria.append("No validation, fuzzing, or report submission is executed.")
+    return _studio_agent_label_list(criteria)
 
 
 def _studio_nonnegative_int(value: object) -> int:
@@ -3305,6 +3512,9 @@ def _studio_hallucination_guard(
     advisory_sources = [
         kind for kind in artifact_kinds if kind in {"sarif", "sbom", "fuzzing", "strategy", "knowledge"}
     ]
+    independent_cross_check_sources = _studio_independent_cross_check_sources(
+        source_facts
+    )
     has_endpoint_and_code = bool(summary.get("affected_endpoint")) and bool(
         summary.get("affected_code_path")
     )
@@ -3321,6 +3531,8 @@ def _studio_hallucination_guard(
         blockers.append("missing_refutation_questions")
     if not has_evidence_needs:
         blockers.append("missing_evidence_needs")
+    if not independent_cross_check_sources:
+        blockers.append("missing_independent_cross_check")
 
     status = "cross_checked" if not blockers else "needs_review"
     if not local_evidence_sources:
@@ -3331,14 +3543,34 @@ def _studio_hallucination_guard(
         "high_confidence_allowed": status == "cross_checked",
         "local_evidence_sources": local_evidence_sources,
         "advisory_sources": advisory_sources,
-        "cross_validation_sources": sorted(set(local_evidence_sources + advisory_sources)),
+        "independent_cross_check_sources": independent_cross_check_sources,
+        "cross_validation_sources": sorted(
+            set(local_evidence_sources + independent_cross_check_sources)
+        ),
         "required_consensus": [
             "local_artifact_trace",
+            "independent_static_or_fuzzing_challenge",
             "independent_refutation_review",
             "human_evidence_review",
         ],
         "blockers": blockers,
     }
+
+
+def _studio_independent_cross_check_sources(
+    source_facts: list[object],
+) -> list[str]:
+    sources: set[str] = set()
+    for fact in source_facts:
+        if not isinstance(fact, dict):
+            continue
+        artifact_kind = _studio_report_guidance_text(fact.get("artifact_kind", ""))
+        fact_type = _studio_report_guidance_text(fact.get("fact_type", ""))
+        if artifact_kind == "sarif" and fact_type == "scanner_signal":
+            sources.add("sarif")
+        if artifact_kind == "fuzzing" and fact_type == "fuzzing_signal":
+            sources.add("fuzzing")
+    return sorted(sources)
 
 
 def _studio_mission_quality_summary(

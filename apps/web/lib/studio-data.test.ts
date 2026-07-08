@@ -78,6 +78,23 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         report_submission_allowed: true,
       },
     ],
+    candidate_hunter_iteration: {
+      iteration_id: "candidate_hunter:next_review",
+      status: "needs_review",
+      work_item_count: 1,
+      priority_order: ["H-002:draft_validation_plan"],
+      next_review_agent: "Evidence Planner",
+      review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
+      success_criteria: [
+        "H-002:draft_validation_plan has traceable evidence: non_destructive_validation_plan.",
+        "No validation, fuzzing, or report submission is executed.",
+      ],
+      safety_gate: "review_only_no_execution",
+      completion_gate: "human_review_required",
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
     mode: "local_ai_vulnerability_research_workbench",
     agent_queue: [
       {
@@ -114,6 +131,40 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         next_action: "Export a submission-blocked draft for human review.",
       },
     ],
+    agent_task_timeline: [
+      {
+        stage_id: "agent_queue:semantic_candidate_hunt",
+        task_id: "semantic_candidate_hunt",
+        attempt: 1,
+        agent: "Semantic Auditor",
+        status: "complete",
+        safety_gate: "local_static_analysis_only",
+        gate_decision: "review_recorded",
+        input_summary: "Input refs: code, api, har",
+        output_summary: "candidates: H-001; focus: candidate_quality",
+        next_human_action: "Review top candidate invariants.",
+        report_submission_allowed: true,
+        validation_execution_allowed: true,
+      },
+    ],
+    studio_timeline_summary: {
+      total_stages: 3,
+      gate_decision_counts: {
+        blocked: 1,
+        human_review_required: 1,
+        review_recorded: 1,
+      },
+      blocked_stage_ids: ["agent_queue:report_draft_review"],
+      needs_review_stage_ids: ["agent_queue:evidence_packet_review"],
+      pending_stage_ids: [],
+      next_human_actions: [
+        "Review top candidate invariants.",
+        "Export a submission-blocked draft for human review.",
+      ],
+      safety_gate: "review_only_no_execution",
+      report_submission_allowed: true,
+      validation_execution_allowed: true,
+    },
     next_actions: [
       "review_top_candidates",
       "create_benchmark_template",
@@ -174,12 +225,14 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         execution_allowed: false,
         false_positive_check_count: 2,
         hallucination_guard: {
-          cross_validation_sources: ["code", "api", "har"],
+          cross_validation_sources: ["api", "code", "har", "sarif"],
           high_confidence_allowed: true,
+          independent_cross_check_sources: ["sarif"],
           local_evidence_sources: ["code", "api", "har"],
           model_output_status: "unverified_claim_not_fact",
           required_consensus: [
             "local_artifact_trace",
+            "independent_static_or_fuzzing_challenge",
             "independent_refutation_review",
             "human_evidence_review",
           ],
@@ -273,6 +326,40 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       nextAction: "Export a submission-blocked draft for human review.",
     },
   ]);
+  assert.deepEqual(panel.agentTaskTimeline, [
+    {
+      stageId: "agent_queue:semantic_candidate_hunt",
+      taskId: "semantic_candidate_hunt",
+      attempt: 1,
+      agent: "Semantic Auditor",
+      status: "complete",
+      safetyGate: "local_static_analysis_only",
+      gateDecision: "review_recorded",
+      inputSummary: "Input refs: code, api, har",
+      outputSummary: "candidates: H-001; focus: candidate_quality",
+      nextHumanAction: "Review top candidate invariants.",
+      reportSubmissionAllowed: false,
+      validationExecutionAllowed: false,
+    },
+  ]);
+  assert.deepEqual(panel.studioTimelineSummary, {
+    totalStages: 3,
+    gateDecisionCounts: {
+      blocked: 1,
+      human_review_required: 1,
+      review_recorded: 1,
+    },
+    blockedStageIds: ["agent_queue:report_draft_review"],
+    needsReviewStageIds: ["agent_queue:evidence_packet_review"],
+    pendingStageIds: [],
+    nextHumanActions: [
+      "Review top candidate invariants.",
+      "Export a submission-blocked draft for human review.",
+    ],
+    safetyGate: "review_only_no_execution",
+    reportSubmissionAllowed: false,
+    validationExecutionAllowed: false,
+  });
   assert.deepEqual(panel.candidateHunterBacklog, [
     {
       workItemId: "H-002:draft_validation_plan",
@@ -288,6 +375,23 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       reportSubmissionAllowed: false,
     },
   ]);
+  assert.deepEqual(panel.candidateHunterIteration, {
+    iterationId: "candidate_hunter:next_review",
+    status: "needs_review",
+    workItemCount: 1,
+    priorityOrder: ["H-002:draft_validation_plan"],
+    nextReviewAgent: "Evidence Planner",
+    reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
+    successCriteria: [
+      "H-002:draft_validation_plan has traceable evidence: non_destructive_validation_plan.",
+      "No validation, fuzzing, or report submission is executed.",
+    ],
+    safetyGate: "review_only_no_execution",
+    completionGate: "human_review_required",
+    executionAllowed: false,
+    validationAllowed: false,
+    reportSubmissionAllowed: false,
+  });
   assert.deepEqual(panel.researchLoopStages, [
     {
       key: "scope_guard",
@@ -329,12 +433,14 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.deepEqual(panel.topCandidates[0]?.hallucinationGuard, {
     advisorySources: [],
     blockers: [],
-    crossValidationSources: ["code", "api", "har"],
+    crossValidationSources: ["api", "code", "har", "sarif"],
     highConfidenceAllowed: true,
+    independentCrossCheckSources: ["sarif"],
     localEvidenceSources: ["code", "api", "har"],
     modelOutputStatus: "unverified_claim_not_fact",
     requiredConsensus: [
       "local_artifact_trace",
+      "independent_static_or_fuzzing_challenge",
       "independent_refutation_review",
       "human_evidence_review",
     ],
@@ -679,6 +785,12 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /Agent queue/);
   assert.match(workbench, /missionPanel\.artifactCoverage/);
   assert.match(workbench, /missionPanel\.agentQueue/);
+  assert.match(workbench, /missionPanel\.agentTaskTimeline/);
+  assert.match(workbench, /missionPanel\.studioTimelineSummary/);
+  assert.match(workbench, /missionPanel\.candidateHunterIteration/);
+  assert.match(workbench, /agentTaskTimelineLine/);
+  assert.match(workbench, /studioTimelineSummaryLine/);
+  assert.match(workbench, /candidateHunterIterationLine/);
   assert.match(workbench, /task\.reviewFocus/);
   assert.match(workbench, /task\.candidateQualityGaps/);
   assert.match(workbench, /missionPanel\.researchLoopStages/);
