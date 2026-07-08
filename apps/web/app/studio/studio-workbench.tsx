@@ -9,7 +9,9 @@ import {
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
   listStudioWorkspaceCandidates,
+  runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
+  type StudioBenchmarkRunResponse,
   type StudioReportExportResponse,
 } from "@/lib/api";
 import {
@@ -56,11 +58,13 @@ export function StudioWorkbench() {
   const [harPath, setHarPath] = useState("");
   const [sbomPath, setSbomPath] = useState("");
   const [sarifPath, setSarifPath] = useState("");
+  const [expectationsPath, setExpectationsPath] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [manifest, setManifest] = useState<StudioWorkspaceManifest>(emptyManifest);
   const [candidates, setCandidates] = useState<ReturnType<typeof toStudioCandidateCards>>([]);
   const [latestRunId, setLatestRunId] = useState<string | null>(null);
   const [reportExport, setReportExport] = useState<StudioReportExportResponse | null>(null);
+  const [benchmarkResult, setBenchmarkResult] = useState<StudioBenchmarkRunResponse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([
@@ -148,6 +152,7 @@ export function StudioWorkbench() {
       const latest = latestRunFromManifest(opened);
       setLatestRunId(latest);
       setReportExport(null);
+      setBenchmarkResult(null);
       if (latest) {
         const listed = await listStudioWorkspaceCandidates(workspacePath, latest, {
           candidates: [],
@@ -179,6 +184,7 @@ export function StudioWorkbench() {
       setCandidates([]);
       setLatestRunId(null);
       setReportExport(null);
+      setBenchmarkResult(null);
       pushLog("Workspace created locally. Scope Guard is waiting for authorized inputs.", "safe");
     } finally {
       setBusy(null);
@@ -261,6 +267,7 @@ export function StudioWorkbench() {
       });
       setCandidates(toStudioCandidateCards(listed.candidates));
       setReportExport(null);
+      setBenchmarkResult(null);
       pushLog(
         `Research run ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
         "safe",
@@ -288,6 +295,40 @@ export function StudioWorkbench() {
       setReportExport(exported);
       setManifest(exported.manifest);
       pushLog("Report preview exported with submission still blocked.", "safe");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRunBenchmark() {
+    if (!workspacePath || !latestRunId) {
+      pushLog("Run research before benchmarking candidates.", "blocked");
+      return;
+    }
+    if (!expectationsPath.trim()) {
+      pushLog("Select a local benchmark expectation file before benchmarking.", "blocked");
+      return;
+    }
+    setBusy("benchmark");
+    try {
+      const benchmark = await runStudioWorkspaceBenchmark(
+        {
+          expectations_path: expectationsPath,
+          run_id: latestRunId,
+          workspace_path: workspacePath,
+        },
+        null,
+      );
+      if (!benchmark) {
+        pushLog("Candidate benchmark failed to run.", "blocked");
+        return;
+      }
+      setBenchmarkResult(benchmark);
+      setManifest(benchmark.manifest);
+      pushLog(
+        `Candidate benchmark ${benchmark.benchmark.status ?? "finished"}: ${benchmark.benchmark.matched ?? 0}/${benchmark.benchmark.expected_count ?? 0} expected candidates matched.`,
+        benchmark.benchmark.status === "passed" ? "safe" : "blocked",
+      );
     } finally {
       setBusy(null);
     }
@@ -576,6 +617,50 @@ export function StudioWorkbench() {
                 label="Export report preview"
                 onClick={handleExportReport}
               />
+            </div>
+            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+              <p className="font-semibold">A+B benchmark</p>
+              <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                <TextField
+                  browseEnabled={desktopPickerAvailable}
+                  label="Expectation file"
+                  onBrowse={() =>
+                    handleSelectPath({
+                      mode: "file",
+                      setter: setExpectationsPath,
+                      title: "Select benchmark expectation file",
+                    })
+                  }
+                  value={expectationsPath}
+                  onChange={setExpectationsPath}
+                />
+                <div className="flex items-end">
+                  <ActionButton
+                    busy={busy === "benchmark"}
+                    disabled={!latestRunId}
+                    icon={<ShieldCheck size={16} aria-hidden="true" />}
+                    label="Run benchmark"
+                    onClick={handleRunBenchmark}
+                  />
+                </div>
+              </div>
+              {benchmarkResult ? (
+                <dl className="mt-4 grid gap-3 sm:grid-cols-3">
+                  <StatusRow
+                    label="Benchmark"
+                    value={benchmarkResult.benchmark.status ?? "unknown"}
+                    warning={benchmarkResult.benchmark.status !== "passed"}
+                  />
+                  <StatusRow
+                    label="Matched"
+                    value={`${benchmarkResult.benchmark.matched ?? 0}/${benchmarkResult.benchmark.expected_count ?? 0}`}
+                  />
+                  <StatusRow
+                    label="Result path"
+                    value={benchmarkResult.benchmark_path ?? "No result path"}
+                  />
+                </dl>
+              ) : null}
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
               <p className="font-semibold">Research intent</p>

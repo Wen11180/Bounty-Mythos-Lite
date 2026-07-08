@@ -214,9 +214,11 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /runStudioWorkspaceResearch/);
   assert.match(workbench, /listStudioWorkspaceCandidates/);
   assert.match(workbench, /exportStudioWorkspaceReport/);
+  assert.match(workbench, /runStudioWorkspaceBenchmark/);
   assert.match(workbench, /Create workspace/);
   assert.match(workbench, /Start research/);
   assert.match(workbench, /Export report preview/);
+  assert.match(workbench, /Run benchmark/);
 });
 
 test("studio workbench can open an existing local workspace", async () => {
@@ -312,6 +314,24 @@ test("studio workbench guides the first local research run", async () => {
   assert.match(workbench, /handleStartResearch/);
   assert.match(workbench, /handleExportReport/);
   assert.doesNotMatch(workbench, /Submit report/);
+});
+
+test("studio workbench runs local A+B benchmarks from expectation files", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /expectationsPath/);
+  assert.match(workbench, /Expectation file/);
+  assert.match(workbench, /Select benchmark expectation file/);
+  assert.match(workbench, /handleRunBenchmark/);
+  assert.match(workbench, /runStudioWorkspaceBenchmark/);
+  assert.match(workbench, /Candidate benchmark/);
+  assert.match(workbench, /benchmarkResult/);
+  assert.match(workbench, /benchmark_path/);
+  assert.match(workbench, /disabled=\{!latestRunId\}/);
+  assert.doesNotMatch(workbench, /submitReport/);
 });
 
 test("studio workbench can use the desktop path picker bridge", async () => {

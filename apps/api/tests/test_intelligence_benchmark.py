@@ -23,6 +23,7 @@ def test_evaluate_studio_candidates_passes_on_traceable_ab_candidate():
                     "report_readiness": {
                         "status": "submission_blocked",
                         "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
                     },
                     "source_facts": [
                         {
@@ -202,6 +203,7 @@ def test_evaluate_studio_candidates_requires_expected_code_path():
                     "report_readiness": {
                         "status": "submission_blocked",
                         "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
                     },
                     "source_facts": [
                         {
@@ -263,6 +265,7 @@ def test_evaluate_studio_candidates_accepts_expected_symbol_code_path():
                     "report_readiness": {
                         "status": "submission_blocked",
                         "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
                     },
                     "source_facts": [
                         {
@@ -451,6 +454,7 @@ def test_cli_studio_eval_writes_benchmark_result(tmp_path, capsys):
                         "report_readiness": {
                             "status": "submission_blocked",
                             "report_submission_allowed": False,
+                            "next_allowed_action": "Review evidence and safety blockers before export.",
                         },
                         "source_facts": [
                             {
