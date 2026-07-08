@@ -881,6 +881,24 @@ export function StudioWorkbench() {
                 items={[candidateHunterIterationLine(missionPanel.candidateHunterIteration)]}
               />
               <ListBlock
+                title="Candidate hunter plan"
+                items={[candidateHunterPlanLine(missionPanel.candidateHunterPlan)]}
+              />
+              <ListBlock
+                title="Candidate hunter plan steps"
+                items={missionPanel.candidateHunterPlan.planSteps.map(candidateHunterPlanStepLine)}
+              />
+              <ListBlock
+                title="Candidate hunter review loop"
+                items={[candidateHunterReviewLoopLine(missionPanel.candidateHunterReviewLoop)]}
+              />
+              <ListBlock
+                title="Candidate hunter review loop steps"
+                items={missionPanel.candidateHunterReviewLoop.activeSteps.map(
+                  candidateHunterReviewLoopStepLine,
+                )}
+              />
+              <ListBlock
                 title="Research loop"
                 items={missionPanel.researchLoopStages.map(
                   (stage) => `${stage.label}: ${stage.status} - ${stage.summary}`,
@@ -1338,6 +1356,90 @@ function candidateHunterIterationLine(
     iteration.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
   ].join(", ");
   return `${iteration.iterationId}: ${iteration.status}; next ${iteration.nextReviewAgent}; work items ${iteration.workItemCount}; gate ${iteration.safetyGate}/${iteration.completionGate}; priority ${priority}; focus ${focus}; success ${criteria}; ${gates}`;
+}
+
+function candidateHunterPlanLine(
+  plan: ReturnType<typeof toStudioMissionPanel>["candidateHunterPlan"],
+): string {
+  const gates = [
+    plan.executionAllowed ? "execution allowed" : "execution blocked",
+    plan.validationAllowed ? "validation allowed" : "validation blocked",
+    plan.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  const governance = [
+    `claim ${plan.hallucinationGovernance.claimPromotionRule}`,
+    `knowledge ${plan.hallucinationGovernance.knowledgePolicy}`,
+    `promotion ${plan.hallucinationGovernance.candidatePromotionAllowed ? "allowed" : "blocked"}`,
+  ].join(", ");
+  return `${plan.planId}: ${plan.status}; next ${plan.nextReviewAgent}; work items ${plan.workItemCount}; steps ${plan.stepCount}; governance ${governance}; gate ${plan.safetyGate}/${plan.completionGate}; ${gates}`;
+}
+
+function candidateHunterPlanStepLine(
+  step: ReturnType<typeof toStudioMissionPanel>["candidateHunterPlan"]["planSteps"][number],
+): string {
+  const refs = step.inputRefs.length > 0 ? step.inputRefs.join(", ") : "no refs";
+  const focus = step.reviewFocus.length > 0 ? step.reviewFocus.join(", ") : "review";
+  const evidence =
+    step.requiredEvidence.length > 0 ? step.requiredEvidence.join(", ") : "review notes";
+  const criteria =
+    step.successCriteria.length > 0 ? step.successCriteria.join("; ") : "human decision";
+  const checklist =
+    step.reviewChecklist.length > 0
+      ? step.reviewChecklist
+          .map((item) => `${item.key}:${item.status}`)
+          .join(", ")
+      : "checklist pending";
+  const governance =
+    step.hallucinationGovernanceRefs.length > 0
+      ? step.hallucinationGovernanceRefs.join("; ")
+      : "LLM claims require local evidence and independent review";
+  const gates = [
+    step.executionAllowed ? "execution allowed" : "execution blocked",
+    step.validationAllowed ? "validation allowed" : "validation blocked",
+    step.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${step.stepId}: ${step.assignedAgent} handles ${step.workItemId} (${step.status}/${step.gap}); refs ${refs}; focus ${focus}; evidence ${evidence}; checklist ${checklist}; success ${criteria}; governance ${governance}; gate ${step.safetyGate}; next ${step.nextAction}; ${gates}`;
+}
+
+function candidateHunterReviewLoopLine(
+  loop: ReturnType<typeof toStudioMissionPanel>["candidateHunterReviewLoop"],
+): string {
+  const agents = loop.reviewAgents.length > 0 ? loop.reviewAgents.join(", ") : "Human Reviewer";
+  const evidence =
+    loop.requiredEvidence.length > 0 ? loop.requiredEvidence.join(", ") : "review notes";
+  const consensus =
+    loop.governanceSummary.requiredConsensus.length > 0
+      ? loop.governanceSummary.requiredConsensus.join(", ")
+      : "human_review_decision";
+  const gates = [
+    loop.executionAllowed ? "execution allowed" : "execution blocked",
+    loop.validationAllowed ? "validation allowed" : "validation blocked",
+    loop.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${loop.loopId}: ${loop.status}; source ${loop.sourcePlanId}; active steps ${loop.activeStepCount}; next ${loop.nextReviewAgent}; agents ${agents}; evidence ${evidence}; consensus ${consensus}; gate ${loop.safetyGate}/${loop.completionGate}; ${gates}`;
+}
+
+function candidateHunterReviewLoopStepLine(
+  step: ReturnType<typeof toStudioMissionPanel>["candidateHunterReviewLoop"]["activeSteps"][number],
+): string {
+  const evidence =
+    step.requiredEvidence.length > 0 ? step.requiredEvidence.join(", ") : "review notes";
+  const governance =
+    step.governanceRefs.length > 0
+      ? step.governanceRefs.join("; ")
+      : "LLM claims require local evidence and independent review";
+  const checklist =
+    step.reviewChecklist.length > 0
+      ? step.reviewChecklist.map((item) => `${item.key}:${item.status}`).join(", ")
+      : "checklist pending";
+  const criteria =
+    step.successCriteria.length > 0 ? step.successCriteria.join("; ") : "human decision";
+  const gates = [
+    step.executionAllowed ? "execution allowed" : "execution blocked",
+    step.validationAllowed ? "validation allowed" : "validation blocked",
+    step.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${step.stepId}: ${step.assignedAgent} handles ${step.workItemId} (${step.gap}); evidence ${evidence}; governance ${governance}; checklist ${checklist}; success ${criteria}; gate ${step.safetyGate}; next ${step.nextAction}; ${gates}`;
 }
 
 function logTone(tone: LogEntry["tone"]): string {

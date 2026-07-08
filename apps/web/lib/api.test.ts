@@ -639,6 +639,36 @@ test("studio mission handoff helper reads the review-only handoff pack", async (
             status: "needs_review",
             validation_allowed: true,
           },
+          candidate_hunter_plan: {
+            execution_allowed: false,
+            next_review_agent: "Evidence Planner",
+            plan_id: "candidate_hunter:autonomous_review_plan",
+            plan_steps: [
+              {
+                assigned_agent: "Evidence Planner",
+                execution_allowed: false,
+                report_submission_allowed: false,
+                step_id: "candidate_hunter:plan:H-002:draft_validation_plan",
+                validation_allowed: false,
+                work_item_id: "H-002:draft_validation_plan",
+              },
+            ],
+            report_submission_allowed: false,
+            safety_gate: "review_only_no_execution",
+            status: "needs_review",
+            step_count: 1,
+            validation_allowed: false,
+          },
+          candidate_hunter_review_loop: {
+            active_step_count: 1,
+            execution_allowed: true,
+            loop_id: "candidate_hunter:next_review_loop",
+            next_review_agent: "Evidence Planner",
+            report_submission_allowed: true,
+            safety_gate: "unsafe_override",
+            status: "needs_review",
+            validation_allowed: true,
+          },
           artifacts: {
             missing: [],
             present: ["scope", "policy", "code", "api", "har"],
@@ -683,6 +713,19 @@ test("studio mission handoff helper reads the review-only handoff pack", async (
     assert.equal(handoff?.report_submission_allowed, false);
     assert.equal(handoff?.agent_handoff_pack.pack_id, "studio:agent_handoff:next_review");
     assert.equal(handoff?.agent_handoff_pack.handoff_item_count, 1);
+    assert.equal(
+      handoff?.candidate_hunter_plan.plan_id,
+      "candidate_hunter:autonomous_review_plan",
+    );
+    assert.equal(handoff?.candidate_hunter_plan.safety_gate, "review_only_no_execution");
+    assert.equal(handoff?.candidate_hunter_plan.execution_allowed, false);
+    assert.equal(handoff?.candidate_hunter_plan.validation_allowed, false);
+    assert.equal(handoff?.candidate_hunter_plan.report_submission_allowed, false);
+    assert.equal(
+      handoff?.candidate_hunter_review_loop.loop_id,
+      "candidate_hunter:next_review_loop",
+    );
+    assert.equal(handoff?.candidate_hunter_review_loop.execution_allowed, true);
     assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
       "/mythos/studio/workspaces/mission/handoff",
     ]);

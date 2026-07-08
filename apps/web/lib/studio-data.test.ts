@@ -96,6 +96,125 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       validation_allowed: true,
       report_submission_allowed: true,
     },
+    candidate_hunter_plan: {
+      plan_id: "candidate_hunter:autonomous_review_plan",
+      status: "needs_review",
+      work_item_count: 1,
+      step_count: 1,
+      next_review_agent: "Evidence Planner",
+      hallucination_governance: {
+        claim_promotion_rule: "no_verified_evidence_no_high_confidence",
+        model_output_policy: "llm_claims_start_unverified",
+        knowledge_policy: "rag_few_shot_context_only_not_cross_validation",
+        required_consensus: [
+          "authorized_local_artifact_evidence",
+          "independent_refutation_or_static_rule",
+          "human_review_decision",
+        ],
+        independent_challenge_sources: [
+          "sarif_static_analysis",
+          "fuzzing_artifact",
+          "second_model_refutation",
+          "manual_code_review",
+        ],
+        candidate_promotion_allowed: true,
+      },
+      plan_steps: [
+        {
+          step_id: "candidate_hunter:plan:H-002:draft_validation_plan",
+          work_item_id: "H-002:draft_validation_plan",
+          candidate_id: "H-002",
+          status: "needs_review",
+          assigned_agent: "Evidence Planner",
+          gap: "missing_safe_validation_plan",
+          input_refs: ["scope", "policy", "code", "api", "har"],
+          review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
+          required_evidence: ["non_destructive_validation_plan"],
+          next_action: "Draft a non-destructive validation plan for H-002.",
+          success_criteria: [
+            "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
+            "Evidence refs required: non_destructive_validation_plan.",
+            "No validation, fuzzing, or report submission is executed.",
+          ],
+          hallucination_governance_refs: [
+            "LLM output remains an unverified claim until local evidence is traced.",
+            "Knowledge/RAG context is few-shot guidance only and cannot satisfy cross-validation.",
+          ],
+          review_checklist: [
+            {
+              key: "safe_validation_plan",
+              label: "Draft or review a non-destructive validation plan without execution.",
+              status: "needs_review",
+              required: true,
+              execution_allowed: true,
+              validation_allowed: true,
+              report_submission_allowed: true,
+            },
+          ],
+          safety_gate: "review_only_no_execution",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      safety_gate: "review_only_no_execution",
+      completion_gate: "human_review_required",
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
+    candidate_hunter_review_loop: {
+      loop_id: "candidate_hunter:next_review_loop",
+      status: "needs_review",
+      source_plan_id: "candidate_hunter:autonomous_review_plan",
+      active_step_count: 1,
+      next_review_agent: "Evidence Planner",
+      review_agents: ["Evidence Planner"],
+      required_evidence: ["non_destructive_validation_plan"],
+      active_steps: [
+        {
+          step_id: "candidate_hunter:plan:H-002:draft_validation_plan",
+          work_item_id: "H-002:draft_validation_plan",
+          candidate_id: "H-002",
+          assigned_agent: "Evidence Planner",
+          gap: "missing_safe_validation_plan",
+          required_evidence: ["non_destructive_validation_plan"],
+          governance_refs: [
+            "LLM output remains an unverified claim until local evidence is traced.",
+          ],
+          review_checklist: [
+            {
+              key: "safe_validation_plan",
+              label: "Draft or review a non-destructive validation plan without execution.",
+              status: "needs_review",
+              required: true,
+              execution_allowed: true,
+              validation_allowed: true,
+              report_submission_allowed: true,
+            },
+          ],
+          next_action: "Draft a non-destructive validation plan for H-002.",
+          success_criteria: [
+            "No validation, fuzzing, or report submission is executed.",
+          ],
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      governance_summary: {
+        claim_promotion_rule: "no_verified_evidence_no_high_confidence",
+        required_consensus: ["authorized_local_artifact_evidence"],
+        candidate_promotion_allowed: true,
+      },
+      blocked_actions: ["execute_live_validation", "run_fuzzer", "submit_report"],
+      safety_gate: "unsafe_override",
+      completion_gate: "unsafe_override",
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
     candidate_review_packets: [
       {
         candidate_id: "H-001",
@@ -499,6 +618,125 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     validationAllowed: false,
     reportSubmissionAllowed: false,
   });
+  assert.deepEqual(panel.candidateHunterPlan, {
+    planId: "candidate_hunter:autonomous_review_plan",
+    status: "needs_review",
+    workItemCount: 1,
+    stepCount: 1,
+    nextReviewAgent: "Evidence Planner",
+    hallucinationGovernance: {
+      claimPromotionRule: "no_verified_evidence_no_high_confidence",
+      modelOutputPolicy: "llm_claims_start_unverified",
+      knowledgePolicy: "rag_few_shot_context_only_not_cross_validation",
+      requiredConsensus: [
+        "authorized_local_artifact_evidence",
+        "independent_refutation_or_static_rule",
+        "human_review_decision",
+      ],
+      independentChallengeSources: [
+        "sarif_static_analysis",
+        "fuzzing_artifact",
+        "second_model_refutation",
+        "manual_code_review",
+      ],
+      candidatePromotionAllowed: false,
+    },
+    planSteps: [
+      {
+        stepId: "candidate_hunter:plan:H-002:draft_validation_plan",
+        workItemId: "H-002:draft_validation_plan",
+        candidateId: "H-002",
+        status: "needs_review",
+        assignedAgent: "Evidence Planner",
+        gap: "missing_safe_validation_plan",
+        inputRefs: ["scope", "policy", "code", "api", "har"],
+        reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
+        requiredEvidence: ["non_destructive_validation_plan"],
+        nextAction: "Draft a non-destructive validation plan for H-002.",
+        successCriteria: [
+          "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
+          "Evidence refs required: non_destructive_validation_plan.",
+          "No validation, fuzzing, or report submission is executed.",
+        ],
+        hallucinationGovernanceRefs: [
+          "LLM output remains an unverified claim until local evidence is traced.",
+          "Knowledge/RAG context is few-shot guidance only and cannot satisfy cross-validation.",
+        ],
+        reviewChecklist: [
+          {
+            key: "safe_validation_plan",
+            label: "Draft or review a non-destructive validation plan without execution.",
+            status: "needs_review",
+            required: true,
+            executionAllowed: false,
+            validationAllowed: false,
+            reportSubmissionAllowed: false,
+          },
+        ],
+        safetyGate: "review_only_no_execution",
+        executionAllowed: false,
+        validationAllowed: false,
+        reportSubmissionAllowed: false,
+      },
+    ],
+    safetyGate: "review_only_no_execution",
+    completionGate: "human_review_required",
+    executionAllowed: false,
+    validationAllowed: false,
+    reportSubmissionAllowed: false,
+  });
+  assert.deepEqual(panel.candidateHunterReviewLoop, {
+    loopId: "candidate_hunter:next_review_loop",
+    status: "needs_review",
+    sourcePlanId: "candidate_hunter:autonomous_review_plan",
+    activeStepCount: 1,
+    nextReviewAgent: "Evidence Planner",
+    reviewAgents: ["Evidence Planner"],
+    requiredEvidence: ["non_destructive_validation_plan"],
+    activeSteps: [
+      {
+        stepId: "candidate_hunter:plan:H-002:draft_validation_plan",
+        workItemId: "H-002:draft_validation_plan",
+        candidateId: "H-002",
+        assignedAgent: "Evidence Planner",
+        gap: "missing_safe_validation_plan",
+        requiredEvidence: ["non_destructive_validation_plan"],
+        governanceRefs: [
+          "LLM output remains an unverified claim until local evidence is traced.",
+        ],
+        reviewChecklist: [
+          {
+            key: "safe_validation_plan",
+            label: "Draft or review a non-destructive validation plan without execution.",
+            status: "needs_review",
+            required: true,
+            executionAllowed: false,
+            validationAllowed: false,
+            reportSubmissionAllowed: false,
+          },
+        ],
+        nextAction: "Draft a non-destructive validation plan for H-002.",
+        successCriteria: [
+          "No validation, fuzzing, or report submission is executed.",
+        ],
+        safetyGate: "review_only_no_execution",
+        executionAllowed: false,
+        validationAllowed: false,
+        reportSubmissionAllowed: false,
+      },
+    ],
+    governanceSummary: {
+      claimPromotionRule: "no_verified_evidence_no_high_confidence",
+      requiredConsensus: ["authorized_local_artifact_evidence"],
+      candidatePromotionAllowed: false,
+    },
+    blockedActions: ["execute_live_validation", "run_fuzzer", "submit_report"],
+    safetyGate: "review_only_no_execution",
+    completionGate: "human_review_required",
+    executionAllowed: false,
+    validationAllowed: false,
+    reportSubmissionAllowed: false,
+  });
   assert.deepEqual(panel.candidateReviewPackets, [
     {
       candidateId: "H-001",
@@ -710,6 +948,41 @@ test("mission handoff brief summarizes review-only state for another session", (
       report_submission_allowed: true,
       validation_execution_allowed: true,
     },
+    candidate_hunter_plan: {
+      plan_id: "candidate_hunter:autonomous_review_plan",
+      status: "needs_review",
+      work_item_count: 1,
+      step_count: 1,
+      next_review_agent: "Evidence Planner",
+      plan_steps: [
+        {
+          step_id: "candidate_hunter:plan:H-001:draft_validation_plan",
+          work_item_id: "H-001:draft_validation_plan",
+          candidate_id: "H-001",
+          assigned_agent: "Evidence Planner",
+          gap: "missing_safe_validation_plan",
+          next_action: "Draft a non-destructive validation plan for H-001.",
+          safety_gate: "review_only_no_execution",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      safety_gate: "review_only_no_execution",
+      completion_gate: "human_review_required",
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
+    candidate_hunter_review_loop: {
+      loop_id: "candidate_hunter:next_review_loop",
+      status: "needs_review",
+      active_step_count: 1,
+      next_review_agent: "Evidence Planner",
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
     agent_handoff_pack: {
       pack_id: "studio:agent_handoff:next_review",
       status: "needs_review",
@@ -744,6 +1017,14 @@ test("mission handoff brief summarizes review-only state for another session", (
   assert.match(brief, /Artifacts: 5\/5 required artifacts/);
   assert.match(brief, /Quality: passed/);
   assert.match(brief, /Report: ready_for_redaction_review/);
+  assert.match(
+    brief,
+    /Candidate hunter plan: needs_review; steps 1; next reviewer Evidence Planner/,
+  );
+  assert.match(
+    brief,
+    /Candidate hunter review loop: needs_review; active steps 1; next reviewer Evidence Planner/,
+  );
   assert.match(brief, /Next reviewer: Evidence Planner/);
   assert.match(brief, /handoff:H-001:draft_validation_plan/);
   assert.match(brief, /Safety gate: review_only_no_execution/);
@@ -1078,6 +1359,12 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.candidateReviewPackets/);
   assert.match(workbench, /missionPanel\.agentHandoffPack/);
   assert.match(workbench, /missionPanel\.candidateHunterIteration/);
+  assert.match(workbench, /missionPanel\.candidateHunterPlan/);
+  assert.match(workbench, /missionPanel\.candidateHunterReviewLoop/);
+  assert.match(workbench, /Candidate hunter plan/);
+  assert.match(workbench, /Candidate hunter plan steps/);
+  assert.match(workbench, /Candidate hunter review loop/);
+  assert.match(workbench, /Candidate hunter review loop steps/);
   assert.match(workbench, /agentTaskTimelineLine/);
   assert.match(workbench, /studioTimelineSummaryLine/);
   assert.match(workbench, /submissionBlockedReportSummaryLine/);
@@ -1085,6 +1372,10 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /agentHandoffPackLine/);
   assert.match(workbench, /agentHandoffItemLine/);
   assert.match(workbench, /candidateHunterIterationLine/);
+  assert.match(workbench, /candidateHunterPlanLine/);
+  assert.match(workbench, /candidateHunterPlanStepLine/);
+  assert.match(workbench, /candidateHunterReviewLoopLine/);
+  assert.match(workbench, /candidateHunterReviewLoopStepLine/);
   assert.match(workbench, /task\.reviewFocus/);
   assert.match(workbench, /task\.candidateQualityGaps/);
   assert.match(workbench, /missionPanel\.researchLoopStages/);

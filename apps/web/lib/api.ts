@@ -11,6 +11,8 @@ import type {
 } from "./campaigns-data";
 import type {
   StudioAgentHandoffPackInput,
+  StudioCandidateHunterPlanInput,
+  StudioCandidateHunterReviewLoopInput,
   StudioCandidateInput,
   StudioMissionSummary,
   StudioWorkspaceManifest,
@@ -558,6 +560,8 @@ export type StudioWorkspaceMissionHandoffResponse = {
   quality_summary: StudioMissionSummary["quality_summary"];
   artifacts: StudioMissionSummary["artifacts"];
   agent_handoff_pack: StudioAgentHandoffPackInput;
+  candidate_hunter_plan: StudioCandidateHunterPlanInput;
+  candidate_hunter_review_loop: StudioCandidateHunterReviewLoopInput;
   safety_gate: string;
   completion_gate: string;
   execution_allowed: false;

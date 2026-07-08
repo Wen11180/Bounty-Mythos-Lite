@@ -2368,6 +2368,12 @@ def get_mythos_studio_workspace_mission_handoff(
     handoff_pack = mission.get("agent_handoff_pack")
     if not isinstance(handoff_pack, dict):
         handoff_pack = {}
+    candidate_hunter_plan = mission.get("candidate_hunter_plan")
+    if not isinstance(candidate_hunter_plan, dict):
+        candidate_hunter_plan = {}
+    candidate_hunter_review_loop = mission.get("candidate_hunter_review_loop")
+    if not isinstance(candidate_hunter_review_loop, dict):
+        candidate_hunter_review_loop = {}
     return {
         "run_id": mission.get("run_id"),
         "scope_guard_status": mission.get("scope_guard_status"),
@@ -2375,6 +2381,8 @@ def get_mythos_studio_workspace_mission_handoff(
         "quality_summary": mission.get("quality_summary", {}),
         "artifacts": mission.get("artifacts", {}),
         "agent_handoff_pack": handoff_pack,
+        "candidate_hunter_plan": candidate_hunter_plan,
+        "candidate_hunter_review_loop": candidate_hunter_review_loop,
         "safety_gate": "review_only_no_execution",
         "completion_gate": "human_review_required",
         "execution_allowed": False,
@@ -2633,6 +2641,13 @@ def _studio_mission_summary(
         candidate_hunter_backlog,
         quality_summary,
     )
+    candidate_hunter_plan = _studio_candidate_hunter_plan(
+        candidate_hunter_backlog,
+        candidate_hunter_iteration,
+    )
+    candidate_hunter_review_loop = _studio_candidate_hunter_review_loop(
+        candidate_hunter_plan
+    )
     agent_queue = _studio_mission_agent_queue(
         present,
         missing,
@@ -2686,6 +2701,8 @@ def _studio_mission_summary(
         "quality_summary": quality_summary,
         "candidate_hunter_backlog": candidate_hunter_backlog,
         "candidate_hunter_iteration": candidate_hunter_iteration,
+        "candidate_hunter_plan": candidate_hunter_plan,
+        "candidate_hunter_review_loop": candidate_hunter_review_loop,
         "research_loop": _studio_mission_research_loop(
             present,
             missing,
@@ -3688,6 +3705,306 @@ def _studio_candidate_hunter_success_criteria(
             criteria.append(f"{work_item_id} has review notes and a human decision.")
     criteria.append("No validation, fuzzing, or report submission is executed.")
     return _studio_agent_label_list(criteria)
+
+
+def _studio_candidate_hunter_plan(
+    backlog: list[dict[str, object]],
+    iteration: dict[str, object],
+) -> dict[str, object]:
+    plan_steps = [
+        _studio_candidate_hunter_plan_step(item)
+        for item in backlog[:10]
+        if safe_preview_text(item.get("work_item_id", ""))
+    ]
+    return {
+        "plan_id": "candidate_hunter:autonomous_review_plan",
+        "status": safe_preview_text(iteration.get("status", "needs_review")),
+        "work_item_count": len(backlog),
+        "step_count": len(plan_steps),
+        "next_review_agent": safe_preview_text(
+            iteration.get("next_review_agent", "Human Reviewer")
+        ),
+        "plan_steps": plan_steps,
+        "hallucination_governance": _studio_candidate_hunter_hallucination_governance(),
+        "safety_gate": "review_only_no_execution",
+        "completion_gate": "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_candidate_hunter_plan_step(item: dict[str, object]) -> dict[str, object]:
+    work_item_id = safe_preview_text(item.get("work_item_id", ""))
+    return {
+        "step_id": f"candidate_hunter:plan:{work_item_id}",
+        "work_item_id": work_item_id,
+        "candidate_id": safe_preview_text(item.get("candidate_id", "")),
+        "assigned_agent": _studio_candidate_hunter_next_agent(
+            safe_preview_text(item.get("gap", ""))
+        ),
+        "gap": safe_preview_text(item.get("gap", "")),
+        "input_refs": ["scope", "policy", "code", "api", "har"],
+        "review_focus": _studio_agent_string_list(item.get("review_focus", [])),
+        "required_evidence": _studio_agent_string_list(
+            item.get("required_evidence", [])
+        ),
+        "next_action": safe_preview_text(item.get("next_action", "")),
+        "review_checklist": _studio_candidate_hunter_plan_step_review_checklist(
+            item
+        ),
+        "success_criteria": _studio_candidate_hunter_plan_step_success(item),
+        "hallucination_governance_refs": _studio_candidate_hunter_plan_step_governance_refs(
+            item
+        ),
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_candidate_hunter_plan_step_success(
+    item: dict[str, object],
+) -> list[str]:
+    work_item_id = safe_preview_text(item.get("work_item_id", "candidate_work_item"))
+    required = _studio_agent_string_list(item.get("required_evidence", []))
+    criteria = [
+        f"{work_item_id} is reviewed against authorized local artifacts.",
+    ]
+    if required:
+        criteria.append("Evidence refs required: " + ", ".join(required) + ".")
+    criteria.append("No validation, fuzzing, or report submission is executed.")
+    return _studio_agent_label_list(criteria)
+
+
+def _studio_candidate_hunter_plan_step_review_checklist(
+    item: dict[str, object],
+) -> list[dict[str, object]]:
+    gap = safe_preview_text(item.get("gap", ""))
+    required = _studio_agent_string_list(item.get("required_evidence", []))
+    evidence_label = (
+        "Record traceable evidence refs: " + ", ".join(required) + "."
+        if required
+        else "Record review notes and a human decision."
+    )
+
+    def checklist_item(key: str, label: str, status: str) -> dict[str, object]:
+        return {
+            "key": key,
+            "label": safe_preview_text(label),
+            "status": status,
+            "required": True,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+
+    return [
+        checklist_item(
+            "authorized_artifact_trace",
+            "Trace the step to scope, policy, code, API, and HAR artifacts.",
+            "needs_review",
+        ),
+        checklist_item(
+            "evidence_requirements",
+            evidence_label,
+            "needs_review",
+        ),
+        checklist_item(
+            "refutation_review",
+            "Record false-positive questions or confirm existing refutation coverage.",
+            "needs_review"
+            if gap
+            in {"missing_refutation_checks", "missing_cross_validation_consensus"}
+            else "confirm_current_state",
+        ),
+        checklist_item(
+            "deduplication_review",
+            "Compare endpoint, code path, invariant, and impact against prior candidates.",
+            "needs_review"
+            if gap == "missing_deduplication_review"
+            else "confirm_current_state",
+        ),
+        checklist_item(
+            "safe_validation_plan",
+            "Draft or review a non-destructive validation plan without execution.",
+            "needs_review"
+            if gap == "missing_safe_validation_plan"
+            else "confirm_current_state",
+        ),
+        checklist_item(
+            "submission_blocked_report_draft",
+            "Confirm report draft readiness while keeping submission blocked.",
+            "needs_review"
+            if gap == "missing_submission_blocked_report"
+            else "confirm_current_state",
+        ),
+    ]
+
+
+def _studio_candidate_hunter_plan_step_governance_refs(
+    item: dict[str, object],
+) -> list[str]:
+    gap = safe_preview_text(item.get("gap", ""))
+    refs = [
+        "LLM output remains an unverified claim until local evidence is traced.",
+        "Knowledge/RAG context is few-shot guidance only and cannot satisfy cross-validation.",
+    ]
+    if gap == "missing_cross_validation_consensus":
+        refs.append(
+            "High confidence requires local evidence plus SARIF, fuzzing, static analysis rule, or independent refutation consensus."
+        )
+    return _studio_agent_label_list(refs)
+
+
+def _studio_candidate_hunter_hallucination_governance() -> dict[str, object]:
+    return {
+        "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+        "model_output_policy": "llm_claims_start_unverified",
+        "knowledge_policy": "rag_few_shot_context_only_not_cross_validation",
+        "required_consensus": [
+            "authorized_local_artifact_evidence",
+            "independent_refutation_or_static_rule",
+            "human_review_decision",
+        ],
+        "independent_challenge_sources": [
+            "sarif_static_analysis",
+            "fuzzing_artifact",
+            "second_model_refutation",
+            "manual_code_review",
+        ],
+        "candidate_promotion_allowed": False,
+    }
+
+
+def _studio_candidate_hunter_review_loop(
+    plan: dict[str, object],
+) -> dict[str, object]:
+    steps = [
+        _studio_candidate_hunter_review_loop_step(step)
+        for step in _studio_plan_step_list(plan.get("plan_steps", []))[:10]
+        if safe_preview_text(step.get("step_id", ""))
+    ]
+    governance = plan.get("hallucination_governance", {})
+    if not isinstance(governance, dict):
+        governance = {}
+    return {
+        "loop_id": "candidate_hunter:next_review_loop",
+        "status": safe_preview_text(plan.get("status", "needs_review")),
+        "source_plan_id": safe_preview_text(
+            plan.get("plan_id", "candidate_hunter:autonomous_review_plan")
+        ),
+        "active_step_count": len(steps),
+        "next_review_agent": safe_preview_text(
+            plan.get("next_review_agent", "Human Reviewer")
+        ),
+        "review_agents": _studio_unique_review_loop_values(
+            step.get("assigned_agent", "") for step in steps
+        ),
+        "required_evidence": _studio_unique_review_loop_values(
+            evidence
+            for step in steps
+            for evidence in _studio_agent_string_list(step.get("required_evidence", []))
+        ),
+        "active_steps": steps,
+        "governance_summary": {
+            "claim_promotion_rule": safe_preview_text(
+                governance.get(
+                    "claim_promotion_rule",
+                    "no_verified_evidence_no_high_confidence",
+                )
+            ),
+            "required_consensus": _studio_agent_string_list(
+                governance.get("required_consensus", [])
+            ),
+            "candidate_promotion_allowed": False,
+        },
+        "blocked_actions": [
+            "execute_live_validation",
+            "run_fuzzer",
+            "submit_report",
+        ],
+        "safety_gate": "review_only_no_execution",
+        "completion_gate": "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_candidate_hunter_review_loop_step(
+    step: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "step_id": safe_preview_text(step.get("step_id", "")),
+        "work_item_id": safe_preview_text(step.get("work_item_id", "")),
+        "candidate_id": safe_preview_text(step.get("candidate_id", "")),
+        "assigned_agent": safe_preview_text(
+            step.get("assigned_agent", "Human Reviewer")
+        ),
+        "gap": safe_preview_text(step.get("gap", "")),
+        "required_evidence": _studio_agent_string_list(
+            step.get("required_evidence", [])
+        ),
+        "governance_refs": _studio_agent_string_list(
+            step.get("hallucination_governance_refs", [])
+        ),
+        "review_checklist": _studio_candidate_hunter_review_loop_checklist(
+            step.get("review_checklist", [])
+        ),
+        "next_action": safe_preview_text(step.get("next_action", "")),
+        "success_criteria": _studio_agent_string_list(
+            step.get("success_criteria", [])
+        ),
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_candidate_hunter_review_loop_checklist(
+    value: object,
+) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    checklist: list[dict[str, object]] = []
+    for item in value[:10]:
+        if not isinstance(item, dict):
+            continue
+        key = safe_preview_text(item.get("key", ""))
+        if not key:
+            continue
+        checklist.append(
+            {
+                "key": key,
+                "label": safe_preview_text(item.get("label", "Review item.")),
+                "status": safe_preview_text(item.get("status", "needs_review")),
+                "required": item.get("required") is not False,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return checklist
+
+
+def _studio_plan_step_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _studio_unique_review_loop_values(values: object) -> list[str]:
+    seen: set[str] = set()
+    items: list[str] = []
+    for value in values:
+        text = safe_preview_text(value)
+        if text and text not in seen:
+            seen.add(text)
+            items.append(text)
+    return items[:10]
 
 
 def _studio_agent_handoff_pack(

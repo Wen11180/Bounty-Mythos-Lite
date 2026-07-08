@@ -537,6 +537,159 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert queue_json["candidate_hunter_iteration"]["execution_allowed"] is False
     assert queue_json["candidate_hunter_iteration"]["validation_allowed"] is False
     assert queue_json["candidate_hunter_iteration"]["report_submission_allowed"] is False
+    assert queue_json["candidate_hunter_plan"]["plan_id"] == (
+        "candidate_hunter:autonomous_review_plan"
+    )
+    assert queue_json["candidate_hunter_plan"]["status"] == "needs_review"
+    assert queue_json["candidate_hunter_plan"]["work_item_count"] == 1
+    assert queue_json["candidate_hunter_plan"]["step_count"] == 1
+    assert queue_json["candidate_hunter_plan"]["next_review_agent"] == (
+        "Evidence Planner"
+    )
+    assert queue_json["candidate_hunter_plan"]["safety_gate"] == (
+        "review_only_no_execution"
+    )
+    assert queue_json["candidate_hunter_plan"]["completion_gate"] == (
+        "human_review_required"
+    )
+    assert queue_json["candidate_hunter_plan"]["execution_allowed"] is False
+    assert queue_json["candidate_hunter_plan"]["validation_allowed"] is False
+    assert queue_json["candidate_hunter_plan"]["report_submission_allowed"] is False
+    assert queue_json["candidate_hunter_plan"]["hallucination_governance"] == {
+        "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+        "model_output_policy": "llm_claims_start_unverified",
+        "knowledge_policy": "rag_few_shot_context_only_not_cross_validation",
+        "required_consensus": [
+            "authorized_local_artifact_evidence",
+            "independent_refutation_or_static_rule",
+            "human_review_decision",
+        ],
+        "independent_challenge_sources": [
+            "sarif_static_analysis",
+            "fuzzing_artifact",
+            "second_model_refutation",
+            "manual_code_review",
+        ],
+        "candidate_promotion_allowed": False,
+    }
+    assert queue_json["candidate_hunter_plan"]["plan_steps"][0] == {
+        "step_id": "candidate_hunter:plan:H-002:draft_validation_plan",
+        "work_item_id": "H-002:draft_validation_plan",
+        "candidate_id": "H-002",
+        "assigned_agent": "Evidence Planner",
+        "gap": "missing_safe_validation_plan",
+        "input_refs": ["scope", "policy", "code", "api", "har"],
+        "review_focus": ["safe_validation_plan", "non_destructive_plan_only"],
+        "required_evidence": ["non_destructive_validation_plan"],
+        "next_action": "Draft a non-destructive validation plan for H-002.",
+        "success_criteria": [
+            "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
+            "Evidence refs required: non_destructive_validation_plan.",
+            "No validation, fuzzing, or report submission is executed.",
+        ],
+        "review_checklist": [
+            {
+                "key": "authorized_artifact_trace",
+                "label": "Trace the step to scope, policy, code, API, and HAR artifacts.",
+                "status": "needs_review",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "evidence_requirements",
+                "label": "Record traceable evidence refs: non_destructive_validation_plan.",
+                "status": "needs_review",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "refutation_review",
+                "label": "Record false-positive questions or confirm existing refutation coverage.",
+                "status": "confirm_current_state",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "deduplication_review",
+                "label": "Compare endpoint, code path, invariant, and impact against prior candidates.",
+                "status": "confirm_current_state",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "safe_validation_plan",
+                "label": "Draft or review a non-destructive validation plan without execution.",
+                "status": "needs_review",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "submission_blocked_report_draft",
+                "label": "Confirm report draft readiness while keeping submission blocked.",
+                "status": "confirm_current_state",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+        ],
+        "hallucination_governance_refs": [
+            "LLM output remains an unverified claim until local evidence is traced.",
+            "Knowledge/RAG context is few-shot guidance only and cannot satisfy cross-validation.",
+        ],
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert queue_json["candidate_hunter_review_loop"]["loop_id"] == (
+        "candidate_hunter:next_review_loop"
+    )
+    assert queue_json["candidate_hunter_review_loop"]["status"] == "needs_review"
+    assert queue_json["candidate_hunter_review_loop"]["active_step_count"] == 1
+    assert queue_json["candidate_hunter_review_loop"]["next_review_agent"] == (
+        "Evidence Planner"
+    )
+    assert queue_json["candidate_hunter_review_loop"]["review_agents"] == [
+        "Evidence Planner"
+    ]
+    assert queue_json["candidate_hunter_review_loop"]["required_evidence"] == [
+        "non_destructive_validation_plan"
+    ]
+    assert (
+        queue_json["candidate_hunter_review_loop"]["governance_summary"][
+            "candidate_promotion_allowed"
+        ]
+        is False
+    )
+    assert queue_json["candidate_hunter_review_loop"]["active_steps"][0][
+        "review_checklist"
+    ][4] == {
+        "key": "safe_validation_plan",
+        "label": "Draft or review a non-destructive validation plan without execution.",
+        "status": "needs_review",
+        "required": True,
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert queue_json["candidate_hunter_review_loop"]["execution_allowed"] is False
+    assert queue_json["candidate_hunter_review_loop"]["validation_allowed"] is False
+    assert (
+        queue_json["candidate_hunter_review_loop"]["report_submission_allowed"] is False
+    )
+    assert markdown.find("## Candidate hunter review loop") > -1
+    assert "candidate_hunter:next_review_loop" in markdown
     assert queue_json["agent_handoff_pack"]["status"] == "needs_review"
     assert queue_json["agent_handoff_pack"]["handoff_item_count"] == 1
     assert queue_json["agent_handoff_pack"]["safety_gate"] == (
@@ -633,6 +786,15 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "## Candidate hunter backlog" in queue_markdown
     assert "H-002:draft_validation_plan" in queue_markdown
     assert "## Candidate hunter iteration" in queue_markdown
+    assert "## Candidate hunter plan" in queue_markdown
+    assert "candidate_hunter:plan:H-002:draft_validation_plan" in queue_markdown
+    assert "## Candidate hunter review loop" in queue_markdown
+    assert "candidate_hunter:next_review_loop" in queue_markdown
+    assert "Hallucination governance" in queue_markdown
+    assert "no_verified_evidence_no_high_confidence" in queue_markdown
+    assert "LLM output remains an unverified claim" in queue_markdown
+    assert "Review checklist: authorized_artifact_trace: needs_review" in queue_markdown
+    assert "safe_validation_plan: needs_review" in queue_markdown
     assert "## Studio timeline summary" in queue_markdown
     assert "## Candidate review packets" in queue_markdown
     assert "## Submission-blocked report summary" in queue_markdown
@@ -651,6 +813,9 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "gate: review_recorded" in queue_markdown
     assert "## Agent queue" in markdown
     assert "## Candidate hunter iteration" in markdown
+    assert "## Candidate hunter plan" in markdown
+    assert "## Candidate hunter review loop" in markdown
+    assert "Hallucination governance" in markdown
     assert "## Studio timeline summary" in markdown
     assert "## Candidate review packets" in markdown
     assert "## Submission-blocked report summary" in markdown

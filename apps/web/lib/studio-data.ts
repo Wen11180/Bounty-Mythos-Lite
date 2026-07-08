@@ -124,6 +124,99 @@ export type StudioCandidateHunterIterationInput = {
   work_item_count?: number;
 };
 
+export type StudioCandidateHunterPlanInput = {
+  completion_gate?: string;
+  execution_allowed?: boolean;
+  hallucination_governance?: {
+    candidate_promotion_allowed?: boolean;
+    claim_promotion_rule?: string;
+    independent_challenge_sources?: string[];
+    knowledge_policy?: string;
+    model_output_policy?: string;
+    required_consensus?: string[];
+  };
+  next_review_agent?: string;
+  plan_id?: string;
+  plan_steps?: Array<{
+    assigned_agent?: string;
+    candidate_id?: string;
+    execution_allowed?: boolean;
+    gap?: string;
+    input_refs?: string[];
+    next_action?: string;
+    report_submission_allowed?: boolean;
+    required_evidence?: string[];
+    review_checklist?: Array<{
+      execution_allowed?: boolean;
+      key?: string;
+      label?: string;
+      report_submission_allowed?: boolean;
+      required?: boolean;
+      status?: string;
+      validation_allowed?: boolean;
+    }>;
+    review_focus?: string[];
+    safety_gate?: string;
+    status?: string;
+    step_id?: string;
+    success_criteria?: string[];
+    hallucination_governance_refs?: string[];
+    validation_allowed?: boolean;
+    work_item_id?: string;
+  }>;
+  report_submission_allowed?: boolean;
+  safety_gate?: string;
+  status?: string;
+  step_count?: number;
+  validation_allowed?: boolean;
+  work_item_count?: number;
+};
+
+export type StudioCandidateHunterReviewLoopInput = {
+  active_step_count?: number;
+  active_steps?: Array<{
+    assigned_agent?: string;
+    candidate_id?: string;
+    execution_allowed?: boolean;
+    gap?: string;
+    governance_refs?: string[];
+    next_action?: string;
+    report_submission_allowed?: boolean;
+    required_evidence?: string[];
+    review_checklist?: Array<{
+      execution_allowed?: boolean;
+      key?: string;
+      label?: string;
+      report_submission_allowed?: boolean;
+      required?: boolean;
+      status?: string;
+      validation_allowed?: boolean;
+    }>;
+    safety_gate?: string;
+    step_id?: string;
+    success_criteria?: string[];
+    validation_allowed?: boolean;
+    work_item_id?: string;
+  }>;
+  blocked_actions?: string[];
+  completion_gate?: string;
+  execution_allowed?: boolean;
+  governance_summary?: {
+    candidate_promotion_allowed?: boolean;
+    claim_promotion_rule?: string;
+    required_consensus?: string[];
+  };
+  loop_id?: string;
+  next_review_agent?: string;
+  report_submission_allowed?: boolean;
+  required_evidence?: string[];
+  review_agents?: string[];
+  safety_gate?: string;
+  source_plan_id?: string;
+  status?: string;
+  validation_allowed?: boolean;
+};
+
 export type StudioMissionAgentTaskTimelineInput = {
   agent?: string;
   attempt?: number;
@@ -249,6 +342,8 @@ export type StudioMissionSummary = {
   candidate_count?: number;
   candidate_hunter_backlog?: StudioCandidateHunterBacklogInput[];
   candidate_hunter_iteration?: StudioCandidateHunterIterationInput;
+  candidate_hunter_plan?: StudioCandidateHunterPlanInput;
+  candidate_hunter_review_loop?: StudioCandidateHunterReviewLoopInput;
   candidate_review_packets?: StudioCandidateReviewPacketInput[];
   mode?: string;
   next_actions?: string[];
@@ -364,6 +459,99 @@ export type StudioCandidateHunterIteration = {
   successCriteria: string[];
   validationAllowed: boolean;
   workItemCount: number;
+};
+
+export type StudioCandidateHunterPlan = {
+  completionGate: string;
+  executionAllowed: boolean;
+  hallucinationGovernance: {
+    candidatePromotionAllowed: boolean;
+    claimPromotionRule: string;
+    independentChallengeSources: string[];
+    knowledgePolicy: string;
+    modelOutputPolicy: string;
+    requiredConsensus: string[];
+  };
+  nextReviewAgent: string;
+  planId: string;
+  planSteps: Array<{
+    assignedAgent: string;
+    candidateId: string;
+    executionAllowed: boolean;
+    gap: string;
+    inputRefs: string[];
+    nextAction: string;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    reviewChecklist: Array<{
+      executionAllowed: boolean;
+      key: string;
+      label: string;
+      reportSubmissionAllowed: boolean;
+      required: boolean;
+      status: string;
+      validationAllowed: boolean;
+    }>;
+    reviewFocus: string[];
+    safetyGate: string;
+    status: string;
+    stepId: string;
+    successCriteria: string[];
+    hallucinationGovernanceRefs: string[];
+    validationAllowed: boolean;
+    workItemId: string;
+  }>;
+  reportSubmissionAllowed: boolean;
+  safetyGate: string;
+  status: string;
+  stepCount: number;
+  validationAllowed: boolean;
+  workItemCount: number;
+};
+
+export type StudioCandidateHunterReviewLoop = {
+  activeStepCount: number;
+  activeSteps: Array<{
+    assignedAgent: string;
+    candidateId: string;
+    executionAllowed: boolean;
+    gap: string;
+    governanceRefs: string[];
+    nextAction: string;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    reviewChecklist: Array<{
+      executionAllowed: boolean;
+      key: string;
+      label: string;
+      reportSubmissionAllowed: boolean;
+      required: boolean;
+      status: string;
+      validationAllowed: boolean;
+    }>;
+    safetyGate: string;
+    stepId: string;
+    successCriteria: string[];
+    validationAllowed: boolean;
+    workItemId: string;
+  }>;
+  blockedActions: string[];
+  completionGate: string;
+  executionAllowed: boolean;
+  governanceSummary: {
+    candidatePromotionAllowed: boolean;
+    claimPromotionRule: string;
+    requiredConsensus: string[];
+  };
+  loopId: string;
+  nextReviewAgent: string;
+  reportSubmissionAllowed: boolean;
+  requiredEvidence: string[];
+  reviewAgents: string[];
+  safetyGate: string;
+  sourcePlanId: string;
+  status: string;
+  validationAllowed: boolean;
 };
 
 export type StudioMissionAgentTaskTimelineItem = {
@@ -483,6 +671,8 @@ export type StudioMissionPanel = {
   blockedActions: string[];
   candidateHunterBacklog: StudioCandidateHunterBacklogItem[];
   candidateHunterIteration: StudioCandidateHunterIteration;
+  candidateHunterPlan: StudioCandidateHunterPlan;
+  candidateHunterReviewLoop: StudioCandidateHunterReviewLoop;
   candidateReviewPackets: StudioCandidateReviewPacket[];
   candidateCountLabel: string;
   gates: {
@@ -738,6 +928,138 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       validationAllowed: false,
       workItemCount: mission?.candidate_hunter_iteration?.work_item_count ?? 0,
     },
+    candidateHunterPlan: {
+      completionGate: safeText(
+        mission?.candidate_hunter_plan?.completion_gate,
+        "human_review_required",
+      ),
+      executionAllowed: false,
+      hallucinationGovernance: {
+        candidatePromotionAllowed: false,
+        claimPromotionRule: safeText(
+          mission?.candidate_hunter_plan?.hallucination_governance?.claim_promotion_rule,
+          "no_verified_evidence_no_high_confidence",
+        ),
+        independentChallengeSources:
+          mission?.candidate_hunter_plan?.hallucination_governance
+            ?.independent_challenge_sources ?? [],
+        knowledgePolicy: safeText(
+          mission?.candidate_hunter_plan?.hallucination_governance?.knowledge_policy,
+          "rag_few_shot_context_only_not_cross_validation",
+        ),
+        modelOutputPolicy: safeText(
+          mission?.candidate_hunter_plan?.hallucination_governance?.model_output_policy,
+          "llm_claims_start_unverified",
+        ),
+        requiredConsensus:
+          mission?.candidate_hunter_plan?.hallucination_governance?.required_consensus ??
+          [],
+      },
+      nextReviewAgent: safeText(
+        mission?.candidate_hunter_plan?.next_review_agent,
+        "Human Reviewer",
+      ),
+      planId: safeText(
+        mission?.candidate_hunter_plan?.plan_id,
+        "candidate_hunter:autonomous_review_plan",
+      ),
+      planSteps: (mission?.candidate_hunter_plan?.plan_steps ?? []).map((step) => ({
+        assignedAgent: safeText(step.assigned_agent, "Human Reviewer"),
+        candidateId: safeText(step.candidate_id, "candidate"),
+        executionAllowed: false,
+        gap: safeText(step.gap, "needs_review"),
+        inputRefs: step.input_refs ?? [],
+        nextAction: safeText(step.next_action, "Human review required."),
+        reportSubmissionAllowed: false,
+        requiredEvidence: step.required_evidence ?? [],
+        reviewChecklist: (step.review_checklist ?? []).map((item) => ({
+          executionAllowed: false,
+          key: safeText(item.key, "review_item"),
+          label: safeText(item.label, "Review item."),
+          reportSubmissionAllowed: false,
+          required: item.required !== false,
+          status: safeText(item.status, "needs_review"),
+          validationAllowed: false,
+        })),
+        reviewFocus: step.review_focus ?? [],
+        safetyGate: safeText(step.safety_gate, "review_only_no_execution"),
+        status: safeText(step.status, "needs_review"),
+        stepId: safeText(step.step_id, "candidate_hunter:plan:candidate"),
+        successCriteria: step.success_criteria ?? [],
+        hallucinationGovernanceRefs: step.hallucination_governance_refs ?? [],
+        validationAllowed: false,
+        workItemId: safeText(step.work_item_id, "candidate_hunter_work_item"),
+      })),
+      reportSubmissionAllowed: false,
+      safetyGate: safeText(
+        mission?.candidate_hunter_plan?.safety_gate,
+        "review_only_no_execution",
+      ),
+      status: safeText(mission?.candidate_hunter_plan?.status, "needs_review"),
+      stepCount: mission?.candidate_hunter_plan?.step_count ?? 0,
+      validationAllowed: false,
+      workItemCount: mission?.candidate_hunter_plan?.work_item_count ?? 0,
+    },
+    candidateHunterReviewLoop: {
+      activeStepCount: mission?.candidate_hunter_review_loop?.active_step_count ?? 0,
+      activeSteps: (mission?.candidate_hunter_review_loop?.active_steps ?? []).map(
+        (step) => ({
+          assignedAgent: safeText(step.assigned_agent, "Human Reviewer"),
+          candidateId: safeText(step.candidate_id, "candidate"),
+          executionAllowed: false,
+          gap: safeText(step.gap, "needs_review"),
+          governanceRefs: step.governance_refs ?? [],
+          nextAction: safeText(step.next_action, "Human review required."),
+          reportSubmissionAllowed: false,
+          requiredEvidence: step.required_evidence ?? [],
+          reviewChecklist: (step.review_checklist ?? []).map((item) => ({
+            executionAllowed: false,
+            key: safeText(item.key, "review_item"),
+            label: safeText(item.label, "Review item."),
+            reportSubmissionAllowed: false,
+            required: item.required !== false,
+            status: safeText(item.status, "needs_review"),
+            validationAllowed: false,
+          })),
+          safetyGate: "review_only_no_execution",
+          stepId: safeText(step.step_id, "candidate_hunter:review_loop:step"),
+          successCriteria: step.success_criteria ?? [],
+          validationAllowed: false,
+          workItemId: safeText(step.work_item_id, "candidate_hunter_work_item"),
+        }),
+      ),
+      blockedActions: mission?.candidate_hunter_review_loop?.blocked_actions ?? [],
+      completionGate: "human_review_required",
+      executionAllowed: false,
+      governanceSummary: {
+        candidatePromotionAllowed: false,
+        claimPromotionRule: safeText(
+          mission?.candidate_hunter_review_loop?.governance_summary?.claim_promotion_rule,
+          "no_verified_evidence_no_high_confidence",
+        ),
+        requiredConsensus:
+          mission?.candidate_hunter_review_loop?.governance_summary
+            ?.required_consensus ?? [],
+      },
+      loopId: safeText(
+        mission?.candidate_hunter_review_loop?.loop_id,
+        "candidate_hunter:next_review_loop",
+      ),
+      nextReviewAgent: safeText(
+        mission?.candidate_hunter_review_loop?.next_review_agent,
+        "Human Reviewer",
+      ),
+      reportSubmissionAllowed: false,
+      requiredEvidence: mission?.candidate_hunter_review_loop?.required_evidence ?? [],
+      reviewAgents: mission?.candidate_hunter_review_loop?.review_agents ?? [],
+      safetyGate: "review_only_no_execution",
+      sourcePlanId: safeText(
+        mission?.candidate_hunter_review_loop?.source_plan_id,
+        "candidate_hunter:autonomous_review_plan",
+      ),
+      status: safeText(mission?.candidate_hunter_review_loop?.status, "needs_review"),
+      validationAllowed: false,
+    },
     candidateReviewPackets: (mission?.candidate_review_packets ?? []).map((packet) => ({
       candidateId: safeText(packet.candidate_id, "candidate"),
       checklist: (packet.checklist ?? []).map((item) => ({
@@ -921,8 +1243,11 @@ export function toStudioMissionHandoffBrief(panel: StudioMissionPanel): string {
     `Artifacts: ${panel.artifactCoverage}`,
     `Scope Guard: ${panel.scopeGuardLabel}`,
     `Advisory context: ${panel.advisoryContextLabel}`,
+    `Hallucination governance: ${panel.candidateHunterPlan.hallucinationGovernance.claimPromotionRule}; knowledge ${panel.candidateHunterPlan.hallucinationGovernance.knowledgePolicy}; promotion allowed ${panel.candidateHunterPlan.hallucinationGovernance.candidatePromotionAllowed ? "true" : "false"}`,
     `Quality: ${panel.qualitySummary.topCandidateQualityGate}; review-ready ${panel.qualitySummary.reviewReadyCount}/${panel.qualitySummary.candidateCount}; average ${panel.qualitySummary.averageQualityScore}`,
     `Report: ${panel.submissionBlockedReportSummary.status}; ready candidates ${panel.submissionBlockedReportSummary.readyCandidateIds.join(", ") || "none"}; gate ${panel.submissionBlockedReportSummary.safetyGate}`,
+    `Candidate hunter plan: ${panel.candidateHunterPlan.status}; steps ${panel.candidateHunterPlan.stepCount}; next reviewer ${panel.candidateHunterPlan.nextReviewAgent}`,
+    `Candidate hunter review loop: ${panel.candidateHunterReviewLoop.status}; active steps ${panel.candidateHunterReviewLoop.activeStepCount}; next reviewer ${panel.candidateHunterReviewLoop.nextReviewAgent}`,
     `Next reviewer: ${panel.agentHandoffPack.nextReviewAgent}`,
     `Handoff items: ${panel.agentHandoffPack.handoffItemCount}`,
     handoffItems,

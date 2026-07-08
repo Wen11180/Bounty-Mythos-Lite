@@ -13,6 +13,8 @@ from app.main import (
     app,
     _studio_candidate_hunter_backlog,
     _studio_candidate_hunter_iteration,
+    _studio_candidate_hunter_plan,
+    _studio_candidate_hunter_review_loop,
     _studio_fuzzing_surface_facts,
     _studio_knowledge_surface_facts,
     _studio_mission_agent_queue,
@@ -424,6 +426,274 @@ def test_studio_candidate_hunter_iteration_prioritizes_review_only_backlog():
     assert "execute_live_validation" not in str(iteration)
     assert "submit_report" not in str(iteration)
     assert "run_fuzzer" not in str(iteration)
+
+
+def test_studio_candidate_hunter_plan_materializes_review_only_steps():
+    backlog = _studio_candidate_hunter_backlog(
+        [
+            {
+                "hypothesis_id": "H-weak",
+                "affected_endpoint": "GET /files/{file_id}/export",
+                "affected_code_path": "routes.py:export_file",
+                "quality_status": "needs_review",
+                "quality_score": 60,
+                "quality_reasons": ["endpoint_and_code_path_traced"],
+                "provenance_review_status": "needs_human_review",
+                "evidence_review_status": "needs_human_review",
+                "evidence_need_count": 0,
+                "false_positive_check_count": 0,
+                "safe_validation_step_count": 0,
+                "report_status": "needs_draft",
+                "hallucination_guard": {"status": "needs_review"},
+            }
+        ],
+        [],
+    )
+    iteration = _studio_candidate_hunter_iteration(
+        backlog,
+        {"top_candidate_quality_gate": "needs_review"},
+    )
+
+    plan = _studio_candidate_hunter_plan(backlog, iteration)
+
+    assert plan["plan_id"] == "candidate_hunter:autonomous_review_plan"
+    assert plan["status"] == "needs_review"
+    assert plan["next_review_agent"] == "Evidence Planner"
+    assert plan["work_item_count"] == len(backlog)
+    assert plan["step_count"] == len(backlog)
+    assert plan["safety_gate"] == "review_only_no_execution"
+    assert plan["completion_gate"] == "human_review_required"
+    assert plan["execution_allowed"] is False
+    assert plan["validation_allowed"] is False
+    assert plan["report_submission_allowed"] is False
+    assert plan["hallucination_governance"] == {
+        "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+        "model_output_policy": "llm_claims_start_unverified",
+        "knowledge_policy": "rag_few_shot_context_only_not_cross_validation",
+        "required_consensus": [
+            "authorized_local_artifact_evidence",
+            "independent_refutation_or_static_rule",
+            "human_review_decision",
+        ],
+        "independent_challenge_sources": [
+            "sarif_static_analysis",
+            "fuzzing_artifact",
+            "second_model_refutation",
+            "manual_code_review",
+        ],
+        "candidate_promotion_allowed": False,
+    }
+    first_step = plan["plan_steps"][0]
+    assert first_step == {
+        "step_id": "candidate_hunter:plan:H-weak:define_evidence_needs",
+        "work_item_id": "H-weak:define_evidence_needs",
+        "candidate_id": "H-weak",
+        "assigned_agent": "Evidence Planner",
+        "gap": "missing_evidence_needs",
+        "input_refs": ["scope", "policy", "code", "api", "har"],
+        "review_focus": ["evidence_needs", "human_evidence_review"],
+        "required_evidence": ["sanitized_evidence_plan"],
+        "next_action": "Define report-safe evidence needs for H-weak.",
+        "success_criteria": [
+            "H-weak:define_evidence_needs is reviewed against authorized local artifacts.",
+            "Evidence refs required: sanitized_evidence_plan.",
+            "No validation, fuzzing, or report submission is executed.",
+        ],
+        "review_checklist": [
+            {
+                "key": "authorized_artifact_trace",
+                "label": "Trace the step to scope, policy, code, API, and HAR artifacts.",
+                "status": "needs_review",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "evidence_requirements",
+                "label": "Record traceable evidence refs: sanitized_evidence_plan.",
+                "status": "needs_review",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "refutation_review",
+                "label": "Record false-positive questions or confirm existing refutation coverage.",
+                "status": "confirm_current_state",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "deduplication_review",
+                "label": "Compare endpoint, code path, invariant, and impact against prior candidates.",
+                "status": "confirm_current_state",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "safe_validation_plan",
+                "label": "Draft or review a non-destructive validation plan without execution.",
+                "status": "confirm_current_state",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "key": "submission_blocked_report_draft",
+                "label": "Confirm report draft readiness while keeping submission blocked.",
+                "status": "confirm_current_state",
+                "required": True,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+        ],
+        "hallucination_governance_refs": [
+            "LLM output remains an unverified claim until local evidence is traced.",
+            "Knowledge/RAG context is few-shot guidance only and cannot satisfy cross-validation.",
+        ],
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert "executeValidation" not in str(plan)
+    assert "submitReport" not in str(plan)
+    assert "send_file" not in str(plan)
+
+
+def test_studio_candidate_hunter_review_loop_summarizes_next_review_cycle():
+    plan = {
+        "plan_id": "candidate_hunter:autonomous_review_plan",
+        "status": "needs_review",
+        "next_review_agent": "Evidence Planner",
+        "plan_steps": [
+            {
+                "step_id": "candidate_hunter:plan:H-weak:define_evidence_needs",
+                "work_item_id": "H-weak:define_evidence_needs",
+                "candidate_id": "H-weak",
+                "assigned_agent": "Evidence Planner",
+                "gap": "missing_evidence_needs",
+                "input_refs": ["scope", "policy", "code", "api", "har"],
+                "review_focus": ["evidence_needs", "human_evidence_review"],
+                "required_evidence": ["sanitized_evidence_plan"],
+                "next_action": "Define report-safe evidence needs for H-weak.",
+                "success_criteria": [
+                    "H-weak:define_evidence_needs is reviewed against authorized local artifacts.",
+                    "Evidence refs required: sanitized_evidence_plan.",
+                    "No validation, fuzzing, or report submission is executed.",
+                ],
+                "hallucination_governance_refs": [
+                    "LLM output remains an unverified claim until local evidence is traced.",
+                ],
+                "review_checklist": [
+                    {
+                        "key": "evidence_requirements",
+                        "label": "Record traceable evidence refs: sanitized_evidence_plan.",
+                        "status": "needs_review",
+                        "required": True,
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": True,
+                "validation_allowed": True,
+                "report_submission_allowed": True,
+            }
+        ],
+        "hallucination_governance": {
+            "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+            "model_output_policy": "llm_claims_start_unverified",
+            "knowledge_policy": "rag_few_shot_context_only_not_cross_validation",
+            "required_consensus": [
+                "authorized_local_artifact_evidence",
+                "human_review_decision",
+            ],
+            "independent_challenge_sources": ["manual_code_review"],
+            "candidate_promotion_allowed": True,
+        },
+        "safety_gate": "unsafe_override",
+        "completion_gate": "unsafe_override",
+        "execution_allowed": True,
+        "validation_allowed": True,
+        "report_submission_allowed": True,
+    }
+
+    review_loop = _studio_candidate_hunter_review_loop(plan)
+
+    assert review_loop == {
+        "loop_id": "candidate_hunter:next_review_loop",
+        "status": "needs_review",
+        "source_plan_id": "candidate_hunter:autonomous_review_plan",
+        "active_step_count": 1,
+        "next_review_agent": "Evidence Planner",
+        "review_agents": ["Evidence Planner"],
+        "required_evidence": ["sanitized_evidence_plan"],
+        "active_steps": [
+            {
+                "step_id": "candidate_hunter:plan:H-weak:define_evidence_needs",
+                "work_item_id": "H-weak:define_evidence_needs",
+                "candidate_id": "H-weak",
+                "assigned_agent": "Evidence Planner",
+                "gap": "missing_evidence_needs",
+                "required_evidence": ["sanitized_evidence_plan"],
+                "governance_refs": [
+                    "LLM output remains an unverified claim until local evidence is traced.",
+                ],
+                "review_checklist": [
+                    {
+                        "key": "evidence_requirements",
+                        "label": "Record traceable evidence refs: sanitized_evidence_plan.",
+                        "status": "needs_review",
+                        "required": True,
+                        "execution_allowed": False,
+                        "validation_allowed": False,
+                        "report_submission_allowed": False,
+                    }
+                ],
+                "next_action": "Define report-safe evidence needs for H-weak.",
+                "success_criteria": [
+                    "H-weak:define_evidence_needs is reviewed against authorized local artifacts.",
+                    "Evidence refs required: sanitized_evidence_plan.",
+                    "No validation, fuzzing, or report submission is executed.",
+                ],
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        ],
+        "governance_summary": {
+            "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+            "required_consensus": [
+                "authorized_local_artifact_evidence",
+                "human_review_decision",
+            ],
+            "candidate_promotion_allowed": False,
+        },
+        "blocked_actions": [
+            "execute_live_validation",
+            "run_fuzzer",
+            "submit_report",
+        ],
+        "safety_gate": "review_only_no_execution",
+        "completion_gate": "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert "executeValidation" not in str(review_loop)
+    assert "submitReport" not in str(review_loop)
+    assert "send_file" not in str(review_loop)
 
 
 def test_studio_fuzzing_surface_facts_ignore_executable_plans():
@@ -1068,6 +1338,65 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "validation_allowed": False,
             "report_submission_allowed": False,
         }
+        assert mission["candidate_hunter_plan"] == {
+            "plan_id": "candidate_hunter:autonomous_review_plan",
+            "status": "ready_for_human_review",
+            "work_item_count": 0,
+            "step_count": 0,
+            "next_review_agent": "Human Reviewer",
+            "plan_steps": [],
+            "hallucination_governance": {
+                "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+                "model_output_policy": "llm_claims_start_unverified",
+                "knowledge_policy": "rag_few_shot_context_only_not_cross_validation",
+                "required_consensus": [
+                    "authorized_local_artifact_evidence",
+                    "independent_refutation_or_static_rule",
+                    "human_review_decision",
+                ],
+                "independent_challenge_sources": [
+                    "sarif_static_analysis",
+                    "fuzzing_artifact",
+                    "second_model_refutation",
+                    "manual_code_review",
+                ],
+                "candidate_promotion_allowed": False,
+            },
+            "safety_gate": "review_only_no_execution",
+            "completion_gate": "human_review_required",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+        assert mission["candidate_hunter_review_loop"] == {
+            "loop_id": "candidate_hunter:next_review_loop",
+            "status": "ready_for_human_review",
+            "source_plan_id": "candidate_hunter:autonomous_review_plan",
+            "active_step_count": 0,
+            "next_review_agent": "Human Reviewer",
+            "review_agents": [],
+            "required_evidence": [],
+            "active_steps": [],
+            "governance_summary": {
+                "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+                "required_consensus": [
+                    "authorized_local_artifact_evidence",
+                    "independent_refutation_or_static_rule",
+                    "human_review_decision",
+                ],
+                "candidate_promotion_allowed": False,
+            },
+            "blocked_actions": [
+                "execute_live_validation",
+                "run_fuzzer",
+                "submit_report",
+            ],
+            "safety_gate": "review_only_no_execution",
+            "completion_gate": "human_review_required",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
         handoff_pack = mission["agent_handoff_pack"]
         assert handoff_pack["pack_id"] == "studio:agent_handoff:next_review"
         assert handoff_pack["status"] == "ready_for_human_review"
@@ -1313,6 +1642,16 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert handoff["artifacts"] == mission["artifacts"]
         assert handoff["quality_summary"]["top_candidate_quality_gate"] == "passed"
         assert handoff["agent_handoff_pack"] == mission["agent_handoff_pack"]
+        assert handoff["candidate_hunter_plan"] == mission["candidate_hunter_plan"]
+        assert handoff["candidate_hunter_review_loop"] == mission[
+            "candidate_hunter_review_loop"
+        ]
+        assert handoff["candidate_hunter_plan"]["safety_gate"] == (
+            "review_only_no_execution"
+        )
+        assert handoff["candidate_hunter_plan"]["execution_allowed"] is False
+        assert handoff["candidate_hunter_plan"]["validation_allowed"] is False
+        assert handoff["candidate_hunter_plan"]["report_submission_allowed"] is False
         assert handoff["safety_gate"] == "review_only_no_execution"
         assert handoff["completion_gate"] == "human_review_required"
         assert handoff["execution_allowed"] is False
@@ -1430,6 +1769,12 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "ready_for_human_review"
         )
         assert dossier_json["candidate_hunter_iteration"]["execution_allowed"] is False
+        assert dossier_json["candidate_hunter_review_loop"] == mission[
+            "candidate_hunter_review_loop"
+        ]
+        assert (
+            dossier_json["candidate_hunter_review_loop"]["execution_allowed"] is False
+        )
         assert dossier_json["agent_handoff_pack"]["handoff_item_count"] == 0
         assert dossier_json["agent_handoff_pack"]["execution_allowed"] is False
         assert dossier_json["agent_handoff_pack"]["validation_allowed"] is False
@@ -1490,6 +1835,14 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "ready_for_human_review"
         )
         assert queue_json["candidate_hunter_iteration"]["validation_allowed"] is False
+        assert queue_json["candidate_hunter_review_loop"] == mission[
+            "candidate_hunter_review_loop"
+        ]
+        assert queue_json["candidate_hunter_review_loop"]["active_steps"] == []
+        assert (
+            queue_json["candidate_hunter_review_loop"]["report_submission_allowed"]
+            is False
+        )
         assert queue_json["agent_handoff_pack"]["status"] == (
             "ready_for_human_review"
         )
@@ -1504,6 +1857,8 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "## Mission quality" in queue_markdown
         assert "## Candidate hunter iteration" in queue_markdown
         assert "candidate_hunter:next_review" in queue_markdown
+        assert "## Candidate hunter review loop" in queue_markdown
+        assert "candidate_hunter:next_review_loop" in queue_markdown
         assert "## Studio timeline summary" in queue_markdown
         assert "## Candidate review packets" in queue_markdown
         assert "## Submission-blocked report summary" in queue_markdown
@@ -1519,6 +1874,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "## Mission quality" in dossier_markdown
         assert "Top candidate quality gate: passed" in dossier_markdown
         assert "## Candidate hunter iteration" in dossier_markdown
+        assert "## Candidate hunter review loop" in dossier_markdown
         assert "## Studio timeline summary" in dossier_markdown
         assert "## Candidate review packets" in dossier_markdown
         assert "## Submission-blocked report summary" in dossier_markdown
