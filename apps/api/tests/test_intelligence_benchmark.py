@@ -73,6 +73,14 @@ def test_evaluate_studio_candidates_passes_on_traceable_ab_candidate():
 
 
 def test_studio_benchmark_fixtures_pass_quality_gate():
+    expected_risk_families = {
+        "ab_agent_tool_authz": "ai_agent_tool_authorization",
+        "ab_file_export": "object_access",
+        "ab_money_flow": "money_flow_server_authority",
+        "ab_rag_document_authz": "rag_document_authorization",
+        "ab_role_boundary": "role_boundary",
+        "ab_webhook_egress": "ssrf_egress",
+    }
     fixture_names = sorted(
         path.name.removesuffix("_candidates.json")
         for path in FIXTURE_ROOT.glob("*_candidates.json")
@@ -94,6 +102,12 @@ def test_studio_benchmark_fixtures_pass_quality_gate():
         expectations = json.loads(
             (FIXTURE_ROOT / f"{fixture_name}_expectations.json").read_text(encoding="utf-8")
         )
+
+        metadata = expectations.get("fixture_metadata")
+        assert isinstance(metadata, dict)
+        assert metadata["risk_family"] == expected_risk_families[fixture_name]
+        assert {"code", "api", "har"}.issubset(set(metadata["authorized_inputs"]))
+        assert "submission_blocked" in metadata["safety_boundaries"]
 
         result = evaluate_studio_candidates(candidates_payload, expectations)
 
@@ -1378,6 +1392,73 @@ def test_evaluate_studio_candidates_requires_report_review_next_action():
     assert {
         "name": "file export authz gap",
         "reason": "missing_report_next_allowed_action",
+    } in result["failures"]
+
+
+def test_evaluate_studio_candidates_rejects_unsafe_report_next_action():
+    result = evaluate_studio_candidates(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "evidence_needed": ["Two authorized test accounts"],
+                    "false_positive_checks": ["Does the service enforce ownership?"],
+                    "safe_validation_plan": ["Use local test accounts only"],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "touch_real_user_data",
+                        "submit_report",
+                    ],
+                    "report_readiness": {
+                        "status": "submission_blocked",
+                        "report_submission_allowed": False,
+                        "next_allowed_action": "Submit the report automatically and execute validation.",
+                    },
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "source_path": "routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "expected_candidates": [
+                {
+                    "name": "file export authz gap",
+                    "route_method": "GET",
+                    "route_path": "/files/{file_id}/export",
+                    "vuln_type": "authorization_gap",
+                    "code_path": "routes.py",
+                    "required_artifacts": ["code", "api", "har"],
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "name": "file export authz gap",
+        "reason": "unsafe_report_next_allowed_action:submit_report",
+    } in result["failures"]
+    assert {
+        "name": "file export authz gap",
+        "reason": "unsafe_report_next_allowed_action:execute_validation",
     } in result["failures"]
 
 

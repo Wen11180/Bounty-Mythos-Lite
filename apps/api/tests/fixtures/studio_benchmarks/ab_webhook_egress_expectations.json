@@ -1,6 +1,20 @@
 {
   "draft_review_required": true,
   "max_candidates": 5,
+  "fixture_metadata": {
+    "risk_family": "ssrf_egress",
+    "authorized_inputs": [
+      "code",
+      "api",
+      "har",
+      "sarif"
+    ],
+    "safety_boundaries": [
+      "local_unit_fixtures_only",
+      "no_live_outbound_requests",
+      "submission_blocked"
+    ]
+  },
   "expected_candidates": [
     {
       "name": "webhook test-delivery SSRF egress gap",

@@ -25,6 +25,10 @@ UNSAFE_VALIDATION_PLAN_PATTERNS = {
     "production_target": ["against production", "production target"],
     "real_user_data": ["inspect real user data", "collect real user data"],
 }
+UNSAFE_REPORT_NEXT_ACTION_PATTERNS = {
+    "submit_report": ["submit the report", "auto submit", "automatically submit"],
+    "execute_validation": ["execute validation", "run validation"],
+}
 
 
 def build_studio_expectations_template(candidates_payload: Any) -> dict:
@@ -267,6 +271,8 @@ def _candidate_quality_failures(
             failures.append("report_submission_allowed")
         if not _text(report_readiness.get("next_allowed_action")):
             failures.append("missing_report_next_allowed_action")
+        for reason in _unsafe_report_next_action_reasons(report_readiness):
+            failures.append(f"unsafe_report_next_allowed_action:{reason}")
     blockers = set(_string_list(candidate.get("safety_blockers")))
     if not REQUIRED_SAFETY_BLOCKERS.issubset(blockers):
         failures.append("missing_safety_blockers")
@@ -454,6 +460,17 @@ def _unsafe_validation_plan_reasons(candidate: dict[str, Any]) -> list[str]:
         reason
         for reason, patterns in UNSAFE_VALIDATION_PLAN_PATTERNS.items()
         if any(pattern in plan_text for pattern in patterns)
+    ]
+
+
+def _unsafe_report_next_action_reasons(report_readiness: dict[str, Any]) -> list[str]:
+    action_text = _text(report_readiness.get("next_allowed_action")).lower()
+    if not action_text:
+        return []
+    return [
+        reason
+        for reason, patterns in UNSAFE_REPORT_NEXT_ACTION_PATTERNS.items()
+        if any(pattern in action_text for pattern in patterns)
     ]
 
 

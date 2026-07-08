@@ -1,6 +1,19 @@
 {
   "draft_review_required": true,
   "max_candidates": 5,
+  "fixture_metadata": {
+    "risk_family": "rag_document_authorization",
+    "authorized_inputs": [
+      "code",
+      "api",
+      "har"
+    ],
+    "safety_boundaries": [
+      "local_synthetic_documents_only",
+      "no_real_user_data",
+      "submission_blocked"
+    ]
+  },
   "expected_candidates": [
     {
       "name": "workspace assistant RAG document authorization gap",

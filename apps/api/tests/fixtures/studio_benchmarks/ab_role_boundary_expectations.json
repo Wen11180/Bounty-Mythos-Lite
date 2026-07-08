@@ -1,6 +1,19 @@
 {
   "draft_review_required": true,
   "max_candidates": 5,
+  "fixture_metadata": {
+    "risk_family": "role_boundary",
+    "authorized_inputs": [
+      "code",
+      "api",
+      "har"
+    ],
+    "safety_boundaries": [
+      "local_role_fixtures_only",
+      "no_live_invite_settings",
+      "submission_blocked"
+    ]
+  },
   "expected_candidates": [
     {
       "name": "team invite policy role-boundary gap",
