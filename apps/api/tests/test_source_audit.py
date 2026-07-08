@@ -219,6 +219,88 @@ def test_run_source_audit_raises_authorization_hypothesis_for_flask_sensitive_ro
     assert "traceable_source_fact" in result.hypotheses[0].ranking_reasons
 
 
+def test_run_source_audit_raises_authorization_hypothesis_for_flask_add_url_rule_function_without_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from flask import Flask, send_file",
+                "",
+                "app = Flask(__name__)",
+                "",
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+                "",
+                "app.add_url_rule(",
+                '    "/files/<file_id>/export",',
+                "    view_func=export_file,",
+                '    methods=["GET"],',
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
+    assert result.hypotheses[0].location == "GET /files/<file_id>/export"
+    assert "traceable_source_fact" in result.hypotheses[0].ranking_reasons
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_add_url_rule_function_decorator_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from flask import Flask, send_file",
+                "from flask_login import login_required",
+                "",
+                "app = Flask(__name__)",
+                "",
+                "@login_required",
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+                "",
+                "app.add_url_rule(",
+                '    "/files/<file_id>/export",',
+                "    view_func=export_file,",
+                '    methods=["GET"],',
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_raises_authorization_hypothesis_for_flask_method_view_without_authz(
     tmp_path,
 ):
@@ -276,6 +358,50 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_meth
                 "",
                 "class FileExport(MethodView):",
                 "    decorators = [login_required]",
+                "",
+                "    def get(self, file_id: str):",
+                "        return send_file(file_id)",
+                "",
+                "app.add_url_rule(",
+                '    "/files/<file_id>/export",',
+                '    view_func=FileExport.as_view("export_file"),',
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_method_view_tuple_decorator_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from flask import Flask, send_file",
+                "from flask.views import MethodView",
+                "from flask_login import login_required",
+                "",
+                "app = Flask(__name__)",
+                "",
+                "class FileExport(MethodView):",
+                "    decorators = (login_required,)",
                 "",
                 "    def get(self, file_id: str):",
                 "        return send_file(file_id)",

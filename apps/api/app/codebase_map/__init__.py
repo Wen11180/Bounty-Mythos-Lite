@@ -24,7 +24,10 @@ FLASK_ADD_URL_RULE_PATTERN = re.compile(r"\.add_url_rule\(")
 FLASK_METHOD_VIEW_PATTERN = re.compile(
     r"view_func\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.as_view\(",
 )
-METHOD_VIEW_DECORATORS_PATTERN = re.compile(r"\bdecorators\s*=\s*\[([^\]]+)\]")
+FLASK_FUNCTION_VIEW_PATTERN = re.compile(
+    r"view_func\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\.as_view)",
+)
+METHOD_VIEW_DECORATORS_PATTERN = re.compile(r"\bdecorators\s*=\s*[\[(]([^\])]+)[\])]")
 ROUTE_DECORATOR_ROUTER_PATTERN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)\.")
 AUTHZ_DECORATOR_PATTERN = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b")
 ROUTER_ASSIGNMENT_PATTERN = re.compile(
@@ -210,6 +213,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     local_call_aliases: dict[str, dict[str, str]] = {}
     class_call_aliases: dict[str, dict[str, str]] = {}
     principal_id_aliases: dict[str, dict[str, str]] = {}
+    function_authz_refs: dict[str, list[tuple[str, int]]] = {}
     method_view_classes: set[str] = set()
     method_view_methods: dict[str, set[str]] = {}
     method_view_authz_refs: dict[str, list[tuple[str, int]]] = {}
@@ -228,6 +232,14 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         method_view_methods,
                         method_view_authz_refs,
                         method_view_method_authz_refs,
+                    )
+                )
+                facts.extend(
+                    _flask_function_add_url_rule_route_facts(
+                        source_path,
+                        add_url_rule_lines,
+                        add_url_rule_line,
+                        function_authz_refs,
                     )
                 )
                 pending_add_url_rule = None
@@ -529,6 +541,14 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         method_view_method_authz_refs,
                     )
                 )
+                facts.extend(
+                    _flask_function_add_url_rule_route_facts(
+                        source_path,
+                        [line],
+                        line_number,
+                        function_authz_refs,
+                    )
+                )
             else:
                 pending_add_url_rule = (line_number, [line])
             continue
@@ -554,6 +574,13 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 )
                 pending_decorator_authz_refs = []
             elif pending_route is None:
+                if pending_decorator_authz_refs:
+                    function_authz_refs[function_match.group(1)] = _dedupe_refs(
+                        [
+                            *function_authz_refs.get(function_match.group(1), []),
+                            *pending_decorator_authz_refs,
+                        ]
+                    )
                 pending_decorator_authz_refs = []
             function_stack.append((function_match.group(1), _indent_width(line)))
         if function_match is not None and pending_route is None:
@@ -1417,6 +1444,55 @@ def _flask_add_url_rule_closed(lines: list[str]) -> bool:
     except tokenize.TokenError:
         return False
     return False
+
+
+def _flask_function_add_url_rule_route_facts(
+    source_path: str,
+    lines: list[str],
+    start_line: int,
+    function_authz_refs: dict[str, list[tuple[str, int]]],
+) -> list[CodebaseFactCandidate]:
+    block = "\n".join(lines)
+    route_path = _route_path_from_decorator_lines(lines)
+    view_match = FLASK_FUNCTION_VIEW_PATTERN.search(block)
+    if route_path is None or view_match is None:
+        return []
+
+    handler_name = view_match.group(1)
+    facts = [
+        CodebaseFactCandidate(
+            fact_type="route_handler",
+            source_path=source_path,
+            symbol_name=handler_name,
+            route_method=_flask_route_method(block),
+            route_path=route_path,
+            authz_hint=None,
+            sensitivity_label="low",
+            payload={
+                "handler": handler_name,
+                "line": start_line,
+                "mapping_mode": "static_code_snippet_analysis",
+            },
+        )
+    ]
+    for call_name, authz_line in function_authz_refs.get(handler_name, []):
+        facts.append(
+            CodebaseFactCandidate(
+                fact_type="authz_check",
+                source_path=source_path,
+                symbol_name=call_name,
+                route_method=None,
+                route_path=None,
+                authz_hint=_authz_hint(call_name),
+                sensitivity_label="low",
+                payload={
+                    "handler": handler_name,
+                    "line": authz_line,
+                    "mapping_mode": "static_code_snippet_analysis",
+                },
+            )
+        )
+    return facts
 
 
 def _flask_method_view_route_facts(
