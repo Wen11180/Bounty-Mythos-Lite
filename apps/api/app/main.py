@@ -2285,6 +2285,7 @@ def run_mythos_studio_workspace_research(
 ) -> dict:
     manifest = load_workspace_manifest(request.workspace_path)
     scope_path = _studio_artifact_path(manifest, "scope")
+    policy_path = _studio_artifact_path(manifest, "policy")
     repo_path = _studio_artifact_path(manifest, "code")
     if scope_path is None or repo_path is None:
         raise HTTPException(
@@ -2301,7 +2302,7 @@ def run_mythos_studio_workspace_research(
     record = save_source_audit_pipeline_run(
         repository=repository,
         result=result,
-        policy_text=_read_source_audit_policy_text(scope_path),
+        policy_text=_read_source_audit_policy_text(policy_path or scope_path),
     )
     preview = build_report_preview_response(record)
     updated_manifest = record_workspace_run(

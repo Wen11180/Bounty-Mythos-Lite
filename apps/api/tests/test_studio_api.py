@@ -1,3 +1,4 @@
+from hashlib import sha256
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -7,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
 from app.main import app
+from app.repository import DatabaseRepository
 
 
 client = TestClient(app)
@@ -26,6 +28,22 @@ def override_session():
             yield session
 
     return _override_get_session
+
+
+def studio_test_session_override():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    return _override_get_session, testing_session
 
 
 def test_create_workspace_and_import_scope_updates_manifest(tmp_path: Path):
@@ -169,6 +187,71 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
             "-report-draft.md"
         )
         assert "send_file(file_id)" not in str(export)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_run_uses_imported_policy_artifact_for_audit_hash(tmp_path: Path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_text = f"allowed_repos:\n  - {repo}\n"
+    scope_path.write_text(scope_text, encoding="utf-8")
+    policy_path = tmp_path / "policy.md"
+    policy_text = "Authorized local code plus API/HAR materials only. No live validation."
+    policy_path.write_text(policy_text, encoding="utf-8")
+
+    session_override, testing_session = studio_test_session_override()
+    app.dependency_overrides[get_session] = session_override
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+
+        with testing_session() as session:
+            record = DatabaseRepository(session).get_pipeline_run(
+                run_response.json()["run_id"]
+            )
+
+        assert record is not None
+        assert record.policy_text_hash == sha256(policy_text.encode("utf-8")).hexdigest()
+        assert record.policy_text_hash != sha256(scope_text.encode("utf-8")).hexdigest()
     finally:
         app.dependency_overrides.clear()
 
