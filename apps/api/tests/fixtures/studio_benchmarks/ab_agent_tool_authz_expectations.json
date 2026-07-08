@@ -1,0 +1,35 @@
+{
+  "draft_review_required": true,
+  "max_candidates": 5,
+  "expected_candidates": [
+    {
+      "name": "agent tool authorization gap",
+      "route_method": "POST",
+      "route_path": "/agents/{agent_id}/tools/execute",
+      "vuln_type": "agent_tool_authz_gap",
+      "required_artifacts": [
+        "code",
+        "api",
+        "har"
+      ],
+      "require_code_path": true,
+      "code_path": "agent_routes.py:execute_agent_tool",
+      "require_refutation_status": true,
+      "require_security_invariant": true,
+      "require_impact_rationale": true,
+      "require_repair_guidance": true,
+      "require_regression_test": true,
+      "max_duplicate_risk_score": 49
+    }
+  ],
+  "forbidden_text": [
+    "Authorization: Bearer",
+    "Cookie",
+    "access_token",
+    "secret-token"
+  ],
+  "notes": [
+    "Synthetic authorized A+B AI-agent tool authorization benchmark fixture.",
+    "Validation is limited to local mock tools and must not invoke live integrations."
+  ]
+}

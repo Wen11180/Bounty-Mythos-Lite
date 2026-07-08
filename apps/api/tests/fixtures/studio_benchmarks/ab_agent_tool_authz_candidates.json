@@ -1,0 +1,70 @@
+{
+  "candidates": [
+    {
+      "hypothesis_id": "H-AB-006",
+      "vuln_type": "agent_tool_authz_gap",
+      "location": "POST /agents/{agent_id}/tools/execute",
+      "reason": "The route, API contract, and authorized traffic describe an agent tool execution path where tool calls must be authorized against the requesting principal, agent policy, and target resource.",
+      "broken_invariant": "AI agents may only invoke tools and resources explicitly authorized for the current user, agent policy, and task context.",
+      "impact_rationale": "A missing tool authorization boundary could let an agent perform privileged actions or access resources beyond the user's permissions.",
+      "repair_guidance": "Enforce per-tool allowlists, user permission checks, and resource-scope checks immediately before every tool invocation.",
+      "regression_test": "Add a local non-destructive agent tool test proving disallowed tools and out-of-scope resources are rejected before execution.",
+      "refutation_status": "unverified",
+      "duplicate_risk_score": 24,
+      "evidence_needed": [
+        "Authorized local agent tool dispatcher code showing how tool permissions are checked.",
+        "OpenAPI route metadata for the tool execution endpoint.",
+        "Redacted HAR route metadata showing the endpoint exists in authorized agent traffic."
+      ],
+      "false_positive_checks": [
+        "Does the dispatcher enforce a per-agent and per-user tool allowlist before invocation?",
+        "Does the tool layer recheck resource scope using the requesting principal?",
+        "Are high-risk tools disabled unless a human approval record is present?"
+      ],
+      "ranking_reasons": [
+        "impact:agent_tool_authorization",
+        "traceable_source_fact",
+        "refutation_status:unverified"
+      ],
+      "safe_validation_plan": [
+        "Use local mock tools and synthetic resources only.",
+        "Do not execute real external tools, live integrations, or state-changing actions.",
+        "Keep any report draft submission-blocked until human evidence and redaction review."
+      ],
+      "safety_blockers": [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report"
+      ],
+      "report_readiness": {
+        "status": "submission_blocked",
+        "report_submission_allowed": false,
+        "next_allowed_action": "Review agent tool authorization evidence, refutation checks, repair guidance, and safety blockers before exporting a report preview."
+      },
+      "source_facts": [
+        {
+          "artifact_kind": "code",
+          "fact_type": "route_handler",
+          "route_method": "POST",
+          "route_path": "/agents/{agent_id}/tools/execute",
+          "source_path": "src/agent_routes.py",
+          "symbol_name": "execute_agent_tool"
+        },
+        {
+          "artifact_kind": "api",
+          "fact_type": "openapi_route",
+          "route_method": "POST",
+          "route_path": "/agents/{id}/tools/execute",
+          "operation_id": "executeAgentTool"
+        },
+        {
+          "artifact_kind": "har",
+          "fact_type": "traffic_route",
+          "route_method": "POST",
+          "route_path": "/agents/123/tools/execute",
+          "advisory_only": "true"
+        }
+      ]
+    }
+  ]
+}

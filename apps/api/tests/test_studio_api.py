@@ -377,6 +377,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["broken_invariant"] in markdown
         assert "## Ranking reasons" in markdown
         assert candidates[0]["ranking_reasons"][0] in markdown
+        assert "## Report readiness" in markdown
+        assert "- Status: submission_blocked" in markdown
+        assert candidates[0]["report_readiness"]["next_allowed_action"] in markdown
         assert "## Evidence needs" in markdown
         assert candidates[0]["evidence_needed"][0] in markdown
         assert "## False-positive checks" in markdown

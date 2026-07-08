@@ -434,6 +434,63 @@ def test_report_export_markdown_includes_candidate_summary_and_ranking_reasons(
     assert "Authorization: Bearer" not in markdown
 
 
+def test_report_export_markdown_includes_report_readiness_next_action(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "report_readiness": {
+                "status": "submission_blocked",
+                "report_submission_allowed": False,
+                "next_allowed_action": "Review evidence gaps before exporting a report preview.",
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Report readiness" in markdown
+    assert "- Status: submission_blocked" in markdown
+    assert "- Report submission allowed: false" in markdown
+    assert "- Next allowed action: Review evidence gaps before exporting a report preview." in markdown
+
+
+def test_report_export_markdown_skips_secret_like_report_next_action(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "report_readiness": {
+                "status": "submission_blocked",
+                "report_submission_allowed": False,
+                "next_allowed_action": "Review Authorization: Bearer secret-token.",
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Report readiness" in markdown
+    assert "- Status: submission_blocked" in markdown
+    assert "Next allowed action" not in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
 def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
 

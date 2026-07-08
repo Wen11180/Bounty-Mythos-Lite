@@ -287,6 +287,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if ranking_reasons:
         lines.extend(["", "## Ranking reasons"])
         lines.extend(f"- {item}" for item in ranking_reasons)
+    lines.extend(_report_readiness_markdown_lines(report.get("report_readiness")))
     sections = report.get("sections")
     if isinstance(sections, dict):
         for key, heading in (
@@ -336,6 +337,24 @@ def _report_markdown(report: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _report_readiness_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    items: list[str] = []
+    status = _markdown_safe_text(value.get("status"))
+    if status:
+        items.append(f"Status: {status}")
+    if isinstance(value.get("report_submission_allowed"), bool):
+        allowed = str(value["report_submission_allowed"]).lower()
+        items.append(f"Report submission allowed: {allowed}")
+    next_allowed_action = _markdown_safe_text(value.get("next_allowed_action"))
+    if next_allowed_action:
+        items.append(f"Next allowed action: {next_allowed_action}")
+    if not items:
+        return []
+    return ["", "## Report readiness", *[f"- {item}" for item in items]]
 
 
 def _studio_context_markdown_lines(value: Any) -> list[str]:

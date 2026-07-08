@@ -79,6 +79,7 @@ def test_studio_benchmark_fixtures_pass_quality_gate():
     )
 
     assert fixture_names == [
+        "ab_agent_tool_authz",
         "ab_file_export",
         "ab_money_flow",
         "ab_rag_document_authz",

@@ -2534,11 +2534,14 @@ def _studio_report_candidate_guidance(
         safety_blockers = _studio_report_guidance_list(candidate.get("safety_blockers", []))
         candidate_summary = _studio_report_candidate_summary(candidate)
         ranking_reasons = _studio_report_guidance_list(candidate.get("ranking_reasons", []))
+        report_readiness = _studio_report_readiness(candidate.get("report_readiness", {}))
         guidance: dict[str, object] = {}
         if candidate_summary:
             guidance["candidate_summary"] = candidate_summary
         if ranking_reasons:
             guidance["ranking_reasons"] = ranking_reasons
+        if report_readiness:
+            guidance["report_readiness"] = report_readiness
         if evidence_needed:
             guidance["evidence_needed"] = evidence_needed
         if false_positive_checks:
@@ -2561,6 +2564,21 @@ def _studio_report_candidate_guidance(
 def _studio_report_guidance_text(value: object) -> str:
     text = safe_preview_text(value)
     return "" if text == "[REDACTED]" else text.strip()
+
+
+def _studio_report_readiness(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    readiness: dict[str, object] = {}
+    status = _studio_report_guidance_text(value.get("status", ""))
+    if status:
+        readiness["status"] = status
+    if value.get("report_submission_allowed") is False:
+        readiness["report_submission_allowed"] = False
+    next_allowed_action = _studio_report_guidance_text(value.get("next_allowed_action", ""))
+    if next_allowed_action:
+        readiness["next_allowed_action"] = next_allowed_action
+    return readiness
 
 
 def _studio_report_candidate_summary(candidate: dict) -> list[str]:
