@@ -293,6 +293,14 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if notes:
         lines.extend(["", "## Safety notes"])
         lines.extend(f"- {note}" for note in notes)
+    evidence_needed = _markdown_list(report.get("evidence_needed"))
+    if evidence_needed:
+        lines.extend(["", "## Evidence needs"])
+        lines.extend(f"- {item}" for item in evidence_needed)
+    false_positive_checks = _markdown_list(report.get("false_positive_checks"))
+    if false_positive_checks:
+        lines.extend(["", "## False-positive checks"])
+        lines.extend(f"- {item}" for item in false_positive_checks)
     suggested_fix = _markdown_safe_text(report.get("suggested_fix"))
     if suggested_fix:
         lines.extend(["", "## Suggested fix", "", suggested_fix])

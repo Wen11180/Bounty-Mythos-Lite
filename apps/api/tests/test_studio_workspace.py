@@ -304,6 +304,39 @@ def test_report_export_markdown_includes_repair_guidance_and_regression_test(
     assert "Enforce ownership in the service layer" not in str(updated)
 
 
+def test_report_export_markdown_includes_evidence_and_false_positive_checks(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "evidence_needed": [
+                "Two authorized local test accounts.",
+                "Authorization: Bearer secret-token",
+            ],
+            "false_positive_checks": [
+                "Does the service enforce ownership before returning the file?",
+                "Cookie: session=secret-token",
+            ],
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Evidence needs" in markdown
+    assert "- Two authorized local test accounts." in markdown
+    assert "## False-positive checks" in markdown
+    assert "- Does the service enforce ownership before returning the file?" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
 def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
 

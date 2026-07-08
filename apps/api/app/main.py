@@ -2519,11 +2519,19 @@ def _studio_report_context(manifest: dict) -> dict[str, object]:
 def _studio_report_candidate_guidance(
     record: PipelineRunRecord,
     manifest: dict,
-) -> dict[str, str]:
+) -> dict[str, object]:
     for candidate in _studio_candidates_for_run(record, manifest):
         suggested_fix = _studio_report_guidance_text(candidate.get("suggested_fix", ""))
         regression_test = _studio_report_guidance_text(candidate.get("regression_test", ""))
-        guidance: dict[str, str] = {}
+        evidence_needed = _studio_report_guidance_list(candidate.get("evidence_needed", []))
+        false_positive_checks = _studio_report_guidance_list(
+            candidate.get("false_positive_checks", [])
+        )
+        guidance: dict[str, object] = {}
+        if evidence_needed:
+            guidance["evidence_needed"] = evidence_needed
+        if false_positive_checks:
+            guidance["false_positive_checks"] = false_positive_checks
         if suggested_fix:
             guidance["suggested_fix"] = suggested_fix
         if regression_test:
@@ -2536,6 +2544,16 @@ def _studio_report_candidate_guidance(
 def _studio_report_guidance_text(value: object) -> str:
     text = safe_preview_text(value)
     return "" if text == "[REDACTED]" else text.strip()
+
+
+def _studio_report_guidance_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        text
+        for item in value
+        if (text := _studio_report_guidance_text(item))
+    ]
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:

@@ -346,6 +346,10 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "- Required artifacts: scope, policy, code, api, har" in markdown
         assert "- API GET /files/{file_id}/export" in markdown
         assert "- HAR GET /files/123/export" in markdown
+        assert "## Evidence needs" in markdown
+        assert candidates[0]["evidence_needed"][0] in markdown
+        assert "## False-positive checks" in markdown
+        assert candidates[0]["false_positive_checks"][0] in markdown
         assert "## Suggested fix" in markdown
         assert candidates[0]["suggested_fix"] in markdown
         assert "## Regression test" in markdown
