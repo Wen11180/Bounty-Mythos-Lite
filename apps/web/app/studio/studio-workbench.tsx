@@ -868,6 +868,10 @@ export function StudioWorkbench() {
                 items={missionPanel.qualitySummary.improvementActions}
               />
               <ListBlock
+                title="Candidate hunter backlog"
+                items={missionPanel.candidateHunterBacklog.map(candidateHunterBacklogLine)}
+              />
+              <ListBlock
                 title="Research loop"
                 items={missionPanel.researchLoopStages.map(
                   (stage) => `${stage.label}: ${stage.status} - ${stage.summary}`,
@@ -1137,6 +1141,20 @@ function agentQueueLine(
     task.targetCandidates.length > 0 ? `; candidates ${task.targetCandidates.join(", ")}` : "";
   const prefix = `${task.taskId}: ${task.agent} - ${task.status}`;
   return `${prefix}; gate ${task.safetyGate}; inputs ${inputs}${focus}${candidates}${gaps}; ${task.nextAction}`;
+}
+
+function candidateHunterBacklogLine(
+  item: ReturnType<typeof toStudioMissionPanel>["candidateHunterBacklog"][number],
+): string {
+  const focus = item.reviewFocus.length > 0 ? item.reviewFocus.join(", ") : "candidate_quality";
+  const evidence =
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review_notes";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${item.workItemId}: ${item.gap} - ${item.status}; gate ${item.safetyGate}; focus ${focus}; evidence ${evidence}; ${gates}; ${item.nextAction}`;
 }
 
 function logTone(tone: LogEntry["tone"]): string {

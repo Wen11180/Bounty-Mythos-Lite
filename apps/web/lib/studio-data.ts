@@ -94,6 +94,20 @@ export type StudioMissionAgentTaskInput = {
   task_id?: string;
 };
 
+export type StudioCandidateHunterBacklogInput = {
+  candidate_id?: string;
+  execution_allowed?: boolean;
+  gap?: string;
+  next_action?: string;
+  report_submission_allowed?: boolean;
+  required_evidence?: string[];
+  review_focus?: string[];
+  safety_gate?: string;
+  status?: string;
+  validation_allowed?: boolean;
+  work_item_id?: string;
+};
+
 export type StudioMissionSummary = {
   agent_queue?: StudioMissionAgentTaskInput[];
   artifacts?: {
@@ -107,6 +121,7 @@ export type StudioMissionSummary = {
   };
   blocked_actions?: string[];
   candidate_count?: number;
+  candidate_hunter_backlog?: StudioCandidateHunterBacklogInput[];
   mode?: string;
   next_actions?: string[];
   quality_summary?: {
@@ -191,11 +206,26 @@ export type StudioMissionAgentTask = {
   taskId: string;
 };
 
+export type StudioCandidateHunterBacklogItem = {
+  candidateId: string;
+  executionAllowed: boolean;
+  gap: string;
+  nextAction: string;
+  reportSubmissionAllowed: boolean;
+  requiredEvidence: string[];
+  reviewFocus: string[];
+  safetyGate: string;
+  status: string;
+  validationAllowed: boolean;
+  workItemId: string;
+};
+
 export type StudioMissionPanel = {
   advisoryContextLabel: string;
   agentQueue: StudioMissionAgentTask[];
   artifactCoverage: string;
   blockedActions: string[];
+  candidateHunterBacklog: StudioCandidateHunterBacklogItem[];
   candidateCountLabel: string;
   gates: {
     humanReviewRequired: boolean;
@@ -349,6 +379,19 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
     })),
     artifactCoverage: `${present.length}/${required.length} required artifacts`,
     blockedActions: mission?.blocked_actions ?? [],
+    candidateHunterBacklog: (mission?.candidate_hunter_backlog ?? []).map((item) => ({
+      candidateId: safeText(item.candidate_id, "mission"),
+      executionAllowed: false,
+      gap: safeText(item.gap, "needs_review"),
+      nextAction: safeText(item.next_action, "Review candidate quality gap."),
+      reportSubmissionAllowed: false,
+      requiredEvidence: item.required_evidence ?? [],
+      reviewFocus: item.review_focus ?? [],
+      safetyGate: safeText(item.safety_gate, "review_only_no_execution"),
+      status: safeText(item.status, "needs_review"),
+      validationAllowed: false,
+      workItemId: safeText(item.work_item_id, "candidate_hunter_work_item"),
+    })),
     candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
     gates: {
       humanReviewRequired: mission?.quality_gates?.human_review_required === true,

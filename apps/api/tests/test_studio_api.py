@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base, get_session
 from app.main import (
     app,
+    _studio_candidate_hunter_backlog,
     _studio_fuzzing_surface_facts,
     _studio_knowledge_surface_facts,
     _studio_mission_agent_queue,
@@ -269,6 +270,49 @@ def test_studio_mission_agent_queue_surfaces_candidate_quality_gaps_without_exec
     assert "execute_live_validation" not in str(queue)
     assert "submit_report" not in str(queue)
     assert "run_fuzzer" not in str(queue)
+
+
+def test_studio_candidate_hunter_backlog_turns_quality_gaps_into_review_work():
+    backlog = _studio_candidate_hunter_backlog(
+        [
+            {
+                "hypothesis_id": "H-weak",
+                "affected_endpoint": "",
+                "affected_code_path": "",
+                "quality_status": "needs_review",
+                "quality_score": 55,
+                "quality_reasons": ["evidence_needs_present"],
+                "evidence_review_status": "needs_human_review",
+                "evidence_need_count": 1,
+                "false_positive_check_count": 0,
+                "safe_validation_step_count": 0,
+                "report_status": "needs_draft",
+                "hallucination_guard": {"status": "blocked"},
+                "evidence_gap_count": 1,
+            }
+        ],
+        [],
+    )
+
+    work_by_gap = {item["gap"]: item for item in backlog}
+    assert work_by_gap["missing_endpoint"]["candidate_id"] == "H-weak"
+    assert work_by_gap["missing_code_path"]["required_evidence"] == [
+        "local_code_reference",
+        "handler_symbol",
+    ]
+    assert work_by_gap["missing_refutation_checks"]["review_focus"] == [
+        "false_positive_checks",
+        "independent_refutation_review",
+    ]
+    assert work_by_gap["missing_cross_validation_consensus"]["safety_gate"] == (
+        "review_only_no_execution"
+    )
+    assert all(item["execution_allowed"] is False for item in backlog)
+    assert all(item["validation_allowed"] is False for item in backlog)
+    assert all(item["report_submission_allowed"] is False for item in backlog)
+    assert "execute_live_validation" not in str(backlog)
+    assert "submit_report" not in str(backlog)
+    assert "run_fuzzer" not in str(backlog)
 
 
 def test_studio_fuzzing_surface_facts_ignore_executable_plans():
@@ -837,6 +881,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert mission["quality_summary"]["average_quality_score"] >= 90
         assert mission["quality_summary"]["blockers"] == []
         assert mission["quality_summary"]["improvement_actions"] == []
+        assert mission["candidate_hunter_backlog"] == []
         assert mission["blocked_actions"] == [
             "execute_live_validation",
             "touch_real_user_data",
@@ -1030,6 +1075,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert queue_json["task_timeline"][3]["report_submission_allowed"] is False
         assert queue_json["task_timeline"][3]["validation_execution_allowed"] is False
         assert queue_json["quality_summary"]["top_candidate_quality_gate"] == "passed"
+        assert queue_json["candidate_hunter_backlog"] == []
         assert "# Mythos Studio agent queue audit" in queue_markdown
         assert "## Mission quality" in queue_markdown
         assert "## Agent queue" in queue_markdown

@@ -63,6 +63,21 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       "submit_report",
     ],
     candidate_count: 1,
+    candidate_hunter_backlog: [
+      {
+        work_item_id: "H-002:draft_validation_plan",
+        candidate_id: "H-002",
+        gap: "missing_safe_validation_plan",
+        status: "needs_review",
+        review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
+        required_evidence: ["non_destructive_validation_plan"],
+        next_action: "Draft a non-destructive validation plan for H-002.",
+        safety_gate: "review_only_no_execution",
+        execution_allowed: true,
+        validation_allowed: true,
+        report_submission_allowed: true,
+      },
+    ],
     mode: "local_ai_vulnerability_research_workbench",
     agent_queue: [
       {
@@ -256,6 +271,21 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       reviewFocus: ["submission_blocked_report", "redaction_review", "human_review_gate"],
       candidateQualityGaps: [],
       nextAction: "Export a submission-blocked draft for human review.",
+    },
+  ]);
+  assert.deepEqual(panel.candidateHunterBacklog, [
+    {
+      workItemId: "H-002:draft_validation_plan",
+      candidateId: "H-002",
+      gap: "missing_safe_validation_plan",
+      status: "needs_review",
+      reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
+      requiredEvidence: ["non_destructive_validation_plan"],
+      nextAction: "Draft a non-destructive validation plan for H-002.",
+      safetyGate: "review_only_no_execution",
+      executionAllowed: false,
+      validationAllowed: false,
+      reportSubmissionAllowed: false,
     },
   ]);
   assert.deepEqual(panel.researchLoopStages, [

@@ -352,6 +352,21 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
                     "Draft a non-destructive validation plan for H-002.",
                 ],
             },
+            "candidate_hunter_backlog": [
+                {
+                    "work_item_id": "H-002:draft_validation_plan",
+                    "candidate_id": "H-002",
+                    "gap": "missing_safe_validation_plan",
+                    "status": "needs_review",
+                    "review_focus": ["safe_validation_plan", "non_destructive_plan_only"],
+                    "required_evidence": ["non_destructive_validation_plan"],
+                    "next_action": "Draft a non-destructive validation plan for H-002.",
+                    "safety_gate": "review_only_no_execution",
+                    "execution_allowed": True,
+                    "validation_allowed": True,
+                    "report_submission_allowed": True,
+                }
+            ],
             "top_candidates": [
                 {
                     "hypothesis_id": "H-001",
@@ -407,6 +422,12 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
         "H-002:missing_safe_validation_plan",
     ]
     assert queue_json["quality_summary"]["top_candidate_quality_gate"] == "needs_review"
+    assert queue_json["candidate_hunter_backlog"][0]["work_item_id"] == (
+        "H-002:draft_validation_plan"
+    )
+    assert queue_json["candidate_hunter_backlog"][0]["execution_allowed"] is False
+    assert queue_json["candidate_hunter_backlog"][0]["validation_allowed"] is False
+    assert queue_json["candidate_hunter_backlog"][0]["report_submission_allowed"] is False
     assert queue_json["task_timeline"][0] == {
         "stage_id": "agent_queue:semantic_candidate_hunt",
         "task_id": "semantic_candidate_hunt",
@@ -425,6 +446,8 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
         "validation_execution_allowed": False,
     }
     assert "# Mythos Studio agent queue audit" in queue_markdown
+    assert "## Candidate hunter backlog" in queue_markdown
+    assert "H-002:draft_validation_plan" in queue_markdown
     assert "quality gaps: H-002:missing_safe_validation_plan" in queue_markdown
     assert "## Mission quality" in queue_markdown
     assert "## Agent task timeline" in queue_markdown

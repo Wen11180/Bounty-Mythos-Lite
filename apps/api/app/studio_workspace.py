@@ -574,6 +574,34 @@ def _safe_quality_summary(value: Any) -> dict[str, Any]:
     return summary
 
 
+def _safe_candidate_hunter_backlog_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        work_item_id = _queue_safe_text(item.get("work_item_id"))
+        if not work_item_id:
+            continue
+        items.append(
+            {
+                "work_item_id": work_item_id,
+                "candidate_id": _queue_safe_text(item.get("candidate_id")),
+                "gap": _queue_safe_text(item.get("gap")),
+                "status": _queue_safe_text(item.get("status")),
+                "review_focus": _queue_safe_list(item.get("review_focus")),
+                "required_evidence": _queue_safe_list(item.get("required_evidence")),
+                "next_action": _queue_safe_text(item.get("next_action")),
+                "safety_gate": _queue_safe_text(item.get("safety_gate")),
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items[:10]
+
+
 def _agent_task_timeline_items(agent_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     timeline: list[dict[str, Any]] = []
     for item in agent_queue:
@@ -640,6 +668,11 @@ def _agent_queue_audit_markdown(audit: dict[str, Any]) -> str:
         "- Validation execution allowed: false",
     ]
     lines.extend(_mission_quality_summary_markdown_lines(audit.get("quality_summary")))
+    lines.extend(
+        _candidate_hunter_backlog_markdown_lines(
+            audit.get("candidate_hunter_backlog")
+        )
+    )
     lines.extend(_mission_agent_queue_markdown_lines(audit.get("agent_queue")))
     lines.extend(_agent_task_timeline_markdown_lines(audit.get("task_timeline")))
     return "\n".join(lines) + "\n"
@@ -704,6 +737,33 @@ def _mission_quality_summary_markdown_lines(value: Any) -> list[str]:
     actions = _markdown_list(value.get("improvement_actions"))
     if actions:
         lines.append("- Improvement actions: " + "; ".join(actions))
+    return lines if len(lines) > 2 else []
+
+
+def _candidate_hunter_backlog_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Candidate hunter backlog"]
+    for item in value[:10]:
+        if not isinstance(item, dict):
+            continue
+        work_item_id = _markdown_safe_text(item.get("work_item_id"))
+        gap = _markdown_safe_text(item.get("gap"))
+        status = _markdown_safe_text(item.get("status"))
+        safety_gate = _markdown_safe_text(item.get("safety_gate"))
+        focus = ", ".join(_markdown_list(item.get("review_focus")))
+        required_evidence = ", ".join(_markdown_list(item.get("required_evidence")))
+        next_action = _markdown_safe_text(item.get("next_action"))
+        if not work_item_id:
+            continue
+        line = f"- {work_item_id}: {gap} ({status}, {safety_gate})"
+        if focus:
+            line += f"; focus: {focus}"
+        if required_evidence:
+            line += f"; evidence: {required_evidence}"
+        if next_action:
+            line += f"; next: {next_action}"
+        lines.append(line)
     return lines if len(lines) > 2 else []
 
 
