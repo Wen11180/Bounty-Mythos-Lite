@@ -968,6 +968,21 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
     api_path = write_api_artifact(tmp_path)
     har_path = write_har_artifact(tmp_path)
     sarif_path = write_sarif_artifact(tmp_path)
+    knowledge_path = tmp_path / "knowledge.json"
+    knowledge_path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "pattern_id": "WEB-IDOR-001",
+                        "vuln_type": "authorization_gap",
+                        "source": "local_milvus",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -985,6 +1000,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             ("api", api_path),
             ("har", har_path),
             ("sarif", sarif_path),
+            ("knowledge", knowledge_path),
         ):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
@@ -1126,6 +1142,8 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "independent_cross_check" in review_packet["completed_items"]
         assert review_packet["next_human_action"].startswith("Review evidence")
         assert review_packet["safety_gate"] == "human_review_required"
+        assert review_packet["quality_score"] == candidate["quality_score"]
+        assert review_packet["report_review_priority"] == "redaction_review_ready"
         assert review_packet["execution_allowed"] is False
         assert review_packet["validation_allowed"] is False
         assert review_packet["report_submission_allowed"] is False
@@ -1137,10 +1155,44 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         ]
         assert report_summary["needs_review_candidate_ids"] == []
         assert report_summary["missing_review_items"] == {}
+        assert report_summary["report_review_queue"] == [
+            {
+                "candidate_id": candidate["hypothesis_id"],
+                "priority": "redaction_review_ready",
+                "quality_score": candidate["quality_score"],
+                "next_human_action": review_packet["next_human_action"],
+                "safety_gate": "submission_blocked_human_review",
+                "report_submission_allowed": False,
+                "validation_execution_allowed": False,
+            }
+        ]
         assert report_summary["redaction_review_required"] is True
         assert report_summary["safety_gate"] == "submission_blocked_human_review"
         assert report_summary["report_submission_allowed"] is False
         assert report_summary["validation_execution_allowed"] is False
+        readiness_audit = mission["readiness_audit"]
+        assert readiness_audit["status"] == "demo_ready_for_human_review"
+        assert readiness_audit["required_check_count"] == 8
+        assert readiness_audit["passed_check_count"] == 8
+        assert readiness_audit["execution_allowed"] is False
+        assert readiness_audit["validation_allowed"] is False
+        assert readiness_audit["report_submission_allowed"] is False
+        readiness_checks = {
+            check["key"]: check for check in readiness_audit["checks"]
+        }
+        assert readiness_checks["authorized_ab_intake"]["status"] == "passed"
+        assert readiness_checks["hallucination_governed_candidates"]["status"] == "passed"
+        assert readiness_checks["advisory_knowledge_context"]["status"] == "passed"
+        assert readiness_checks["cross_validation_refutation"]["status"] == "passed"
+        assert readiness_checks["candidate_hunter_backlog"]["status"] == "passed"
+        assert readiness_checks["safe_validation_planning"]["status"] == "passed"
+        assert readiness_checks["submission_blocked_report"]["status"] == "passed"
+        assert readiness_checks["review_only_handoff"]["status"] == "passed"
+        assert "knowledge" in readiness_checks["advisory_knowledge_context"]["evidence_refs"]
+        assert "sarif" in readiness_checks["cross_validation_refutation"]["evidence_refs"]
+        assert readiness_checks["review_only_handoff"]["safety_gate"] == (
+            "review_only_no_execution"
+        )
         research_loop = mission["research_loop"]
         assert [stage["key"] for stage in research_loop] == [
             "scope_guard",
@@ -1365,6 +1417,10 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             ]
             is False
         )
+        assert dossier_json["readiness_audit"]["status"] == (
+            "demo_ready_for_human_review"
+        )
+        assert dossier_json["readiness_audit"]["report_submission_allowed"] is False
         assert dossier_json["studio_timeline_summary"]["blocked_stage_ids"]
         assert (
             dossier_json["studio_timeline_summary"]["validation_execution_allowed"]
@@ -1396,16 +1452,34 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert queue_json["task_timeline"][3]["validation_execution_allowed"] is False
         assert queue_json["quality_summary"]["top_candidate_quality_gate"] == "passed"
         assert queue_json["candidate_review_packets"][0]["status"] == "review_ready"
+        assert queue_json["candidate_review_packets"][0]["report_review_priority"] == (
+            "redaction_review_ready"
+        )
         assert queue_json["candidate_review_packets"][0]["validation_allowed"] is False
         assert queue_json["submission_blocked_report_summary"]["ready_candidate_ids"] == [
             candidate["hypothesis_id"]
         ]
+        assert queue_json["submission_blocked_report_summary"]["report_review_queue"][
+            0
+        ] == {
+            "candidate_id": candidate["hypothesis_id"],
+            "priority": "redaction_review_ready",
+            "quality_score": candidate["quality_score"],
+            "next_human_action": queue_json["candidate_review_packets"][0][
+                "next_human_action"
+            ],
+            "safety_gate": "submission_blocked_human_review",
+            "report_submission_allowed": False,
+            "validation_execution_allowed": False,
+        }
         assert (
             queue_json["submission_blocked_report_summary"][
                 "validation_execution_allowed"
             ]
             is False
         )
+        assert queue_json["readiness_audit"]["passed_check_count"] == 8
+        assert queue_json["readiness_audit"]["execution_allowed"] is False
         assert queue_json["candidate_hunter_backlog"] == []
         assert queue_json["studio_timeline_summary"]["total_stages"] == len(
             queue_json["task_timeline"]
@@ -1433,6 +1507,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "## Studio timeline summary" in queue_markdown
         assert "## Candidate review packets" in queue_markdown
         assert "## Submission-blocked report summary" in queue_markdown
+        assert "## Readiness audit" in queue_markdown
         assert "## Agent handoff pack" in queue_markdown
         assert "handoff items: 0" in queue_markdown
         assert "## Agent queue" in queue_markdown
@@ -1447,6 +1522,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "## Studio timeline summary" in dossier_markdown
         assert "## Candidate review packets" in dossier_markdown
         assert "## Submission-blocked report summary" in dossier_markdown
+        assert "## Readiness audit" in dossier_markdown
         assert "## Agent handoff pack" in dossier_markdown
         assert "## Agent queue" in dossier_markdown
         assert "## Hallucination guard" in dossier_markdown

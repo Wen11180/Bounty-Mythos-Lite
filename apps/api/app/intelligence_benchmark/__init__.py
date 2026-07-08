@@ -461,10 +461,18 @@ def _candidate_artifact_kinds(candidate: dict[str, Any]) -> list[str]:
     source_facts = candidate.get("source_facts", [])
     if not isinstance(source_facts, list):
         return list(REQUIRED_STUDIO_ARTIFACTS)
+    benchmark_artifacts = {
+        *REQUIRED_STUDIO_ARTIFACTS,
+        "sarif",
+        "sbom",
+        "fuzzing",
+    }
     kinds = {
         kind
         for fact in source_facts
-        if isinstance(fact, dict) and (kind := _text(fact.get("artifact_kind")))
+        if isinstance(fact, dict)
+        and (kind := _text(fact.get("artifact_kind")))
+        and kind in benchmark_artifacts
     }
     kinds.update(REQUIRED_STUDIO_ARTIFACTS)
     ordered = [

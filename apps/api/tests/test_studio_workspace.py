@@ -451,6 +451,8 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
                     "evidence_need_count": 2,
                     "false_positive_check_count": 1,
                     "safe_validation_step_count": 0,
+                    "quality_score": 85,
+                    "report_review_priority": "resolve_review_gaps",
                     "report_status": "submission_blocked",
                     "hallucination_guard_status": "needs_review",
                     "execution_allowed": True,
@@ -567,6 +569,10 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert queue_json["candidate_review_packets"][0]["missing_items"] == [
         "safe_validation_plan"
     ]
+    assert queue_json["candidate_review_packets"][0]["quality_score"] == 85
+    assert queue_json["candidate_review_packets"][0]["report_review_priority"] == (
+        "resolve_review_gaps"
+    )
     assert queue_json["candidate_review_packets"][0]["execution_allowed"] is False
     assert queue_json["candidate_review_packets"][0]["validation_allowed"] is False
     assert (
@@ -578,6 +584,17 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
         "ready_candidate_ids": [],
         "needs_review_candidate_ids": ["H-001"],
         "missing_review_items": {"H-001": ["safe_validation_plan"]},
+        "report_review_queue": [
+            {
+                "candidate_id": "H-001",
+                "priority": "resolve_review_gaps",
+                "quality_score": 85,
+                "next_human_action": "Draft a non-destructive validation plan.",
+                "safety_gate": "submission_blocked_human_review",
+                "report_submission_allowed": False,
+                "validation_execution_allowed": False,
+            }
+        ],
         "next_human_actions": ["Draft a non-destructive validation plan."],
         "safety_gate": "submission_blocked_human_review",
         "redaction_review_required": True,
@@ -620,6 +637,7 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "## Candidate review packets" in queue_markdown
     assert "## Submission-blocked report summary" in queue_markdown
     assert "H-001: safe_validation_plan" in queue_markdown
+    assert "H-001: resolve_review_gaps (85/100)" in queue_markdown
     assert "## Agent handoff pack" in queue_markdown
     assert "handoff items: 1" in queue_markdown
     assert "agent: Evidence Planner" in queue_markdown

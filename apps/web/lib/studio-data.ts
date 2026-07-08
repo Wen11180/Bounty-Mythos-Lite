@@ -165,6 +165,8 @@ export type StudioCandidateReviewPacketInput = {
   hallucination_guard_status?: string;
   missing_items?: string[];
   next_human_action?: string;
+  quality_score?: number;
+  report_review_priority?: string;
   report_status?: string;
   report_submission_allowed?: boolean;
   safe_validation_step_count?: number;
@@ -178,6 +180,15 @@ export type StudioSubmissionBlockedReportSummaryInput = {
   missing_review_items?: Record<string, string[]>;
   needs_review_candidate_ids?: string[];
   next_human_actions?: string[];
+  report_review_queue?: Array<{
+    candidate_id?: string;
+    next_human_action?: string;
+    priority?: string;
+    quality_score?: number;
+    report_submission_allowed?: boolean;
+    safety_gate?: string;
+    validation_execution_allowed?: boolean;
+  }>;
   ready_candidate_ids?: string[];
   redaction_review_required?: boolean;
   report_submission_allowed?: boolean;
@@ -396,6 +407,8 @@ export type StudioCandidateReviewPacket = {
   hallucinationGuardStatus: string;
   missingItems: string[];
   nextHumanAction: string;
+  qualityScore: number;
+  reportReviewPriority: string;
   reportStatus: string;
   reportSubmissionAllowed: boolean;
   safeValidationStepCount: number;
@@ -444,6 +457,15 @@ export type StudioSubmissionBlockedReportSummary = {
   missingReviewItems: Record<string, string[]>;
   needsReviewCandidateIds: string[];
   nextHumanActions: string[];
+  reportReviewQueue: Array<{
+    candidateId: string;
+    nextHumanAction: string;
+    priority: string;
+    qualityScore: number;
+    reportSubmissionAllowed: boolean;
+    safetyGate: string;
+    validationExecutionAllowed: boolean;
+  }>;
   readyCandidateIds: string[];
   redactionReviewRequired: boolean;
   reportSubmissionAllowed: boolean;
@@ -733,6 +755,11 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       ),
       missingItems: packet.missing_items ?? [],
       nextHumanAction: safeText(packet.next_human_action, "Human review required."),
+      qualityScore: packet.quality_score ?? 0,
+      reportReviewPriority: safeText(
+        packet.report_review_priority,
+        "resolve_review_gaps",
+      ),
       reportStatus: safeText(packet.report_status, "submission_blocked"),
       reportSubmissionAllowed: false,
       safeValidationStepCount: packet.safe_validation_step_count ?? 0,
@@ -801,6 +828,17 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         mission?.submission_blocked_report_summary?.needs_review_candidate_ids ?? [],
       nextHumanActions:
         mission?.submission_blocked_report_summary?.next_human_actions ?? [],
+      reportReviewQueue: (
+        mission?.submission_blocked_report_summary?.report_review_queue ?? []
+      ).map((item) => ({
+        candidateId: safeText(item.candidate_id, "candidate"),
+        nextHumanAction: safeText(item.next_human_action, "Human review required."),
+        priority: safeText(item.priority, "resolve_review_gaps"),
+        qualityScore: item.quality_score ?? 0,
+        reportSubmissionAllowed: false,
+        safetyGate: safeText(item.safety_gate, "submission_blocked_human_review"),
+        validationExecutionAllowed: false,
+      })),
       readyCandidateIds:
         mission?.submission_blocked_report_summary?.ready_candidate_ids ?? [],
       redactionReviewRequired: true,
@@ -860,6 +898,39 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       vulnType: safeText(candidate.vuln_type, "candidate"),
     })),
   };
+}
+
+export function toStudioMissionHandoffBrief(panel: StudioMissionPanel): string {
+  const handoffItems =
+    panel.agentHandoffPack.handoffItems.length > 0
+      ? panel.agentHandoffPack.handoffItems
+          .map(
+            (item) =>
+              `- ${item.handoffId}: ${item.assignedAgent} handles ${item.workItemId}; status ${item.status}; gap ${item.gap}; next ${item.nextAction}`,
+          )
+          .join("\n")
+      : "- No handoff items; keep human review on the current Top candidates.";
+  const blockedActions =
+    panel.agentHandoffPack.blockedActions.length > 0
+      ? panel.agentHandoffPack.blockedActions.join(", ")
+      : panel.blockedActions.join(", ");
+
+  return [
+    "Mythos / MDASH / XBOW style local AI vulnerability research handoff",
+    `Run: ${panel.runId}`,
+    `Artifacts: ${panel.artifactCoverage}`,
+    `Scope Guard: ${panel.scopeGuardLabel}`,
+    `Advisory context: ${panel.advisoryContextLabel}`,
+    `Quality: ${panel.qualitySummary.topCandidateQualityGate}; review-ready ${panel.qualitySummary.reviewReadyCount}/${panel.qualitySummary.candidateCount}; average ${panel.qualitySummary.averageQualityScore}`,
+    `Report: ${panel.submissionBlockedReportSummary.status}; ready candidates ${panel.submissionBlockedReportSummary.readyCandidateIds.join(", ") || "none"}; gate ${panel.submissionBlockedReportSummary.safetyGate}`,
+    `Next reviewer: ${panel.agentHandoffPack.nextReviewAgent}`,
+    `Handoff items: ${panel.agentHandoffPack.handoffItemCount}`,
+    handoffItems,
+    `Safety gate: ${panel.agentHandoffPack.safetyGate}`,
+    `Completion gate: ${panel.agentHandoffPack.completionGate}`,
+    `Blocked actions: ${blockedActions || "execute_live_validation, run_fuzzer, submit_report"}`,
+    "No validation, fuzzing, or report submission is authorized from this handoff.",
+  ].join("\n");
 }
 
 export function toStudioArtifactChecklist(

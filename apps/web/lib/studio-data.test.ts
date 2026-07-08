@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   toStudioArtifactChecklist,
   toStudioCandidateCards,
+  toStudioMissionHandoffBrief,
   toStudioMissionPanel,
   toStudioResearchReadiness,
   toStudioWorkspaceSummary,
@@ -123,6 +124,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         evidence_need_count: 2,
         false_positive_check_count: 2,
         safe_validation_step_count: 3,
+        quality_score: 95,
+        report_review_priority: "redaction_review_ready",
         report_status: "submission_blocked",
         hallucination_guard_status: "cross_checked",
         execution_allowed: true,
@@ -136,6 +139,17 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       ready_candidate_ids: ["H-001"],
       needs_review_candidate_ids: [],
       missing_review_items: {},
+      report_review_queue: [
+        {
+          candidate_id: "H-001",
+          priority: "redaction_review_ready",
+          quality_score: 95,
+          next_human_action: "Human evidence and redaction review required.",
+          safety_gate: "submission_blocked_human_review",
+          report_submission_allowed: true,
+          validation_execution_allowed: true,
+        },
+      ],
       next_human_actions: ["Human evidence and redaction review required."],
       safety_gate: "submission_blocked_human_review",
       redaction_review_required: true,
@@ -513,6 +527,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       evidenceNeedCount: 2,
       falsePositiveCheckCount: 2,
       safeValidationStepCount: 3,
+      qualityScore: 95,
+      reportReviewPriority: "redaction_review_ready",
       reportStatus: "submission_blocked",
       hallucinationGuardStatus: "cross_checked",
       executionAllowed: false,
@@ -525,6 +541,17 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     missingReviewItems: {},
     needsReviewCandidateIds: [],
     nextHumanActions: ["Human evidence and redaction review required."],
+    reportReviewQueue: [
+      {
+        candidateId: "H-001",
+        priority: "redaction_review_ready",
+        qualityScore: 95,
+        nextHumanAction: "Human evidence and redaction review required.",
+        safetyGate: "submission_blocked_human_review",
+        reportSubmissionAllowed: false,
+        validationExecutionAllowed: false,
+      },
+    ],
     readyCandidateIds: ["H-001"],
     redactionReviewRequired: true,
     reportSubmissionAllowed: false,
@@ -651,6 +678,78 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     "har",
   ]);
   assert.doesNotMatch(JSON.stringify(panel), /executeValidation|submitReport|send_file/i);
+});
+
+test("mission handoff brief summarizes review-only state for another session", () => {
+  const panel = toStudioMissionPanel({
+    artifacts: {
+      missing: [],
+      present: ["scope", "policy", "code", "api", "har"],
+      required: ["scope", "policy", "code", "api", "har"],
+    },
+    advisory_artifacts: {
+      present: ["sarif"],
+      supported: ["sarif", "knowledge"],
+    },
+    blocked_actions: ["execute_live_validation", "touch_real_user_data", "submit_report"],
+    candidate_count: 1,
+    run_id: "pipeline_run_1",
+    scope_guard_status: "scope_imported",
+    quality_summary: {
+      average_quality_score: 95,
+      candidate_count: 1,
+      review_ready_count: 1,
+      status: "review_ready",
+      top_candidate_quality_gate: "passed",
+    },
+    submission_blocked_report_summary: {
+      candidate_count: 1,
+      ready_candidate_ids: ["H-001"],
+      status: "ready_for_redaction_review",
+      safety_gate: "submission_blocked_human_review",
+      report_submission_allowed: true,
+      validation_execution_allowed: true,
+    },
+    agent_handoff_pack: {
+      pack_id: "studio:agent_handoff:next_review",
+      status: "needs_review",
+      handoff_item_count: 1,
+      next_review_agent: "Evidence Planner",
+      priority_order: ["H-001:draft_validation_plan"],
+      safety_gate: "review_only_no_execution",
+      completion_gate: "human_review_required",
+      blocked_actions: ["execute_live_validation", "run_fuzzer", "submit_report"],
+      handoff_items: [
+        {
+          handoff_id: "handoff:H-001:draft_validation_plan",
+          work_item_id: "H-001:draft_validation_plan",
+          candidate_id: "H-001",
+          assigned_agent: "Evidence Planner",
+          status: "needs_review",
+          gap: "missing_safe_validation_plan",
+          next_action: "Draft a non-destructive validation plan for H-001.",
+          safety_gate: "review_only_no_execution",
+        },
+      ],
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
+  });
+
+  const brief = toStudioMissionHandoffBrief(panel);
+
+  assert.match(brief, /Mythos \/ MDASH \/ XBOW style local AI vulnerability research/);
+  assert.match(brief, /Run: pipeline_run_1/);
+  assert.match(brief, /Artifacts: 5\/5 required artifacts/);
+  assert.match(brief, /Quality: passed/);
+  assert.match(brief, /Report: ready_for_redaction_review/);
+  assert.match(brief, /Next reviewer: Evidence Planner/);
+  assert.match(brief, /handoff:H-001:draft_validation_plan/);
+  assert.match(brief, /Safety gate: review_only_no_execution/);
+  assert.match(brief, /Blocked actions: execute_live_validation, run_fuzzer, submit_report/);
+  assert.match(brief, /No validation, fuzzing, or report submission is authorized/);
+  assert.doesNotMatch(brief, /executeValidation|submitReport|send_file/);
 });
 
 test("artifact checklist marks required A+B authorized inputs before research", () => {
@@ -965,8 +1064,10 @@ test("studio workbench reads mission summary for desktop workbench state", async
 
   assert.match(workbench, /getStudioWorkspaceMission/);
   assert.match(workbench, /toStudioMissionPanel/);
+  assert.match(workbench, /toStudioMissionHandoffBrief/);
   assert.match(workbench, /missionPanel/);
   assert.match(workbench, /Mission control/);
+  assert.match(workbench, /Handoff brief/);
   assert.match(workbench, /Research loop/);
   assert.match(workbench, /Agent queue/);
   assert.match(workbench, /missionPanel\.artifactCoverage/);

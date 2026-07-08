@@ -284,6 +284,51 @@ def test_build_studio_expectations_template_preserves_ab_required_artifacts():
     assert template["expected_candidates"][0]["max_policy_risk_score"] == 49
 
 
+def test_build_studio_expectations_template_keeps_knowledge_advisory():
+    template = build_studio_expectations_template(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "source_path": "src/routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                        {
+                            "artifact_kind": "knowledge",
+                            "fact_type": "knowledge_signal",
+                            "pattern_id": "WEB-IDOR-001",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert template["expected_candidates"][0]["required_artifacts"] == [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har",
+    ]
+
+
 def test_evaluate_studio_candidates_requires_any_code_path_when_marked_required():
     result = evaluate_studio_candidates(
         {

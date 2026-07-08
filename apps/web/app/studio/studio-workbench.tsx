@@ -21,6 +21,7 @@ import {
 import {
   toStudioArtifactChecklist,
   toStudioCandidateCards,
+  toStudioMissionHandoffBrief,
   toStudioMissionPanel,
   toStudioResearchReadiness,
   toStudioWorkspaceSummary,
@@ -89,6 +90,10 @@ export function StudioWorkbench() {
 
   const workspace = useMemo(() => toStudioWorkspaceSummary(manifest), [manifest]);
   const artifactChecklist = useMemo(() => toStudioArtifactChecklist(manifest), [manifest]);
+  const missionHandoffBrief = useMemo(
+    () => toStudioMissionHandoffBrief(missionPanel),
+    [missionPanel],
+  );
   const researchReadiness = useMemo(
     () => toStudioResearchReadiness(workspacePath, manifest),
     [manifest, workspacePath],
@@ -901,6 +906,7 @@ export function StudioWorkbench() {
                   ),
                 ]}
               />
+              <TextBlock title="Handoff brief" value={missionHandoffBrief} />
               <ListBlock
                 title="Agent handoff pack"
                 items={[agentHandoffPackLine(missionPanel.agentHandoffPack)]}
@@ -1143,6 +1149,17 @@ function ListBlock({ items, title }: { items: string[]; title: string }) {
   );
 }
 
+function TextBlock({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="mt-4">
+      <p className="text-xs font-semibold uppercase text-[var(--muted)]">{title}</p>
+      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap border border-[var(--line)] bg-[var(--panel)] p-3 text-xs leading-5 text-[var(--muted)]">
+        {value}
+      </pre>
+    </div>
+  );
+}
+
 function missionCandidateLine(
   candidate: ReturnType<typeof toStudioMissionPanel>["topCandidates"][number],
 ): string {
@@ -1221,7 +1238,7 @@ function candidateReviewPacketLine(
     packet.validationAllowed ? "validation allowed" : "validation blocked",
     packet.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
   ].join(", ");
-  return `${packet.candidateId}: ${packet.status}; completed ${completed}; missing ${missing}; evidence ${packet.evidenceNeedCount}; refutation ${packet.falsePositiveCheckCount}; validation steps ${packet.safeValidationStepCount}; hallucination ${packet.hallucinationGuardStatus}; report ${packet.reportStatus}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
+  return `${packet.candidateId}: ${packet.status}; priority ${packet.reportReviewPriority}; quality ${packet.qualityScore}/100; completed ${completed}; missing ${missing}; evidence ${packet.evidenceNeedCount}; refutation ${packet.falsePositiveCheckCount}; validation steps ${packet.safeValidationStepCount}; hallucination ${packet.hallucinationGuardStatus}; report ${packet.reportStatus}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
 }
 
 function submissionBlockedReportSummaryLine(
@@ -1240,11 +1257,17 @@ function submissionBlockedReportSummaryLine(
     summary.nextHumanActions.length > 0
       ? summary.nextHumanActions.join("; ")
       : "Human redaction review required.";
+  const reviewQueue =
+    summary.reportReviewQueue.length > 0
+      ? summary.reportReviewQueue
+          .map((item) => `${item.candidateId}: ${item.priority} (${item.qualityScore}/100)`)
+          .join("; ")
+      : "none";
   const gates = [
     summary.validationExecutionAllowed ? "validation allowed" : "validation blocked",
     summary.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
   ].join(", ");
-  return `${summary.status}; candidates ${summary.candidateCount}; ready ${ready}; needs review ${needsReview}; missing ${missing}; gate ${summary.safetyGate}; redaction review ${summary.redactionReviewRequired ? "required" : "missing"}; next ${nextActions}; ${gates}`;
+  return `${summary.status}; candidates ${summary.candidateCount}; ready ${ready}; needs review ${needsReview}; missing ${missing}; report queue ${reviewQueue}; gate ${summary.safetyGate}; redaction review ${summary.redactionReviewRequired ? "required" : "missing"}; next ${nextActions}; ${gates}`;
 }
 
 function agentHandoffPackLine(

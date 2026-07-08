@@ -2647,6 +2647,16 @@ def _studio_mission_summary(
         agent_queue,
         studio_timeline_summary,
     )
+    readiness_audit = _studio_readiness_audit(
+        present,
+        _studio_present_advisory_artifacts(manifest),
+        candidate_summaries,
+        candidate_review_packets,
+        submission_blocked_report_summary,
+        candidate_hunter_backlog,
+        candidate_hunter_iteration,
+        agent_handoff_pack,
+    )
     return {
         "mode": "local_ai_vulnerability_research_workbench",
         "run_id": run_id,
@@ -2672,6 +2682,7 @@ def _studio_mission_summary(
         "top_candidates": candidate_summaries,
         "candidate_review_packets": candidate_review_packets,
         "submission_blocked_report_summary": submission_blocked_report_summary,
+        "readiness_audit": readiness_audit,
         "quality_summary": quality_summary,
         "candidate_hunter_backlog": candidate_hunter_backlog,
         "candidate_hunter_iteration": candidate_hunter_iteration,
@@ -2992,6 +3003,7 @@ def _studio_submission_blocked_report_summary(
     ready_candidate_ids: list[str] = []
     needs_review_candidate_ids: list[str] = []
     missing_review_items: dict[str, list[str]] = {}
+    report_review_queue: list[dict[str, object]] = []
     next_human_actions: list[str] = []
 
     for packet in packets[:5]:
@@ -2999,6 +3011,7 @@ def _studio_submission_blocked_report_summary(
         if not candidate_id:
             continue
         missing = _studio_agent_string_list(packet.get("missing_items", []))
+        status = safe_preview_text(packet.get("status", "needs_review"))
         if packet.get("status") == "review_ready" and not missing:
             ready_candidate_ids.append(candidate_id)
         else:
@@ -3007,6 +3020,17 @@ def _studio_submission_blocked_report_summary(
         next_action = safe_preview_text(packet.get("next_human_action", ""))
         if next_action and next_action not in next_human_actions:
             next_human_actions.append(next_action)
+        report_review_queue.append(
+            {
+                "candidate_id": candidate_id,
+                "priority": _studio_report_review_priority(status, missing),
+                "quality_score": _studio_nonnegative_int(packet.get("quality_score")),
+                "next_human_action": next_action,
+                "safety_gate": "submission_blocked_human_review",
+                "report_submission_allowed": False,
+                "validation_execution_allowed": False,
+            }
+        )
 
     return {
         "status": (
@@ -3018,6 +3042,13 @@ def _studio_submission_blocked_report_summary(
         "ready_candidate_ids": ready_candidate_ids,
         "needs_review_candidate_ids": needs_review_candidate_ids,
         "missing_review_items": missing_review_items,
+        "report_review_queue": sorted(
+            report_review_queue,
+            key=lambda item: (
+                _studio_report_review_priority_rank(item.get("priority")),
+                -_studio_nonnegative_int(item.get("quality_score")),
+            ),
+        )[:5],
         "next_human_actions": next_human_actions[:5],
         "safety_gate": "submission_blocked_human_review",
         "redaction_review_required": True,
@@ -3080,9 +3111,10 @@ def _studio_candidate_review_packet(candidate: dict[str, object]) -> dict[str, o
         for item in checklist
         if item.get("status") != "complete"
     ]
+    status = "review_ready" if not missing_items else "needs_review"
     return {
         "candidate_id": candidate_id,
-        "status": "review_ready" if not missing_items else "needs_review",
+        "status": status,
         "completed_items": completed_items,
         "missing_items": missing_items,
         "checklist": checklist,
@@ -3100,6 +3132,11 @@ def _studio_candidate_review_packet(candidate: dict[str, object]) -> dict[str, o
         "safe_validation_step_count": _studio_nonnegative_int(
             candidate.get("safe_validation_step_count")
         ),
+        "quality_score": _studio_nonnegative_int(candidate.get("quality_score")),
+        "report_review_priority": _studio_report_review_priority(
+            status,
+            missing_items,
+        ),
         "report_status": safe_preview_text(
             candidate.get("report_status", "submission_blocked")
         ),
@@ -3110,6 +3147,189 @@ def _studio_candidate_review_packet(candidate: dict[str, object]) -> dict[str, o
         "validation_allowed": False,
         "report_submission_allowed": False,
     }
+
+
+def _studio_report_review_priority(status: str, missing_items: list[str]) -> str:
+    if status == "review_ready" and not missing_items:
+        return "redaction_review_ready"
+    return "resolve_review_gaps"
+
+
+def _studio_report_review_priority_rank(value: object) -> int:
+    priority = safe_preview_text(value)
+    if priority == "redaction_review_ready":
+        return 0
+    if priority == "resolve_review_gaps":
+        return 1
+    return 2
+
+
+def _studio_readiness_audit(
+    present_artifacts: list[str],
+    advisory_artifacts: list[str],
+    candidates: list[dict[str, object]],
+    candidate_review_packets: list[dict[str, object]],
+    submission_blocked_report_summary: dict[str, object],
+    candidate_hunter_backlog: list[dict[str, object]],
+    candidate_hunter_iteration: dict[str, object],
+    agent_handoff_pack: dict[str, object],
+) -> dict[str, object]:
+    checks = [
+        _studio_readiness_check(
+            "authorized_ab_intake",
+            all(kind in present_artifacts for kind in _studio_required_ab_artifacts()),
+            present_artifacts,
+            "Authorized policy, scope, API, HAR, and local code are present.",
+        ),
+        _studio_readiness_check(
+            "hallucination_governed_candidates",
+            bool(candidates)
+            and all(_studio_candidate_is_hallucination_governed(candidate) for candidate in candidates),
+            _studio_candidate_readiness_refs(candidates),
+            "LLM claims remain unverified until local evidence and cross-checks agree.",
+        ),
+        _studio_readiness_check(
+            "advisory_knowledge_context",
+            bool(advisory_artifacts),
+            _studio_advisory_readiness_refs(advisory_artifacts),
+            "Private knowledge/RAG context is advisory few-shot context only.",
+        ),
+        _studio_readiness_check(
+            "cross_validation_refutation",
+            bool(candidates)
+            and all(_studio_candidate_has_cross_validation(candidate) for candidate in candidates),
+            _studio_cross_validation_refs(candidates, advisory_artifacts),
+            "Independent static or fuzzing challenge and refutation questions are present.",
+        ),
+        _studio_readiness_check(
+            "candidate_hunter_backlog",
+            not candidate_hunter_backlog
+            and candidate_hunter_iteration.get("status") == "ready_for_human_review",
+            _studio_candidate_readiness_refs(candidates),
+            "Candidate hunter backlog is clear for human review.",
+        ),
+        _studio_readiness_check(
+            "safe_validation_planning",
+            bool(candidates)
+            and all(
+                _studio_nonnegative_int(candidate.get("safe_validation_step_count")) > 0
+                for candidate in candidates
+            ),
+            _studio_candidate_readiness_refs(candidates),
+            "Non-destructive validation plans exist, but execution remains blocked.",
+        ),
+        _studio_readiness_check(
+            "submission_blocked_report",
+            submission_blocked_report_summary.get("status") == "ready_for_redaction_review"
+            and submission_blocked_report_summary.get("report_submission_allowed") is False,
+            _studio_agent_string_list(
+                submission_blocked_report_summary.get("ready_candidate_ids", [])
+            ),
+            "Report draft is ready only for redaction and human review.",
+            safety_gate="submission_blocked_human_review",
+        ),
+        _studio_readiness_check(
+            "review_only_handoff",
+            agent_handoff_pack.get("safety_gate") == "review_only_no_execution"
+            and agent_handoff_pack.get("execution_allowed") is False
+            and agent_handoff_pack.get("validation_allowed") is False
+            and agent_handoff_pack.get("report_submission_allowed") is False,
+            _studio_agent_string_list(agent_handoff_pack.get("agent_queue_refs", [])),
+            "Agent handoff is review-only and cannot execute validation or submission.",
+        ),
+    ]
+    passed_count = sum(1 for check in checks if check["status"] == "passed")
+    return {
+        "status": (
+            "demo_ready_for_human_review"
+            if passed_count == len(checks)
+            else "needs_review"
+        ),
+        "required_check_count": len(checks),
+        "passed_check_count": passed_count,
+        "checks": checks,
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_readiness_check(
+    key: str,
+    passed: bool,
+    evidence_refs: list[str],
+    summary: str,
+    *,
+    safety_gate: str = "review_only_no_execution",
+) -> dict[str, object]:
+    return {
+        "key": key,
+        "status": "passed" if passed else "needs_review",
+        "summary": safe_preview_text(summary),
+        "evidence_refs": _studio_agent_label_list(evidence_refs),
+        "safety_gate": safety_gate,
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_candidate_is_hallucination_governed(candidate: dict[str, object]) -> bool:
+    guard = candidate.get("hallucination_guard")
+    return (
+        isinstance(guard, dict)
+        and guard.get("status") == "cross_checked"
+        and guard.get("model_output_status") == "unverified_claim_not_fact"
+        and candidate.get("quality_status") == "review_ready"
+    )
+
+
+def _studio_candidate_has_cross_validation(candidate: dict[str, object]) -> bool:
+    guard = candidate.get("hallucination_guard")
+    independent_sources = (
+        _studio_agent_string_list(guard.get("independent_cross_check_sources", []))
+        if isinstance(guard, dict)
+        else []
+    )
+    return (
+        bool(independent_sources)
+        and _studio_nonnegative_int(candidate.get("false_positive_check_count")) > 0
+    )
+
+
+def _studio_candidate_readiness_refs(
+    candidates: list[dict[str, object]],
+) -> list[str]:
+    refs: list[str] = []
+    for candidate in candidates:
+        candidate_id = safe_preview_text(candidate.get("hypothesis_id", ""))
+        if candidate_id:
+            refs.append(candidate_id)
+    return refs
+
+
+def _studio_cross_validation_refs(
+    candidates: list[dict[str, object]],
+    advisory_artifacts: list[str],
+) -> list[str]:
+    refs: set[str] = {
+        artifact
+        for artifact in advisory_artifacts
+        if artifact in {"sarif", "fuzzing"}
+    }
+    for candidate in candidates:
+        guard = candidate.get("hallucination_guard")
+        if not isinstance(guard, dict):
+            continue
+        refs.update(_studio_agent_string_list(guard.get("independent_cross_check_sources", [])))
+    return sorted(refs)
+
+
+def _studio_advisory_readiness_refs(advisory_artifacts: list[str]) -> list[str]:
+    refs = set(advisory_artifacts)
+    refs.add("knowledge")
+    return sorted(refs)
 
 
 def _studio_candidate_review_item(
@@ -4684,12 +4904,13 @@ def _studio_provenance_review(source_facts: list[dict]) -> dict[str, object]:
         for fact in source_facts
         if isinstance(fact, dict)
     }
+    provenance_kinds = kinds - {"knowledge"}
     ordered = [
         kind
         for kind in ("scope", "policy", "code", "api", "har")
-        if kind in kinds
+        if kind in provenance_kinds
     ]
-    ordered.extend(sorted(kinds.difference(ordered)))
+    ordered.extend(sorted(provenance_kinds.difference(ordered)))
     return {
         "status": "needs_human_review",
         "artifact_kinds": ordered,
