@@ -374,6 +374,14 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
                 "Complete redaction review before report export or sharing.",
             ],
         }
+        assert candidates[0]["provenance_review"] == {
+            "status": "needs_human_review",
+            "artifact_kinds": ["scope", "policy", "code", "api", "har"],
+            "review_items": [
+                "Confirm every candidate claim is traceable to imported authorized artifacts.",
+                "Review only normalized artifact summaries; raw paths, headers, tokens, and bodies remain excluded.",
+            ],
+        }
         assert candidates[0]["suggested_fix"] == (
             "Enforce the affected authorization or input boundary in the backend service layer before returning sensitive data or performing state changes."
         )
@@ -521,6 +529,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "## Evidence review" in markdown
         assert "- Status: needs_human_review" in markdown
         assert candidates[0]["evidence_review"]["required_items"][0] in markdown
+        assert "## Provenance review" in markdown
+        assert "- Artifact kinds: scope, policy, code, api, har" in markdown
+        assert candidates[0]["provenance_review"]["review_items"][0] in markdown
         assert "## Deduplication review" in markdown
         assert "- Status: needs_human_review" in markdown
         assert candidates[0]["deduplication_review"]["review_items"][0] in markdown
@@ -542,6 +553,107 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "- execute_live_validation" in markdown
         assert "- submit_report" in markdown
         assert "send_file(file_id)" not in str(export)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+        run_id = run_response.json()["run_id"]
+
+        mission_response = client.get(
+            "/mythos/studio/workspaces/mission",
+            params={"workspace_path": workspace_path},
+        )
+
+        assert mission_response.status_code == 200
+        mission = mission_response.json()
+        assert mission["mode"] == "local_ai_vulnerability_research_workbench"
+        assert mission["run_id"] == run_id
+        assert mission["scope_guard_status"] == "scope_imported"
+        assert mission["artifacts"] == {
+            "required": ["scope", "policy", "code", "api", "har"],
+            "present": ["scope", "policy", "code", "api", "har"],
+            "missing": [],
+        }
+        assert 1 <= mission["candidate_count"] <= 5
+        assert mission["quality_gates"] == {
+            "top_candidates_limited": True,
+            "submission_blocked": True,
+            "report_submission_allowed": False,
+            "validation_execution_allowed": False,
+            "human_review_required": True,
+        }
+        assert mission["blocked_actions"] == [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+        ]
+        assert mission["next_actions"] == [
+            "review_top_candidates",
+            "create_benchmark_template",
+            "export_submission_blocked_report",
+        ]
+        candidate = mission["top_candidates"][0]
+        assert candidate["hypothesis_id"].startswith("H-")
+        assert candidate["affected_endpoint"] == "GET /files/{file_id}/export"
+        assert candidate["affected_code_path"] == "routes.py:export_file"
+        assert candidate["report_status"] == "submission_blocked"
+        assert candidate["validation_status"] == "needs_human_approval"
+        assert candidate["execution_allowed"] is False
+        assert candidate["provenance_artifacts"] == ["scope", "policy", "code", "api", "har"]
+        assert "send_file(file_id)" not in str(mission)
+        assert str(repo) not in str(mission)
     finally:
         app.dependency_overrides.clear()
 

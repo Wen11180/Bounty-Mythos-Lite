@@ -2343,6 +2343,23 @@ def run_mythos_studio_workspace_research(
     }
 
 
+@app.get("/mythos/studio/workspaces/mission")
+def get_mythos_studio_workspace_mission(
+    workspace_path: str,
+    run_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    manifest = load_workspace_manifest(workspace_path)
+    selected_run_id = run_id or _latest_studio_run_id(manifest)
+    if selected_run_id is None:
+        return _studio_mission_summary(manifest, None, [])
+    record = DatabaseRepository(session).get_pipeline_run(selected_run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    candidates = _studio_candidates_for_run(record, manifest)
+    return _studio_mission_summary(manifest, selected_run_id, candidates)
+
+
 @app.get("/mythos/studio/workspaces/candidates")
 def list_mythos_studio_workspace_candidates(
     workspace_path: str,
@@ -2500,6 +2517,95 @@ def _studio_missing_ab_artifacts(manifest: dict) -> list[str]:
     ]
 
 
+def _studio_mission_summary(
+    manifest: dict,
+    run_id: str | None,
+    candidates: list[dict],
+) -> dict[str, object]:
+    present = _studio_present_ab_artifacts(manifest)
+    missing = [kind for kind in _studio_required_ab_artifacts() if kind not in present]
+    top_candidates = candidates[:5]
+    return {
+        "mode": "local_ai_vulnerability_research_workbench",
+        "run_id": run_id,
+        "scope_guard_status": safe_preview_text(
+            manifest.get("safety", {}).get("scope_guard_status", "")
+            if isinstance(manifest.get("safety"), dict)
+            else ""
+        ),
+        "artifacts": {
+            "required": list(_studio_required_ab_artifacts()),
+            "present": present,
+            "missing": missing,
+        },
+        "candidate_count": len(top_candidates),
+        "top_candidates": [
+            _studio_mission_candidate_summary(candidate)
+            for candidate in top_candidates
+        ],
+        "quality_gates": {
+            "top_candidates_limited": len(candidates) <= 5,
+            "submission_blocked": True,
+            "report_submission_allowed": False,
+            "validation_execution_allowed": False,
+            "human_review_required": True,
+        },
+        "blocked_actions": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+        ],
+        "next_actions": [
+            "review_top_candidates",
+            "create_benchmark_template",
+            "export_submission_blocked_report",
+        ],
+    }
+
+
+def _studio_required_ab_artifacts() -> tuple[str, ...]:
+    return ("scope", "policy", "code", "api", "har")
+
+
+def _studio_present_ab_artifacts(manifest: dict) -> list[str]:
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return []
+    present = {
+        artifact.get("kind")
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+        and artifact.get("kind") in _studio_required_ab_artifacts()
+    }
+    return [kind for kind in _studio_required_ab_artifacts() if kind in present]
+
+
+def _studio_mission_candidate_summary(candidate: dict) -> dict[str, object]:
+    report_readiness = candidate.get("report_readiness", {})
+    validation_review = candidate.get("validation_review", {})
+    provenance_review = candidate.get("provenance_review", {})
+    return {
+        "hypothesis_id": _studio_report_guidance_text(candidate.get("hypothesis_id", "")),
+        "vuln_type": _studio_report_guidance_text(candidate.get("vuln_type", "")),
+        "risk": _studio_report_guidance_text(candidate.get("risk", "")),
+        "priority_score": candidate.get("priority_score", 0),
+        "affected_endpoint": _studio_report_endpoint(candidate),
+        "affected_code_path": _studio_report_code_path(candidate),
+        "report_status": _studio_report_guidance_text(
+            report_readiness.get("status", "") if isinstance(report_readiness, dict) else ""
+        ),
+        "validation_status": _studio_report_guidance_text(
+            validation_review.get("status", "") if isinstance(validation_review, dict) else ""
+        ),
+        "execution_allowed": False,
+        "provenance_artifacts": _studio_report_guidance_list(
+            provenance_review.get("artifact_kinds", [])
+            if isinstance(provenance_review, dict)
+            else []
+        ),
+    }
+
+
 def _studio_report_context(manifest: dict) -> dict[str, object]:
     surface_facts = [
         fact
@@ -2545,6 +2651,9 @@ def _studio_report_candidate_guidance(
             candidate.get("refutation_review", {})
         )
         policy_review = _studio_report_policy_review(candidate.get("policy_review", {}))
+        provenance_review = _studio_report_provenance_review(
+            candidate.get("provenance_review", {})
+        )
         validation_review = _studio_report_validation_review(
             candidate.get("validation_review", {})
         )
@@ -2564,6 +2673,8 @@ def _studio_report_candidate_guidance(
             guidance["refutation_review"] = refutation_review
         if policy_review:
             guidance["policy_review"] = policy_review
+        if provenance_review:
+            guidance["provenance_review"] = provenance_review
         if validation_review:
             guidance["validation_review"] = validation_review
         if evidence_needed:
@@ -2662,6 +2773,22 @@ def _studio_report_policy_review(value: object) -> dict[str, object]:
     policy_risk_score = value.get("policy_risk_score")
     if isinstance(policy_risk_score, int):
         review["policy_risk_score"] = max(0, min(100, policy_risk_score))
+    review_items = _studio_report_guidance_list(value.get("review_items", []))
+    if review_items:
+        review["review_items"] = review_items
+    return review
+
+
+def _studio_report_provenance_review(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    review: dict[str, object] = {}
+    status = _studio_report_guidance_text(value.get("status", ""))
+    if status:
+        review["status"] = status
+    artifact_kinds = _studio_report_guidance_list(value.get("artifact_kinds", []))
+    if artifact_kinds:
+        review["artifact_kinds"] = artifact_kinds
     review_items = _studio_report_guidance_list(value.get("review_items", []))
     if review_items:
         review["review_items"] = review_items
@@ -2988,6 +3115,7 @@ def _studio_candidate_from_hypothesis(
         "policy_review": _studio_policy_review(policy_risk, policy_risk_score),
         "evidence_gaps": _studio_candidate_evidence_gaps(candidate_source_facts),
         "evidence_review": _studio_evidence_review(candidate_source_facts),
+        "provenance_review": _studio_provenance_review(candidate_source_facts),
         "source_facts": candidate_source_facts,
         "submission_blocked": True,
 }
@@ -3056,6 +3184,28 @@ def _studio_evidence_review(source_facts: list[dict]) -> dict[str, object]:
     return {
         "status": "needs_human_review",
         "required_items": items,
+    }
+
+
+def _studio_provenance_review(source_facts: list[dict]) -> dict[str, object]:
+    kinds = {
+        safe_preview_text(fact.get("artifact_kind"))
+        for fact in source_facts
+        if isinstance(fact, dict)
+    }
+    ordered = [
+        kind
+        for kind in ("scope", "policy", "code", "api", "har")
+        if kind in kinds
+    ]
+    ordered.extend(sorted(kinds.difference(ordered)))
+    return {
+        "status": "needs_human_review",
+        "artifact_kinds": ordered,
+        "review_items": [
+            "Confirm every candidate claim is traceable to imported authorized artifacts.",
+            "Review only normalized artifact summaries; raw paths, headers, tokens, and bodies remain excluded.",
+        ],
     }
 
 

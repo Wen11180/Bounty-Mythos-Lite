@@ -92,6 +92,21 @@
           "Complete redaction review before report export or sharing."
         ]
       },
+      "provenance_review": {
+        "status": "needs_human_review",
+        "artifact_kinds": [
+          "scope",
+          "policy",
+          "code",
+          "api",
+          "har",
+          "sarif"
+        ],
+        "review_items": [
+          "Confirm every candidate claim is traceable to imported authorized artifacts.",
+          "Review only normalized artifact summaries; raw paths, headers, tokens, and bodies remain excluded."
+        ]
+      },
       "deduplication_review": {
         "status": "needs_human_review",
         "duplicate_risk_score": 16,

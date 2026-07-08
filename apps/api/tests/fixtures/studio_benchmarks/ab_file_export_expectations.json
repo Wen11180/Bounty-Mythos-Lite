@@ -43,6 +43,7 @@
       "max_duplicate_risk_score": 49,
       "require_policy_risk": true,
       "require_evidence_review": true,
+      "require_provenance_review": true,
       "max_policy_risk_score": 49,
       "require_deduplication_review": true,
       "require_refutation_review": true,

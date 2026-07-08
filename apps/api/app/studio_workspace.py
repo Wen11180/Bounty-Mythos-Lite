@@ -294,6 +294,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
     lines.extend(_deduplication_review_markdown_lines(report.get("deduplication_review")))
     lines.extend(_refutation_review_markdown_lines(report.get("refutation_review")))
     lines.extend(_policy_review_markdown_lines(report.get("policy_review")))
+    lines.extend(_provenance_review_markdown_lines(report.get("provenance_review")))
     lines.extend(_validation_review_markdown_lines(report.get("validation_review")))
     sections = report.get("sections")
     if isinstance(sections, dict):
@@ -434,6 +435,23 @@ def _policy_review_markdown_lines(value: Any) -> list[str]:
     if not items:
         return []
     return ["", "## Policy review", *[f"- {item}" for item in items]]
+
+
+def _provenance_review_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    items: list[str] = []
+    status = _markdown_safe_text(value.get("status"))
+    if status:
+        items.append(f"Status: {status}")
+    artifact_kinds = _markdown_list(value.get("artifact_kinds"))
+    if artifact_kinds:
+        items.append(f"Artifact kinds: {', '.join(artifact_kinds)}")
+    review_items = _markdown_list(value.get("review_items"))
+    items.extend(review_items)
+    if not items:
+        return []
+    return ["", "## Provenance review", *[f"- {item}" for item in items]]
 
 
 def _validation_review_markdown_lines(value: Any) -> list[str]:

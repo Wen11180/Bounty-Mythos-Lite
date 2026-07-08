@@ -645,6 +645,37 @@ def test_report_export_markdown_includes_policy_review_items(tmp_path: Path):
     assert "Authorization: Bearer" not in markdown
 
 
+def test_report_export_markdown_includes_provenance_review_items(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "provenance_review": {
+                "status": "needs_human_review",
+                "artifact_kinds": ["scope", "policy", "code", "api", "har"],
+                "review_items": [
+                    "Confirm claims are traceable to imported artifacts.",
+                    "Review Authorization: Bearer secret-token before sharing.",
+                ],
+            },
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Provenance review" in markdown
+    assert "- Status: needs_human_review" in markdown
+    assert "- Artifact kinds: scope, policy, code, api, har" in markdown
+    assert "- Confirm claims are traceable to imported artifacts." in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
 def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
 
