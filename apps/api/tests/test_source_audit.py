@@ -304,6 +304,49 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_meth
     )
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_method_view_method_decorator_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from flask import Flask, send_file",
+                "from flask.views import MethodView",
+                "from flask_login import login_required",
+                "",
+                "app = Flask(__name__)",
+                "",
+                "class FileExport(MethodView):",
+                "    @login_required",
+                "    def get(self, file_id: str):",
+                "        return send_file(file_id)",
+                "",
+                "app.add_url_rule(",
+                '    "/files/<file_id>/export",',
+                '    view_func=FileExport.as_view("export_file"),',
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+    assert (
+        "- No high-signal vulnerability hypotheses generated from the current inputs."
+        in result.report_markdown
+    )
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_service_layer_authz(
     tmp_path,
 ):

@@ -213,6 +213,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     method_view_classes: set[str] = set()
     method_view_methods: dict[str, set[str]] = {}
     method_view_authz_refs: dict[str, list[tuple[str, int]]] = {}
+    method_view_method_authz_refs: dict[tuple[str, str], list[tuple[str, int]]] = {}
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         if pending_add_url_rule is not None:
@@ -226,6 +227,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         add_url_rule_line,
                         method_view_methods,
                         method_view_authz_refs,
+                        method_view_method_authz_refs,
                     )
                 )
                 pending_add_url_rule = None
@@ -460,7 +462,10 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             continue
 
         if line.strip():
-            if not line.strip().startswith("@"):
+            if (
+                not line.strip().startswith("@")
+                and FUNCTION_PATTERN.match(line) is None
+            ):
                 pending_decorator_authz_refs = []
             indent = _indent_width(line)
             class_stack = [
@@ -521,6 +526,7 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         line_number,
                         method_view_methods,
                         method_view_authz_refs,
+                        method_view_method_authz_refs,
                     )
                 )
             else:
@@ -530,13 +536,25 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
         function_match = FUNCTION_PATTERN.match(line)
         if function_match is not None:
             class_name = _current_class(class_stack)
-            if (
+            function_name = function_match.group(1).lower()
+            is_method_view_method = (
                 class_name in method_view_classes
-                and function_match.group(1).lower() in HTTP_METHOD_NAMES
-            ):
-                method_view_methods.setdefault(class_name, set()).add(
-                    function_match.group(1).lower()
+                and function_name in HTTP_METHOD_NAMES
+            )
+            if is_method_view_method:
+                method_view_methods.setdefault(class_name, set()).add(function_name)
+                method_view_method_authz_refs[(class_name, function_name)] = _dedupe_refs(
+                    [
+                        *method_view_method_authz_refs.get(
+                            (class_name, function_name),
+                            [],
+                        ),
+                        *pending_decorator_authz_refs,
+                    ]
                 )
+                pending_decorator_authz_refs = []
+            elif pending_route is None:
+                pending_decorator_authz_refs = []
             function_stack.append((function_match.group(1), _indent_width(line)))
         if function_match is not None and pending_route is None:
             function_name = function_match.group(1)
@@ -1407,6 +1425,7 @@ def _flask_method_view_route_facts(
     start_line: int,
     method_view_methods: dict[str, set[str]],
     method_view_authz_refs: dict[str, list[tuple[str, int]]],
+    method_view_method_authz_refs: dict[tuple[str, str], list[tuple[str, int]]],
 ) -> list[CodebaseFactCandidate]:
     block = "\n".join(lines)
     route_path = _route_path_from_decorator_lines(lines)
@@ -1434,7 +1453,12 @@ def _flask_method_view_route_facts(
                 },
             )
         )
-        for call_name, authz_line in method_view_authz_refs.get(class_name, []):
+        for call_name, authz_line in _dedupe_refs(
+            [
+                *method_view_authz_refs.get(class_name, []),
+                *method_view_method_authz_refs.get((class_name, method_name), []),
+            ]
+        ):
             facts.append(
                 CodebaseFactCandidate(
                     fact_type="authz_check",
