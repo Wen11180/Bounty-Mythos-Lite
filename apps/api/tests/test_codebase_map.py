@@ -2714,6 +2714,234 @@ def load_file_for_user(file_id: str, current_user):
     assert "authorization_gap_candidate" not in fact_types
 
 
+def test_map_authorized_code_files_follows_multiline_repository_owner_filter():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from app.services.files import export_file_for_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    return export_file_for_user(
+        file_id,
+        current_user,
+    )
+""",
+                },
+                {
+                    "path": "apps/api/services/files.py",
+                    "content": """
+from app.repositories.files import load_file_for_user
+
+def export_file_for_user(file_id: str, current_user):
+    file = load_file_for_user(
+        file_id,
+        current_user,
+    )
+    return send_file(file.path)
+""",
+                },
+                {
+                    "path": "apps/api/repositories/files.py",
+                    "content": """
+def load_file_for_user(file_id: str, current_user):
+    return db.query(File).filter_by(id=file_id, account_id=current_user.account_id).one()
+""",
+                },
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    service_calls = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "service_call"
+    ]
+
+    assert "export_file_for_user" in service_calls
+    assert "load_file_for_user" in service_calls
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_treats_multiline_membership_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    file = db.query(File).filter(
+        File.id == file_id,
+        File.account_id.in_(
+            current_user.account_ids
+        ),
+    ).one()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "account_id_filter" in authz_symbols
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_treats_bracketed_multiline_membership_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    file = db.query(File).filter(
+        File.id == file_id,
+        File.account_id.in_([
+            current_user.account_id,
+        ]),
+    ).one()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "account_id_filter" in authz_symbols
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_treats_multiline_kwarg_membership_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, current_user):
+    file = File.objects.filter(
+        id=file_id,
+        account_id__in=[
+            current_user.account_id,
+        ],
+    ).get()
+    return send_file(file.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "account_id_filter" in authz_symbols
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_treats_workspace_id_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/assistant.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/workspaces/{workspace_id}/assistant/query")
+def query_workspace(workspace_id: str, current_user):
+    docs = db.query(Document).filter(
+        Document.workspace_id == current_user.workspace_id,
+    ).all()
+    return answer_from_documents(docs)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "workspace_id_filter" in authz_symbols
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_treats_team_id_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/teams.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.patch("/teams/{team_id}/invite-policy")
+def update_invite_policy(team_id: str, current_user):
+    policy = db.query(InvitePolicy).filter(
+        InvitePolicy.team_id == current_user.team_id,
+    ).one()
+    return update_role(policy)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "team_id_filter" in authz_symbols
+    assert "authorization_gap_candidate" not in fact_types
+
+
 def test_map_authorized_code_files_follows_imported_service_alias_to_repository_owner_filter():
     result = map_authorized_code_files(
         {

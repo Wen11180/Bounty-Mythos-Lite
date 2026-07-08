@@ -75,9 +75,13 @@ AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
-    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id)(?:__in)?)\s*=\s*"
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id)(?:__in)?)\s*=\s*"
     r"(?:[\[({]\s*)?"
     r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*[\])}]?",
+    re.IGNORECASE,
+)
+AUTHZ_BOUNDARY_KWARG_START_PATTERN = re.compile(
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id)__in)\s*=\s*[\[({]?\s*$",
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN = re.compile(
@@ -86,6 +90,12 @@ AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN = re.compile(
     r"(?P<values>[A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*[\])}]?\s*\)",
     re.IGNORECASE,
 )
+AUTHZ_BOUNDARY_MEMBERSHIP_START_PATTERN = re.compile(
+    r"\b(?P<field>[A-Za-z_][A-Za-z0-9_.]*)\.in_\(\s*[\[({]?\s*$",
+    re.IGNORECASE,
+)
+IDENTIFIER_LINE_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*$")
+MEMBERSHIP_WRAPPER_LINE_PATTERN = re.compile(r"^\s*[\[({]\s*$")
 AUTHZ_BOUNDARY_FIELDS = {
     "created_by_id",
     "owner_id",
@@ -94,6 +104,7 @@ AUTHZ_BOUNDARY_FIELDS = {
     "account_id",
     "org_id",
     "organization_id",
+    "workspace_id",
 }
 PRINCIPAL_ID_IDENTIFIERS = {
     "user_id",
@@ -124,6 +135,23 @@ SENSITIVE_SINK_NAMES = {
     "update_role",
 }
 HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
+CALL_NAME_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+NON_CALL_KEYWORDS = {
+    "and",
+    "as",
+    "assert",
+    "await",
+    "class",
+    "def",
+    "for",
+    "if",
+    "in",
+    "not",
+    "or",
+    "return",
+    "while",
+    "with",
+}
 
 
 @dataclass(frozen=True)
@@ -202,6 +230,8 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     pending_router_assignment: tuple[str, int, list[str], str] | None = None
     pending_add_url_rule: tuple[int, list[str]] | None = None
     pending_signature_authz: tuple[str, int] | None = None
+    pending_membership_filter: tuple[str, str, int] | None = None
+    pending_kwarg_membership_filter: tuple[str, str, int] | None = None
     function_stack: list[tuple[str, int]] = []
     class_stack: list[tuple[str, int]] = []
     dependency_aliases: dict[str, str] = {}
@@ -830,6 +860,69 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
             alias_name, boundary_field = principal_id_alias
             principal_id_aliases.setdefault(current_function, {})[alias_name] = boundary_field
 
+        if current_function is not None and pending_membership_filter is not None:
+            handler, field_name, membership_line = pending_membership_filter
+            values = _identifier_line_value(line)
+            if handler == current_function and values is None and _membership_wrapper_line(line):
+                continue
+            if handler == current_function and values is not None:
+                boundary_field = _authz_boundary_membership_field(
+                    field_name,
+                    values,
+                    principal_id_aliases.get(current_function, {}),
+                )
+                if boundary_field is not None:
+                    facts.append(
+                        CodebaseFactCandidate(
+                            fact_type="authz_check",
+                            source_path=source_path,
+                            symbol_name=f"{boundary_field}_filter",
+                            route_method=None,
+                            route_path=None,
+                            authz_hint=_authz_boundary_hint(boundary_field),
+                            sensitivity_label="low",
+                            payload={
+                                "handler": current_function,
+                                "line": membership_line,
+                                "mapping_mode": "static_code_snippet_analysis",
+                            },
+                        )
+                    )
+            pending_membership_filter = None
+
+        if (
+            current_function is not None
+            and pending_kwarg_membership_filter is not None
+        ):
+            handler, field_name, membership_line = pending_kwarg_membership_filter
+            value = _identifier_line_value(line)
+            if handler == current_function and value is None and _membership_wrapper_line(line):
+                continue
+            if handler == current_function and value is not None:
+                boundary_field = _authz_boundary_kwarg_field(
+                    field_name,
+                    value,
+                    principal_id_aliases.get(current_function, {}),
+                )
+                if boundary_field is not None:
+                    facts.append(
+                        CodebaseFactCandidate(
+                            fact_type="authz_check",
+                            source_path=source_path,
+                            symbol_name=f"{boundary_field}_filter",
+                            route_method=None,
+                            route_path=None,
+                            authz_hint=_authz_boundary_hint(boundary_field),
+                            sensitivity_label="low",
+                            payload={
+                                "handler": current_function,
+                                "line": membership_line,
+                                "mapping_mode": "static_code_snippet_analysis",
+                            },
+                        )
+                    )
+            pending_kwarg_membership_filter = None
+
         boundary_filter = _authz_boundary_filter(
             line,
             principal_id_aliases.get(current_function or "", {}),
@@ -852,6 +945,22 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                     },
                 )
             )
+        elif current_function is not None:
+            membership_field = _authz_boundary_membership_start(line)
+            if membership_field is not None:
+                pending_membership_filter = (
+                    current_function,
+                    membership_field,
+                    line_number,
+                )
+            else:
+                kwarg_membership_field = _authz_boundary_kwarg_membership_start(line)
+                if kwarg_membership_field is not None:
+                    pending_kwarg_membership_filter = (
+                        current_function,
+                        kwarg_membership_field,
+                        line_number,
+                    )
         for raw_call_name in _called_names(line):
             call_name = _resolved_call_name(
                 raw_call_name,
@@ -1054,13 +1163,22 @@ def _called_names(line: str) -> list[str]:
             }
         ]
     except tokenize.TokenError:
-        return []
+        return _called_names_from_incomplete_line(line)
 
     for index, token in enumerate(tokens[:-1]):
         next_token = tokens[index + 1]
         if token.type == tokenize.NAME and next_token.string == "(":
             calls.append(token.string)
     return calls
+
+
+def _called_names_from_incomplete_line(line: str) -> list[str]:
+    scrubbed = re.sub(r"([\"']).*?\1", "\"\"", line)
+    return [
+        match.group(1)
+        for match in CALL_NAME_PATTERN.finditer(scrubbed)
+        if match.group(1) not in NON_CALL_KEYWORDS
+    ]
 
 
 def _local_call_alias(line: str) -> tuple[str, str] | None:
@@ -1657,6 +1775,31 @@ def _authz_boundary_filter(
     return None
 
 
+def _authz_boundary_membership_start(line: str) -> str | None:
+    match = AUTHZ_BOUNDARY_MEMBERSHIP_START_PATTERN.search(line)
+    if match is None:
+        return None
+    return match.group("field")
+
+
+def _authz_boundary_kwarg_membership_start(line: str) -> str | None:
+    match = AUTHZ_BOUNDARY_KWARG_START_PATTERN.search(line)
+    if match is None:
+        return None
+    return match.group("field")
+
+
+def _identifier_line_value(line: str) -> str | None:
+    match = IDENTIFIER_LINE_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _membership_wrapper_line(line: str) -> bool:
+    return MEMBERSHIP_WRAPPER_LINE_PATTERN.match(line) is not None
+
+
 def _authz_boundary_field(
     left: str,
     right: str,
@@ -1832,7 +1975,15 @@ def _relation_boundary_field(field_name: str) -> str | None:
     normalized = field_name.lower()
     if normalized.endswith("__in"):
         return None
-    if normalized in {"owner", "user", "tenant", "account", "org", "organization"}:
+    if normalized in {
+        "owner",
+        "user",
+        "tenant",
+        "account",
+        "org",
+        "organization",
+        "workspace",
+    }:
         return normalized
     return None
 
@@ -1842,7 +1993,15 @@ def _relation_membership_boundary_field(field_name: str) -> str | None:
     if not normalized.endswith("__in"):
         return None
     relation = normalized.removesuffix("__in")
-    if relation in {"owner", "user", "tenant", "account", "org", "organization"}:
+    if relation in {
+        "owner",
+        "user",
+        "tenant",
+        "account",
+        "org",
+        "organization",
+        "workspace",
+    }:
         return relation
     return None
 

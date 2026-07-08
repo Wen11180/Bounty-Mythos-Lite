@@ -520,6 +520,231 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_service_la
     )
 
 
+def test_run_source_audit_raises_authorization_hypothesis_for_multiline_service_sink_without_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    services = repo / "services"
+    services.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "from services.files import export_file_for_user",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    return export_file_for_user(",
+                "        file_id,",
+                "        current_user,",
+                "    )",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (services / "files.py").write_text(
+        "\n".join(
+            [
+                "def export_file_for_user(file_id: str, current_user):",
+                "    return send_file(",
+                "        file_id,",
+                "    )",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
+    assert result.hypotheses[0].location == "GET /files/{file_id}/export"
+    assert "traceable_source_fact" in result.hypotheses[0].ranking_reasons
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_membership_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    file = db.query(File).filter(",
+                "        File.id == file_id,",
+                "        File.account_id.in_(",
+                "            current_user.account_ids",
+                "        ),",
+                "    ).one()",
+                "    return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_bracketed_multiline_membership_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    file = db.query(File).filter(",
+                "        File.id == file_id,",
+                "        File.account_id.in_([",
+                "            current_user.account_id,",
+                "        ]),",
+                "    ).one()",
+                "    return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_kwarg_membership_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str, current_user):",
+                "    file = File.objects.filter(",
+                "        id=file_id,",
+                "        account_id__in=[",
+                "            current_user.account_id,",
+                "        ],",
+                "    ).get()",
+                "    return send_file(file.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_workspace_id_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.post("/workspaces/{workspace_id}/assistant/query")',
+                "def query_workspace(workspace_id: str, current_user):",
+                "    docs = db.query(Document).filter(",
+                "        Document.workspace_id == current_user.workspace_id,",
+                "    ).all()",
+                "    return send_file(docs[0].path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_team_id_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.patch("/teams/{team_id}/invite-policy")',
+                "def update_invite_policy(team_id: str, current_user):",
+                "    policy = db.query(InvitePolicy).filter(",
+                "        InvitePolicy.team_id == current_user.team_id,",
+                "    ).one()",
+                "    return update_role(policy)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_owner_filter_authz(
     tmp_path,
 ):
