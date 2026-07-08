@@ -337,6 +337,8 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["ranking_reasons"]
         assert candidates[0]["refutation_status"] == "unverified"
         assert candidates[0]["duplicate_risk_score"] <= 49
+        assert candidates[0]["policy_risk"] == "low"
+        assert candidates[0]["policy_risk_score"] == 10
         assert candidates[0]["evidence_gaps"] == []
         assert candidates[0]["suggested_fix"] == (
             "Enforce the affected authorization or input boundary in the backend service layer before returning sensitive data or performing state changes."
@@ -460,6 +462,8 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "- Affected endpoint: GET /files/{file_id}/export" in markdown
         assert "- Affected code path: routes.py:export_file" in markdown
         assert candidates[0]["broken_invariant"] in markdown
+        assert "- Policy risk: low" in markdown
+        assert "- Policy risk score: 10" in markdown
         assert "## Ranking reasons" in markdown
         assert candidates[0]["ranking_reasons"][0] in markdown
         assert "## Report readiness" in markdown
@@ -1245,7 +1249,130 @@ def test_studio_candidates_include_imported_fuzzing_plan_context_as_advisory(
         markdown = Path(export["report_markdown_path"]).read_text(encoding="utf-8")
         assert "## Advisory signals" in markdown
         assert (
+            "Advisory-only signals are not confirmed vulnerabilities and require human review."
+            in markdown
+        )
+        assert (
             "- Fuzzing plan advisory: parse_export_manifest (parser, planned, not_executed)"
+            in markdown
+        )
+        assert "secret-token" not in str(export)
+        assert "secret-token" not in markdown
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_candidates_include_imported_strategy_context_as_advisory(
+    tmp_path: Path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+    strategy_path = tmp_path / "strategy-notes.md"
+    strategy_path.write_text(
+        "\n".join(
+            [
+                "# Strategy",
+                "focus: Cross-tenant file export authorization",
+                "risk_family: IDOR",
+                "note: Prioritize workspace boundary checks before validation.",
+                "note: Authorization: Bearer secret-token should not leak",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+            ("strategy", strategy_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+
+        candidates_response = client.get(
+            "/mythos/studio/workspaces/candidates",
+            params={"workspace_path": workspace_path},
+        )
+        assert candidates_response.status_code == 200
+        candidates = candidates_response.json()["candidates"]
+        strategy_facts = [
+            fact
+            for candidate in candidates
+            for fact in candidate["source_facts"]
+            if fact.get("fact_type") == "strategy_signal"
+        ]
+
+        assert strategy_facts
+        assert strategy_facts[0] == {
+            "fact_type": "strategy_signal",
+            "artifact_kind": "strategy",
+            "focus": "Cross-tenant file export authorization",
+            "risk_family": "IDOR",
+            "note": "Prioritize workspace boundary checks before validation.",
+            "advisory_only": "true",
+        }
+        assert "strategy-notes.md" not in str(candidates)
+        assert "secret-token" not in str(candidates)
+        assert "Authorization: Bearer" not in str(candidates)
+
+        export_response = client.post(
+            "/mythos/studio/workspaces/reports/export",
+            json={
+                "workspace_path": workspace_path,
+                "run_id": run_response.json()["run_id"],
+            },
+        )
+        assert export_response.status_code == 200
+        export = export_response.json()
+        assert export["report"]["advisory_signals"] == [
+            "Strategy advisory: Cross-tenant file export authorization (IDOR)"
+        ]
+        markdown = Path(export["report_markdown_path"]).read_text(encoding="utf-8")
+        assert "## Advisory signals" in markdown
+        assert (
+            "- Strategy advisory: Cross-tenant file export authorization (IDOR)"
             in markdown
         )
         assert "secret-token" not in str(export)

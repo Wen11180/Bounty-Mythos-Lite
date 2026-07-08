@@ -2600,6 +2600,10 @@ def _studio_report_candidate_summary(candidate: dict) -> list[str]:
     duplicate_risk_score = candidate.get("duplicate_risk_score")
     if isinstance(duplicate_risk_score, int):
         _append_studio_summary(summary, "Duplicate risk score", str(duplicate_risk_score))
+    _append_studio_summary(summary, "Policy risk", candidate.get("policy_risk", ""))
+    policy_risk_score = candidate.get("policy_risk_score")
+    if isinstance(policy_risk_score, int):
+        _append_studio_summary(summary, "Policy risk score", str(policy_risk_score))
     return summary
 
 
@@ -2680,6 +2684,8 @@ def _studio_report_advisory_signal_labels(value: object) -> list[str]:
             label = _studio_report_dependency_signal_label(item)
         elif fact_type == "fuzzing_signal":
             label = _studio_report_fuzzing_signal_label(item)
+        elif fact_type == "strategy_signal":
+            label = _studio_report_strategy_signal_label(item)
         else:
             label = ""
         if label and label not in labels:
@@ -2723,6 +2729,17 @@ def _studio_report_fuzzing_signal_label(value: dict) -> str:
     )
     details_text = f" ({details})" if details else ""
     return f"Fuzzing plan advisory: {target_symbol}{details_text}"
+
+
+def _studio_report_strategy_signal_label(value: dict) -> str:
+    focus = _studio_report_guidance_text(value.get("focus", ""))
+    risk_family = _studio_report_guidance_text(value.get("risk_family", ""))
+    note = _studio_report_guidance_text(value.get("note", ""))
+    subject = focus or note
+    if not subject:
+        return ""
+    suffix = f" ({risk_family})" if risk_family else ""
+    return f"Strategy advisory: {subject}{suffix}"
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:
@@ -2863,6 +2880,8 @@ def _studio_candidate_from_hypothesis(
         "priority_score": hypothesis.get("priority_score", 0),
         "refutation_status": safe_preview_text(hypothesis.get("refutation_status", "")),
         "duplicate_risk_score": _studio_duplicate_risk_score(hypothesis),
+        "policy_risk": _studio_policy_risk(hypothesis),
+        "policy_risk_score": _studio_policy_risk_score(hypothesis),
         "evidence_gaps": _studio_candidate_evidence_gaps(candidate_source_facts),
         "source_facts": candidate_source_facts,
         "submission_blocked": True,
@@ -2959,6 +2978,35 @@ def _studio_duplicate_risk_score(hypothesis: dict) -> int:
     return 0
 
 
+def _studio_policy_risk(hypothesis: dict) -> str:
+    value = safe_preview_text(hypothesis.get("policy_risk", ""))
+    if value:
+        return value
+    hunter_assessment = hypothesis.get("hunter_assessment")
+    if isinstance(hunter_assessment, dict):
+        value = safe_preview_text(hunter_assessment.get("policy_risk", ""))
+        if value:
+            return value
+    return "unknown"
+
+
+def _studio_policy_risk_score(hypothesis: dict) -> int:
+    value = hypothesis.get("policy_risk_score")
+    if isinstance(value, int):
+        return max(0, min(100, value))
+    hunter_assessment = hypothesis.get("hunter_assessment")
+    if isinstance(hunter_assessment, dict):
+        value = hunter_assessment.get("policy_risk_score")
+        if isinstance(value, int):
+            return max(0, min(100, value))
+    return {
+        "low": 10,
+        "medium": 35,
+        "high": 70,
+        "blocked": 100,
+    }.get(_studio_policy_risk(hypothesis).lower(), 0)
+
+
 def _studio_safe_validation_plan(hypothesis: dict) -> list[str]:
     validation_mode = safe_preview_text(hypothesis.get("validation_mode", "manual_review"))
     if validation_mode == "two_account_authorization_check":
@@ -3008,7 +3056,8 @@ def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
     for artifact in artifacts:
         if (
             not isinstance(artifact, dict)
-            or artifact.get("kind") not in {"api", "har", "sarif", "sbom", "fuzzing"}
+            or artifact.get("kind")
+            not in {"api", "har", "sarif", "sbom", "fuzzing", "strategy"}
         ):
             continue
         source_path = artifact.get("source_path")
@@ -3019,6 +3068,12 @@ def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
 
 
 def _studio_surface_facts_from_file(kind: str, source_path: str) -> list[dict[str, str]]:
+    if kind == "strategy":
+        try:
+            text = Path(source_path).read_text(encoding="utf-8-sig")
+        except OSError:
+            return []
+        return _studio_strategy_surface_facts(text)
     try:
         payload = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
@@ -3034,6 +3089,29 @@ def _studio_surface_facts_from_file(kind: str, source_path: str) -> list[dict[st
     if kind == "fuzzing":
         return _studio_fuzzing_surface_facts(payload)
     return []
+
+
+def _studio_strategy_surface_facts(text: str) -> list[dict[str, str]]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower().replace("-", "_")
+        if key not in {"focus", "risk_family", "note"} or key in values:
+            continue
+        safe_value = safe_preview_text(value.strip())
+        if safe_value and safe_value != "[REDACTED]":
+            values[key] = safe_value
+    if not values:
+        return []
+    fact = {
+        "fact_type": "strategy_signal",
+        "artifact_kind": "strategy",
+        "advisory_only": "true",
+        **values,
+    }
+    return [fact]
 
 
 def _studio_openapi_surface_facts(payload: object) -> list[dict[str, str]]:

@@ -14,6 +14,7 @@ ADVISORY_ARTIFACT_FACT_TYPES = {
     "sarif": "scanner_signal",
     "sbom": "dependency_signal",
     "fuzzing": "fuzzing_signal",
+    "strategy": "strategy_signal",
 }
 DEFAULT_FORBIDDEN_TEXT = [
     "Authorization: Bearer",

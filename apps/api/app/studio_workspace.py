@@ -15,6 +15,7 @@ WORKSPACE_DIRS = (
     "sbom",
     "sarif",
     "fuzzing",
+    "strategy",
     "evidence",
     "benchmarks",
     "reports",
@@ -318,6 +319,9 @@ def _report_markdown(report: dict[str, Any]) -> str:
     advisory_signals = _markdown_list(report.get("advisory_signals"))
     if advisory_signals:
         lines.extend(["", "## Advisory signals"])
+        lines.append(
+            "Advisory-only signals are not confirmed vulnerabilities and require human review."
+        )
         lines.extend(f"- {item}" for item in advisory_signals)
     safe_validation_plan = _markdown_list(report.get("safe_validation_plan"))
     if safe_validation_plan:

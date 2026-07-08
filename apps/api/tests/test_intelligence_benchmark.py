@@ -1428,6 +1428,74 @@ def test_evaluate_studio_candidates_requires_fuzzing_artifacts_to_stay_advisory(
     } in result["failures"]
 
 
+def test_evaluate_studio_candidates_requires_strategy_artifacts_to_stay_advisory():
+    result = evaluate_studio_candidates(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "evidence_needed": ["Two authorized test accounts"],
+                    "false_positive_checks": ["Does the service enforce ownership?"],
+                    "safe_validation_plan": ["Use local test accounts only"],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "touch_real_user_data",
+                        "submit_report",
+                    ],
+                    "report_readiness": {
+                        "status": "submission_blocked",
+                        "report_submission_allowed": False,
+                        "next_allowed_action": "Review evidence and safety blockers before export.",
+                    },
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "source_path": "src/routes.py",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                        {
+                            "artifact_kind": "strategy",
+                            "fact_type": "research_note",
+                            "focus": "Cross-tenant file export authorization",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "expected_candidates": [
+                {
+                    "name": "file export authz gap",
+                    "route_method": "GET",
+                    "route_path": "/files/{file_id}/export",
+                    "vuln_type": "authorization_gap",
+                    "code_path": "routes.py",
+                    "required_artifacts": ["code", "api", "har", "strategy"],
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "name": "file export authz gap",
+        "reason": "missing_advisory_signal:strategy",
+    } in result["failures"]
+
+
 def test_evaluate_studio_candidates_accepts_advisory_tool_signals():
     result = evaluate_studio_candidates(
         {
