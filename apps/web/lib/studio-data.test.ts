@@ -215,10 +215,12 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /listStudioWorkspaceCandidates/);
   assert.match(workbench, /exportStudioWorkspaceReport/);
   assert.match(workbench, /runStudioWorkspaceBenchmark/);
+  assert.match(workbench, /createStudioWorkspaceBenchmarkTemplate/);
   assert.match(workbench, /Create workspace/);
   assert.match(workbench, /Start research/);
   assert.match(workbench, /Export report preview/);
   assert.match(workbench, /Run benchmark/);
+  assert.match(workbench, /Create template/);
 });
 
 test("studio workbench can open an existing local workspace", async () => {
@@ -326,8 +328,11 @@ test("studio workbench runs local A+B benchmarks from expectation files", async 
   assert.match(workbench, /Expectation file/);
   assert.match(workbench, /Select benchmark expectation file/);
   assert.match(workbench, /handleRunBenchmark/);
+  assert.match(workbench, /handleCreateBenchmarkTemplate/);
+  assert.match(workbench, /createStudioWorkspaceBenchmarkTemplate/);
   assert.match(workbench, /runStudioWorkspaceBenchmark/);
   assert.match(workbench, /Candidate benchmark/);
+  assert.match(workbench, /Benchmark expectation template created for human review/);
   assert.match(workbench, /benchmarkResult/);
   assert.match(workbench, /benchmark_path/);
   assert.match(workbench, /disabled=\{!latestRunId\}/);

@@ -10,7 +10,10 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import create_tables
 from app.deep_research import build_knowledge_artifact
-from app.intelligence_benchmark import evaluate_studio_candidates
+from app.intelligence_benchmark import (
+    build_studio_expectations_template,
+    evaluate_studio_candidates,
+)
 from app.mythos_agent import (
     AgentGoal,
     get_agent_gates,
@@ -80,12 +83,17 @@ def main(argv: list[str] | None = None) -> int:
     studio_eval.add_argument("--candidates", required=True)
     studio_eval.add_argument("--expectations", required=True)
     studio_eval.add_argument("--output")
+    studio_eval_template = subparsers.add_parser("studio-eval-template")
+    studio_eval_template.add_argument("--candidates", required=True)
+    studio_eval_template.add_argument("--output")
 
     args = parser.parse_args(argv)
     if args.command == "chat":
         return run_terminal_chat()
     if args.command == "studio-eval":
         return run_studio_eval_command(args)
+    if args.command == "studio-eval-template":
+        return run_studio_eval_template_command(args)
     if args.command == "agent":
         return run_agent_command(args)
     if args.command == "agent-status":
@@ -234,6 +242,17 @@ def run_studio_eval_command(args) -> int:
         return 0
     print("Studio benchmark failed", file=sys.stderr)
     return 1
+
+
+def run_studio_eval_template_command(args) -> int:
+    template = build_studio_expectations_template(_read_json_file(args.candidates))
+    template_json = json.dumps(template, indent=2)
+    if args.output:
+        Path(args.output).write_text(template_json, encoding="utf-8")
+        print("Studio benchmark template written")
+    else:
+        print(template_json)
+    return 0
 
 
 def run_agent_status_command(args) -> int:

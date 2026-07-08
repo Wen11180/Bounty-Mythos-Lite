@@ -31,7 +31,10 @@ from app.campaign_orchestrator import tick_campaign
 from app.hunter_intelligence import (
     HunterIntelligence,
 )
-from app.intelligence_benchmark import evaluate_studio_candidates
+from app.intelligence_benchmark import (
+    build_studio_expectations_template,
+    evaluate_studio_candidates,
+)
 from app.llm.base import LLMRequest, LLMResponse
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
@@ -100,6 +103,7 @@ from app.studio_workspace import (
     import_workspace_artifact,
     load_workspace_manifest,
     record_workspace_benchmark_result,
+    record_workspace_benchmark_template,
     record_workspace_report_export,
     record_workspace_run,
 )
@@ -189,6 +193,11 @@ class StudioBenchmarkRunRequest(BaseModel):
     workspace_path: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     expectations_path: str = Field(min_length=1)
+
+
+class StudioBenchmarkTemplateRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
 
 
 class ArtifactResponse(BaseModel):
@@ -2392,6 +2401,39 @@ def run_mythos_studio_workspace_benchmark(
     }
 
 
+@app.post("/mythos/studio/workspaces/benchmarks/template")
+def create_mythos_studio_workspace_benchmark_template(
+    request: StudioBenchmarkTemplateRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    manifest = load_workspace_manifest(request.workspace_path)
+    if request.run_id not in {
+        run.get("run_id") for run in manifest.get("runs", []) if isinstance(run, dict)
+    }:
+        raise HTTPException(status_code=404, detail="workspace_run_not_found")
+    record = DatabaseRepository(session).get_pipeline_run(request.run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    template = build_studio_expectations_template(
+        {"candidates": _studio_candidates_for_run(record, manifest)}
+    )
+    updated_manifest = record_workspace_benchmark_template(
+        request.workspace_path,
+        run_id=request.run_id,
+        template=template,
+    )
+    return {
+        "run_id": request.run_id,
+        "template": template,
+        "template_path": _studio_benchmark_template_field(
+            updated_manifest,
+            request.run_id,
+            "template_path",
+        ),
+        "manifest": updated_manifest,
+    }
+
+
 @app.post("/mythos/studio/workspaces/reports/export")
 def export_mythos_studio_workspace_report(
     request: StudioReportExportRequest,
@@ -2506,6 +2548,22 @@ def _studio_benchmark_field(manifest: dict, run_id: str, field_name: str) -> str
         if not isinstance(benchmark, dict) or benchmark.get("run_id") != run_id:
             continue
         value = benchmark.get(field_name)
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _studio_benchmark_template_field(
+    manifest: dict,
+    run_id: str,
+    field_name: str,
+) -> str | None:
+    templates = manifest.get("benchmark_templates", [])
+    if not isinstance(templates, list):
+        return None
+    for template in reversed(templates):
+        if not isinstance(template, dict) or template.get("run_id") != run_id:
+            continue
+        value = template.get(field_name)
         return value if isinstance(value, str) else None
     return None
 

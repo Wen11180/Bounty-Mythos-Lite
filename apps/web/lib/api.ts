@@ -555,6 +555,18 @@ export type StudioBenchmarkRunRequest = {
   expectations_path: string;
 };
 
+export type StudioBenchmarkTemplateRequest = {
+  workspace_path: string;
+  run_id: string;
+};
+
+export type StudioBenchmarkTemplateResponse = {
+  run_id: string;
+  template: Record<string, unknown>;
+  template_path: string | null;
+  manifest: StudioWorkspaceManifest;
+};
+
 export type StudioBenchmarkRunResponse = {
   run_id: string;
   benchmark: {
@@ -1165,6 +1177,13 @@ export function runStudioWorkspaceBenchmark(
   fallback: StudioBenchmarkRunResponse | null,
 ): Promise<StudioBenchmarkRunResponse | null> {
   return apiPost("/mythos/studio/workspaces/benchmarks/run", request, fallback);
+}
+
+export function createStudioWorkspaceBenchmarkTemplate(
+  request: StudioBenchmarkTemplateRequest,
+  fallback: StudioBenchmarkTemplateResponse | null,
+): Promise<StudioBenchmarkTemplateResponse | null> {
+  return apiPost("/mythos/studio/workspaces/benchmarks/template", request, fallback);
 }
 
 async function runSourceAuditScanRequest(

@@ -5,6 +5,7 @@ import {
   completeCampaignCycleReview,
   createResearchReviewPlan,
   createResearchRefutationDecision,
+  createStudioWorkspaceBenchmarkTemplate,
   createStudioWorkspace,
   createFindingCandidate,
   getStudioWorkspaceManifest,
@@ -327,6 +328,39 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       );
     }
 
+    if (url.endsWith("/mythos/studio/workspaces/benchmarks/template")) {
+      return new Response(
+        JSON.stringify({
+          manifest: {
+            benchmark_templates: [
+              {
+                draft_review_required: true,
+                run_id: "pipeline_run_1",
+                template_path:
+                  "C:/workspaces/acme-api/benchmarks/pipeline_run_1-expectations-template.json",
+              },
+            ],
+            runs: [
+              {
+                benchmark_template_path:
+                  "C:/workspaces/acme-api/benchmarks/pipeline_run_1-expectations-template.json",
+                run_id: "pipeline_run_1",
+              },
+            ],
+          },
+          run_id: "pipeline_run_1",
+          template: {
+            draft_review_required: true,
+            expected_candidates: [],
+            max_candidates: 5,
+          },
+          template_path:
+            "C:/workspaces/acme-api/benchmarks/pipeline_run_1-expectations-template.json",
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
     return new Response(JSON.stringify({ detail: "unexpected request" }), {
       headers: { "Content-Type": "application/json" },
       status: 500,
@@ -358,6 +392,18 @@ test("studio research API helpers keep reports submission-blocked", async () => 
     );
     assert.equal(exported?.submission_blocked, true);
 
+    const template = await createStudioWorkspaceBenchmarkTemplate(
+      {
+        run_id: "pipeline_run_1",
+        workspace_path: "C:/workspaces/acme-api",
+      },
+      null,
+    );
+    assert.equal(
+      template?.template_path,
+      "C:/workspaces/acme-api/benchmarks/pipeline_run_1-expectations-template.json",
+    );
+
     const benchmark = await runStudioWorkspaceBenchmark(
       {
         expectations_path: "C:/authorized/studio-expectations.json",
@@ -376,9 +422,14 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       "/mythos/studio/workspaces/runs",
       "/mythos/studio/workspaces/candidates",
       "/mythos/studio/workspaces/reports/export",
+      "/mythos/studio/workspaces/benchmarks/template",
       "/mythos/studio/workspaces/benchmarks/run",
     ]);
     assert.deepEqual(calls[3]?.body, {
+      run_id: "pipeline_run_1",
+      workspace_path: "C:/workspaces/acme-api",
+    });
+    assert.deepEqual(calls[4]?.body, {
       expectations_path: "C:/authorized/studio-expectations.json",
       run_id: "pipeline_run_1",
       workspace_path: "C:/workspaces/acme-api",

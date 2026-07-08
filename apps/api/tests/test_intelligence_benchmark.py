@@ -1,7 +1,10 @@
 import json
 
 from app.cli import main as cli_main
-from app.intelligence_benchmark import evaluate_studio_candidates
+from app.intelligence_benchmark import (
+    build_studio_expectations_template,
+    evaluate_studio_candidates,
+)
 
 
 def test_evaluate_studio_candidates_passes_on_traceable_ab_candidate():
@@ -63,6 +66,87 @@ def test_evaluate_studio_candidates_passes_on_traceable_ab_candidate():
     assert result["matched"] == 1
     assert result["failures"] == []
     assert result["safety"]["forbidden_text_present"] == []
+
+
+def test_build_studio_expectations_template_uses_safe_candidate_metadata_only():
+    template = build_studio_expectations_template(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization",
+                    "location": "GET /files/{file_id}/export",
+                    "reason": "send_file(file_id) should not be copied",
+                    "source_facts": [
+                        {
+                            "artifact_kind": "code",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "source_path": "C:/target/routes.py",
+                            "symbol_name": "export_file",
+                        },
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert template["draft_review_required"] is True
+    assert template["max_candidates"] == 5
+    assert template["expected_candidates"] == [
+        {
+            "name": "authorization at GET /files/{file_id}/export",
+            "route_method": "GET",
+            "route_path": "/files/{file_id}/export",
+            "vuln_type": "authorization",
+            "required_artifacts": ["code", "api", "har"],
+            "code_path": "routes.py:export_file",
+        }
+    ]
+    assert "Authorization: Bearer" in template["forbidden_text"]
+    assert "send_file(file_id)" not in str(template)
+
+
+def test_build_studio_expectations_template_preserves_ab_required_artifacts():
+    template = build_studio_expectations_template(
+        {
+            "candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization",
+                    "location": "GET /files/{file_id}/export",
+                    "source_facts": [
+                        {
+                            "artifact_kind": "api",
+                            "route_method": "GET",
+                            "route_path": "/files/{id}/export",
+                        },
+                        {
+                            "artifact_kind": "har",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert template["expected_candidates"][0]["required_artifacts"] == [
+        "code",
+        "api",
+        "har",
+    ]
 
 
 def test_evaluate_studio_candidates_fails_closed_on_missing_quality_and_secret_leak():
@@ -182,6 +266,9 @@ def test_evaluate_studio_candidates_fails_when_candidate_set_is_noisy():
 
     assert result["status"] == "failed"
     assert {"name": "candidate_set", "reason": "too_many_candidates:6"} in result["failures"]
+    assert result["failures"].count(
+        {"name": "candidate_set", "reason": "too_many_candidates:6"}
+    ) == 1
 
 
 def test_evaluate_studio_candidates_requires_expected_code_path():
@@ -511,3 +598,67 @@ def test_cli_studio_eval_writes_benchmark_result(tmp_path, capsys):
     assert exit_code == 0
     assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == "passed"
     assert "Studio benchmark passed" in capsys.readouterr().out
+
+
+def test_cli_studio_eval_template_writes_reviewable_expectations(tmp_path, capsys):
+    candidates_path = tmp_path / "candidates.json"
+    output_path = tmp_path / "expectations-template.json"
+    candidates_path.write_text(
+        json.dumps(
+            {
+                "candidates": [
+                    {
+                        "hypothesis_id": "H-001",
+                        "vuln_type": "authorization_gap",
+                        "location": "GET /files/{file_id}/export",
+                        "source_facts": [
+                            {
+                                "artifact_kind": "code",
+                                "route_method": "GET",
+                                "route_path": "/files/{file_id}/export",
+                                "source_path": "src/routes.py",
+                                "symbol_name": "export_file",
+                            },
+                            {
+                                "artifact_kind": "api",
+                                "route_method": "GET",
+                                "route_path": "/files/{id}/export",
+                            },
+                            {
+                                "artifact_kind": "har",
+                                "route_method": "GET",
+                                "route_path": "/files/123/export",
+                            },
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli_main(
+        [
+            "studio-eval-template",
+            "--candidates",
+            str(candidates_path),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    template = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert template["draft_review_required"] is True
+    assert template["expected_candidates"] == [
+        {
+            "name": "authorization_gap at GET /files/{file_id}/export",
+            "route_method": "GET",
+            "route_path": "/files/{file_id}/export",
+            "vuln_type": "authorization_gap",
+            "required_artifacts": ["code", "api", "har"],
+            "code_path": "routes.py:export_file",
+        }
+    ]
+    assert "Authorization: Bearer" in template["forbidden_text"]
+    assert "Studio benchmark template written" in capsys.readouterr().out

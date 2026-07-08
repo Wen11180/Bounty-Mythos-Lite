@@ -238,30 +238,34 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         )
         assert "send_file(file_id)" not in str(candidates)
 
-        expectations_path = tmp_path / "expectations.json"
-        expectations_path.write_text(
-            """
-{
-  "expected_candidates": [
-    {
-      "name": "file export authorization gap",
-      "route_method": "GET",
-      "route_path": "/files/{file_id}/export",
-      "vuln_type": "authorization",
-      "required_artifacts": ["code", "api", "har"]
-    }
-  ],
-  "forbidden_text": ["send_file(file_id)", "secret-token"]
-}
-""",
-            encoding="utf-8",
+        template_response = client.post(
+            "/mythos/studio/workspaces/benchmarks/template",
+            json={"workspace_path": workspace_path, "run_id": run_body["run_id"]},
         )
+        assert template_response.status_code == 200
+        template_body = template_response.json()
+        assert template_body["template_path"].endswith("-expectations-template.json")
+        assert template_body["template"]["draft_review_required"] is True
+        assert template_body["template"]["expected_candidates"][0]["code_path"] == (
+            "routes.py:export_file"
+        )
+        assert template_body["manifest"]["benchmark_templates"][-1][
+            "draft_review_required"
+        ] is True
+        assert template_body["manifest"]["runs"][-1]["benchmark_template_path"].endswith(
+            "-expectations-template.json"
+        )
+        persisted_template = Path(template_body["template_path"]).read_text(
+            encoding="utf-8"
+        )
+        assert "send_file(file_id)" not in persisted_template
+
         benchmark_response = client.post(
             "/mythos/studio/workspaces/benchmarks/run",
             json={
                 "workspace_path": workspace_path,
                 "run_id": run_body["run_id"],
-                "expectations_path": str(expectations_path),
+                "expectations_path": template_body["template_path"],
             },
         )
         assert benchmark_response.status_code == 200

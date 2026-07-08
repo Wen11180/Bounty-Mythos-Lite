@@ -121,7 +121,17 @@ python -m app studio-eval `
   --output studio-eval-result.json
 ```
 
-The Studio API also exposes `/mythos/studio/workspaces/benchmarks/run` for
+Generate a draft expectation template for human review before turning it into a
+quality gate:
+
+```powershell
+python -m app studio-eval-template `
+  --candidates C:/path/to/studio-candidates.json `
+  --output studio-expectations-template.json
+```
+
+The Studio API also exposes `/mythos/studio/workspaces/benchmarks/template` and
+`/mythos/studio/workspaces/benchmarks/run` for creating a reviewable template and
 benchmarking a workspace run directly from the local app shell.
 
 All of these CLI paths stay inside the project safety boundary: no public-target

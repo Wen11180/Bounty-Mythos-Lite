@@ -19,6 +19,12 @@ export type StudioWorkspaceManifest = {
     matched?: number;
     expected_count?: number;
   }>;
+  benchmark_templates?: Array<{
+    run_id?: string;
+    template_path?: string;
+    expected_count?: number;
+    draft_review_required?: boolean;
+  }>;
   safety?: {
     scope_guard_status?: string;
     blocked_actions?: string[];

@@ -197,6 +197,38 @@ def record_workspace_benchmark_result(
     return manifest
 
 
+def record_workspace_benchmark_template(
+    workspace_path: str | Path,
+    *,
+    run_id: str,
+    template: dict[str, Any],
+) -> dict[str, Any]:
+    path = Path(workspace_path)
+    manifest = load_workspace_manifest(path)
+    benchmark_dir = path / "benchmarks"
+    benchmark_dir.mkdir(exist_ok=True)
+    template_path = benchmark_dir / f"{_safe_name(run_id)}-expectations-template.json"
+    template_path.write_text(json.dumps(template, indent=2), encoding="utf-8")
+    template_ref = _safe_path_ref(str(template_path))
+    manifest.setdefault("benchmark_templates", []).append(
+        {
+            "run_id": run_id,
+            "template_path": template_ref,
+            "expected_count": len(template.get("expected_candidates", []))
+            if isinstance(template.get("expected_candidates"), list)
+            else 0,
+            "draft_review_required": True,
+            "recorded_at": _utc_now(),
+        }
+    )
+    for run in manifest.get("runs", []):
+        if isinstance(run, dict) and run.get("run_id") == run_id:
+            run["benchmark_template_path"] = template_ref
+            break
+    _write_manifest(path, manifest)
+    return manifest
+
+
 def _write_manifest(workspace_path: Path, manifest: dict[str, Any]) -> None:
     (workspace_path / "manifest.json").write_text(
         json.dumps(manifest, indent=2),
@@ -362,6 +394,7 @@ __all__ = [
     "import_workspace_artifact",
     "load_workspace_manifest",
     "record_workspace_benchmark_result",
+    "record_workspace_benchmark_template",
     "record_workspace_report_export",
     "record_workspace_run",
 ]

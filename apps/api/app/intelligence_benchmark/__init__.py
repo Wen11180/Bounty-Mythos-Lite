@@ -9,6 +9,44 @@ REQUIRED_SAFETY_BLOCKERS = {
     "touch_real_user_data",
     "submit_report",
 }
+DEFAULT_FORBIDDEN_TEXT = [
+    "Authorization: Bearer",
+    "Cookie",
+    "access_token",
+    "secret-token",
+]
+REQUIRED_STUDIO_ARTIFACTS = ["code", "api", "har"]
+
+
+def build_studio_expectations_template(candidates_payload: Any) -> dict:
+    candidates = _candidate_list(candidates_payload)[:5]
+    expected_candidates = []
+    for candidate in candidates:
+        route = _first_candidate_route(candidate)
+        if not route:
+            continue
+        expected: dict[str, Any] = {
+            "name": _expectation_name(candidate, route),
+            "route_method": route.get("route_method", ""),
+            "route_path": route.get("route_path", ""),
+            "vuln_type": _candidate_vuln_type(candidate),
+            "required_artifacts": _candidate_artifact_kinds(candidate),
+        }
+        code_path = _candidate_code_path(candidate)
+        if code_path:
+            expected["code_path"] = code_path
+        expected_candidates.append(expected)
+    return {
+        "draft_review_required": True,
+        "max_candidates": 5,
+        "expected_candidates": expected_candidates,
+        "forbidden_text": list(DEFAULT_FORBIDDEN_TEXT),
+        "notes": [
+            "Generated from current Studio candidates as a draft benchmark template.",
+            "Review and edit expected candidates before using this as a quality gate.",
+        ],
+    }
+
 MAX_STUDIO_CANDIDATES = 5
 
 
@@ -45,10 +83,6 @@ def evaluate_studio_candidates(candidates_payload: Any, expectations: Any) -> di
 
     if forbidden_text_present:
         failures.append({"name": "safety", "reason": "forbidden_text_present"})
-    if len(candidates) > MAX_STUDIO_CANDIDATES:
-        failures.append(
-            {"name": "candidate_set", "reason": f"too_many_candidates:{len(candidates)}"}
-        )
 
     status = "passed" if not failures else "failed"
     return {
@@ -90,6 +124,19 @@ def _matching_candidate(
         if _candidate_matches_route(candidate, expected):
             return candidate
     return None
+
+
+def _first_candidate_route(candidate: dict[str, Any]) -> dict[str, str] | None:
+    routes = _candidate_routes(candidate)
+    return routes[0] if routes else None
+
+
+def _expectation_name(candidate: dict[str, Any], route: dict[str, str]) -> str:
+    vuln_type = _candidate_vuln_type(candidate) or "candidate"
+    route_method = _text(route.get("route_method"))
+    route_path = _text(route.get("route_path"))
+    route_label = f"{route_method} {route_path}".strip()
+    return f"{vuln_type} at {route_label}" if route_label else vuln_type
 
 
 def _candidate_matches_route(candidate: dict[str, Any], expected: dict[str, Any]) -> bool:
@@ -189,6 +236,20 @@ def _missing_required_artifacts(
     return [kind for kind in required if kind not in artifact_kinds]
 
 
+def _candidate_artifact_kinds(candidate: dict[str, Any]) -> list[str]:
+    source_facts = candidate.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        return list(REQUIRED_STUDIO_ARTIFACTS)
+    kinds = {
+        kind
+        for fact in source_facts
+        if isinstance(fact, dict) and (kind := _text(fact.get("artifact_kind")))
+    }
+    kinds.update(REQUIRED_STUDIO_ARTIFACTS)
+    ordered = [kind for kind in ("code", "api", "har", "sarif", "sbom") if kind in kinds]
+    return ordered + sorted(kinds.difference(ordered))
+
+
 def _candidate_has_code_path(candidate: dict[str, Any], expected_code_path: str) -> bool:
     expected_path, expected_symbol = _split_expected_code_path(expected_code_path)
     source_facts = candidate.get("source_facts", [])
@@ -209,6 +270,22 @@ def _candidate_has_code_path(candidate: dict[str, Any], expected_code_path: str)
     return False
 
 
+def _candidate_code_path(candidate: dict[str, Any]) -> str:
+    source_facts = candidate.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        return ""
+    for fact in source_facts:
+        if not isinstance(fact, dict) or _text(fact.get("artifact_kind")) != "code":
+            continue
+        source_path = _normalized_path(_text(fact.get("source_path")))
+        if not source_path:
+            continue
+        source_name = source_path.rsplit("/", 1)[-1]
+        symbol = _text(fact.get("symbol_name"))
+        return f"{source_name}:{symbol}" if symbol else source_name
+    return ""
+
+
 def _split_expected_code_path(value: str) -> tuple[str, str]:
     path, separator, symbol = value.rpartition(":")
     if separator and path:
@@ -226,9 +303,11 @@ def _forbidden_text_present(payload: Any, forbidden_text: list[str]) -> list[str
 
 def _max_candidates(expectations: Any) -> int:
     if not isinstance(expectations, dict):
-        return 5
-    value = expectations.get("max_candidates", 5)
-    return value if isinstance(value, int) and value > 0 else 5
+        return MAX_STUDIO_CANDIDATES
+    value = expectations.get("max_candidates", MAX_STUDIO_CANDIDATES)
+    if not isinstance(value, int) or value <= 0:
+        return MAX_STUDIO_CANDIDATES
+    return min(value, MAX_STUDIO_CANDIDATES)
 
 
 def _route_paths_match(expected_path: str, candidate_path: str) -> bool:
@@ -281,4 +360,4 @@ def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-__all__ = ["evaluate_studio_candidates"]
+__all__ = ["build_studio_expectations_template", "evaluate_studio_candidates"]

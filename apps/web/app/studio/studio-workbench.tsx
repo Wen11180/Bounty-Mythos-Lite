@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   createStudioWorkspace,
+  createStudioWorkspaceBenchmarkTemplate,
   exportStudioWorkspaceReport,
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
@@ -334,6 +335,34 @@ export function StudioWorkbench() {
     }
   }
 
+  async function handleCreateBenchmarkTemplate() {
+    if (!workspacePath || !latestRunId) {
+      pushLog("Run research before creating a benchmark template.", "blocked");
+      return;
+    }
+    setBusy("benchmark-template");
+    try {
+      const template = await createStudioWorkspaceBenchmarkTemplate(
+        {
+          run_id: latestRunId,
+          workspace_path: workspacePath,
+        },
+        null,
+      );
+      if (!template) {
+        pushLog("Benchmark template was not created.", "blocked");
+        return;
+      }
+      setManifest(template.manifest);
+      if (template.template_path) {
+        setExpectationsPath(template.template_path);
+      }
+      pushLog("Benchmark expectation template created for human review.", "safe");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function pushLog(message: string, tone: LogEntry["tone"]) {
     setLog((entries) => [{ message, tone }, ...entries].slice(0, 6));
   }
@@ -635,13 +664,22 @@ export function StudioWorkbench() {
                   onChange={setExpectationsPath}
                 />
                 <div className="flex items-end">
-                  <ActionButton
-                    busy={busy === "benchmark"}
-                    disabled={!latestRunId}
-                    icon={<ShieldCheck size={16} aria-hidden="true" />}
-                    label="Run benchmark"
-                    onClick={handleRunBenchmark}
-                  />
+                  <div className="flex flex-wrap gap-2">
+                    <ActionButton
+                      busy={busy === "benchmark-template"}
+                      disabled={!latestRunId}
+                      icon={<FileDown size={16} aria-hidden="true" />}
+                      label="Create template"
+                      onClick={handleCreateBenchmarkTemplate}
+                    />
+                    <ActionButton
+                      busy={busy === "benchmark"}
+                      disabled={!latestRunId}
+                      icon={<ShieldCheck size={16} aria-hidden="true" />}
+                      label="Run benchmark"
+                      onClick={handleRunBenchmark}
+                    />
+                  </div>
                 </div>
               </div>
               {benchmarkResult ? (
