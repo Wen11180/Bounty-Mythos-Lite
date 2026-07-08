@@ -53,7 +53,10 @@ def build_studio_expectations_template(candidates_payload: Any) -> dict:
             "require_impact_rationale": True,
             "require_repair_guidance": True,
             "require_regression_test": True,
+            "require_policy_risk": True,
+            "require_evidence_review": True,
             "max_duplicate_risk_score": 49,
+            "max_policy_risk_score": 49,
         }
         code_path = _candidate_code_path(candidate)
         if code_path:
@@ -271,6 +274,10 @@ def _candidate_quality_failures(
         failures.append("missing_repair_guidance")
     if expected.get("require_regression_test") is True and not _candidate_regression_test(candidate):
         failures.append("missing_regression_test")
+    if expected.get("require_policy_risk") is True and not _candidate_policy_risk(candidate):
+        failures.append("missing_policy_risk")
+    if expected.get("require_evidence_review") is True and not _candidate_evidence_review_gate(candidate):
+        failures.append("missing_evidence_review")
     max_duplicate_risk_score = expected.get("max_duplicate_risk_score")
     if isinstance(max_duplicate_risk_score, int):
         duplicate_risk_score = _candidate_duplicate_risk_score(candidate)
@@ -278,6 +285,13 @@ def _candidate_quality_failures(
             failures.append("missing_duplicate_risk_score")
         elif duplicate_risk_score > max_duplicate_risk_score:
             failures.append(f"duplicate_risk_too_high:{duplicate_risk_score}")
+    max_policy_risk_score = expected.get("max_policy_risk_score")
+    if isinstance(max_policy_risk_score, int):
+        policy_risk_score = _candidate_policy_risk_score(candidate)
+        if policy_risk_score is None:
+            failures.append("missing_policy_risk_score")
+        elif policy_risk_score > max_policy_risk_score:
+            failures.append(f"policy_risk_too_high:{policy_risk_score}")
     report_readiness = candidate.get("report_readiness")
     if not isinstance(report_readiness, dict):
         failures.append("missing_report_readiness")
@@ -496,6 +510,36 @@ def _candidate_duplicate_risk_score(candidate: dict[str, Any]) -> int | None:
     if not isinstance(value, int):
         return None
     return max(0, min(100, value))
+
+
+def _candidate_policy_risk(candidate: dict[str, Any]) -> str:
+    return _text(candidate.get("policy_risk"))
+
+
+def _candidate_policy_risk_score(candidate: dict[str, Any]) -> int | None:
+    value = candidate.get("policy_risk_score")
+    if not isinstance(value, int):
+        return None
+    return max(0, min(100, value))
+
+
+def _candidate_evidence_review_gate(candidate: dict[str, Any]) -> bool:
+    evidence_review = candidate.get("evidence_review")
+    if not isinstance(evidence_review, dict):
+        return False
+    required_items = _string_list(evidence_review.get("required_items"))
+    if (
+        _text(evidence_review.get("status"))
+        in {"required", "needs_review", "needs_human_review"}
+        and required_items
+    ):
+        return True
+    return (
+        _text(evidence_review.get("status")) in {"required", "needs_review"}
+        and evidence_review.get("human_review_required") is True
+        and evidence_review.get("redaction_required") is True
+        and evidence_review.get("provenance_required") is True
+    )
 
 
 def _candidate_security_invariant(candidate: dict[str, Any]) -> str:

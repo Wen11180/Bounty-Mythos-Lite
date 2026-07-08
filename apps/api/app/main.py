@@ -2537,6 +2537,7 @@ def _studio_report_candidate_guidance(
         safety_blockers = _studio_report_guidance_list(candidate.get("safety_blockers", []))
         candidate_summary = _studio_report_candidate_summary(candidate)
         ranking_reasons = _studio_report_guidance_list(candidate.get("ranking_reasons", []))
+        evidence_review = _studio_report_evidence_review(candidate.get("evidence_review", {}))
         report_readiness = _studio_report_readiness(candidate.get("report_readiness", {}))
         guidance: dict[str, object] = {}
         if candidate_summary:
@@ -2545,6 +2546,8 @@ def _studio_report_candidate_guidance(
             guidance["ranking_reasons"] = ranking_reasons
         if report_readiness:
             guidance["report_readiness"] = report_readiness
+        if evidence_review:
+            guidance["evidence_review"] = evidence_review
         if evidence_needed:
             guidance["evidence_needed"] = evidence_needed
         if false_positive_checks:
@@ -2584,6 +2587,19 @@ def _studio_report_readiness(value: object) -> dict[str, object]:
     if next_allowed_action:
         readiness["next_allowed_action"] = next_allowed_action
     return readiness
+
+
+def _studio_report_evidence_review(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    review: dict[str, object] = {}
+    status = _studio_report_guidance_text(value.get("status", ""))
+    if status:
+        review["status"] = status
+    required_items = _studio_report_guidance_list(value.get("required_items", []))
+    if required_items:
+        review["required_items"] = required_items
+    return review
 
 
 def _studio_report_candidate_summary(candidate: dict) -> list[str]:
@@ -2883,6 +2899,7 @@ def _studio_candidate_from_hypothesis(
         "policy_risk": _studio_policy_risk(hypothesis),
         "policy_risk_score": _studio_policy_risk_score(hypothesis),
         "evidence_gaps": _studio_candidate_evidence_gaps(candidate_source_facts),
+        "evidence_review": _studio_evidence_review(candidate_source_facts),
         "source_facts": candidate_source_facts,
         "submission_blocked": True,
 }
@@ -2938,6 +2955,20 @@ def _studio_candidate_evidence_gaps(source_facts: list[dict]) -> list[dict[str, 
             }
         )
     return gaps
+
+
+def _studio_evidence_review(source_facts: list[dict]) -> dict[str, object]:
+    items = [
+        "Confirm the affected endpoint and code path using authorized local artifacts.",
+        "Resolve evidence gaps and false-positive checks before validation.",
+        "Complete redaction review before report export or sharing.",
+    ]
+    if _studio_candidate_evidence_gaps(source_facts):
+        items.insert(1, "Collect the missing required artifacts before treating this as report-ready.")
+    return {
+        "status": "needs_human_review",
+        "required_items": items,
+    }
 
 
 def _studio_suggested_fix(hypothesis: dict) -> str:

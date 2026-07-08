@@ -340,6 +340,14 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["policy_risk"] == "low"
         assert candidates[0]["policy_risk_score"] == 10
         assert candidates[0]["evidence_gaps"] == []
+        assert candidates[0]["evidence_review"] == {
+            "status": "needs_human_review",
+            "required_items": [
+                "Confirm the affected endpoint and code path using authorized local artifacts.",
+                "Resolve evidence gaps and false-positive checks before validation.",
+                "Complete redaction review before report export or sharing.",
+            ],
+        }
         assert candidates[0]["suggested_fix"] == (
             "Enforce the affected authorization or input boundary in the backend service layer before returning sensitive data or performing state changes."
         )
@@ -469,6 +477,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "## Report readiness" in markdown
         assert "- Status: submission_blocked" in markdown
         assert candidates[0]["report_readiness"]["next_allowed_action"] in markdown
+        assert "## Evidence review" in markdown
+        assert "- Status: needs_human_review" in markdown
+        assert candidates[0]["evidence_review"]["required_items"][0] in markdown
         assert "## Evidence needs" in markdown
         assert candidates[0]["evidence_needed"][0] in markdown
         assert "## False-positive checks" in markdown
