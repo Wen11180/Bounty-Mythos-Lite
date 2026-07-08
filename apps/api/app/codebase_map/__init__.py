@@ -75,13 +75,13 @@ AUTHZ_BOUNDARY_COMPARISON_PATTERN = re.compile(
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_KWARG_PATTERN = re.compile(
-    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|team|project|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|team_id|project_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id|team__id|project__id)(?:__in)?)\s*=\s*"
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|team|project|group|agent|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|team_id|project_id|group_id|agent_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id|team__id|project__id|group__id|agent__id)(?:__in)?)\s*=\s*"
     r"(?:[\[({]\s*)?"
     r"(?P<value>[A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*[\])}]?",
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_KWARG_START_PATTERN = re.compile(
-    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id)__in)\s*=\s*[\[({]?\s*$",
+    r"\b(?P<field>(?:owner|user|tenant|account|org|organization|workspace|team|project|group|agent|created_by|owner_id|user_id|created_by_id|tenant_id|account_id|org_id|organization_id|workspace_id|team_id|project_id|group_id|agent_id|owner__id|user__id|created_by__id|tenant__id|account__id|org__id|organization__id|workspace__id|team__id|project__id|group__id|agent__id)__in)\s*=\s*[\[({]?\s*$",
     re.IGNORECASE,
 )
 AUTHZ_BOUNDARY_MEMBERSHIP_PATTERN = re.compile(
@@ -107,6 +107,8 @@ AUTHZ_BOUNDARY_FIELDS = {
     "workspace_id",
     "team_id",
     "project_id",
+    "group_id",
+    "agent_id",
 }
 PRINCIPAL_ID_IDENTIFIERS = {
     "user_id",
@@ -131,6 +133,7 @@ SENSITIVE_SINK_NAMES = {
     "delete_file",
     "export",
     "export_file",
+    "execute_agent_tool",
     "send_file",
     "transfer",
     "update",
@@ -1987,6 +1990,8 @@ def _relation_boundary_field(field_name: str) -> str | None:
         "workspace",
         "team",
         "project",
+        "group",
+        "agent",
     }:
         return normalized
     return None
@@ -2007,6 +2012,8 @@ def _relation_membership_boundary_field(field_name: str) -> str | None:
         "workspace",
         "team",
         "project",
+        "group",
+        "agent",
     }:
         return relation
     return None

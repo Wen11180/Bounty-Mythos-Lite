@@ -779,6 +779,106 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_project_id
     assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
 
 
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_group_id_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.get("/groups/{group_id}/exports/{export_id}")',
+                "def download_group_export(group_id: str, export_id: str, current_user):",
+                "    export = db.query(GroupExport).filter(",
+                "        GroupExport.id == export_id,",
+                "        GroupExport.group_id == current_user.group_id,",
+                "    ).one()",
+                "    return send_file(export.path)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
+def test_run_source_audit_raises_authorization_hypothesis_for_agent_tool_execution_without_authz(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.post("/agents/{agent_id}/tools/execute")',
+                "def run_agent_tool(agent_id: str, tool_name: str, current_user):",
+                "    return execute_agent_tool(agent_id, tool_name)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
+    assert result.hypotheses[0].location == "POST /agents/{agent_id}/tools/execute"
+
+
+def test_run_source_audit_does_not_raise_authorization_hypothesis_for_agent_id_filter(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.post("/agents/{agent_id}/tools/execute")',
+                "def run_agent_tool(agent_id: str, tool_name: str, current_user):",
+                "    agent = db.query(Agent).filter(",
+                "        Agent.agent_id == current_user.agent_id,",
+                "    ).one()",
+                "    return execute_agent_tool(agent, tool_name)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_owner_filter_authz(
     tmp_path,
 ):

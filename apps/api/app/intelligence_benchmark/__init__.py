@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -341,8 +342,18 @@ def _missing_required_keywords(
     required = _string_list(expected.get(expected_field))
     if not required:
         return []
-    candidate_text = " ".join(_string_list(candidate.get(candidate_field))).lower()
-    return [keyword for keyword in required if keyword.lower() not in candidate_text]
+    candidate_text = _normalized_keyword_text(
+        " ".join(_string_list(candidate.get(candidate_field)))
+    )
+    return [
+        keyword
+        for keyword in required
+        if _normalized_keyword_text(keyword) not in candidate_text
+    ]
+
+
+def _normalized_keyword_text(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
 
 
 def _candidate_evidence_gaps(
@@ -382,6 +393,34 @@ def _candidate_evidence_gaps(
                 "name": name,
                 "artifact_kind": "code",
                 "reason": "missing_code_path",
+            }
+        )
+    for keyword in _missing_required_keywords(
+        candidate,
+        "evidence_needed",
+        expected,
+        "required_evidence_keywords",
+    ):
+        gaps.append(
+            {
+                "name": name,
+                "artifact_kind": "evidence_needed",
+                "reason": "missing_required_keyword",
+                "keyword": keyword,
+            }
+        )
+    for keyword in _missing_required_keywords(
+        candidate,
+        "false_positive_checks",
+        expected,
+        "required_false_positive_keywords",
+    ):
+        gaps.append(
+            {
+                "name": name,
+                "artifact_kind": "false_positive_checks",
+                "reason": "missing_required_keyword",
+                "keyword": keyword,
             }
         )
     return gaps

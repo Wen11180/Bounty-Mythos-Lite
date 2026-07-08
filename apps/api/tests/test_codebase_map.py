@@ -2976,6 +2976,103 @@ def download_project_export(project_id: str, export_id: str, current_user):
     assert "authorization_gap_candidate" not in fact_types
 
 
+def test_map_authorized_code_files_treats_group_id_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/groups.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/groups/{group_id}/exports/{export_id}")
+def download_group_export(group_id: str, export_id: str, current_user):
+    export = db.query(GroupExport).filter(
+        GroupExport.id == export_id,
+        GroupExport.group_id == current_user.group_id,
+    ).one()
+    return send_file(export.path)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "group_id_filter" in authz_symbols
+    assert fact_types.count("sensitive_sink") == 1
+    assert "authorization_gap_candidate" not in fact_types
+
+
+def test_map_authorized_code_files_marks_agent_tool_execution_without_authz_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/agents.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/agents/{agent_id}/tools/execute")
+def run_agent_tool(agent_id: str, tool_name: str, current_user):
+    return execute_agent_tool(agent_id, tool_name)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert "sensitive_sink" in fact_types
+    assert gap.route_method == "POST"
+    assert gap.route_path == "/agents/{agent_id}/tools/execute"
+
+
+def test_map_authorized_code_files_treats_agent_id_filter_as_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/agents.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/agents/{agent_id}/tools/execute")
+def run_agent_tool(agent_id: str, tool_name: str, current_user):
+    agent = db.query(Agent).filter(
+        Agent.agent_id == current_user.agent_id,
+    ).one()
+    return execute_agent_tool(agent, tool_name)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz_symbols = [
+        fact.symbol_name for fact in result.facts if fact.fact_type == "authz_check"
+    ]
+
+    assert "agent_id_filter" in authz_symbols
+    assert "sensitive_sink" in fact_types
+    assert "authorization_gap_candidate" not in fact_types
+
+
 def test_map_authorized_code_files_follows_imported_service_alias_to_repository_owner_filter():
     result = map_authorized_code_files(
         {
