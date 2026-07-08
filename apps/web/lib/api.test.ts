@@ -12,6 +12,7 @@ import {
   importStudioWorkspaceArtifact,
   exportStudioWorkspaceReport,
   listStudioWorkspaceCandidates,
+  getStudioWorkspaceMission,
   materializeResearchQueueTask,
   recordClaimReviewDecision,
   recordManualObservation,
@@ -437,6 +438,95 @@ test("studio research API helpers keep reports submission-blocked", async () => 
     assert.doesNotMatch(
       JSON.stringify(calls),
       /Authorization\s*[:=]|Bearer|secret-token|cookie|send_file\(file_id\)|submitReport/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio mission API helper reads the local workbench state without unsafe calls", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ body, url });
+
+    if (url.includes("/mythos/studio/workspaces/mission")) {
+      return new Response(
+        JSON.stringify({
+          artifacts: {
+            missing: [],
+            present: ["scope", "policy", "code", "api", "har"],
+            required: ["scope", "policy", "code", "api", "har"],
+          },
+          blocked_actions: [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+          ],
+          candidate_count: 1,
+          mode: "local_ai_vulnerability_research_workbench",
+          next_actions: [
+            "review_top_candidates",
+            "create_benchmark_template",
+            "export_submission_blocked_report",
+          ],
+          quality_gates: {
+            human_review_required: true,
+            report_submission_allowed: false,
+            submission_blocked: true,
+            top_candidates_limited: true,
+            validation_execution_allowed: false,
+          },
+          run_id: "pipeline_run_1",
+          scope_guard_status: "scope_imported",
+          top_candidates: [
+            {
+              affected_code_path: "routes.py:export_file",
+              affected_endpoint: "GET /files/{file_id}/export",
+              execution_allowed: false,
+              hypothesis_id: "H-001",
+              priority_score: 80,
+              provenance_artifacts: ["scope", "policy", "code", "api", "har"],
+              report_status: "submission_blocked",
+              risk: "high",
+              validation_status: "needs_human_approval",
+              vuln_type: "authorization_gap",
+            },
+          ],
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    return new Response(JSON.stringify({ detail: "unexpected request" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 500,
+    });
+  };
+
+  try {
+    const mission = await getStudioWorkspaceMission(
+      "C:/workspaces/acme-api",
+      "pipeline_run_1",
+      null,
+    );
+
+    assert.equal(mission?.mode, "local_ai_vulnerability_research_workbench");
+    assert.equal(mission?.quality_gates.report_submission_allowed, false);
+    assert.equal(mission?.quality_gates.validation_execution_allowed, false);
+    assert.equal(mission?.top_candidates[0]?.execution_allowed, false);
+    assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+      "/mythos/studio/workspaces/mission",
+    ]);
+    assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("workspace_path"), "C:/workspaces/acme-api");
+    assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("run_id"), "pipeline_run_1");
+    assert.deepEqual(calls[0]?.body, null);
+    assert.doesNotMatch(
+      JSON.stringify(calls),
+      /executeValidation|approveValidation|submitReport|Authorization\s*[:=]|secret-token|send_file/i,
     );
   } finally {
     globalThis.fetch = originalFetch;

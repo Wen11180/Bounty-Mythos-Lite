@@ -7,6 +7,12 @@ until the Studio URL is ready, and then opens `/studio` in a desktop window. If
 the local service does not become ready, the app shows a local startup error
 page instead of a blank window.
 
+The Studio window consumes the local mission summary from
+`/mythos/studio/workspaces/mission` to show Scope Guard state, A+B artifact
+coverage, Top candidate summaries, blocked actions, and safe next actions in a
+Mission control panel. It remains a local review workbench: validation execution
+and report submission controls are not exposed.
+
 The launcher prefers API port `8000` and Web port `3000`, but it automatically
 uses the next available local ports when either one is already occupied. Set
 `MYTHOS_API_PORT` or `MYTHOS_WEB_PORT` only when you need fixed local ports.

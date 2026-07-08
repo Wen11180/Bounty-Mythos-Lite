@@ -8,6 +8,7 @@ import {
   createStudioWorkspaceBenchmarkTemplate,
   exportStudioWorkspaceReport,
   getStudioWorkspaceManifest,
+  getStudioWorkspaceMission,
   importStudioWorkspaceArtifact,
   listStudioWorkspaceCandidates,
   runStudioWorkspaceBenchmark,
@@ -18,6 +19,7 @@ import {
 import {
   toStudioArtifactChecklist,
   toStudioCandidateCards,
+  toStudioMissionPanel,
   toStudioResearchReadiness,
   toStudioWorkspaceSummary,
   type StudioWorkspaceManifest,
@@ -63,6 +65,9 @@ export function StudioWorkbench() {
   const [workspacePath, setWorkspacePath] = useState("");
   const [manifest, setManifest] = useState<StudioWorkspaceManifest>(emptyManifest);
   const [candidates, setCandidates] = useState<ReturnType<typeof toStudioCandidateCards>>([]);
+  const [missionPanel, setMissionPanel] = useState<ReturnType<typeof toStudioMissionPanel>>(
+    toStudioMissionPanel(null),
+  );
   const [latestRunId, setLatestRunId] = useState<string | null>(null);
   const [reportExport, setReportExport] = useState<StudioReportExportResponse | null>(null);
   const [benchmarkResult, setBenchmarkResult] = useState<StudioBenchmarkRunResponse | null>(null);
@@ -161,8 +166,10 @@ export function StudioWorkbench() {
           run_id: latest,
         });
         setCandidates(toStudioCandidateCards(listed.candidates));
+        await refreshMissionPanel(workspacePath, latest);
       } else {
         setCandidates([]);
+        setMissionPanel(toStudioMissionPanel(null));
       }
       pushLog("Workspace opened locally.", "safe");
     } finally {
@@ -184,6 +191,7 @@ export function StudioWorkbench() {
       setWorkspacePath(created.path);
       setManifest(created.manifest);
       setCandidates([]);
+      setMissionPanel(toStudioMissionPanel(null));
       setLatestRunId(null);
       setReportExport(null);
       setBenchmarkResult(null);
@@ -268,6 +276,7 @@ export function StudioWorkbench() {
         run_id: run.run_id,
       });
       setCandidates(toStudioCandidateCards(listed.candidates));
+      await refreshMissionPanel(workspacePath, run.run_id);
       setReportExport(null);
       setBenchmarkResult(null);
       pushLog(
@@ -296,6 +305,7 @@ export function StudioWorkbench() {
       }
       setReportExport(exported);
       setManifest(exported.manifest);
+      await refreshMissionPanel(workspacePath, latestRunId);
       pushLog("Report preview exported with submission still blocked.", "safe");
     } finally {
       setBusy(null);
@@ -327,6 +337,7 @@ export function StudioWorkbench() {
       }
       setBenchmarkResult(benchmark);
       setManifest(benchmark.manifest);
+      await refreshMissionPanel(workspacePath, latestRunId);
       pushLog(
         `Candidate benchmark ${benchmark.benchmark.status ?? "finished"}: ${benchmark.benchmark.matched ?? 0}/${benchmark.benchmark.expected_count ?? 0} expected candidates matched.`,
         benchmark.benchmark.status === "passed" ? "safe" : "blocked",
@@ -358,6 +369,7 @@ export function StudioWorkbench() {
       if (template.template_path) {
         setExpectationsPath(template.template_path);
       }
+      await refreshMissionPanel(workspacePath, latestRunId);
       pushLog("Benchmark expectation template created for human review.", "safe");
     } finally {
       setBusy(null);
@@ -366,6 +378,11 @@ export function StudioWorkbench() {
 
   function pushLog(message: string, tone: LogEntry["tone"]) {
     setLog((entries) => [{ message, tone }, ...entries].slice(0, 6));
+  }
+
+  async function refreshMissionPanel(path: string, runId: string | null) {
+    const mission = await getStudioWorkspaceMission(path, runId, null);
+    setMissionPanel(toStudioMissionPanel(mission));
   }
 
   const wizardPrimaryAction =
@@ -730,6 +747,38 @@ export function StudioWorkbench() {
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Safety and Run Log" />
           <div className="grid gap-4 p-5 text-sm">
+            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+              <p className="font-semibold">Mission control</p>
+              <dl className="mt-3 grid gap-3">
+                <StatusRow label="Mode" value={missionPanel.modeLabel} />
+                <StatusRow label="Run" value={missionPanel.runId} />
+                <StatusRow label="Scope Guard" value={missionPanel.scopeGuardLabel} warning />
+                <StatusRow label="Artifact coverage" value={missionPanel.artifactCoverage} />
+                <StatusRow label="Candidates" value={missionPanel.candidateCountLabel} />
+                <StatusRow
+                  label="Report gate"
+                  value={missionPanel.gates.submissionBlocked ? "submission-blocked" : "review required"}
+                  warning
+                />
+                <StatusRow
+                  label="Validation gate"
+                  value={
+                    missionPanel.gates.validationExecutionAllowed
+                      ? "human review required"
+                      : "execution blocked"
+                  }
+                  warning
+                />
+              </dl>
+              <ListBlock title="Safe next actions" items={missionPanel.safeNextActions} />
+              <ListBlock
+                title="Mission Top candidates"
+                items={missionPanel.topCandidates.map(
+                  (candidate) =>
+                    `${candidate.hypothesisId}: ${candidate.affectedEndpoint} -> ${candidate.affectedCodePath}`,
+                )}
+              />
+            </div>
             <p className="font-semibold text-[var(--warning)]">submission-blocked</p>
             <div className="grid gap-2">
               {workspace.blockedActions.map((action) => (

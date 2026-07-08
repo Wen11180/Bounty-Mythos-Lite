@@ -9,7 +9,11 @@ import type {
   CampaignTask,
   CampaignValidationRun,
 } from "./campaigns-data";
-import type { StudioCandidateInput, StudioWorkspaceManifest } from "./studio-data";
+import type {
+  StudioCandidateInput,
+  StudioMissionSummary,
+  StudioWorkspaceManifest,
+} from "./studio-data";
 
 const API_BASE_URL =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -543,6 +547,8 @@ export type StudioWorkspaceCandidatesResponse = {
   run_id: string | null;
   candidates: StudioCandidateInput[];
 };
+
+export type StudioWorkspaceMissionResponse = StudioMissionSummary;
 
 export type StudioReportExportRequest = {
   workspace_path: string;
@@ -1164,6 +1170,18 @@ export function listStudioWorkspaceCandidates(
     query.set("run_id", runId);
   }
   return apiGet(`/mythos/studio/workspaces/candidates?${query}`, fallback);
+}
+
+export function getStudioWorkspaceMission(
+  workspacePath: string,
+  runId: string | null,
+  fallback: StudioWorkspaceMissionResponse | null,
+): Promise<StudioWorkspaceMissionResponse | null> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  return apiGet(`/mythos/studio/workspaces/mission?${query}`, fallback);
 }
 
 export function exportStudioWorkspaceReport(

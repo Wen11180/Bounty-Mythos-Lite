@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   toStudioArtifactChecklist,
   toStudioCandidateCards,
+  toStudioMissionPanel,
   toStudioResearchReadiness,
   toStudioWorkspaceSummary,
 } from "./studio-data.ts";
@@ -43,6 +44,81 @@ test("candidate cards map missing endpoint and code path to review fallbacks", (
   assert.equal(card.affectedEndpoint, "Endpoint needs review");
   assert.equal(card.affectedCodePath, "Code path needs review");
   assert.equal(card.status, "needs_review");
+});
+
+test("mission panel maps Studio mission summary into safe desktop workbench state", () => {
+  const panel = toStudioMissionPanel({
+    artifacts: {
+      missing: [],
+      present: ["scope", "policy", "code", "api", "har"],
+      required: ["scope", "policy", "code", "api", "har"],
+    },
+    blocked_actions: [
+      "execute_live_validation",
+      "touch_real_user_data",
+      "submit_report",
+    ],
+    candidate_count: 1,
+    mode: "local_ai_vulnerability_research_workbench",
+    next_actions: [
+      "review_top_candidates",
+      "create_benchmark_template",
+      "export_submission_blocked_report",
+    ],
+    quality_gates: {
+      human_review_required: true,
+      report_submission_allowed: false,
+      submission_blocked: true,
+      top_candidates_limited: true,
+      validation_execution_allowed: false,
+    },
+    run_id: "pipeline_run_1",
+    scope_guard_status: "scope_imported",
+    top_candidates: [
+      {
+        affected_code_path: "routes.py:export_file",
+        affected_endpoint: "GET /files/{file_id}/export",
+        execution_allowed: false,
+        hypothesis_id: "H-001",
+        priority_score: 80,
+        provenance_artifacts: ["scope", "policy", "code", "api", "har"],
+        report_status: "submission_blocked",
+        risk: "high",
+        validation_status: "needs_human_approval",
+        vuln_type: "authorization_gap",
+      },
+    ],
+  });
+
+  assert.equal(panel.modeLabel, "Local AI vulnerability research workbench");
+  assert.equal(panel.scopeGuardLabel, "Scope imported");
+  assert.equal(panel.artifactCoverage, "5/5 required artifacts");
+  assert.equal(panel.candidateCountLabel, "1 Top candidate");
+  assert.deepEqual(panel.safeNextActions, [
+    "Review top candidates",
+    "Create benchmark template",
+    "Export submission-blocked report",
+  ]);
+  assert.deepEqual(panel.blockedActions, [
+    "execute_live_validation",
+    "touch_real_user_data",
+    "submit_report",
+  ]);
+  assert.equal(panel.gates.submissionBlocked, true);
+  assert.equal(panel.gates.reportSubmissionAllowed, false);
+  assert.equal(panel.gates.validationExecutionAllowed, false);
+  assert.equal(panel.gates.humanReviewRequired, true);
+  assert.equal(panel.topCandidates[0]?.reportStatus, "submission_blocked");
+  assert.equal(panel.topCandidates[0]?.validationStatus, "needs_human_approval");
+  assert.equal(panel.topCandidates[0]?.executionAllowed, false);
+  assert.deepEqual(panel.topCandidates[0]?.provenanceArtifacts, [
+    "scope",
+    "policy",
+    "code",
+    "api",
+    "har",
+  ]);
+  assert.doesNotMatch(JSON.stringify(panel), /executeValidation|submitReport|send_file/i);
 });
 
 test("artifact checklist marks required A+B authorized inputs before research", () => {
@@ -312,6 +388,22 @@ test("studio workbench can open an existing local workspace", async () => {
   assert.match(workbench, /Open workspace/);
   assert.match(workbench, /latestRunFromManifest/);
   assert.match(workbench, /listStudioWorkspaceCandidates\(workspacePath/);
+});
+
+test("studio workbench reads mission summary for desktop workbench state", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /getStudioWorkspaceMission/);
+  assert.match(workbench, /toStudioMissionPanel/);
+  assert.match(workbench, /missionPanel/);
+  assert.match(workbench, /Mission control/);
+  assert.match(workbench, /missionPanel\.artifactCoverage/);
+  assert.match(workbench, /missionPanel\.safeNextActions/);
+  assert.match(workbench, /missionPanel\.topCandidates/);
+  assert.doesNotMatch(workbench, /executeValidation|submitReport/);
 });
 
 test("studio workbench imports policy as a first-class authorized artifact", async () => {

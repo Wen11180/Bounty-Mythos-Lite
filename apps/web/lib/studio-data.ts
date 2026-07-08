@@ -39,6 +39,72 @@ export type StudioWorkspaceSummary = {
   blockedActions: string[];
 };
 
+export type StudioMissionCandidateInput = {
+  affected_code_path?: string;
+  affected_endpoint?: string;
+  execution_allowed?: boolean;
+  hypothesis_id?: string;
+  priority_score?: number;
+  provenance_artifacts?: string[];
+  report_status?: string;
+  risk?: string;
+  validation_status?: string;
+  vuln_type?: string;
+};
+
+export type StudioMissionSummary = {
+  artifacts?: {
+    missing?: string[];
+    present?: string[];
+    required?: string[];
+  };
+  blocked_actions?: string[];
+  candidate_count?: number;
+  mode?: string;
+  next_actions?: string[];
+  quality_gates?: {
+    human_review_required?: boolean;
+    report_submission_allowed?: boolean;
+    submission_blocked?: boolean;
+    top_candidates_limited?: boolean;
+    validation_execution_allowed?: boolean;
+  };
+  run_id?: string | null;
+  scope_guard_status?: string;
+  top_candidates?: StudioMissionCandidateInput[];
+};
+
+export type StudioMissionPanelCandidate = {
+  affectedCodePath: string;
+  affectedEndpoint: string;
+  executionAllowed: boolean;
+  hypothesisId: string;
+  priorityScore: number;
+  provenanceArtifacts: string[];
+  reportStatus: string;
+  risk: string;
+  validationStatus: string;
+  vulnType: string;
+};
+
+export type StudioMissionPanel = {
+  artifactCoverage: string;
+  blockedActions: string[];
+  candidateCountLabel: string;
+  gates: {
+    humanReviewRequired: boolean;
+    reportSubmissionAllowed: boolean;
+    submissionBlocked: boolean;
+    topCandidatesLimited: boolean;
+    validationExecutionAllowed: boolean;
+  };
+  modeLabel: string;
+  runId: string;
+  safeNextActions: string[];
+  scopeGuardLabel: string;
+  topCandidates: StudioMissionPanelCandidate[];
+};
+
 export type StudioArtifactChecklistItem = {
   kind: "scope" | "code" | "policy" | "api" | "har" | "sbom" | "sarif";
   label: string;
@@ -131,6 +197,44 @@ export function toStudioWorkspaceSummary(
     runCount: manifest.runs?.length ?? 0,
     scopeGuardLabel: scopeGuardLabel(manifest.safety?.scope_guard_status),
     blockedActions: manifest.safety?.blocked_actions ?? [],
+  };
+}
+
+export function toStudioMissionPanel(mission: StudioMissionSummary | null): StudioMissionPanel {
+  const required = mission?.artifacts?.required ?? [];
+  const present = mission?.artifacts?.present ?? [];
+  const candidateCount = mission?.candidate_count ?? mission?.top_candidates?.length ?? 0;
+  return {
+    artifactCoverage: `${present.length}/${required.length} required artifacts`,
+    blockedActions: mission?.blocked_actions ?? [],
+    candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
+    gates: {
+      humanReviewRequired: mission?.quality_gates?.human_review_required === true,
+      reportSubmissionAllowed: mission?.quality_gates?.report_submission_allowed === true,
+      submissionBlocked: mission?.quality_gates?.submission_blocked !== false,
+      topCandidatesLimited: mission?.quality_gates?.top_candidates_limited === true,
+      validationExecutionAllowed:
+        mission?.quality_gates?.validation_execution_allowed === true,
+    },
+    modeLabel:
+      mission?.mode === "local_ai_vulnerability_research_workbench"
+        ? "Local AI vulnerability research workbench"
+        : "Local research workbench",
+    runId: safeText(mission?.run_id, "No run selected"),
+    safeNextActions: (mission?.next_actions ?? []).map(missionActionLabel),
+    scopeGuardLabel: scopeGuardLabel(mission?.scope_guard_status),
+    topCandidates: (mission?.top_candidates ?? []).slice(0, 5).map((candidate, index) => ({
+      affectedCodePath: safeText(candidate.affected_code_path, "Code path needs review"),
+      affectedEndpoint: safeText(candidate.affected_endpoint, "Endpoint needs review"),
+      executionAllowed: candidate.execution_allowed === true,
+      hypothesisId: safeText(candidate.hypothesis_id, `H-${String(index + 1).padStart(3, "0")}`),
+      priorityScore: candidate.priority_score ?? 0,
+      provenanceArtifacts: candidate.provenance_artifacts ?? [],
+      reportStatus: safeText(candidate.report_status, "submission_blocked"),
+      risk: safeText(candidate.risk, "medium"),
+      validationStatus: safeText(candidate.validation_status, "needs_human_review"),
+      vulnType: safeText(candidate.vuln_type, "candidate"),
+    })),
   };
 }
 
@@ -297,6 +401,23 @@ function scopeGuardLabel(value: string | undefined): string {
     return "Blocked";
   }
   return "Missing scope";
+}
+
+function missionActionLabel(value: string): string {
+  if (value === "review_top_candidates") {
+    return "Review top candidates";
+  }
+  if (value === "create_benchmark_template") {
+    return "Create benchmark template";
+  }
+  if (value === "export_submission_blocked_report") {
+    return "Export submission-blocked report";
+  }
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((word, index) => (index === 0 ? word[0]?.toUpperCase() + word.slice(1) : word))
+    .join(" ");
 }
 
 function safeText(value: unknown, fallback: string): string {
