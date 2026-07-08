@@ -341,6 +341,22 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
                     "affected_endpoint": "GET /files/{file_id}/export",
                     "affected_code_path": "routes.py:export_file",
                     "report_status": "submission_blocked",
+                    "next_report_action": "Review evidence before exporting a report preview.",
+                    "evidence_needed": [
+                        "Confirm the owner boundary from authorized local artifacts.",
+                        "Do not include Authorization: Bearer secret-token.",
+                    ],
+                    "false_positive_checks": [
+                        "Check whether the service layer enforces tenant ownership.",
+                    ],
+                    "safe_validation_plan": [
+                        "Prepare a non-destructive two-account check for human approval.",
+                    ],
+                    "safety_blockers": [
+                        "execute_live_validation",
+                        "submit_report",
+                        "Do not touch real user data.",
+                    ],
                 }
             ],
         },
@@ -356,6 +372,13 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "semantic_candidate_hunt: Semantic Auditor" in markdown
     assert "## Top candidates" in markdown
     assert "H-001: candidate; endpoint: GET /files/{file_id}/export" in markdown
+    assert "Evidence needed: Confirm the owner boundary" in markdown
+    assert "Refutation questions: Check whether the service layer" in markdown
+    assert "Safe validation plan: Prepare a non-destructive two-account check" in markdown
+    assert "Validation execution remains blocked pending human approval." in markdown
+    assert "Report submission remains blocked pending human review." in markdown
+    assert "Do not touch real user data." in markdown
+    assert "Next report action: Review evidence before exporting" in markdown
     assert "secret-token" not in markdown
     assert "Authorization: Bearer" not in markdown
     assert "execute_live_validation" not in markdown
@@ -504,8 +527,10 @@ def test_report_export_markdown_includes_validation_plan_and_safety_blockers(
     assert "## Safe validation plan" in markdown
     assert "- Prepare two authorized local test accounts." in markdown
     assert "## Safety blockers" in markdown
-    assert "- execute_live_validation" in markdown
-    assert "- submit_report" in markdown
+    assert "- Validation execution remains blocked pending human approval." in markdown
+    assert "- Report submission remains blocked pending human review." in markdown
+    assert "execute_live_validation" not in markdown
+    assert "submit_report" not in markdown
     assert "secret-token" not in markdown
     assert "Authorization: Bearer" not in markdown
 

@@ -52,6 +52,9 @@ export type StudioMissionCandidateInput = {
   next_report_action?: string;
   policy_review_status?: string;
   priority_score?: number;
+  quality_reasons?: string[];
+  quality_score?: number;
+  quality_status?: string;
   provenance_artifacts?: string[];
   provenance_review_status?: string;
   refutation_review_status?: string;
@@ -120,6 +123,9 @@ export type StudioMissionPanelCandidate = {
   nextReportAction: string;
   policyReviewStatus: string;
   priorityScore: number;
+  qualityReasons: string[];
+  qualityScore: number;
+  qualityStatus: string;
   provenanceArtifacts: string[];
   provenanceReviewStatus: string;
   refutationReviewStatus: string;
@@ -333,6 +339,9 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       nextReportAction: safeText(candidate.next_report_action, "Review evidence before export."),
       policyReviewStatus: safeText(candidate.policy_review_status, "needs_human_review"),
       priorityScore: candidate.priority_score ?? 0,
+      qualityReasons: candidate.quality_reasons ?? [],
+      qualityScore: candidate.quality_score ?? 0,
+      qualityStatus: safeText(candidate.quality_status, "needs_review"),
       provenanceArtifacts: candidate.provenance_artifacts ?? [],
       provenanceReviewStatus: safeText(candidate.provenance_review_status, "needs_human_review"),
       refutationReviewStatus: safeText(candidate.refutation_review_status, "needs_human_review"),

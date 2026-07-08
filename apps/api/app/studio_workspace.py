@@ -37,6 +37,11 @@ BLOCKED_ACTIONS = (
     "touch_real_user_data",
     "submit_report",
 )
+SAFETY_BLOCKER_LABELS = {
+    "execute_live_validation": "Validation execution remains blocked pending human approval.",
+    "touch_real_user_data": "Protected user data remains out of scope.",
+    "submit_report": "Report submission remains blocked pending human review.",
+}
 
 
 @dataclass(frozen=True)
@@ -368,7 +373,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if safe_validation_plan:
         lines.extend(["", "## Safe validation plan"])
         lines.extend(f"- {item}" for item in safe_validation_plan)
-    safety_blockers = _markdown_list(report.get("safety_blockers"))
+    safety_blockers = _safety_blocker_markdown_list(report.get("safety_blockers"))
     if safety_blockers:
         lines.extend(["", "## Safety blockers"])
         lines.extend(f"- {item}" for item in safety_blockers)
@@ -412,6 +417,7 @@ def _mission_dossier_markdown(mission: dict[str, Any]) -> str:
         )
     lines.extend(_mission_stage_markdown_lines(mission.get("research_loop")))
     lines.extend(_mission_agent_queue_markdown_lines(mission.get("agent_queue")))
+    lines.extend(_mission_candidate_quality_markdown_lines(mission.get("top_candidates")))
     lines.extend(_mission_candidate_markdown_lines(mission.get("top_candidates")))
     return "\n".join(lines) + "\n"
 
@@ -452,6 +458,29 @@ def _mission_agent_queue_markdown_lines(value: Any) -> list[str]:
     return lines
 
 
+def _mission_candidate_quality_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Candidate quality"]
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        hypothesis_id = _markdown_safe_text(item.get("hypothesis_id"))
+        quality_status = _markdown_safe_text(item.get("quality_status"))
+        quality_score_value = item.get("quality_score")
+        quality_score = (
+            str(quality_score_value)
+            if isinstance(quality_score_value, int) and quality_score_value >= 0
+            else _markdown_safe_text(quality_score_value)
+        )
+        reasons = ", ".join(_markdown_list(item.get("quality_reasons")))
+        if hypothesis_id:
+            lines.append(
+                f"- {hypothesis_id}: {quality_status} ({quality_score}/100); reasons: {reasons}"
+            )
+    return lines
+
+
 def _mission_candidate_markdown_lines(value: Any) -> list[str]:
     if not isinstance(value, list) or not value:
         return []
@@ -468,7 +497,56 @@ def _mission_candidate_markdown_lines(value: Any) -> list[str]:
             lines.append(
                 f"- {hypothesis_id}: {vuln_type}; endpoint: {endpoint}; code path: {code_path}; report: {report_status}"
             )
+            lines.extend(
+                _mission_candidate_review_packet_lines(
+                    item,
+                    {
+                        "evidence_needed": "Evidence needed",
+                        "false_positive_checks": "Refutation questions",
+                        "evidence_gaps": "Evidence gaps",
+                        "safe_validation_plan": "Safe validation plan",
+                        "safety_blockers": "Safety blockers",
+                    },
+                )
+            )
     return lines
+
+
+def _mission_candidate_review_packet_lines(
+    item: dict[str, Any],
+    labels: dict[str, str],
+) -> list[str]:
+    lines: list[str] = []
+    for key, label in labels.items():
+        values = _mission_review_packet_values(key, item.get(key))
+        if values:
+            lines.append(f"  - {label}: {'; '.join(values)}")
+    next_action = _markdown_safe_text(item.get("next_report_action"))
+    if next_action:
+        lines.append(f"  - Next report action: {next_action}")
+    return lines
+
+
+def _mission_review_packet_values(key: str, value: Any) -> list[str]:
+    if key != "safety_blockers":
+        return _markdown_list(value)
+    return _safety_blocker_markdown_list(value)
+
+
+def _safety_blocker_markdown_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    values: list[str] = []
+    for item in value:
+        text = _markdown_text(item, "")
+        if not text or _secret_like_text(text):
+            continue
+        mapped = SAFETY_BLOCKER_LABELS.get(text)
+        if mapped:
+            values.append(mapped)
+        elif text not in BLOCKED_ACTIONS:
+            values.append(text)
+    return values
 
 
 def _top_candidate_reviews_markdown_lines(value: Any) -> list[str]:

@@ -12,6 +12,7 @@ from app.db import Base, get_session
 from app.main import (
     app,
     _studio_fuzzing_surface_facts,
+    _studio_mission_candidate_summary,
     _studio_report_candidate_guidance,
 )
 from app.repository import DatabaseRepository
@@ -148,9 +149,57 @@ def test_studio_report_candidate_guidance_lists_top_candidates_without_execution
     assert guidance["top_candidate_reviews"][0]["execution_allowed"] is False
     assert guidance["top_candidate_reviews"][0]["evidence_need_count"] == 1
     assert guidance["top_candidate_reviews"][0]["false_positive_check_count"] == 1
+    assert (
+        "Validation execution remains blocked pending human approval."
+        in guidance["top_candidate_reviews"][0]["safety_blockers"]
+    )
+    assert (
+        "Report submission remains blocked pending human review."
+        in guidance["top_candidate_reviews"][0]["safety_blockers"]
+    )
     assert guidance["top_candidate_reviews"][1]["affected_endpoint"] == "POST /webhooks/test"
     assert "execute_live_validation" not in str(guidance["top_candidate_reviews"])
     assert "submit_report" not in str(guidance["top_candidate_reviews"])
+
+
+def test_studio_mission_candidate_summary_includes_safe_review_packet():
+    summary = _studio_mission_candidate_summary(
+        {
+            "hypothesis_id": "H-001",
+            "vuln_type": "authorization_gap",
+            "risk": "high",
+            "location": "GET /files/{file_id}/export",
+            "evidence_needed": [
+                "Confirm the object owner boundary from authorized local artifacts.",
+                "Do not copy Authorization: Bearer secret-token into the dossier.",
+            ],
+            "false_positive_checks": [
+                "Check whether the service layer enforces tenant ownership.",
+            ],
+            "safe_validation_plan": [
+                "Prepare a non-destructive two-account check for human approval.",
+            ],
+            "safety_blockers": ["Requires human approval before validation."],
+            "evidence_gaps": [
+                {"artifact_kind": "api", "reason": "missing_required_artifact"},
+            ],
+        }
+    )
+
+    assert summary["execution_allowed"] is False
+    assert summary["evidence_needed"] == [
+        "Confirm the object owner boundary from authorized local artifacts.",
+    ]
+    assert summary["false_positive_checks"] == [
+        "Check whether the service layer enforces tenant ownership.",
+    ]
+    assert summary["safe_validation_plan"] == [
+        "Prepare a non-destructive two-account check for human approval.",
+    ]
+    assert summary["safety_blockers"] == ["Requires human approval before validation."]
+    assert summary["evidence_gaps"] == ["api: missing_required_artifact"]
+    assert "secret-token" not in str(summary)
+    assert "Authorization: Bearer" not in str(summary)
 
 
 def test_studio_fuzzing_surface_facts_ignore_executable_plans():
@@ -592,8 +641,10 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "- Execution allowed: false" in markdown
         assert candidates[0]["validation_review"]["review_items"][0] in markdown
         assert "## Safety blockers" in markdown
-        assert "- execute_live_validation" in markdown
-        assert "- submit_report" in markdown
+        assert "- Validation execution remains blocked pending human approval." in markdown
+        assert "- Report submission remains blocked pending human review." in markdown
+        assert "execute_live_validation" not in markdown
+        assert "submit_report" not in markdown
         assert "send_file(file_id)" not in str(export)
     finally:
         app.dependency_overrides.clear()
@@ -706,6 +757,12 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert candidate["false_positive_check_count"] >= 1
         assert candidate["evidence_gap_count"] == 0
         assert candidate["safe_validation_step_count"] >= 1
+        assert candidate["quality_score"] >= 90
+        assert candidate["quality_status"] == "review_ready"
+        assert "endpoint_and_code_path_traced" in candidate["quality_reasons"]
+        assert "provenance_review_present" in candidate["quality_reasons"]
+        assert "refutation_checks_present" in candidate["quality_reasons"]
+        assert "safe_validation_plan_present" in candidate["quality_reasons"]
         research_loop = mission["research_loop"]
         assert [stage["key"] for stage in research_loop] == [
             "scope_guard",
@@ -803,6 +860,9 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "# Mythos Studio mission dossier" in dossier_markdown
         assert "## Research loop" in dossier_markdown
         assert "## Agent queue" in dossier_markdown
+        assert "## Candidate quality" in dossier_markdown
+        assert "review_ready (100/100)" in dossier_markdown
+        assert "endpoint_and_code_path_traced" in dossier_markdown
         assert "## Top candidates" in dossier_markdown
         assert candidate["hypothesis_id"] in dossier_markdown
         assert "send_file(file_id)" not in str(dossier)
@@ -891,6 +951,8 @@ def test_studio_mission_export_writes_review_only_dossier(tmp_path: Path):
         assert "## Top candidates" in markdown
         assert "send_file(file_id)" not in markdown
         assert str(repo) not in markdown
+        assert "Validation execution remains blocked pending human approval." in markdown
+        assert "Report submission remains blocked pending human review." in markdown
         assert "execute_live_validation" not in markdown
         assert "submit_report" not in markdown
     finally:

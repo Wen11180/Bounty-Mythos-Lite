@@ -1077,6 +1077,7 @@ function ListBlock({ items, title }: { items: string[]; title: string }) {
 function missionCandidateLine(
   candidate: ReturnType<typeof toStudioMissionPanel>["topCandidates"][number],
 ): string {
+  const qualityReasons = candidate.qualityReasons.join(", ") || "needs_review";
   return [
     `${candidate.hypothesisId}: ${candidate.affectedEndpoint} -> ${candidate.affectedCodePath}`,
     `evidence ${candidate.evidenceReviewStatus}/${candidate.evidenceNeedCount}`,
@@ -1084,6 +1085,7 @@ function missionCandidateLine(
     `provenance ${candidate.provenanceReviewStatus}`,
     `dedup ${candidate.deduplicationReviewStatus}`,
     `validation ${candidate.validationStatus}/${candidate.safeValidationStepCount}`,
+    `quality ${candidate.qualityStatus}/${candidate.qualityScore} (${qualityReasons})`,
     `report ${candidate.reportStatus}`,
   ].join("; ");
 }

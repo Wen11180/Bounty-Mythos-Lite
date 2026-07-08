@@ -2886,7 +2886,7 @@ def _studio_mission_candidate_summary(candidate: dict) -> dict[str, object]:
     policy_review = candidate.get("policy_review", {})
     validation_review = candidate.get("validation_review", {})
     provenance_review = candidate.get("provenance_review", {})
-    return {
+    summary: dict[str, object] = {
         "hypothesis_id": _studio_report_guidance_text(candidate.get("hypothesis_id", "")),
         "vuln_type": _studio_report_guidance_text(candidate.get("vuln_type", "")),
         "risk": _studio_report_guidance_text(candidate.get("risk", "")),
@@ -2940,7 +2940,83 @@ def _studio_mission_candidate_summary(candidate: dict) -> dict[str, object]:
         "safe_validation_step_count": len(
             _studio_report_guidance_list(candidate.get("safe_validation_plan", []))
         ),
+        "evidence_needed": _studio_review_packet_items(candidate.get("evidence_needed", [])),
+        "false_positive_checks": _studio_review_packet_items(
+            candidate.get("false_positive_checks", [])
+        ),
+        "safe_validation_plan": _studio_review_packet_items(
+            candidate.get("safe_validation_plan", [])
+        ),
+        "safety_blockers": _studio_review_packet_safety_blockers(
+            candidate.get("safety_blockers", [])
+        ),
+        "evidence_gaps": _studio_report_evidence_gap_labels(
+            candidate.get("evidence_gaps", [])
+        )[:3],
     }
+    summary.update(_studio_mission_candidate_quality(summary))
+    return summary
+
+
+def _studio_mission_candidate_quality(candidate: dict[str, object]) -> dict[str, object]:
+    score = 0
+    reasons: list[str] = []
+    if candidate.get("affected_endpoint") and candidate.get("affected_code_path"):
+        score += 20
+        reasons.append("endpoint_and_code_path_traced")
+    if candidate.get("provenance_review_status"):
+        score += 15
+        reasons.append("provenance_review_present")
+    if candidate.get("evidence_review_status") and int(candidate.get("evidence_need_count", 0)) > 0:
+        score += 15
+        reasons.append("evidence_needs_present")
+    if (
+        candidate.get("refutation_review_status")
+        and int(candidate.get("false_positive_check_count", 0)) > 0
+    ):
+        score += 15
+        reasons.append("refutation_checks_present")
+    if candidate.get("deduplication_review_status"):
+        score += 10
+        reasons.append("deduplication_review_present")
+    if (
+        candidate.get("validation_status")
+        and int(candidate.get("safe_validation_step_count", 0)) > 0
+    ):
+        score += 15
+        reasons.append("safe_validation_plan_present")
+    if candidate.get("report_status") == "submission_blocked":
+        score += 10
+        reasons.append("submission_blocked_report_ready")
+    if int(candidate.get("evidence_gap_count", 0)) > 0:
+        score = max(0, score - 15)
+        reasons.append("evidence_gaps_need_review")
+
+    return {
+        "quality_score": min(score, 100),
+        "quality_status": "review_ready" if score >= 85 else "needs_review",
+        "quality_reasons": reasons,
+    }
+
+
+def _studio_review_packet_items(value: object) -> list[str]:
+    return [
+        item
+        for item in _studio_report_guidance_list(value)
+        if item not in {"execute_live_validation", "touch_real_user_data", "submit_report"}
+    ][:3]
+
+
+def _studio_review_packet_safety_blockers(value: object) -> list[str]:
+    labels = {
+        "execute_live_validation": "Validation execution remains blocked pending human approval.",
+        "touch_real_user_data": "Protected user data remains out of scope.",
+        "submit_report": "Report submission remains blocked pending human review.",
+    }
+    items = []
+    for item in _studio_report_guidance_list(value):
+        items.append(labels.get(item, item))
+    return items[:3]
 
 
 def _studio_report_context(manifest: dict) -> dict[str, object]:

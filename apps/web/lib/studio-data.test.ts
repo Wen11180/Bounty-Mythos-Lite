@@ -143,6 +143,12 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         next_report_action: "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
         policy_review_status: "needs_human_review",
         priority_score: 80,
+        quality_reasons: [
+          "endpoint_and_code_path_traced",
+          "refutation_checks_present",
+        ],
+        quality_score: 95,
+        quality_status: "review_ready",
         provenance_artifacts: ["scope", "policy", "code", "api", "har"],
         provenance_review_status: "needs_human_review",
         refutation_review_status: "needs_human_review",
@@ -240,6 +246,12 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.equal(panel.topCandidates[0]?.refutationStatus, "unverified");
   assert.equal(panel.topCandidates[0]?.refutationReviewStatus, "needs_human_review");
   assert.equal(panel.topCandidates[0]?.policyReviewStatus, "needs_human_review");
+  assert.equal(panel.topCandidates[0]?.qualityScore, 95);
+  assert.equal(panel.topCandidates[0]?.qualityStatus, "review_ready");
+  assert.deepEqual(panel.topCandidates[0]?.qualityReasons, [
+    "endpoint_and_code_path_traced",
+    "refutation_checks_present",
+  ]);
   assert.equal(panel.topCandidates[0]?.validationStatus, "needs_human_approval");
   assert.equal(panel.topCandidates[0]?.provenanceReviewStatus, "needs_human_review");
   assert.equal(panel.topCandidates[0]?.executionAllowed, false);
@@ -573,6 +585,9 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.researchLoopStages/);
   assert.match(workbench, /missionPanel\.safeNextActions/);
   assert.match(workbench, /missionPanel\.topCandidates/);
+  assert.match(workbench, /candidate\.qualityStatus/);
+  assert.match(workbench, /candidate\.qualityScore/);
+  assert.match(workbench, /candidate\.qualityReasons/);
   assert.match(workbench, /handleExportMissionDossier/);
   assert.match(workbench, /missionDossierExport/);
   assert.match(workbench, /Mission dossier exported/);
