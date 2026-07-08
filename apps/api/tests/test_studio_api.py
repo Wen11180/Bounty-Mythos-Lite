@@ -1,4 +1,5 @@
 from hashlib import sha256
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -109,6 +110,47 @@ def test_studio_report_candidate_guidance_includes_advisory_signal_labels():
         "SBOM dependency advisory: django 4.2.1 (CVE-2099-0001, high)",
         "Fuzzing plan advisory: parse_export_manifest (parser, planned, not_executed)",
     ]
+
+
+def test_studio_report_candidate_guidance_lists_top_candidates_without_execution():
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "risk": "high",
+                    "location": "GET /files/{file_id}/export",
+                    "evidence_needed": ["Confirm ownership boundary with authorized local artifacts."],
+                    "false_positive_checks": ["Check whether the service layer enforces ownership."],
+                    "validation_mode": "two_account_authorization_check",
+                },
+                {
+                    "hypothesis_id": "H-002",
+                    "vuln_type": "webhook_egress_boundary",
+                    "risk": "medium",
+                    "location": "POST /webhooks/test",
+                    "evidence_needed": ["Confirm outbound destination policy from authorized config."],
+                    "false_positive_checks": ["Check whether webhook URLs are allowlisted."],
+                    "validation_mode": "manual_review",
+                },
+            ]
+        }
+    )
+
+    guidance = _studio_report_candidate_guidance(record, {})
+
+    assert [item["hypothesis_id"] for item in guidance["top_candidate_reviews"]] == [
+        "H-001",
+        "H-002",
+    ]
+    assert guidance["top_candidate_reviews"][0]["report_status"] == "submission_blocked"
+    assert guidance["top_candidate_reviews"][0]["execution_allowed"] is False
+    assert guidance["top_candidate_reviews"][0]["evidence_need_count"] == 1
+    assert guidance["top_candidate_reviews"][0]["false_positive_check_count"] == 1
+    assert guidance["top_candidate_reviews"][1]["affected_endpoint"] == "POST /webhooks/test"
+    assert "execute_live_validation" not in str(guidance["top_candidate_reviews"])
+    assert "submit_report" not in str(guidance["top_candidate_reviews"])
 
 
 def test_studio_fuzzing_surface_facts_ignore_executable_plans():
@@ -734,8 +776,123 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "execute_live_validation" not in str(agent_queue)
         assert "submit_report" not in str(agent_queue)
         assert "run_fuzzer" not in str(agent_queue)
+
+        dossier_response = client.post(
+            "/mythos/studio/workspaces/mission/export",
+            json={"workspace_path": workspace_path, "run_id": run_id},
+        )
+        assert dossier_response.status_code == 200
+        dossier = dossier_response.json()
+        assert dossier["run_id"] == run_id
+        assert dossier["report_submission_allowed"] is False
+        assert dossier["validation_execution_allowed"] is False
+        assert dossier["mission_dossier_path"].endswith("-mission-dossier.json")
+        assert dossier["mission_dossier_markdown_path"].endswith("-mission-dossier.md")
+        assert dossier["manifest"]["mission_dossiers"][-1]["report_submission_allowed"] is False
+        assert (
+            dossier["manifest"]["runs"][-1]["mission_dossier_markdown_path"]
+            == dossier["mission_dossier_markdown_path"]
+        )
+        dossier_json = json.loads(
+            Path(dossier["mission_dossier_path"]).read_text(encoding="utf-8")
+        )
+        dossier_markdown = Path(dossier["mission_dossier_markdown_path"]).read_text(
+            encoding="utf-8"
+        )
+        assert dossier_json["agent_queue"][0]["task_id"] == "scope_guard_intake"
+        assert "# Mythos Studio mission dossier" in dossier_markdown
+        assert "## Research loop" in dossier_markdown
+        assert "## Agent queue" in dossier_markdown
+        assert "## Top candidates" in dossier_markdown
+        assert candidate["hypothesis_id"] in dossier_markdown
+        assert "send_file(file_id)" not in str(dossier)
+        assert str(repo) not in str(dossier)
+        assert "send_file(file_id)" not in dossier_markdown
+        assert str(repo) not in dossier_markdown
         assert "send_file(file_id)" not in str(mission)
         assert str(repo) not in str(mission)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_mission_export_writes_review_only_dossier(tmp_path: Path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+
+    app.dependency_overrides[get_session] = override_session()
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        run_response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={"workspace_path": workspace_path},
+        )
+        assert run_response.status_code == 200
+        run_id = run_response.json()["run_id"]
+
+        export_response = client.post(
+            "/mythos/studio/workspaces/mission/export",
+            json={"workspace_path": workspace_path, "run_id": run_id},
+        )
+
+        assert export_response.status_code == 200
+        body = export_response.json()
+        assert body["run_id"] == run_id
+        assert body["report_submission_allowed"] is False
+        assert body["validation_execution_allowed"] is False
+        assert body["mission"]["quality_gates"]["report_submission_allowed"] is False
+        assert body["mission"]["quality_gates"]["validation_execution_allowed"] is False
+        assert body["mission_dossier_path"].endswith("mission-dossier.json")
+        assert body["mission_dossier_markdown_path"].endswith("mission-dossier.md")
+        assert body["manifest"]["mission_dossiers"][0]["report_submission_allowed"] is False
+        assert body["manifest"]["mission_dossiers"][0]["validation_execution_allowed"] is False
+
+        markdown = Path(body["mission_dossier_markdown_path"]).read_text(encoding="utf-8")
+        assert "## Agent queue" in markdown
+        assert "## Top candidates" in markdown
+        assert "send_file(file_id)" not in markdown
+        assert str(repo) not in markdown
+        assert "execute_live_validation" not in markdown
+        assert "submit_report" not in markdown
     finally:
         app.dependency_overrides.clear()
 

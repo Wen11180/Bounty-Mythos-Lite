@@ -5,6 +5,7 @@ from app.studio_workspace import (
     create_workspace,
     import_workspace_artifact,
     load_workspace_manifest,
+    record_workspace_mission_dossier,
     record_workspace_report_export,
     record_workspace_run,
 )
@@ -250,6 +251,115 @@ def test_report_export_markdown_includes_preview_claim_sections(tmp_path: Path):
     assert "## Unverified claims" in markdown
     assert "- Changing file_id may cross tenant boundaries." in markdown
     assert "Changing file_id may cross tenant boundaries." not in str(updated)
+
+
+def test_report_export_markdown_includes_top_candidate_reviews_without_secrets(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "A+B candidate review",
+            "top_candidate_reviews": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "risk": "high",
+                    "affected_endpoint": "GET /files/{file_id}/export",
+                    "affected_code_path": "routes.py:export_file",
+                    "report_status": "submission_blocked",
+                    "validation_status": "needs_human_approval",
+                    "evidence_need_count": 2,
+                    "false_positive_check_count": 1,
+                },
+                {
+                    "hypothesis_id": "H-002",
+                    "vuln_type": "Authorization: Bearer secret-token",
+                    "risk": "medium",
+                    "affected_endpoint": "POST /webhooks/test",
+                    "affected_code_path": "routes.py:test_webhook",
+                    "report_status": "submission_blocked",
+                    "validation_status": "needs_human_review",
+                    "evidence_need_count": 1,
+                    "false_positive_check_count": 1,
+                },
+            ],
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Top candidate reviews" in markdown
+    assert "H-001: high authorization_gap at GET /files/{file_id}/export -> routes.py:export_file" in markdown
+    assert "evidence needs: 2" in markdown
+    assert "false-positive checks: 1" in markdown
+    assert "H-002: medium candidate at POST /webhooks/test -> routes.py:test_webhook" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
+def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+    record_workspace_run(
+        workspace.path,
+        run_id="run-1",
+        status="completed",
+        report_path=None,
+        candidate_count=1,
+    )
+
+    updated = record_workspace_mission_dossier(
+        workspace.path,
+        run_id="run-1",
+        mission={
+            "mode": "local_ai_vulnerability_research_workbench",
+            "run_id": "run-1",
+            "scope_guard_status": "scope_imported",
+            "artifacts": {
+                "required": ["scope", "policy", "code", "api", "har"],
+                "present": ["scope", "policy", "code", "api", "har"],
+                "missing": [],
+            },
+            "agent_queue": [
+                {
+                    "task_id": "semantic_candidate_hunt",
+                    "agent": "Semantic Auditor",
+                    "status": "complete",
+                    "safety_gate": "local_static_analysis_only",
+                    "input_refs": ["code", "api", "har"],
+                    "target_candidates": ["H-001"],
+                    "next_action": "Review top candidate invariants.",
+                }
+            ],
+            "top_candidates": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "Authorization: Bearer secret-token",
+                    "affected_endpoint": "GET /files/{file_id}/export",
+                    "affected_code_path": "routes.py:export_file",
+                    "report_status": "submission_blocked",
+                }
+            ],
+        },
+    )
+
+    dossier = updated["mission_dossiers"][0]
+    markdown = Path(dossier["dossier_markdown_path"]).read_text(encoding="utf-8")
+
+    assert dossier["report_submission_allowed"] is False
+    assert dossier["validation_execution_allowed"] is False
+    assert updated["runs"][0]["mission_dossier_path"] == dossier["dossier_path"]
+    assert "## Agent queue" in markdown
+    assert "semantic_candidate_hunt: Semantic Auditor" in markdown
+    assert "## Top candidates" in markdown
+    assert "H-001: candidate; endpoint: GET /files/{file_id}/export" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+    assert "execute_live_validation" not in markdown
+    assert "submit_report" not in markdown
 
 
 def test_report_export_markdown_skips_secret_like_section_items(tmp_path: Path):

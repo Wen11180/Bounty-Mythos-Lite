@@ -104,6 +104,7 @@ from app.studio_workspace import (
     load_workspace_manifest,
     record_workspace_benchmark_result,
     record_workspace_benchmark_template,
+    record_workspace_mission_dossier,
     record_workspace_report_export,
     record_workspace_run,
 )
@@ -182,6 +183,11 @@ class StudioArtifactImportRequest(BaseModel):
 
 class StudioWorkspaceRunRequest(BaseModel):
     workspace_path: str = Field(min_length=1)
+
+
+class StudioMissionExportRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+    run_id: str | None = None
 
 
 class StudioReportExportRequest(BaseModel):
@@ -2360,6 +2366,44 @@ def get_mythos_studio_workspace_mission(
     return _studio_mission_summary(manifest, selected_run_id, candidates)
 
 
+@app.post("/mythos/studio/workspaces/mission/export")
+def export_mythos_studio_workspace_mission(
+    request: StudioMissionExportRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    manifest = load_workspace_manifest(request.workspace_path)
+    selected_run_id = request.run_id or _latest_studio_run_id(manifest)
+    candidates: list[dict] = []
+    if selected_run_id is not None:
+        record = DatabaseRepository(session).get_pipeline_run(selected_run_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        candidates = _studio_candidates_for_run(record, manifest)
+    mission = _studio_mission_summary(manifest, selected_run_id, candidates)
+    updated_manifest = record_workspace_mission_dossier(
+        request.workspace_path,
+        run_id=selected_run_id,
+        mission=mission,
+    )
+    return {
+        "run_id": selected_run_id,
+        "mission_dossier_path": _studio_mission_dossier_field(
+            updated_manifest,
+            selected_run_id,
+            "dossier_path",
+        ),
+        "mission_dossier_markdown_path": _studio_mission_dossier_field(
+            updated_manifest,
+            selected_run_id,
+            "dossier_markdown_path",
+        ),
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+        "mission": mission,
+        "manifest": updated_manifest,
+    }
+
+
 @app.get("/mythos/studio/workspaces/candidates")
 def list_mythos_studio_workspace_candidates(
     workspace_path: str,
@@ -2919,7 +2963,12 @@ def _studio_report_candidate_guidance(
     record: PipelineRunRecord,
     manifest: dict,
 ) -> dict[str, object]:
-    for candidate in _studio_candidates_for_run(record, manifest):
+    candidates = _studio_candidates_for_run(record, manifest)
+    top_candidate_reviews = [
+        _studio_mission_candidate_summary(candidate)
+        for candidate in candidates[:5]
+    ]
+    for candidate in candidates:
         suggested_fix = _studio_report_guidance_text(candidate.get("suggested_fix", ""))
         regression_test = _studio_report_guidance_text(candidate.get("regression_test", ""))
         evidence_needed = _studio_report_guidance_list(candidate.get("evidence_needed", []))
@@ -2952,6 +3001,8 @@ def _studio_report_candidate_guidance(
         )
         report_readiness = _studio_report_readiness(candidate.get("report_readiness", {}))
         guidance: dict[str, object] = {}
+        if top_candidate_reviews:
+            guidance["top_candidate_reviews"] = top_candidate_reviews
         if candidate_summary:
             guidance["candidate_summary"] = candidate_summary
         if ranking_reasons:
@@ -2988,7 +3039,7 @@ def _studio_report_candidate_guidance(
             guidance["regression_test"] = regression_test
         if guidance:
             return guidance
-    return {}
+    return {"top_candidate_reviews": top_candidate_reviews} if top_candidate_reviews else {}
 
 
 def _studio_report_guidance_text(value: object) -> str:
@@ -3308,6 +3359,22 @@ def _studio_benchmark_template_field(
         if not isinstance(template, dict) or template.get("run_id") != run_id:
             continue
         value = template.get(field_name)
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _studio_mission_dossier_field(
+    manifest: dict,
+    run_id: str | None,
+    field_name: str,
+) -> str | None:
+    dossiers = manifest.get("mission_dossiers", [])
+    if not isinstance(dossiers, list):
+        return None
+    for dossier in reversed(dossiers):
+        if not isinstance(dossier, dict) or dossier.get("run_id") != run_id:
+            continue
+        value = dossier.get(field_name)
         return value if isinstance(value, str) else None
     return None
 

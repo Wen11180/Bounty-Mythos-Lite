@@ -532,11 +532,13 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /runStudioWorkspaceResearch/);
   assert.match(workbench, /listStudioWorkspaceCandidates/);
   assert.match(workbench, /exportStudioWorkspaceReport/);
+  assert.match(workbench, /exportStudioWorkspaceMissionDossier/);
   assert.match(workbench, /runStudioWorkspaceBenchmark/);
   assert.match(workbench, /createStudioWorkspaceBenchmarkTemplate/);
   assert.match(workbench, /Create workspace/);
   assert.match(workbench, /Start research/);
   assert.match(workbench, /Export report preview/);
+  assert.match(workbench, /Export mission dossier/);
   assert.match(workbench, /Run benchmark/);
   assert.match(workbench, /Create template/);
 });
@@ -571,7 +573,11 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.researchLoopStages/);
   assert.match(workbench, /missionPanel\.safeNextActions/);
   assert.match(workbench, /missionPanel\.topCandidates/);
-  assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer/);
+  assert.match(workbench, /handleExportMissionDossier/);
+  assert.match(workbench, /missionDossierExport/);
+  assert.match(workbench, /Mission dossier exported/);
+  assert.match(workbench, /review-only/);
+  assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
 });
 
 test("studio workbench imports policy as a first-class authorized artifact", async () => {

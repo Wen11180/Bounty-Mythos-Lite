@@ -10,6 +10,7 @@ import {
   createFindingCandidate,
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
+  exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   listStudioWorkspaceCandidates,
   getStudioWorkspaceMission,
@@ -299,6 +300,39 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       );
     }
 
+    if (url.endsWith("/mythos/studio/workspaces/mission/export")) {
+      return new Response(
+        JSON.stringify({
+          manifest: {
+            mission_dossiers: [
+              {
+                dossier_markdown_path:
+                  "C:/workspaces/acme-api/reports/pipeline_run_1-mission-dossier.md",
+                dossier_path:
+                  "C:/workspaces/acme-api/reports/pipeline_run_1-mission-dossier.json",
+                report_submission_allowed: false,
+                run_id: "pipeline_run_1",
+                validation_execution_allowed: false,
+              },
+            ],
+          },
+          mission: {
+            agent_queue: [],
+            mode: "local_ai_vulnerability_research_workbench",
+            research_loop: [],
+          },
+          mission_dossier_markdown_path:
+            "C:/workspaces/acme-api/reports/pipeline_run_1-mission-dossier.md",
+          mission_dossier_path:
+            "C:/workspaces/acme-api/reports/pipeline_run_1-mission-dossier.json",
+          report_submission_allowed: false,
+          run_id: "pipeline_run_1",
+          validation_execution_allowed: false,
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
     if (url.endsWith("/mythos/studio/workspaces/benchmarks/run")) {
       return new Response(
         JSON.stringify({
@@ -393,6 +427,17 @@ test("studio research API helpers keep reports submission-blocked", async () => 
     );
     assert.equal(exported?.submission_blocked, true);
 
+    const dossier = await exportStudioWorkspaceMissionDossier(
+      { run_id: "pipeline_run_1", workspace_path: "C:/workspaces/acme-api" },
+      null,
+    );
+    assert.equal(dossier?.report_submission_allowed, false);
+    assert.equal(dossier?.validation_execution_allowed, false);
+    assert.equal(
+      dossier?.mission_dossier_markdown_path,
+      "C:/workspaces/acme-api/reports/pipeline_run_1-mission-dossier.md",
+    );
+
     const template = await createStudioWorkspaceBenchmarkTemplate(
       {
         run_id: "pipeline_run_1",
@@ -423,6 +468,7 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       "/mythos/studio/workspaces/runs",
       "/mythos/studio/workspaces/candidates",
       "/mythos/studio/workspaces/reports/export",
+      "/mythos/studio/workspaces/mission/export",
       "/mythos/studio/workspaces/benchmarks/template",
       "/mythos/studio/workspaces/benchmarks/run",
     ]);
@@ -431,6 +477,10 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       workspace_path: "C:/workspaces/acme-api",
     });
     assert.deepEqual(calls[4]?.body, {
+      run_id: "pipeline_run_1",
+      workspace_path: "C:/workspaces/acme-api",
+    });
+    assert.deepEqual(calls[5]?.body, {
       expectations_path: "C:/authorized/studio-expectations.json",
       run_id: "pipeline_run_1",
       workspace_path: "C:/workspaces/acme-api",

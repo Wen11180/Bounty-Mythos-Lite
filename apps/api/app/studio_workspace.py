@@ -167,6 +167,40 @@ def record_workspace_report_export(
     return manifest
 
 
+def record_workspace_mission_dossier(
+    workspace_path: str | Path,
+    *,
+    run_id: str | None,
+    mission: dict[str, Any],
+) -> dict[str, Any]:
+    path = Path(workspace_path)
+    manifest = load_workspace_manifest(path)
+    safe_run_id = _safe_name(run_id or "no-run")
+    dossier_path = path / "reports" / f"{safe_run_id}-mission-dossier.json"
+    markdown_path = path / "reports" / f"{safe_run_id}-mission-dossier.md"
+    dossier_path.write_text(json.dumps(mission, indent=2), encoding="utf-8")
+    markdown_path.write_text(_mission_dossier_markdown(mission), encoding="utf-8")
+    dossier_ref = _safe_path_ref(str(dossier_path))
+    markdown_ref = _safe_path_ref(str(markdown_path))
+    manifest.setdefault("mission_dossiers", []).append(
+        {
+            "run_id": run_id,
+            "dossier_path": dossier_ref,
+            "dossier_markdown_path": markdown_ref,
+            "report_submission_allowed": False,
+            "validation_execution_allowed": False,
+            "recorded_at": _utc_now(),
+        }
+    )
+    for run in manifest.get("runs", []):
+        if isinstance(run, dict) and run.get("run_id") == run_id:
+            run["mission_dossier_path"] = dossier_ref
+            run["mission_dossier_markdown_path"] = markdown_ref
+            break
+    _write_manifest(path, manifest)
+    return manifest
+
+
 def record_workspace_benchmark_result(
     workspace_path: str | Path,
     *,
@@ -281,6 +315,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if summary:
         lines.extend(["", "## Summary", "", summary])
     lines.extend(_studio_context_markdown_lines(report.get("studio_context")))
+    lines.extend(_top_candidate_reviews_markdown_lines(report.get("top_candidate_reviews")))
     candidate_summary = _markdown_list(report.get("candidate_summary"))
     if candidate_summary:
         lines.extend(["", "## Candidate summary"])
@@ -352,6 +387,122 @@ def _report_markdown(report: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _mission_dossier_markdown(mission: dict[str, Any]) -> str:
+    lines = [
+        "# Mythos Studio mission dossier",
+        "",
+        "- Mode: " + _markdown_text(mission.get("mode"), "local workbench"),
+        "- Run: " + _markdown_text(mission.get("run_id"), "No run selected"),
+        "- Scope Guard: " + _markdown_text(mission.get("scope_guard_status"), "unknown"),
+        "- Submission blocked: true",
+        "- Validation execution allowed: false",
+    ]
+    artifacts = mission.get("artifacts")
+    if isinstance(artifacts, dict):
+        lines.extend(
+            [
+                "",
+                "## Artifact coverage",
+                "- Required: " + ", ".join(_markdown_list(artifacts.get("required"))),
+                "- Present: " + ", ".join(_markdown_list(artifacts.get("present"))),
+                "- Missing: " + ", ".join(_markdown_list(artifacts.get("missing"))),
+            ]
+        )
+    lines.extend(_mission_stage_markdown_lines(mission.get("research_loop")))
+    lines.extend(_mission_agent_queue_markdown_lines(mission.get("agent_queue")))
+    lines.extend(_mission_candidate_markdown_lines(mission.get("top_candidates")))
+    return "\n".join(lines) + "\n"
+
+
+def _mission_stage_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Research loop"]
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        key = _markdown_safe_text(item.get("key"))
+        status = _markdown_safe_text(item.get("status"))
+        summary = _markdown_safe_text(item.get("summary"))
+        if key:
+            lines.append(f"- {key}: {status} - {summary}".rstrip(" -"))
+    return lines
+
+
+def _mission_agent_queue_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Agent queue"]
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        task_id = _markdown_safe_text(item.get("task_id"))
+        agent = _markdown_safe_text(item.get("agent"))
+        status = _markdown_safe_text(item.get("status"))
+        safety_gate = _markdown_safe_text(item.get("safety_gate"))
+        inputs = ", ".join(_markdown_list(item.get("input_refs")))
+        candidates = ", ".join(_markdown_list(item.get("target_candidates")))
+        next_action = _markdown_safe_text(item.get("next_action"))
+        if task_id:
+            lines.append(
+                f"- {task_id}: {agent} ({status}, {safety_gate}); inputs: {inputs}; candidates: {candidates}; next: {next_action}"
+            )
+    return lines
+
+
+def _mission_candidate_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Top candidates"]
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        hypothesis_id = _markdown_safe_text(item.get("hypothesis_id"))
+        vuln_type = _markdown_safe_text(item.get("vuln_type")) or "candidate"
+        endpoint = _markdown_safe_text(item.get("affected_endpoint"))
+        code_path = _markdown_safe_text(item.get("affected_code_path"))
+        report_status = _markdown_safe_text(item.get("report_status"))
+        if hypothesis_id:
+            lines.append(
+                f"- {hypothesis_id}: {vuln_type}; endpoint: {endpoint}; code path: {code_path}; report: {report_status}"
+            )
+    return lines
+
+
+def _top_candidate_reviews_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for candidate in value[:5]:
+        if not isinstance(candidate, dict):
+            continue
+        hypothesis_id = _markdown_safe_text(candidate.get("hypothesis_id"))
+        if not hypothesis_id:
+            continue
+        vuln_type = _markdown_safe_text(candidate.get("vuln_type")) or "candidate"
+        risk = _markdown_safe_text(candidate.get("risk")) or "medium"
+        endpoint = _markdown_safe_text(candidate.get("affected_endpoint")) or "endpoint review"
+        code_path = _markdown_safe_text(candidate.get("affected_code_path")) or "code-path review"
+        report_status = _markdown_safe_text(candidate.get("report_status")) or "submission_blocked"
+        validation_status = (
+            _markdown_safe_text(candidate.get("validation_status")) or "needs_human_review"
+        )
+        evidence_count = _markdown_count(candidate.get("evidence_need_count"))
+        false_positive_count = _markdown_count(candidate.get("false_positive_check_count"))
+        items.append(
+            f"{hypothesis_id}: {risk} {vuln_type} at {endpoint} -> {code_path}; "
+            f"evidence needs: {evidence_count}; false-positive checks: {false_positive_count}; "
+            f"report: {report_status}; validation: {validation_status}"
+        )
+    if not items:
+        return []
+    return ["", "## Top candidate reviews", *[f"- {item}" for item in items]]
+
+
+def _markdown_count(value: Any) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def _report_readiness_markdown_lines(value: Any) -> list[str]:
@@ -556,6 +707,7 @@ __all__ = [
     "load_workspace_manifest",
     "record_workspace_benchmark_result",
     "record_workspace_benchmark_template",
+    "record_workspace_mission_dossier",
     "record_workspace_report_export",
     "record_workspace_run",
 ]

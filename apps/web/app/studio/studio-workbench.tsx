@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createStudioWorkspace,
   createStudioWorkspaceBenchmarkTemplate,
+  exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   getStudioWorkspaceManifest,
   getStudioWorkspaceMission,
@@ -14,6 +15,7 @@ import {
   runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
   type StudioBenchmarkRunResponse,
+  type StudioMissionDossierExportResponse,
   type StudioReportExportResponse,
 } from "@/lib/api";
 import {
@@ -72,6 +74,8 @@ export function StudioWorkbench() {
   );
   const [latestRunId, setLatestRunId] = useState<string | null>(null);
   const [reportExport, setReportExport] = useState<StudioReportExportResponse | null>(null);
+  const [missionDossierExport, setMissionDossierExport] =
+    useState<StudioMissionDossierExportResponse | null>(null);
   const [benchmarkResult, setBenchmarkResult] = useState<StudioBenchmarkRunResponse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
@@ -161,6 +165,7 @@ export function StudioWorkbench() {
       const latest = latestRunFromManifest(opened);
       setLatestRunId(latest);
       setReportExport(null);
+      setMissionDossierExport(null);
       setBenchmarkResult(null);
       if (latest) {
         const listed = await listStudioWorkspaceCandidates(workspacePath, latest, {
@@ -196,6 +201,7 @@ export function StudioWorkbench() {
       setMissionPanel(toStudioMissionPanel(null));
       setLatestRunId(null);
       setReportExport(null);
+      setMissionDossierExport(null);
       setBenchmarkResult(null);
       pushLog("Workspace created locally. Scope Guard is waiting for authorized inputs.", "safe");
     } finally {
@@ -282,6 +288,7 @@ export function StudioWorkbench() {
       setCandidates(toStudioCandidateCards(listed.candidates));
       await refreshMissionPanel(workspacePath, run.run_id);
       setReportExport(null);
+      setMissionDossierExport(null);
       setBenchmarkResult(null);
       pushLog(
         `Research run ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
@@ -311,6 +318,30 @@ export function StudioWorkbench() {
       setManifest(exported.manifest);
       await refreshMissionPanel(workspacePath, latestRunId);
       pushLog("Report preview exported with submission still blocked.", "safe");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleExportMissionDossier() {
+    if (!workspacePath || !latestRunId) {
+      pushLog("Run research before exporting a mission dossier.", "blocked");
+      return;
+    }
+    setBusy("mission-dossier");
+    try {
+      const exported = await exportStudioWorkspaceMissionDossier(
+        { run_id: latestRunId, workspace_path: workspacePath },
+        null,
+      );
+      if (!exported) {
+        pushLog("Mission dossier export failed.", "blocked");
+        return;
+      }
+      setMissionDossierExport(exported);
+      setManifest(exported.manifest);
+      await refreshMissionPanel(workspacePath, latestRunId);
+      pushLog("Mission dossier exported locally with validation and submission still blocked.", "safe");
     } finally {
       setBusy(null);
     }
@@ -694,6 +725,13 @@ export function StudioWorkbench() {
                 label="Export report preview"
                 onClick={handleExportReport}
               />
+              <ActionButton
+                busy={busy === "mission-dossier"}
+                disabled={!latestRunId}
+                icon={<FileDown size={16} aria-hidden="true" />}
+                label="Export mission dossier"
+                onClick={handleExportMissionDossier}
+              />
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
               <p className="font-semibold">A+B benchmark</p>
@@ -906,6 +944,20 @@ export function StudioWorkbench() {
             <p className="mt-1 text-[var(--muted)]">
               Exported report preview remains submission-blocked and cannot be submitted from
               Studio.
+            </p>
+          </div>
+        ) : null}
+        {missionDossierExport ? (
+          <div className="border-t border-[var(--line)] p-5 text-sm">
+            <p className="font-semibold">Mission dossier exported</p>
+            {missionDossierExport.mission_dossier_markdown_path ? (
+              <p className="mt-1 text-[var(--muted)]">
+                Mission dossier: {missionDossierExport.mission_dossier_markdown_path}
+              </p>
+            ) : null}
+            <p className="mt-1 text-[var(--muted)]">
+              Local mission dossiers are review-only and do not grant validation execution or
+              report submission.
             </p>
           </div>
         ) : null}

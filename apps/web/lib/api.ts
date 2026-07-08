@@ -555,6 +555,21 @@ export type StudioReportExportRequest = {
   run_id: string;
 };
 
+export type StudioMissionDossierExportRequest = {
+  workspace_path: string;
+  run_id: string;
+};
+
+export type StudioMissionDossierExportResponse = {
+  run_id: string | null;
+  mission_dossier_path: string | null;
+  mission_dossier_markdown_path: string | null;
+  report_submission_allowed: false;
+  validation_execution_allowed: false;
+  mission: StudioMissionSummary;
+  manifest: StudioWorkspaceManifest;
+};
+
 export type StudioBenchmarkRunRequest = {
   workspace_path: string;
   run_id: string;
@@ -1189,6 +1204,13 @@ export function exportStudioWorkspaceReport(
   fallback: StudioReportExportResponse | null,
 ): Promise<StudioReportExportResponse | null> {
   return apiPost("/mythos/studio/workspaces/reports/export", request, fallback);
+}
+
+export function exportStudioWorkspaceMissionDossier(
+  request: StudioMissionDossierExportRequest,
+  fallback: StudioMissionDossierExportResponse | null,
+): Promise<StudioMissionDossierExportResponse | null> {
+  return apiPost("/mythos/studio/workspaces/mission/export", request, fallback);
 }
 
 export function runStudioWorkspaceBenchmark(

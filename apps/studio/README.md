@@ -14,7 +14,8 @@ Mission control panel. Strategy notes and fuzzing plans can be imported as
 optional advisory context; they can influence review focus but do not grant
 validation execution, fuzzer execution, or report submission permission. It
 remains a local review workbench: validation execution and report submission
-controls are not exposed.
+controls are not exposed. Mission dossiers can be exported as local review-only
+JSON and Markdown summaries of the current workbench state.
 
 The launcher prefers API port `8000` and Web port `3000`, but it automatically
 uses the next available local ports when either one is already occupied. Set
