@@ -575,6 +575,7 @@ export type StudioBenchmarkRunResponse = {
     expected_count?: number;
     matched?: number;
     failures?: Array<{ name?: string; reason?: string }>;
+    evidence_gaps?: Array<{ name?: string; artifact_kind?: string; reason?: string }>;
     safety?: { forbidden_text_present?: string[] };
   };
   benchmark_path: string | null;

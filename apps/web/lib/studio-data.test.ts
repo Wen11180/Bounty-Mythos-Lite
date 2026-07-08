@@ -109,6 +109,7 @@ test("candidate cards expose review rationale and ranking reasons", () => {
       vuln_type: "IDOR",
       risk: "high",
       reason: "Authenticated users can request object ids without proven ownership.",
+      broken_invariant: "Private object access must enforce ownership.",
       ranking_reasons: ["impact:sensitive_data_sink", "traceable_source_fact"],
       safe_verification: true,
       source_facts: [{ route_path: "/files/{file_id}", source_path: "routes.py" }],
@@ -123,6 +124,7 @@ test("candidate cards expose review rationale and ranking reasons", () => {
     "impact:sensitive_data_sink",
     "traceable_source_fact",
   ]);
+  assert.equal(card.brokenInvariant, "Private object access must enforce ownership.");
   assert.equal(card.status, "needs_evidence");
 });
 
@@ -168,6 +170,32 @@ test("candidate cards expose report readiness gate", () => {
     card.reportReadiness.nextAllowedAction,
     "Review evidence before exporting a report preview.",
   );
+});
+
+test("candidate cards expose artifact evidence gaps", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-006",
+      vuln_type: "authorization",
+      risk: "high",
+      evidence_gaps: [
+        {
+          artifact_kind: "code",
+          reason: "missing_code_path",
+        },
+        {
+          artifact_kind: "har",
+          reason: "missing_required_artifact",
+        },
+      ],
+      safe_verification: true,
+    },
+  ]);
+
+  assert.deepEqual(card.evidenceGaps, [
+    "code: missing_code_path",
+    "har: missing_required_artifact",
+  ]);
 });
 
 test("candidate cards keep unsafe candidates visibly blocked", () => {
@@ -335,6 +363,8 @@ test("studio workbench runs local A+B benchmarks from expectation files", async 
   assert.match(workbench, /Benchmark expectation template created for human review/);
   assert.match(workbench, /benchmarkResult/);
   assert.match(workbench, /benchmark_path/);
+  assert.match(workbench, /Evidence gaps/);
+  assert.match(workbench, /benchmark\.evidence_gaps/);
   assert.match(workbench, /disabled=\{!latestRunId\}/);
   assert.doesNotMatch(workbench, /submitReport/);
 });
@@ -387,6 +417,8 @@ test("studio workbench surfaces validation plan and safety blockers", async () =
 
   assert.match(workbench, /Safe validation plan/);
   assert.match(workbench, /Safety blockers/);
+  assert.match(workbench, /Candidate evidence gaps/);
+  assert.match(workbench, /candidate\.evidenceGaps/);
   assert.match(workbench, /candidate\.validationMode/);
 });
 

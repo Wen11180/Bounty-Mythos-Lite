@@ -36,6 +36,10 @@ def build_studio_expectations_template(candidates_payload: Any) -> dict:
             "vuln_type": _candidate_vuln_type(candidate),
             "required_artifacts": _candidate_artifact_kinds(candidate),
             "require_code_path": True,
+            "require_refutation_status": True,
+            "require_security_invariant": True,
+            "require_impact_rationale": True,
+            "max_duplicate_risk_score": 49,
         }
         code_path = _candidate_code_path(candidate)
         if code_path:
@@ -64,7 +68,11 @@ def evaluate_studio_candidates(candidates_payload: Any, expectations: Any) -> di
     max_candidates = _max_candidates(expectations)
     forbidden_text_present = _forbidden_text_present(candidates_payload, forbidden_text)
     failures: list[dict[str, str]] = []
+    evidence_gaps: list[dict[str, str]] = []
     matched = 0
+
+    if not expected_candidates:
+        failures.append({"name": "benchmark", "reason": "no_expected_candidates"})
 
     if len(candidates) > max_candidates:
         failures.append(
@@ -81,6 +89,7 @@ def evaluate_studio_candidates(candidates_payload: Any, expectations: Any) -> di
             failures.append({"name": name, "reason": "expected_candidate_not_found"})
             continue
         candidate_failures = _candidate_quality_failures(candidate, expected)
+        evidence_gaps.extend(_candidate_evidence_gaps(candidate, expected, name))
         if candidate_failures:
             failures.extend({"name": name, "reason": reason} for reason in candidate_failures)
         else:
@@ -96,6 +105,7 @@ def evaluate_studio_candidates(candidates_payload: Any, expectations: Any) -> di
         "expected_count": len(expected_candidates),
         "matched": matched,
         "failures": failures,
+        "evidence_gaps": evidence_gaps,
         "safety": {
             "forbidden_text_present": forbidden_text_present,
         },
@@ -214,6 +224,19 @@ def _candidate_quality_failures(
         failures.append(f"missing_code_path:{expected_code_path}")
     if expected.get("require_code_path") is True and not _candidate_has_any_code_path(candidate):
         failures.append("missing_code_path")
+    if expected.get("require_refutation_status") is True and not _candidate_refutation_status(candidate):
+        failures.append("missing_refutation_status")
+    if expected.get("require_security_invariant") is True and not _candidate_security_invariant(candidate):
+        failures.append("missing_security_invariant")
+    if expected.get("require_impact_rationale") is True and not _candidate_impact_rationale(candidate):
+        failures.append("missing_impact_rationale")
+    max_duplicate_risk_score = expected.get("max_duplicate_risk_score")
+    if isinstance(max_duplicate_risk_score, int):
+        duplicate_risk_score = _candidate_duplicate_risk_score(candidate)
+        if duplicate_risk_score is None:
+            failures.append("missing_duplicate_risk_score")
+        elif duplicate_risk_score > max_duplicate_risk_score:
+            failures.append(f"duplicate_risk_too_high:{duplicate_risk_score}")
     report_readiness = candidate.get("report_readiness")
     if not isinstance(report_readiness, dict):
         failures.append("missing_report_readiness")
@@ -269,6 +292,48 @@ def _missing_advisory_signals(
     return missing
 
 
+def _candidate_evidence_gaps(
+    candidate: dict[str, Any],
+    expected: dict[str, Any],
+    name: str,
+) -> list[dict[str, str]]:
+    gaps: list[dict[str, str]] = []
+    for artifact_kind in _missing_required_artifacts(candidate, expected):
+        gaps.append(
+            {
+                "name": name,
+                "artifact_kind": artifact_kind,
+                "reason": "missing_required_artifact",
+            }
+        )
+    for artifact_kind in _missing_advisory_signals(candidate, expected):
+        gaps.append(
+            {
+                "name": name,
+                "artifact_kind": artifact_kind,
+                "reason": "missing_advisory_signal",
+            }
+        )
+    expected_code_path = _text(expected.get("code_path"))
+    if expected_code_path and not _candidate_has_code_path(candidate, expected_code_path):
+        gaps.append(
+            {
+                "name": name,
+                "artifact_kind": "code",
+                "reason": "missing_code_path",
+            }
+        )
+    if expected.get("require_code_path") is True and not _candidate_has_any_code_path(candidate):
+        gaps.append(
+            {
+                "name": name,
+                "artifact_kind": "code",
+                "reason": "missing_code_path",
+            }
+        )
+    return gaps
+
+
 def _candidate_artifact_kinds(candidate: dict[str, Any]) -> list[str]:
     source_facts = candidate.get("source_facts", [])
     if not isinstance(source_facts, list):
@@ -313,6 +378,35 @@ def _candidate_has_any_code_path(candidate: dict[str, Any]) -> bool:
         and bool(_normalized_path(_text(fact.get("source_path"))))
         for fact in source_facts
     )
+
+
+def _candidate_refutation_status(candidate: dict[str, Any]) -> str:
+    return _text(candidate.get("refutation_status"))
+
+
+def _candidate_duplicate_risk_score(candidate: dict[str, Any]) -> int | None:
+    value = candidate.get("duplicate_risk_score")
+    if not isinstance(value, int):
+        return None
+    return max(0, min(100, value))
+
+
+def _candidate_security_invariant(candidate: dict[str, Any]) -> str:
+    return (
+        _text(candidate.get("broken_invariant"))
+        or _text(candidate.get("security_invariant"))
+        or _text(candidate.get("invariant"))
+    )
+
+
+def _candidate_impact_rationale(candidate: dict[str, Any]) -> str:
+    explicit = _text(candidate.get("impact_rationale")) or _text(candidate.get("impact"))
+    if explicit:
+        return explicit
+    for reason in _string_list(candidate.get("ranking_reasons")):
+        if reason.lower().startswith("impact:"):
+            return reason
+    return ""
 
 
 def _candidate_code_path(candidate: dict[str, Any]) -> str:

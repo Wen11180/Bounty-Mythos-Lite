@@ -58,6 +58,7 @@ export type StudioCandidateInput = {
   risk?: string;
   location?: string;
   reason?: string;
+  broken_invariant?: string;
   evidence_needed?: string[];
   false_positive_checks?: string[];
   ranking_reasons?: string[];
@@ -66,6 +67,10 @@ export type StudioCandidateInput = {
     report_submission_allowed?: boolean;
     status?: string;
   };
+  evidence_gaps?: Array<{
+    artifact_kind?: string;
+    reason?: string;
+  }>;
   safe_validation_plan?: string[];
   safe_verification?: boolean;
   safety_blockers?: string[];
@@ -96,8 +101,10 @@ export type StudioCandidateCard = {
   affectedEndpoint: string;
   affectedCodePath: string;
   evidenceNeeds: string[];
+  evidenceGaps: string[];
   refutationQuestions: string[];
   rankingReasons: string[];
+  brokenInvariant: string;
   reason: string;
   reportReadiness: {
     nextAllowedAction: string;
@@ -188,8 +195,10 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       affectedEndpoint: endpoint || "Endpoint needs review",
       affectedCodePath: codePath || "Code path needs review",
       evidenceNeeds: candidate.evidence_needed ?? [],
+      evidenceGaps: evidenceGapsFromCandidate(candidate),
       refutationQuestions: candidate.false_positive_checks ?? [],
       rankingReasons: candidate.ranking_reasons ?? [],
+      brokenInvariant: safeText(candidate.broken_invariant, "Security invariant needs review."),
       reason: safeText(candidate.reason, "Review rationale unavailable."),
       reportReadiness: reportReadinessFromCandidate(candidate),
       safeValidationPlan: candidate.safe_validation_plan ?? [],
@@ -227,6 +236,19 @@ function reportReadinessFromCandidate(
     reportSubmissionAllowed: candidate.report_readiness?.report_submission_allowed === true,
     status: safeText(candidate.report_readiness?.status, "submission_blocked"),
   };
+}
+
+function evidenceGapsFromCandidate(candidate: StudioCandidateInput): string[] {
+  if (!Array.isArray(candidate.evidence_gaps)) {
+    return [];
+  }
+  return candidate.evidence_gaps
+    .map((gap) => {
+      const artifactKind = safeText(gap.artifact_kind, "");
+      const reason = safeText(gap.reason, "");
+      return artifactKind && reason ? `${artifactKind}: ${reason}` : "";
+    })
+    .filter((item) => item.length > 0);
 }
 
 function missingArtifactLabel(item: StudioArtifactChecklistItem): string {

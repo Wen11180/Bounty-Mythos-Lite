@@ -129,6 +129,7 @@ export function StudioWorkbench() {
     () => artifactChecklist.filter((item) => !item.required),
     [artifactChecklist],
   );
+  const benchmarkEvidenceGaps = benchmarkResult?.benchmark.evidence_gaps ?? [];
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -683,21 +684,38 @@ export function StudioWorkbench() {
                 </div>
               </div>
               {benchmarkResult ? (
-                <dl className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <StatusRow
-                    label="Benchmark"
-                    value={benchmarkResult.benchmark.status ?? "unknown"}
-                    warning={benchmarkResult.benchmark.status !== "passed"}
-                  />
-                  <StatusRow
-                    label="Matched"
-                    value={`${benchmarkResult.benchmark.matched ?? 0}/${benchmarkResult.benchmark.expected_count ?? 0}`}
-                  />
-                  <StatusRow
-                    label="Result path"
-                    value={benchmarkResult.benchmark_path ?? "No result path"}
-                  />
-                </dl>
+                <div className="mt-4 space-y-3">
+                  <dl className="grid gap-3 sm:grid-cols-3">
+                    <StatusRow
+                      label="Benchmark"
+                      value={benchmarkResult.benchmark.status ?? "unknown"}
+                      warning={benchmarkResult.benchmark.status !== "passed"}
+                    />
+                    <StatusRow
+                      label="Matched"
+                      value={`${benchmarkResult.benchmark.matched ?? 0}/${benchmarkResult.benchmark.expected_count ?? 0}`}
+                    />
+                    <StatusRow
+                      label="Result path"
+                      value={benchmarkResult.benchmark_path ?? "No result path"}
+                    />
+                  </dl>
+                  {benchmarkEvidenceGaps.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                        Evidence gaps
+                      </p>
+                      <ul className="mt-2 space-y-1 text-xs text-[var(--muted)]">
+                        {benchmarkEvidenceGaps.map((gap, index) => (
+                          <li key={`${gap.name ?? "gap"}-${gap.artifact_kind ?? "artifact"}-${index}`}>
+                            {gap.name ?? "candidate"}: {gap.artifact_kind ?? "artifact"} -{" "}
+                            {gap.reason ?? "needs_review"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
@@ -763,6 +781,10 @@ export function StudioWorkbench() {
                   <p className="mt-2 text-[var(--muted)]">{candidate.reason}</p>
                 </div>
                 <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Broken invariant</p>
+                  <p className="mt-2 text-[var(--muted)]">{candidate.brokenInvariant}</p>
+                </div>
+                <div className="mt-4">
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">Next report action</p>
                   <p className="mt-2 text-[var(--muted)]">
                     {candidate.reportReadiness.nextAllowedAction}
@@ -771,6 +793,7 @@ export function StudioWorkbench() {
                 <ListBlock title="Ranking reasons" items={candidate.rankingReasons} />
                 <ListBlock title="Safe validation plan" items={candidate.safeValidationPlan} />
                 <ListBlock title="Safety blockers" items={candidate.safetyBlockers} />
+                <ListBlock title="Candidate evidence gaps" items={candidate.evidenceGaps} />
                 <ListBlock title="Evidence needed" items={candidate.evidenceNeeds} />
                 <ListBlock title="False-positive checks" items={candidate.refutationQuestions} />
               </article>

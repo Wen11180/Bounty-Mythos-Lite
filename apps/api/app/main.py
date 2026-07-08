@@ -2604,6 +2604,10 @@ def _studio_candidate_from_hypothesis(
     candidate_route_fact = _studio_candidate_route_fact(hypothesis)
     if candidate_route_fact is not None:
         safe_source_facts = [candidate_route_fact, *safe_source_facts]
+    candidate_source_facts = safe_source_facts + _studio_matching_surface_facts(
+        hypothesis,
+        imported_surface_facts or [],
+    )
     return {
         "hypothesis_id": safe_preview_text(hypothesis.get("hypothesis_id", "")),
         "vuln_type": safe_preview_text(hypothesis.get("vuln_type", "candidate")),
@@ -2612,6 +2616,7 @@ def _studio_candidate_from_hypothesis(
         ),
         "location": safe_preview_text(hypothesis.get("location", "")),
         "reason": safe_preview_text(hypothesis.get("hypothesis", "")),
+        "broken_invariant": _studio_broken_invariant(hypothesis),
         "evidence_needed": safe_preview_lines(hypothesis.get("evidence_needed", [])),
         "false_positive_checks": safe_preview_lines(
             hypothesis.get("false_positive_checks", [])
@@ -2633,10 +2638,64 @@ def _studio_candidate_from_hypothesis(
         },
         "safe_verification": hypothesis.get("validation_mode") != "blocked",
         "priority_score": hypothesis.get("priority_score", 0),
-        "source_facts": safe_source_facts
-        + _studio_matching_surface_facts(hypothesis, imported_surface_facts or []),
+        "refutation_status": safe_preview_text(hypothesis.get("refutation_status", "")),
+        "duplicate_risk_score": _studio_duplicate_risk_score(hypothesis),
+        "evidence_gaps": _studio_candidate_evidence_gaps(candidate_source_facts),
+        "source_facts": candidate_source_facts,
         "submission_blocked": True,
+}
+
+
+def _studio_broken_invariant(hypothesis: dict) -> str:
+    explicit = safe_preview_text(hypothesis.get("broken_invariant", ""))
+    if explicit:
+        return explicit
+    vuln_type = safe_preview_text(hypothesis.get("vuln_type", "candidate"))
+    if "authorization" in vuln_type.lower():
+        return "Object access must be authorized before sensitive data or actions are returned."
+    return "Candidate security invariant requires human review before validation."
+
+
+def _studio_candidate_evidence_gaps(source_facts: list[dict]) -> list[dict[str, str]]:
+    artifact_kinds = {
+        safe_preview_text(fact.get("artifact_kind"))
+        for fact in source_facts
+        if isinstance(fact, dict)
     }
+    gaps = [
+        {
+            "artifact_kind": artifact_kind,
+            "reason": "missing_required_artifact",
+        }
+        for artifact_kind in ("code", "api", "har")
+        if artifact_kind not in artifact_kinds
+    ]
+    has_code_path = any(
+        isinstance(fact, dict)
+        and safe_preview_text(fact.get("artifact_kind")) == "code"
+        and safe_preview_text(fact.get("source_path"))
+        for fact in source_facts
+    )
+    if "code" in artifact_kinds and not has_code_path:
+        gaps.append(
+            {
+                "artifact_kind": "code",
+                "reason": "missing_code_path",
+            }
+        )
+    return gaps
+
+
+def _studio_duplicate_risk_score(hypothesis: dict) -> int:
+    value = hypothesis.get("duplicate_risk_score")
+    if isinstance(value, int):
+        return value
+    hunter_assessment = hypothesis.get("hunter_assessment")
+    if isinstance(hunter_assessment, dict):
+        value = hunter_assessment.get("duplicate_risk_score")
+        if isinstance(value, int):
+            return value
+    return 0
 
 
 def _studio_safe_validation_plan(hypothesis: dict) -> list[str]:
