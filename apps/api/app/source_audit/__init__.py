@@ -132,6 +132,7 @@ class VulnerabilityHypothesis:
     ranking_reasons: list[str]
     safe_verification: bool
     risk: str
+    source_facts: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -976,6 +977,18 @@ def normalize_semgrep_json(payload: dict) -> list[StaticFinding]:
     return findings
 
 
+def _source_fact_from_codebase_candidate(fact: CodebaseFactCandidate) -> dict:
+    return {
+        "fact_ref": f"codebase_fact:{fact.fact_type}:{fact.route_path or fact.source_path}",
+        "fact_type": fact.fact_type,
+        "artifact_kind": "code",
+        "route_method": fact.route_method,
+        "route_path": fact.route_path,
+        "source_path": safe_display_text(fact.source_path),
+        "symbol_name": safe_display_text(fact.symbol_name or ""),
+    }
+
+
 def build_source_hypotheses(
     facts: list[CodebaseFactCandidate],
     findings: list[StaticFinding],
@@ -1010,6 +1023,7 @@ def build_source_hypotheses(
                 ranking_reasons=_fact_ranking_reasons(fact),
                 safe_verification=True,
                 risk="high",
+                source_facts=[_source_fact_from_codebase_candidate(fact)],
             )
         )
 
@@ -1470,6 +1484,7 @@ def _source_audit_pipeline_hypotheses(result: SourceAuditResult) -> list[dict]:
             "ranking_reasons": hypothesis.ranking_reasons,
             "validation_mode": _validation_mode_for_hypothesis(hypothesis),
             "policy_risk": "low",
+            "source_facts": hypothesis.source_facts,
             "source": "source_audit",
         }
         for hypothesis in result.hypotheses

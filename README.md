@@ -111,6 +111,16 @@ For a lightweight terminal chat wrapper:
 python -m app chat
 ```
 
+Evaluate a saved Studio candidate response against a local A+B benchmark
+expectation file:
+
+```powershell
+python -m app studio-eval `
+  --candidates C:/path/to/studio-candidates.json `
+  --expectations C:/path/to/studio-expectations.json `
+  --output studio-eval-result.json
+```
+
 All of these CLI paths stay inside the project safety boundary: no public-target
 scanning, no destructive validation, no credential collection, no automatic
 approval, and no automatic report submission.

@@ -230,6 +230,12 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
             "report_submission_allowed": False,
             "next_allowed_action": "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
         }
+        assert any(
+            fact.get("artifact_kind") == "code"
+            and fact.get("source_path", "").endswith("routes.py")
+            and fact.get("symbol_name") == "export_file"
+            for fact in candidates[0]["source_facts"]
+        )
         assert "send_file(file_id)" not in str(candidates)
 
         export_response = client.post(

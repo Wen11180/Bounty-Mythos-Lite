@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import create_tables
 from app.deep_research import build_knowledge_artifact
+from app.intelligence_benchmark import evaluate_studio_candidates
 from app.mythos_agent import (
     AgentGoal,
     get_agent_gates,
@@ -75,10 +76,16 @@ def main(argv: list[str] | None = None) -> int:
     review_note.add_argument("--reviewer", required=True)
     review_note.add_argument("--decision", required=True)
     review_note.add_argument("--note", required=True)
+    studio_eval = subparsers.add_parser("studio-eval")
+    studio_eval.add_argument("--candidates", required=True)
+    studio_eval.add_argument("--expectations", required=True)
+    studio_eval.add_argument("--output")
 
     args = parser.parse_args(argv)
     if args.command == "chat":
         return run_terminal_chat()
+    if args.command == "studio-eval":
+        return run_studio_eval_command(args)
     if args.command == "agent":
         return run_agent_command(args)
     if args.command == "agent-status":
@@ -212,6 +219,23 @@ def run_agent_review_note_command(args) -> int:
     return 0 if review_note.status == "recorded" else 2
 
 
+def run_studio_eval_command(args) -> int:
+    result = evaluate_studio_candidates(
+        _read_json_file(args.candidates),
+        _read_json_file(args.expectations),
+    )
+    result_json = json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(result_json, encoding="utf-8")
+    else:
+        print(result_json)
+    if result["status"] == "passed":
+        print("Studio benchmark passed")
+        return 0
+    print("Studio benchmark failed", file=sys.stderr)
+    return 1
+
+
 def run_agent_status_command(args) -> int:
     resume = _read_agent_resume(args.resume_from)
     campaign_id = args.campaign_id or resume.get("campaign_id")
@@ -298,8 +322,13 @@ def _read_policy_text(scope_path: str) -> str:
 def _read_json_metadata(path: str | None) -> dict | None:
     if path is None:
         return None
-    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    data = _read_json_file(path)
     return data if isinstance(data, dict) else {}
+
+
+def _read_json_file(path: str) -> object:
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return data
 
 
 def _build_pipeline_run_receipt(*, args, run) -> dict:
