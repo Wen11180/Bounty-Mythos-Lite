@@ -16,6 +16,7 @@ WORKSPACE_DIRS = (
     "sarif",
     "fuzzing",
     "strategy",
+    "knowledge",
     "evidence",
     "benchmarks",
     "reports",
@@ -183,15 +184,46 @@ def record_workspace_mission_dossier(
     safe_run_id = _safe_name(run_id or "no-run")
     dossier_path = path / "reports" / f"{safe_run_id}-mission-dossier.json"
     markdown_path = path / "reports" / f"{safe_run_id}-mission-dossier.md"
+    agent_queue_path = path / "reports" / f"{safe_run_id}-agent-queue.json"
+    agent_queue_markdown_path = path / "reports" / f"{safe_run_id}-agent-queue.md"
+    agent_queue_audit = _agent_queue_audit(run_id, mission)
     dossier_path.write_text(json.dumps(mission, indent=2), encoding="utf-8")
     markdown_path.write_text(_mission_dossier_markdown(mission), encoding="utf-8")
+    agent_queue_path.write_text(json.dumps(agent_queue_audit, indent=2), encoding="utf-8")
+    agent_queue_markdown_path.write_text(
+        _agent_queue_audit_markdown(agent_queue_audit),
+        encoding="utf-8",
+    )
     dossier_ref = _safe_path_ref(str(dossier_path))
     markdown_ref = _safe_path_ref(str(markdown_path))
+    agent_queue_ref = _safe_path_ref(str(agent_queue_path))
+    agent_queue_markdown_ref = _safe_path_ref(str(agent_queue_markdown_path))
     manifest.setdefault("mission_dossiers", []).append(
         {
             "run_id": run_id,
             "dossier_path": dossier_ref,
             "dossier_markdown_path": markdown_ref,
+            "agent_queue_path": agent_queue_ref,
+            "agent_queue_markdown_path": agent_queue_markdown_ref,
+            "report_submission_allowed": False,
+            "validation_execution_allowed": False,
+            "recorded_at": _utc_now(),
+        }
+    )
+    manifest.setdefault("agent_queue_audits", []).append(
+        {
+            "run_id": run_id,
+            "agent_queue_path": agent_queue_ref,
+            "agent_queue_markdown_path": agent_queue_markdown_ref,
+            "task_count": len(agent_queue_audit["agent_queue"]),
+            "timeline_stage_count": len(agent_queue_audit["task_timeline"]),
+            "candidate_hunter_backlog_count": len(
+                agent_queue_audit["candidate_hunter_backlog"]
+            ),
+            "top_candidate_quality_gate": agent_queue_audit["quality_summary"].get(
+                "top_candidate_quality_gate",
+                "unknown",
+            ),
             "report_submission_allowed": False,
             "validation_execution_allowed": False,
             "recorded_at": _utc_now(),
@@ -201,6 +233,8 @@ def record_workspace_mission_dossier(
         if isinstance(run, dict) and run.get("run_id") == run_id:
             run["mission_dossier_path"] = dossier_ref
             run["mission_dossier_markdown_path"] = markdown_ref
+            run["agent_queue_path"] = agent_queue_ref
+            run["agent_queue_markdown_path"] = agent_queue_markdown_ref
             break
     _write_manifest(path, manifest)
     return manifest
@@ -416,7 +450,14 @@ def _mission_dossier_markdown(mission: dict[str, Any]) -> str:
             ]
         )
     lines.extend(_mission_stage_markdown_lines(mission.get("research_loop")))
+    lines.extend(_mission_quality_summary_markdown_lines(mission.get("quality_summary")))
+    lines.extend(
+        _candidate_hunter_backlog_markdown_lines(
+            mission.get("candidate_hunter_backlog")
+        )
+    )
     lines.extend(_mission_agent_queue_markdown_lines(mission.get("agent_queue")))
+    lines.extend(_mission_hallucination_guard_markdown_lines(mission.get("top_candidates")))
     lines.extend(_mission_candidate_quality_markdown_lines(mission.get("top_candidates")))
     lines.extend(_mission_candidate_markdown_lines(mission.get("top_candidates")))
     return "\n".join(lines) + "\n"
@@ -450,12 +491,228 @@ def _mission_agent_queue_markdown_lines(value: Any) -> list[str]:
         safety_gate = _markdown_safe_text(item.get("safety_gate"))
         inputs = ", ".join(_markdown_list(item.get("input_refs")))
         candidates = ", ".join(_markdown_list(item.get("target_candidates")))
+        focus = ", ".join(_markdown_list(item.get("review_focus")))
+        quality_gaps = ", ".join(_markdown_list(item.get("candidate_quality_gaps")))
         next_action = _markdown_safe_text(item.get("next_action"))
         if task_id:
-            lines.append(
-                f"- {task_id}: {agent} ({status}, {safety_gate}); inputs: {inputs}; candidates: {candidates}; next: {next_action}"
+            line = (
+                f"- {task_id}: {agent} ({status}, {safety_gate}); "
+                f"inputs: {inputs}; candidates: {candidates}"
             )
+            if focus:
+                line += f"; focus: {focus}"
+            if quality_gaps:
+                line += f"; quality gaps: {quality_gaps}"
+            lines.append(f"{line}; next: {next_action}")
     return lines
+
+
+def _agent_queue_audit(run_id: str | None, mission: dict[str, Any]) -> dict[str, Any]:
+    quality_summary = mission.get("quality_summary")
+    agent_queue = _safe_agent_queue_items(mission.get("agent_queue"))
+    return {
+        "run_id": run_id,
+        "agent_queue": agent_queue,
+        "task_timeline": _agent_task_timeline_items(agent_queue),
+        "candidate_hunter_backlog": _safe_candidate_hunter_backlog_items(
+            mission.get("candidate_hunter_backlog")
+        ),
+        "quality_summary": _safe_quality_summary(quality_summary),
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+    }
+
+
+def _safe_agent_queue_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        task_id = _queue_safe_text(item.get("task_id"))
+        if not task_id:
+            continue
+        items.append(
+            {
+                "task_id": task_id,
+                "agent": _queue_safe_text(item.get("agent")),
+                "status": _queue_safe_text(item.get("status")),
+                "safety_gate": _queue_safe_text(item.get("safety_gate")),
+                "input_refs": _queue_safe_list(item.get("input_refs")),
+                "target_candidates": _queue_safe_list(item.get("target_candidates")),
+                "review_focus": _queue_safe_list(item.get("review_focus")),
+                "candidate_quality_gaps": _queue_safe_list(
+                    item.get("candidate_quality_gaps")
+                ),
+                "next_action": _queue_safe_text(item.get("next_action")),
+            }
+        )
+    return items[:10]
+
+
+def _safe_quality_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for key in (
+        "status",
+        "top_candidate_quality_gate",
+        "candidate_count",
+        "review_ready_count",
+        "average_quality_score",
+    ):
+        raw_value = value.get(key)
+        if isinstance(raw_value, int):
+            summary[key] = raw_value
+            continue
+        text = _queue_safe_text(raw_value)
+        if text:
+            summary[key] = text
+    summary["blockers"] = _queue_safe_list(value.get("blockers"))
+    summary["improvement_actions"] = _queue_safe_list(value.get("improvement_actions"))
+    return summary
+
+
+def _agent_task_timeline_items(agent_queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for item in agent_queue:
+        task_id = _queue_safe_text(item.get("task_id"))
+        if not task_id:
+            continue
+        timeline.append(
+            {
+                "stage_id": f"agent_queue:{task_id}",
+                "task_id": task_id,
+                "attempt": 1,
+                "agent": _queue_safe_text(item.get("agent")),
+                "status": _queue_safe_text(item.get("status")),
+                "safety_gate": _queue_safe_text(item.get("safety_gate")),
+                "gate_decision": _agent_task_gate_decision(item),
+                "input_summary": _agent_task_input_summary(item),
+                "output_summary": _agent_task_output_summary(item),
+                "next_human_action": _queue_safe_text(item.get("next_action")),
+                "report_submission_allowed": False,
+                "validation_execution_allowed": False,
+            }
+        )
+    return timeline[:10]
+
+
+def _agent_task_gate_decision(item: dict[str, Any]) -> str:
+    status = _queue_safe_text(item.get("status"))
+    if status == "complete":
+        return "review_recorded"
+    if status == "needs_review":
+        return "human_review_required"
+    if status == "blocked":
+        return "blocked"
+    return "pending"
+
+
+def _agent_task_input_summary(item: dict[str, Any]) -> str:
+    refs = _queue_safe_list(item.get("input_refs"))
+    if not refs:
+        return "No input refs recorded."
+    return "Input refs: " + ", ".join(refs)
+
+
+def _agent_task_output_summary(item: dict[str, Any]) -> str:
+    candidates = _queue_safe_list(item.get("target_candidates"))
+    focus = _queue_safe_list(item.get("review_focus"))
+    gaps = _queue_safe_list(item.get("candidate_quality_gaps"))
+    parts: list[str] = []
+    if candidates:
+        parts.append("candidates: " + ", ".join(candidates))
+    if focus:
+        parts.append("focus: " + ", ".join(focus))
+    if gaps:
+        parts.append("quality gaps: " + ", ".join(gaps))
+    return "; ".join(parts) if parts else "No output summary recorded."
+
+
+def _agent_queue_audit_markdown(audit: dict[str, Any]) -> str:
+    lines = [
+        "# Mythos Studio agent queue audit",
+        "",
+        "- Run: " + _markdown_text(audit.get("run_id"), "No run selected"),
+        "- Submission blocked: true",
+        "- Validation execution allowed: false",
+    ]
+    lines.extend(_mission_quality_summary_markdown_lines(audit.get("quality_summary")))
+    lines.extend(_mission_agent_queue_markdown_lines(audit.get("agent_queue")))
+    lines.extend(_agent_task_timeline_markdown_lines(audit.get("task_timeline")))
+    return "\n".join(lines) + "\n"
+
+
+def _agent_task_timeline_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Agent task timeline"]
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        stage_id = _queue_safe_text(item.get("stage_id"))
+        status = _queue_safe_text(item.get("status"))
+        gate_decision = _queue_safe_text(item.get("gate_decision"))
+        input_summary = _queue_safe_text(item.get("input_summary"))
+        output_summary = _queue_safe_text(item.get("output_summary"))
+        next_human_action = _queue_safe_text(item.get("next_human_action"))
+        if not stage_id:
+            continue
+        lines.append(
+            f"- {stage_id}: {status}; gate: {gate_decision}; input: {input_summary}; output: {output_summary}; next: {next_human_action}"
+        )
+    return lines
+
+
+def _queue_safe_text(value: Any) -> str:
+    text = _markdown_safe_text(value)
+    if text in BLOCKED_ACTIONS:
+        return ""
+    return text
+
+
+def _queue_safe_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        text = _queue_safe_text(item)
+        if text:
+            items.append(text)
+    return items[:10]
+
+
+def _mission_quality_summary_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    lines = ["", "## Mission quality"]
+    fields = [
+        ("Status", value.get("status")),
+        ("Top candidate quality gate", value.get("top_candidate_quality_gate")),
+        ("Review-ready candidates", value.get("review_ready_count")),
+        ("Average quality score", value.get("average_quality_score")),
+    ]
+    for label, raw_value in fields:
+        text = _markdown_summary_value(raw_value)
+        if text:
+            lines.append(f"- {label}: {text}")
+    blockers = _markdown_list(value.get("blockers"))
+    if blockers:
+        lines.append("- Blockers: " + "; ".join(blockers))
+    actions = _markdown_list(value.get("improvement_actions"))
+    if actions:
+        lines.append("- Improvement actions: " + "; ".join(actions))
+    return lines if len(lines) > 2 else []
+
+
+def _markdown_summary_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return str(value)
+    return _markdown_safe_text(value)
 
 
 def _mission_candidate_quality_markdown_lines(value: Any) -> list[str]:
@@ -479,6 +736,30 @@ def _mission_candidate_quality_markdown_lines(value: Any) -> list[str]:
                 f"- {hypothesis_id}: {quality_status} ({quality_score}/100); reasons: {reasons}"
             )
     return lines
+
+
+def _mission_hallucination_guard_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return []
+    lines = ["", "## Hallucination guard"]
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        hypothesis_id = _markdown_safe_text(item.get("hypothesis_id"))
+        guard = item.get("hallucination_guard")
+        if not hypothesis_id or not isinstance(guard, dict):
+            continue
+        status = _markdown_safe_text(guard.get("status"))
+        model_output_status = _markdown_safe_text(guard.get("model_output_status"))
+        sources = ", ".join(_markdown_list(guard.get("cross_validation_sources")))
+        blockers = ", ".join(_markdown_list(guard.get("blockers")))
+        line = f"- {hypothesis_id}: {status}; model output: {model_output_status}"
+        if sources:
+            line += f"; sources: {sources}"
+        if blockers:
+            line += f"; blockers: {blockers}"
+        lines.append(line)
+    return lines if len(lines) > 2 else []
 
 
 def _mission_candidate_markdown_lines(value: Any) -> list[str]:

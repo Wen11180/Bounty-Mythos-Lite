@@ -72,6 +72,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         safety_gate: "authorized_artifacts_only",
         input_refs: ["scope"],
         target_candidates: [],
+        review_focus: ["scope_guard_status", "policy_alignment"],
+        candidate_quality_gaps: [],
         next_action: "Review scope and policy coverage.",
       },
       {
@@ -81,6 +83,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         safety_gate: "local_static_analysis_only",
         input_refs: ["code", "api", "har"],
         target_candidates: ["H-001"],
+        review_focus: ["security_invariants", "affected_code_paths", "candidate_quality"],
+        candidate_quality_gaps: ["H-002:missing_safe_validation_plan"],
         next_action: "Review top candidate invariants.",
       },
       {
@@ -90,6 +94,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         safety_gate: "submission_blocked",
         input_refs: ["policy", "code", "api", "har"],
         target_candidates: ["H-001"],
+        review_focus: ["submission_blocked_report", "redaction_review", "human_review_gate"],
+        candidate_quality_gaps: [],
         next_action: "Export a submission-blocked draft for human review.",
       },
     ],
@@ -102,8 +108,21 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       human_review_required: true,
       report_submission_allowed: false,
       submission_blocked: true,
+      top_candidate_quality_gate: true,
       top_candidates_limited: true,
       validation_execution_allowed: false,
+    },
+    quality_summary: {
+      average_quality_score: 95,
+      blockers: [],
+      candidate_count: 1,
+      improvement_actions: [],
+      required_candidate_max: 5,
+      required_candidate_min: 1,
+      review_ready_count: 1,
+      review_ready_threshold: 85,
+      status: "review_ready",
+      top_candidate_quality_gate: "passed",
     },
     run_id: "pipeline_run_1",
     scope_guard_status: "scope_imported",
@@ -139,6 +158,18 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         evidence_review_status: "needs_human_review",
         execution_allowed: false,
         false_positive_check_count: 2,
+        hallucination_guard: {
+          cross_validation_sources: ["code", "api", "har"],
+          high_confidence_allowed: true,
+          local_evidence_sources: ["code", "api", "har"],
+          model_output_status: "unverified_claim_not_fact",
+          required_consensus: [
+            "local_artifact_trace",
+            "independent_refutation_review",
+            "human_evidence_review",
+          ],
+          status: "cross_checked",
+        },
         hypothesis_id: "H-001",
         next_report_action: "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
         policy_review_status: "needs_human_review",
@@ -181,6 +212,17 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.equal(panel.gates.reportSubmissionAllowed, false);
   assert.equal(panel.gates.validationExecutionAllowed, false);
   assert.equal(panel.gates.humanReviewRequired, true);
+  assert.equal(panel.gates.topCandidateQualityGate, true);
+  assert.deepEqual(panel.qualitySummary, {
+    averageQualityScore: 95,
+    blockers: [],
+    candidateCount: 1,
+    improvementActions: [],
+    reviewReadyCount: 1,
+    reviewReadyThreshold: 85,
+    status: "review_ready",
+    topCandidateQualityGate: "passed",
+  });
   assert.deepEqual(panel.agentQueue, [
     {
       taskId: "scope_guard_intake",
@@ -189,6 +231,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       safetyGate: "authorized_artifacts_only",
       inputRefs: ["scope"],
       targetCandidates: [],
+      reviewFocus: ["scope_guard_status", "policy_alignment"],
+      candidateQualityGaps: [],
       nextAction: "Review scope and policy coverage.",
     },
     {
@@ -198,6 +242,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       safetyGate: "local_static_analysis_only",
       inputRefs: ["code", "api", "har"],
       targetCandidates: ["H-001"],
+      reviewFocus: ["security_invariants", "affected_code_paths", "candidate_quality"],
+      candidateQualityGaps: ["H-002:missing_safe_validation_plan"],
       nextAction: "Review top candidate invariants.",
     },
     {
@@ -207,6 +253,8 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       safetyGate: "submission_blocked",
       inputRefs: ["policy", "code", "api", "har"],
       targetCandidates: ["H-001"],
+      reviewFocus: ["submission_blocked_report", "redaction_review", "human_review_gate"],
+      candidateQualityGaps: [],
       nextAction: "Export a submission-blocked draft for human review.",
     },
   ]);
@@ -248,6 +296,20 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.equal(panel.topCandidates[0]?.policyReviewStatus, "needs_human_review");
   assert.equal(panel.topCandidates[0]?.qualityScore, 95);
   assert.equal(panel.topCandidates[0]?.qualityStatus, "review_ready");
+  assert.deepEqual(panel.topCandidates[0]?.hallucinationGuard, {
+    advisorySources: [],
+    blockers: [],
+    crossValidationSources: ["code", "api", "har"],
+    highConfidenceAllowed: true,
+    localEvidenceSources: ["code", "api", "har"],
+    modelOutputStatus: "unverified_claim_not_fact",
+    requiredConsensus: [
+      "local_artifact_trace",
+      "independent_refutation_review",
+      "human_evidence_review",
+    ],
+    status: "cross_checked",
+  });
   assert.deepEqual(panel.topCandidates[0]?.qualityReasons, [
     "endpoint_and_code_path_traced",
     "refutation_checks_present",
@@ -292,9 +354,10 @@ test("artifact checklist marks required A+B authorized inputs before research", 
   assert.equal(checklist.find((item) => item.kind === "sbom")?.status, "optional");
   assert.equal(checklist.find((item) => item.kind === "strategy")?.status, "optional");
   assert.equal(checklist.find((item) => item.kind === "fuzzing")?.status, "optional");
+  assert.equal(checklist.find((item) => item.kind === "knowledge")?.status, "optional");
 });
 
-test("artifact checklist treats strategy notes as optional advisory context", () => {
+test("artifact checklist treats strategy and knowledge notes as optional advisory context", () => {
   const checklist = toStudioArtifactChecklist({
     artifacts: [
       { kind: "scope", source_path: "C:/targets/scope.yaml" },
@@ -303,11 +366,14 @@ test("artifact checklist treats strategy notes as optional advisory context", ()
       { kind: "api", source_path: "C:/targets/openapi.json" },
       { kind: "har", source_path: "C:/targets/session.har" },
       { kind: "strategy", source_path: "C:/targets/strategy.md" },
+      { kind: "knowledge", source_path: "C:/targets/knowledge.json" },
     ],
   });
 
   assert.equal(checklist.find((item) => item.kind === "strategy")?.present, true);
   assert.equal(checklist.find((item) => item.kind === "strategy")?.status, "ready");
+  assert.equal(checklist.find((item) => item.kind === "knowledge")?.present, true);
+  assert.equal(checklist.find((item) => item.kind === "knowledge")?.status, "ready");
   assert.equal(toStudioResearchReadiness("C:/mythos-workspaces/acme", {
     artifacts: [
       { kind: "scope", source_path: "C:/targets/scope.yaml" },
@@ -316,6 +382,7 @@ test("artifact checklist treats strategy notes as optional advisory context", ()
       { kind: "api", source_path: "C:/targets/openapi.json" },
       { kind: "har", source_path: "C:/targets/session.har" },
       { kind: "strategy", source_path: "C:/targets/strategy.md" },
+      { kind: "knowledge", source_path: "C:/targets/knowledge.json" },
     ],
   }).canStart, true);
 });
@@ -582,12 +649,18 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /Agent queue/);
   assert.match(workbench, /missionPanel\.artifactCoverage/);
   assert.match(workbench, /missionPanel\.agentQueue/);
+  assert.match(workbench, /task\.reviewFocus/);
+  assert.match(workbench, /task\.candidateQualityGaps/);
   assert.match(workbench, /missionPanel\.researchLoopStages/);
   assert.match(workbench, /missionPanel\.safeNextActions/);
+  assert.match(workbench, /missionPanel\.qualitySummary/);
+  assert.match(workbench, /Mission quality blockers/);
+  assert.match(workbench, /Candidate improvement actions/);
   assert.match(workbench, /missionPanel\.topCandidates/);
   assert.match(workbench, /candidate\.qualityStatus/);
   assert.match(workbench, /candidate\.qualityScore/);
   assert.match(workbench, /candidate\.qualityReasons/);
+  assert.match(workbench, /candidate\.hallucinationGuard/);
   assert.match(workbench, /handleExportMissionDossier/);
   assert.match(workbench, /missionDossierExport/);
   assert.match(workbench, /Mission dossier exported/);
@@ -641,12 +714,16 @@ test("studio workbench imports strategy and fuzzing plans as optional advisory c
 
   assert.match(workbench, /strategyPath/);
   assert.match(workbench, /fuzzingPath/);
+  assert.match(workbench, /knowledgePath/);
   assert.match(workbench, /Strategy file/);
   assert.match(workbench, /Fuzzing plan/);
+  assert.match(workbench, /Knowledge file/);
   assert.match(workbench, /kind: "strategy"/);
   assert.match(workbench, /kind: "fuzzing"/);
+  assert.match(workbench, /kind: "knowledge"/);
   assert.match(workbench, /setStrategyPath/);
   assert.match(workbench, /setFuzzingPath/);
+  assert.match(workbench, /setKnowledgePath/);
   assert.match(workbench, /missionPanel\.advisoryContextLabel/);
   assert.match(workbench, /candidate\.evidenceReviewStatus/);
   assert.match(workbench, /candidate\.refutationReviewStatus/);

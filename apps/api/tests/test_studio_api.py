@@ -12,6 +12,8 @@ from app.db import Base, get_session
 from app.main import (
     app,
     _studio_fuzzing_surface_facts,
+    _studio_knowledge_surface_facts,
+    _studio_mission_agent_queue,
     _studio_mission_candidate_summary,
     _studio_report_candidate_guidance,
 )
@@ -98,6 +100,14 @@ def test_studio_report_candidate_guidance_includes_advisory_signal_labels():
                             "fuzzer_status": "not_executed",
                             "advisory_only": "true",
                         },
+                        {
+                            "fact_type": "knowledge_signal",
+                            "artifact_kind": "knowledge",
+                            "pattern_id": "WEB-IDOR-001",
+                            "vuln_type": "authorization_gap",
+                            "source": "local_milvus",
+                            "advisory_only": "true",
+                        },
                     ],
                 }
             ]
@@ -110,6 +120,7 @@ def test_studio_report_candidate_guidance_includes_advisory_signal_labels():
         "SARIF scanner advisory: GET /files/{file_id}/export",
         "SBOM dependency advisory: django 4.2.1 (CVE-2099-0001, high)",
         "Fuzzing plan advisory: parse_export_manifest (parser, planned, not_executed)",
+        "Knowledge advisory: WEB-IDOR-001 (authorization_gap) from local_milvus",
     ]
 
 
@@ -198,8 +209,66 @@ def test_studio_mission_candidate_summary_includes_safe_review_packet():
     ]
     assert summary["safety_blockers"] == ["Requires human approval before validation."]
     assert summary["evidence_gaps"] == ["api: missing_required_artifact"]
+    assert summary["hallucination_guard"] == {
+        "status": "blocked",
+        "model_output_status": "unverified_claim_not_fact",
+        "high_confidence_allowed": False,
+        "local_evidence_sources": [],
+        "advisory_sources": [],
+        "cross_validation_sources": [],
+        "required_consensus": [
+            "local_artifact_trace",
+            "independent_refutation_review",
+            "human_evidence_review",
+        ],
+        "blockers": [
+            "no_local_evidence_source",
+            "missing_endpoint_or_code_path_trace",
+        ],
+    }
+    assert summary["quality_status"] == "needs_review"
+    assert "hallucination_guard_needs_cross_validation" in summary["quality_reasons"]
     assert "secret-token" not in str(summary)
     assert "Authorization: Bearer" not in str(summary)
+
+
+def test_studio_mission_agent_queue_surfaces_candidate_quality_gaps_without_execution():
+    queue = _studio_mission_agent_queue(
+        ["scope", "policy", "code", "api", "har"],
+        [],
+        "pipeline_run_1",
+        [
+            {
+                "hypothesis_id": "H-weak",
+                "affected_endpoint": "",
+                "affected_code_path": "",
+                "quality_status": "needs_review",
+                "quality_reasons": ["evidence_needs_present"],
+                "evidence_gap_count": 1,
+            }
+        ],
+    )
+
+    by_task = {task["task_id"]: task for task in queue}
+    assert by_task["semantic_candidate_hunt"]["review_focus"] == [
+        "security_invariants",
+        "affected_code_paths",
+        "candidate_quality",
+    ]
+    assert by_task["evidence_validation_plan_review"]["review_focus"] == [
+        "evidence_needs",
+        "evidence_gaps",
+        "safe_validation_plan",
+    ]
+    assert "H-weak:missing_endpoint_or_code_path_trace" in by_task[
+        "semantic_candidate_hunt"
+    ]["candidate_quality_gaps"]
+    assert "H-weak:missing_safe_validation_plan" in by_task[
+        "evidence_validation_plan_review"
+    ]["candidate_quality_gaps"]
+    assert "execute_live_validation" not in str(queue)
+    assert "submit_report" not in str(queue)
+    assert "run_fuzzer" not in str(queue)
 
 
 def test_studio_fuzzing_surface_facts_ignore_executable_plans():
@@ -221,6 +290,39 @@ def test_studio_fuzzing_surface_facts_ignore_executable_plans():
     )
 
     assert facts == []
+
+
+def test_studio_knowledge_surface_facts_are_advisory_few_shot_context():
+    facts = _studio_knowledge_surface_facts(
+        {
+            "entries": [
+                {
+                    "pattern_id": "WEB-IDOR-001",
+                    "vuln_type": "authorization_gap",
+                    "source": "local_milvus",
+                },
+                {
+                    "pattern_id": "Authorization: Bearer secret-token",
+                    "vuln_type": "token leak",
+                    "source": "raw_notes",
+                },
+            ]
+        }
+    )
+
+    assert facts == [
+        {
+            "fact_type": "knowledge_signal",
+            "artifact_kind": "knowledge",
+            "advisory_only": "true",
+            "model_input_role": "few_shot_context_only",
+            "source": "local_milvus",
+            "pattern_id": "WEB-IDOR-001",
+            "vuln_type": "authorization_gap",
+        }
+    ]
+    assert "secret-token" not in str(facts)
+    assert "Authorization: Bearer" not in str(facts)
 
 
 def override_session():
@@ -726,7 +828,15 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "report_submission_allowed": False,
             "validation_execution_allowed": False,
             "human_review_required": True,
+            "top_candidate_quality_gate": True,
         }
+        assert mission["quality_summary"]["status"] == "review_ready"
+        assert mission["quality_summary"]["top_candidate_quality_gate"] == "passed"
+        assert mission["quality_summary"]["candidate_count"] == mission["candidate_count"]
+        assert mission["quality_summary"]["review_ready_count"] == mission["candidate_count"]
+        assert mission["quality_summary"]["average_quality_score"] >= 90
+        assert mission["quality_summary"]["blockers"] == []
+        assert mission["quality_summary"]["improvement_actions"] == []
         assert mission["blocked_actions"] == [
             "execute_live_validation",
             "touch_real_user_data",
@@ -759,10 +869,20 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert candidate["safe_validation_step_count"] >= 1
         assert candidate["quality_score"] >= 90
         assert candidate["quality_status"] == "review_ready"
+        assert candidate["hallucination_guard"]["status"] == "cross_checked"
+        assert (
+            candidate["hallucination_guard"]["model_output_status"]
+            == "unverified_claim_not_fact"
+        )
+        assert candidate["hallucination_guard"]["high_confidence_allowed"] is True
+        assert {"code", "api", "har"}.issubset(
+            set(candidate["hallucination_guard"]["local_evidence_sources"])
+        )
         assert "endpoint_and_code_path_traced" in candidate["quality_reasons"]
         assert "provenance_review_present" in candidate["quality_reasons"]
         assert "refutation_checks_present" in candidate["quality_reasons"]
         assert "safe_validation_plan_present" in candidate["quality_reasons"]
+        assert "hallucination_guard_cross_checked" in candidate["quality_reasons"]
         research_loop = mission["research_loop"]
         assert [stage["key"] for stage in research_loop] == [
             "scope_guard",
@@ -819,9 +939,24 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         }
         assert agent_queue[0]["agent"] == "Scope Guard"
         assert agent_queue[0]["input_refs"] == ["scope"]
+        assert agent_queue[0]["review_focus"] == [
+            "scope_guard_status",
+            "policy_alignment",
+        ]
         assert agent_queue[3]["target_candidates"] == [
             candidate["hypothesis_id"]
             for candidate in mission["top_candidates"]
+        ]
+        assert agent_queue[3]["review_focus"] == [
+            "security_invariants",
+            "affected_code_paths",
+            "candidate_quality",
+        ]
+        assert agent_queue[3]["candidate_quality_gaps"] == []
+        assert agent_queue[5]["review_focus"] == [
+            "evidence_needs",
+            "evidence_gaps",
+            "safe_validation_plan",
         ]
         assert all(task["safety_gate"] for task in agent_queue)
         assert all(
@@ -845,10 +980,26 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert dossier["validation_execution_allowed"] is False
         assert dossier["mission_dossier_path"].endswith("-mission-dossier.json")
         assert dossier["mission_dossier_markdown_path"].endswith("-mission-dossier.md")
+        assert dossier["agent_queue_path"].endswith("-agent-queue.json")
+        assert dossier["agent_queue_markdown_path"].endswith("-agent-queue.md")
         assert dossier["manifest"]["mission_dossiers"][-1]["report_submission_allowed"] is False
+        assert dossier["manifest"]["agent_queue_audits"][-1]["task_count"] == len(
+            agent_queue
+        )
+        assert dossier["manifest"]["agent_queue_audits"][-1]["timeline_stage_count"] == len(
+            agent_queue
+        )
+        assert (
+            dossier["manifest"]["agent_queue_audits"][-1]["agent_queue_markdown_path"]
+            == dossier["agent_queue_markdown_path"]
+        )
         assert (
             dossier["manifest"]["runs"][-1]["mission_dossier_markdown_path"]
             == dossier["mission_dossier_markdown_path"]
+        )
+        assert (
+            dossier["manifest"]["runs"][-1]["agent_queue_markdown_path"]
+            == dossier["agent_queue_markdown_path"]
         )
         dossier_json = json.loads(
             Path(dossier["mission_dossier_path"]).read_text(encoding="utf-8")
@@ -856,10 +1007,42 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         dossier_markdown = Path(dossier["mission_dossier_markdown_path"]).read_text(
             encoding="utf-8"
         )
+        queue_json = json.loads(
+            Path(dossier["agent_queue_path"]).read_text(encoding="utf-8")
+        )
+        queue_markdown = Path(dossier["agent_queue_markdown_path"]).read_text(
+            encoding="utf-8"
+        )
         assert dossier_json["agent_queue"][0]["task_id"] == "scope_guard_intake"
+        assert dossier_json["quality_summary"]["top_candidate_quality_gate"] == "passed"
+        assert queue_json["agent_queue"][0]["task_id"] == "scope_guard_intake"
+        assert queue_json["agent_queue"][3]["review_focus"] == [
+            "security_invariants",
+            "affected_code_paths",
+            "candidate_quality",
+        ]
+        assert queue_json["task_timeline"][3]["stage_id"] == (
+            "agent_queue:semantic_candidate_hunt"
+        )
+        assert queue_json["task_timeline"][3]["gate_decision"] == "review_recorded"
+        assert queue_json["task_timeline"][4]["gate_decision"] == "human_review_required"
+        assert queue_json["task_timeline"][6]["gate_decision"] == "blocked"
+        assert queue_json["task_timeline"][3]["report_submission_allowed"] is False
+        assert queue_json["task_timeline"][3]["validation_execution_allowed"] is False
+        assert queue_json["quality_summary"]["top_candidate_quality_gate"] == "passed"
+        assert "# Mythos Studio agent queue audit" in queue_markdown
+        assert "## Mission quality" in queue_markdown
+        assert "## Agent queue" in queue_markdown
+        assert "## Agent task timeline" in queue_markdown
+        assert "agent_queue:semantic_candidate_hunt" in queue_markdown
+        assert "focus: security_invariants, affected_code_paths, candidate_quality" in queue_markdown
         assert "# Mythos Studio mission dossier" in dossier_markdown
         assert "## Research loop" in dossier_markdown
+        assert "## Mission quality" in dossier_markdown
+        assert "Top candidate quality gate: passed" in dossier_markdown
         assert "## Agent queue" in dossier_markdown
+        assert "## Hallucination guard" in dossier_markdown
+        assert "unverified_claim_not_fact" in dossier_markdown
         assert "## Candidate quality" in dossier_markdown
         assert "review_ready (100/100)" in dossier_markdown
         assert "endpoint_and_code_path_traced" in dossier_markdown
@@ -868,7 +1051,11 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert "send_file(file_id)" not in str(dossier)
         assert str(repo) not in str(dossier)
         assert "send_file(file_id)" not in dossier_markdown
+        assert "send_file(file_id)" not in queue_markdown
         assert str(repo) not in dossier_markdown
+        assert str(repo) not in queue_markdown
+        assert "execute_live_validation" not in queue_markdown
+        assert "submit_report" not in queue_markdown
         assert "send_file(file_id)" not in str(mission)
         assert str(repo) not in str(mission)
     finally:
@@ -943,18 +1130,29 @@ def test_studio_mission_export_writes_review_only_dossier(tmp_path: Path):
         assert body["mission"]["quality_gates"]["validation_execution_allowed"] is False
         assert body["mission_dossier_path"].endswith("mission-dossier.json")
         assert body["mission_dossier_markdown_path"].endswith("mission-dossier.md")
+        assert body["agent_queue_path"].endswith("agent-queue.json")
+        assert body["agent_queue_markdown_path"].endswith("agent-queue.md")
         assert body["manifest"]["mission_dossiers"][0]["report_submission_allowed"] is False
         assert body["manifest"]["mission_dossiers"][0]["validation_execution_allowed"] is False
+        assert body["manifest"]["agent_queue_audits"][0]["report_submission_allowed"] is False
+        assert body["manifest"]["agent_queue_audits"][0]["validation_execution_allowed"] is False
 
         markdown = Path(body["mission_dossier_markdown_path"]).read_text(encoding="utf-8")
+        queue_markdown = Path(body["agent_queue_markdown_path"]).read_text(encoding="utf-8")
         assert "## Agent queue" in markdown
         assert "## Top candidates" in markdown
+        assert "# Mythos Studio agent queue audit" in queue_markdown
+        assert "## Agent queue" in queue_markdown
         assert "send_file(file_id)" not in markdown
+        assert "send_file(file_id)" not in queue_markdown
         assert str(repo) not in markdown
+        assert str(repo) not in queue_markdown
         assert "Validation execution remains blocked pending human approval." in markdown
         assert "Report submission remains blocked pending human review." in markdown
         assert "execute_live_validation" not in markdown
         assert "submit_report" not in markdown
+        assert "execute_live_validation" not in queue_markdown
+        assert "submit_report" not in queue_markdown
     finally:
         app.dependency_overrides.clear()
 
@@ -990,6 +1188,21 @@ Authorization: Bearer secret-token
 """,
         encoding="utf-8",
     )
+    knowledge_path = tmp_path / "knowledge.json"
+    knowledge_path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "pattern_id": "WEB-IDOR-001",
+                        "vuln_type": "authorization_gap",
+                        "source": "local_milvus",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -1007,6 +1220,7 @@ Authorization: Bearer secret-token
             ("api", api_path),
             ("har", har_path),
             ("strategy", strategy_path),
+            ("knowledge", knowledge_path),
         ):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
@@ -1036,9 +1250,10 @@ Authorization: Bearer secret-token
             "missing": [],
         }
         assert mission["advisory_artifacts"] == {
-            "supported": ["sarif", "sbom", "fuzzing", "strategy"],
-            "present": ["strategy"],
+            "supported": ["sarif", "sbom", "fuzzing", "strategy", "knowledge"],
+            "present": ["strategy", "knowledge"],
         }
+        assert "knowledge" in mission["top_candidates"][0]["hallucination_guard"]["advisory_sources"]
         assert mission["quality_gates"]["validation_execution_allowed"] is False
         assert mission["quality_gates"]["report_submission_allowed"] is False
         assert "strategy-notes.md" not in str(mission)

@@ -562,6 +562,8 @@ export type StudioMissionDossierExportRequest = {
 
 export type StudioMissionDossierExportResponse = {
   run_id: string | null;
+  agent_queue_path: string | null;
+  agent_queue_markdown_path: string | null;
   mission_dossier_path: string | null;
   mission_dossier_markdown_path: string | null;
   report_submission_allowed: false;

@@ -48,6 +48,16 @@ export type StudioMissionCandidateInput = {
   evidence_review_status?: string;
   execution_allowed?: boolean;
   false_positive_check_count?: number;
+  hallucination_guard?: {
+    advisory_sources?: string[];
+    blockers?: string[];
+    cross_validation_sources?: string[];
+    high_confidence_allowed?: boolean;
+    local_evidence_sources?: string[];
+    model_output_status?: string;
+    required_consensus?: string[];
+    status?: string;
+  };
   hypothesis_id?: string;
   next_report_action?: string;
   policy_review_status?: string;
@@ -74,8 +84,10 @@ export type StudioMissionResearchLoopStageInput = {
 
 export type StudioMissionAgentTaskInput = {
   agent?: string;
+  candidate_quality_gaps?: string[];
   input_refs?: string[];
   next_action?: string;
+  review_focus?: string[];
   safety_gate?: string;
   status?: string;
   target_candidates?: string[];
@@ -97,10 +109,23 @@ export type StudioMissionSummary = {
   candidate_count?: number;
   mode?: string;
   next_actions?: string[];
+  quality_summary?: {
+    average_quality_score?: number;
+    blockers?: string[];
+    candidate_count?: number;
+    improvement_actions?: string[];
+    required_candidate_max?: number;
+    required_candidate_min?: number;
+    review_ready_count?: number;
+    review_ready_threshold?: number;
+    status?: string;
+    top_candidate_quality_gate?: string;
+  };
   quality_gates?: {
     human_review_required?: boolean;
     report_submission_allowed?: boolean;
     submission_blocked?: boolean;
+    top_candidate_quality_gate?: boolean;
     top_candidates_limited?: boolean;
     validation_execution_allowed?: boolean;
   };
@@ -119,6 +144,16 @@ export type StudioMissionPanelCandidate = {
   evidenceReviewStatus: string;
   executionAllowed: boolean;
   falsePositiveCheckCount: number;
+  hallucinationGuard: {
+    advisorySources: string[];
+    blockers: string[];
+    crossValidationSources: string[];
+    highConfidenceAllowed: boolean;
+    localEvidenceSources: string[];
+    modelOutputStatus: string;
+    requiredConsensus: string[];
+    status: string;
+  };
   hypothesisId: string;
   nextReportAction: string;
   policyReviewStatus: string;
@@ -146,8 +181,10 @@ export type StudioMissionResearchLoopStage = {
 
 export type StudioMissionAgentTask = {
   agent: string;
+  candidateQualityGaps: string[];
   inputRefs: string[];
   nextAction: string;
+  reviewFocus: string[];
   safetyGate: string;
   status: string;
   targetCandidates: string[];
@@ -164,10 +201,21 @@ export type StudioMissionPanel = {
     humanReviewRequired: boolean;
     reportSubmissionAllowed: boolean;
     submissionBlocked: boolean;
+    topCandidateQualityGate: boolean;
     topCandidatesLimited: boolean;
     validationExecutionAllowed: boolean;
   };
   modeLabel: string;
+  qualitySummary: {
+    averageQualityScore: number;
+    blockers: string[];
+    candidateCount: number;
+    improvementActions: string[];
+    reviewReadyCount: number;
+    reviewReadyThreshold: number;
+    status: string;
+    topCandidateQualityGate: string;
+  };
   researchLoopStages: StudioMissionResearchLoopStage[];
   runId: string;
   safeNextActions: string[];
@@ -185,7 +233,8 @@ export type StudioArtifactChecklistItem = {
     | "sbom"
     | "sarif"
     | "fuzzing"
-    | "strategy";
+    | "strategy"
+    | "knowledge";
   label: string;
   present: boolean;
   required: boolean;
@@ -289,8 +338,10 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       advisoryPresent.length > 0 ? advisoryPresent.join(", ") : "No advisory context",
     agentQueue: (mission?.agent_queue ?? []).map((task) => ({
       agent: safeText(task.agent, "Review agent"),
+      candidateQualityGaps: task.candidate_quality_gaps ?? [],
       inputRefs: task.input_refs ?? [],
       nextAction: safeText(task.next_action, "Review required."),
+      reviewFocus: task.review_focus ?? [],
       safetyGate: safeText(task.safety_gate, "human_review_required"),
       status: safeText(task.status, "needs_review"),
       targetCandidates: task.target_candidates ?? [],
@@ -303,6 +354,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       humanReviewRequired: mission?.quality_gates?.human_review_required === true,
       reportSubmissionAllowed: mission?.quality_gates?.report_submission_allowed === true,
       submissionBlocked: mission?.quality_gates?.submission_blocked !== false,
+      topCandidateQualityGate: mission?.quality_gates?.top_candidate_quality_gate === true,
       topCandidatesLimited: mission?.quality_gates?.top_candidates_limited === true,
       validationExecutionAllowed:
         mission?.quality_gates?.validation_execution_allowed === true,
@@ -311,6 +363,19 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       mission?.mode === "local_ai_vulnerability_research_workbench"
         ? "Local AI vulnerability research workbench"
         : "Local research workbench",
+    qualitySummary: {
+      averageQualityScore: mission?.quality_summary?.average_quality_score ?? 0,
+      blockers: mission?.quality_summary?.blockers ?? [],
+      candidateCount: mission?.quality_summary?.candidate_count ?? candidateCount,
+      improvementActions: mission?.quality_summary?.improvement_actions ?? [],
+      reviewReadyCount: mission?.quality_summary?.review_ready_count ?? 0,
+      reviewReadyThreshold: mission?.quality_summary?.review_ready_threshold ?? 85,
+      status: safeText(mission?.quality_summary?.status, "needs_review"),
+      topCandidateQualityGate: safeText(
+        mission?.quality_summary?.top_candidate_quality_gate,
+        "needs_review",
+      ),
+    },
     researchLoopStages: (mission?.research_loop ?? []).map((stage) => {
       const key = safeText(stage.key, "unknown");
       return {
@@ -335,6 +400,19 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       evidenceReviewStatus: safeText(candidate.evidence_review_status, "needs_human_review"),
       executionAllowed: candidate.execution_allowed === true,
       falsePositiveCheckCount: candidate.false_positive_check_count ?? 0,
+      hallucinationGuard: {
+        advisorySources: candidate.hallucination_guard?.advisory_sources ?? [],
+        blockers: candidate.hallucination_guard?.blockers ?? [],
+        crossValidationSources: candidate.hallucination_guard?.cross_validation_sources ?? [],
+        highConfidenceAllowed: candidate.hallucination_guard?.high_confidence_allowed === true,
+        localEvidenceSources: candidate.hallucination_guard?.local_evidence_sources ?? [],
+        modelOutputStatus: safeText(
+          candidate.hallucination_guard?.model_output_status,
+          "unverified_claim_not_fact",
+        ),
+        requiredConsensus: candidate.hallucination_guard?.required_consensus ?? [],
+        status: safeText(candidate.hallucination_guard?.status, "needs_review"),
+      },
       hypothesisId: safeText(candidate.hypothesis_id, `H-${String(index + 1).padStart(3, "0")}`),
       nextReportAction: safeText(candidate.next_report_action, "Review evidence before export."),
       policyReviewStatus: safeText(candidate.policy_review_status, "needs_human_review"),
@@ -374,6 +452,7 @@ export function toStudioArtifactChecklist(
     artifactChecklistItem("sarif", "SARIF", false, presentKinds),
     artifactChecklistItem("fuzzing", "Fuzzing plan", false, presentKinds),
     artifactChecklistItem("strategy", "Strategy", false, presentKinds),
+    artifactChecklistItem("knowledge", "Knowledge", false, presentKinds),
   ];
 }
 

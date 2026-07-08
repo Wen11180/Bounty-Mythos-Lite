@@ -2397,6 +2397,16 @@ def export_mythos_studio_workspace_mission(
             selected_run_id,
             "dossier_markdown_path",
         ),
+        "agent_queue_path": _studio_mission_dossier_field(
+            updated_manifest,
+            selected_run_id,
+            "agent_queue_path",
+        ),
+        "agent_queue_markdown_path": _studio_mission_dossier_field(
+            updated_manifest,
+            selected_run_id,
+            "agent_queue_markdown_path",
+        ),
         "report_submission_allowed": False,
         "validation_execution_allowed": False,
         "mission": mission,
@@ -2573,6 +2583,15 @@ def _studio_mission_summary(
         _studio_mission_candidate_summary(candidate)
         for candidate in top_candidates
     ]
+    quality_summary = _studio_mission_quality_summary(
+        candidate_summaries,
+        missing,
+        len(candidates),
+    )
+    candidate_hunter_backlog = _studio_candidate_hunter_backlog(
+        candidate_summaries,
+        missing,
+    )
     return {
         "mode": "local_ai_vulnerability_research_workbench",
         "run_id": run_id,
@@ -2598,6 +2617,8 @@ def _studio_mission_summary(
         ),
         "candidate_count": len(top_candidates),
         "top_candidates": candidate_summaries,
+        "quality_summary": quality_summary,
+        "candidate_hunter_backlog": candidate_hunter_backlog,
         "research_loop": _studio_mission_research_loop(
             present,
             missing,
@@ -2610,6 +2631,9 @@ def _studio_mission_summary(
             "report_submission_allowed": False,
             "validation_execution_allowed": False,
             "human_review_required": True,
+            "top_candidate_quality_gate": (
+                quality_summary["top_candidate_quality_gate"] == "passed"
+            ),
         },
         "blocked_actions": [
             "execute_live_validation",
@@ -2629,7 +2653,7 @@ def _studio_required_ab_artifacts() -> tuple[str, ...]:
 
 
 def _studio_supported_advisory_artifacts() -> tuple[str, ...]:
-    return ("sarif", "sbom", "fuzzing", "strategy")
+    return ("sarif", "sbom", "fuzzing", "strategy", "knowledge")
 
 
 def _studio_present_ab_artifacts(manifest: dict) -> list[str]:
@@ -2679,6 +2703,7 @@ def _studio_mission_agent_queue(
         if isinstance(candidate.get("hypothesis_id"), str)
         and str(candidate.get("hypothesis_id")).strip()
     ]
+    candidate_quality_gaps = _studio_candidate_quality_gap_labels(candidates)
 
     return [
         _studio_mission_agent_task(
@@ -2689,6 +2714,8 @@ def _studio_mission_agent_queue(
             ["scope"],
             [],
             "Review scope and policy coverage.",
+            ["scope_guard_status", "policy_alignment"],
+            [],
         ),
         _studio_mission_agent_task(
             "artifact_intake",
@@ -2700,6 +2727,10 @@ def _studio_mission_agent_queue(
             "Review imported A+B artifact coverage."
             if not missing_artifacts
             else "Import missing authorized A+B artifacts.",
+            ["required_ab_artifact_coverage"]
+            if not missing_artifacts
+            else [f"missing_{artifact}" for artifact in missing_artifacts],
+            [],
         ),
         _studio_mission_agent_task(
             "surface_modeling",
@@ -2709,6 +2740,8 @@ def _studio_mission_agent_queue(
             ["api", "har"],
             candidate_ids,
             "Review modeled endpoints and traffic facts.",
+            ["endpoint_coverage", "api_har_route_matching"],
+            candidate_quality_gaps,
         ),
         _studio_mission_agent_task(
             "semantic_candidate_hunt",
@@ -2718,6 +2751,8 @@ def _studio_mission_agent_queue(
             ["code", "api", "har"],
             candidate_ids,
             "Review top candidate invariants.",
+            ["security_invariants", "affected_code_paths", "candidate_quality"],
+            candidate_quality_gaps,
         ),
         _studio_mission_agent_task(
             "refutation_dedup_review",
@@ -2727,6 +2762,8 @@ def _studio_mission_agent_queue(
             ["policy", "code", "api", "har"],
             candidate_ids,
             "Review refutation questions and duplicate-risk signals.",
+            ["false_positive_checks", "deduplication_review", "candidate_quality"],
+            candidate_quality_gaps,
         ),
         _studio_mission_agent_task(
             "evidence_validation_plan_review",
@@ -2736,6 +2773,8 @@ def _studio_mission_agent_queue(
             ["scope", "policy", "code", "api", "har"],
             candidate_ids,
             "Review evidence needs and safe validation plans.",
+            ["evidence_needs", "evidence_gaps", "safe_validation_plan"],
+            candidate_quality_gaps,
         ),
         _studio_mission_agent_task(
             "report_draft_review",
@@ -2747,6 +2786,8 @@ def _studio_mission_agent_queue(
             "Export a submission-blocked draft for human review."
             if run_id
             else "Report drafting starts after a local research run.",
+            ["submission_blocked_report", "redaction_review", "human_review_gate"],
+            candidate_quality_gaps,
         ),
     ]
 
@@ -2759,6 +2800,8 @@ def _studio_mission_agent_task(
     input_refs: list[str],
     target_candidates: list[str],
     next_action: str,
+    review_focus: list[str],
+    candidate_quality_gaps: list[str],
 ) -> dict[str, object]:
     return {
         "task_id": task_id,
@@ -2767,8 +2810,237 @@ def _studio_mission_agent_task(
         "safety_gate": safety_gate,
         "input_refs": input_refs,
         "target_candidates": target_candidates,
+        "review_focus": _studio_agent_label_list(review_focus),
+        "candidate_quality_gaps": _studio_agent_label_list(candidate_quality_gaps),
         "next_action": safe_preview_text(next_action),
     }
+
+
+def _studio_agent_label_list(values: list[str]) -> list[str]:
+    labels: list[str] = []
+    for value in values:
+        text = safe_preview_text(value)
+        if text and text != "[REDACTED]":
+            labels.append(text)
+    return labels[:10]
+
+
+def _studio_candidate_quality_gap_labels(candidates: list[dict[str, object]]) -> list[str]:
+    required_reasons = {
+        "endpoint_and_code_path_traced": "missing_endpoint_or_code_path_trace",
+        "provenance_review_present": "missing_provenance_review",
+        "evidence_needs_present": "missing_evidence_needs",
+        "refutation_checks_present": "missing_refutation_checks",
+        "deduplication_review_present": "missing_deduplication_review",
+        "safe_validation_plan_present": "missing_safe_validation_plan",
+        "submission_blocked_report_ready": "missing_submission_blocked_report_state",
+        "hallucination_guard_cross_checked": "missing_cross_validation_consensus",
+    }
+    labels: list[str] = []
+    for candidate in candidates:
+        hypothesis_id = candidate.get("hypothesis_id")
+        if not isinstance(hypothesis_id, str) or not hypothesis_id.strip():
+            continue
+        reasons = candidate.get("quality_reasons", [])
+        present_reasons = {reason for reason in reasons if isinstance(reason, str)}
+        candidate_labels = [
+            label
+            for reason, label in required_reasons.items()
+            if reason not in present_reasons
+        ]
+        if _studio_nonnegative_int(candidate.get("evidence_gap_count")) > 0:
+            candidate_labels.append("evidence_gaps_need_review")
+        if (
+            candidate.get("quality_status") == "review_ready"
+            and not candidate_labels
+        ):
+            continue
+        labels.extend(f"{hypothesis_id}:{label}" for label in candidate_labels)
+    return labels[:10]
+
+
+def _studio_candidate_hunter_backlog(
+    candidates: list[dict[str, object]],
+    missing_artifacts: list[str],
+) -> list[dict[str, object]]:
+    if missing_artifacts:
+        return [
+            _studio_candidate_hunter_work_item(
+                work_item_id="intake:missing_ab_artifacts",
+                candidate_id=None,
+                gap="missing_ab_artifacts",
+                review_focus=["required_ab_artifact_coverage", "scope_guard_status"],
+                required_evidence=[f"authorized_{artifact}" for artifact in missing_artifacts],
+                next_action=(
+                    "Import missing authorized A+B artifacts before candidate hunting: "
+                    + ", ".join(missing_artifacts)
+                ),
+            )
+        ]
+
+    items: list[dict[str, object]] = []
+    for candidate in candidates[:5]:
+        candidate_id = safe_preview_text(candidate.get("hypothesis_id", "candidate"))
+        if not candidate_id:
+            continue
+        items.extend(_studio_candidate_hunter_candidate_items(candidate_id, candidate))
+    return items[:10]
+
+
+def _studio_candidate_hunter_candidate_items(
+    candidate_id: str,
+    candidate: dict[str, object],
+) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    if not candidate.get("affected_endpoint"):
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:map_endpoint",
+                candidate_id=candidate_id,
+                gap="missing_endpoint",
+                review_focus=["endpoint_coverage", "api_har_route_matching"],
+                required_evidence=["api_route", "har_request_summary"],
+                next_action=f"Map the affected endpoint for {candidate_id} from API/HAR evidence.",
+            )
+        )
+    if not candidate.get("affected_code_path"):
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:map_code_path",
+                candidate_id=candidate_id,
+                gap="missing_code_path",
+                review_focus=["affected_code_paths", "security_invariants"],
+                required_evidence=["local_code_reference", "handler_symbol"],
+                next_action=f"Map the affected code path for {candidate_id} from local code.",
+            )
+        )
+    if not candidate.get("provenance_review_status"):
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:review_provenance",
+                candidate_id=candidate_id,
+                gap="missing_provenance_review",
+                review_focus=["provenance_review", "artifact_traceability"],
+                required_evidence=["scope", "policy", "code", "api", "har"],
+                next_action=f"Review provenance artifacts supporting {candidate_id}.",
+            )
+        )
+    if (
+        not candidate.get("evidence_review_status")
+        or _studio_nonnegative_int(candidate.get("evidence_need_count")) == 0
+    ):
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:define_evidence_needs",
+                candidate_id=candidate_id,
+                gap="missing_evidence_needs",
+                review_focus=["evidence_needs", "human_evidence_review"],
+                required_evidence=["sanitized_evidence_plan"],
+                next_action=f"Define report-safe evidence needs for {candidate_id}.",
+            )
+        )
+    if (
+        not candidate.get("refutation_review_status")
+        or _studio_nonnegative_int(candidate.get("false_positive_check_count")) == 0
+    ):
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:add_refutation",
+                candidate_id=candidate_id,
+                gap="missing_refutation_checks",
+                review_focus=["false_positive_checks", "independent_refutation_review"],
+                required_evidence=["refutation_questions"],
+                next_action=f"Add refutation questions for {candidate_id}.",
+            )
+        )
+    if not candidate.get("deduplication_review_status"):
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:review_dedup",
+                candidate_id=candidate_id,
+                gap="missing_deduplication_review",
+                review_focus=["deduplication_review", "duplicate_risk"],
+                required_evidence=["candidate_similarity_review"],
+                next_action=f"Review duplicate risk for {candidate_id}.",
+            )
+        )
+    if (
+        not candidate.get("validation_status")
+        or _studio_nonnegative_int(candidate.get("safe_validation_step_count")) == 0
+    ):
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:draft_validation_plan",
+                candidate_id=candidate_id,
+                gap="missing_safe_validation_plan",
+                review_focus=["safe_validation_plan", "non_destructive_plan_only"],
+                required_evidence=["non_destructive_validation_plan"],
+                next_action=f"Draft a non-destructive validation plan for {candidate_id}.",
+            )
+        )
+    if candidate.get("report_status") != "submission_blocked":
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:prepare_report_draft",
+                candidate_id=candidate_id,
+                gap="missing_submission_blocked_report",
+                review_focus=["submission_blocked_report", "redaction_review"],
+                required_evidence=["submission_blocked_report_draft"],
+                next_action=f"Prepare a submission-blocked report draft for {candidate_id}.",
+            )
+        )
+    guard = candidate.get("hallucination_guard", {})
+    if not isinstance(guard, dict) or guard.get("status") != "cross_checked":
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:cross_check_claims",
+                candidate_id=candidate_id,
+                gap="missing_cross_validation_consensus",
+                review_focus=["local_artifact_trace", "independent_refutation_review"],
+                required_evidence=["local_evidence_source", "cross_validation_source"],
+                next_action=f"Cross-check model claims for {candidate_id} against local evidence.",
+            )
+        )
+    if _studio_nonnegative_int(candidate.get("evidence_gap_count")) > 0:
+        items.append(
+            _studio_candidate_hunter_work_item(
+                work_item_id=f"{candidate_id}:resolve_evidence_gaps",
+                candidate_id=candidate_id,
+                gap="evidence_gaps_need_review",
+                review_focus=["evidence_gaps", "report_safe_evidence"],
+                required_evidence=["gap_resolution_notes"],
+                next_action=f"Resolve evidence gaps for {candidate_id}.",
+            )
+        )
+    return items
+
+
+def _studio_candidate_hunter_work_item(
+    *,
+    work_item_id: str,
+    candidate_id: str | None,
+    gap: str,
+    review_focus: list[str],
+    required_evidence: list[str],
+    next_action: str,
+) -> dict[str, object]:
+    return {
+        "work_item_id": safe_preview_text(work_item_id),
+        "candidate_id": safe_preview_text(candidate_id or ""),
+        "gap": safe_preview_text(gap),
+        "status": "needs_review",
+        "review_focus": _studio_agent_label_list(review_focus),
+        "required_evidence": _studio_agent_label_list(required_evidence),
+        "next_action": safe_preview_text(next_action),
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _studio_nonnegative_int(value: object) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def _studio_mission_research_loop(
@@ -2954,6 +3226,7 @@ def _studio_mission_candidate_summary(candidate: dict) -> dict[str, object]:
             candidate.get("evidence_gaps", [])
         )[:3],
     }
+    summary["hallucination_guard"] = _studio_hallucination_guard(candidate, summary)
     summary.update(_studio_mission_candidate_quality(summary))
     return summary
 
@@ -2961,6 +3234,11 @@ def _studio_mission_candidate_summary(candidate: dict) -> dict[str, object]:
 def _studio_mission_candidate_quality(candidate: dict[str, object]) -> dict[str, object]:
     score = 0
     reasons: list[str] = []
+    hallucination_guard = candidate.get("hallucination_guard", {})
+    hallucination_guard_passed = (
+        isinstance(hallucination_guard, dict)
+        and hallucination_guard.get("status") == "cross_checked"
+    )
     if candidate.get("affected_endpoint") and candidate.get("affected_code_path"):
         score += 20
         reasons.append("endpoint_and_code_path_traced")
@@ -2991,12 +3269,226 @@ def _studio_mission_candidate_quality(candidate: dict[str, object]) -> dict[str,
     if int(candidate.get("evidence_gap_count", 0)) > 0:
         score = max(0, score - 15)
         reasons.append("evidence_gaps_need_review")
+    if hallucination_guard_passed:
+        reasons.append("hallucination_guard_cross_checked")
+    else:
+        score = max(0, score - 30)
+        reasons.append("hallucination_guard_needs_cross_validation")
 
     return {
         "quality_score": min(score, 100),
-        "quality_status": "review_ready" if score >= 85 else "needs_review",
+        "quality_status": (
+            "review_ready" if score >= 85 and hallucination_guard_passed else "needs_review"
+        ),
         "quality_reasons": reasons,
     }
+
+
+def _studio_hallucination_guard(
+    candidate: dict,
+    summary: dict[str, object],
+) -> dict[str, object]:
+    source_facts = candidate.get("source_facts", [])
+    if not isinstance(source_facts, list):
+        source_facts = []
+    artifact_kinds = sorted(
+        {
+            _studio_report_guidance_text(fact.get("artifact_kind", ""))
+            for fact in source_facts
+            if isinstance(fact, dict)
+        }
+        - {""}
+    )
+    local_evidence_sources = [
+        kind for kind in artifact_kinds if kind in {"scope", "policy", "code", "api", "har"}
+    ]
+    advisory_sources = [
+        kind for kind in artifact_kinds if kind in {"sarif", "sbom", "fuzzing", "strategy", "knowledge"}
+    ]
+    has_endpoint_and_code = bool(summary.get("affected_endpoint")) and bool(
+        summary.get("affected_code_path")
+    )
+    has_refutation = _studio_nonnegative_int(
+        summary.get("false_positive_check_count")
+    ) > 0
+    has_evidence_needs = _studio_nonnegative_int(summary.get("evidence_need_count")) > 0
+    blockers: list[str] = []
+    if not local_evidence_sources:
+        blockers.append("no_local_evidence_source")
+    if not has_endpoint_and_code:
+        blockers.append("missing_endpoint_or_code_path_trace")
+    if not has_refutation:
+        blockers.append("missing_refutation_questions")
+    if not has_evidence_needs:
+        blockers.append("missing_evidence_needs")
+
+    status = "cross_checked" if not blockers else "needs_review"
+    if not local_evidence_sources:
+        status = "blocked"
+    return {
+        "status": status,
+        "model_output_status": "unverified_claim_not_fact",
+        "high_confidence_allowed": status == "cross_checked",
+        "local_evidence_sources": local_evidence_sources,
+        "advisory_sources": advisory_sources,
+        "cross_validation_sources": sorted(set(local_evidence_sources + advisory_sources)),
+        "required_consensus": [
+            "local_artifact_trace",
+            "independent_refutation_review",
+            "human_evidence_review",
+        ],
+        "blockers": blockers,
+    }
+
+
+def _studio_mission_quality_summary(
+    candidates: list[dict[str, object]],
+    missing_artifacts: list[str],
+    total_candidate_count: int,
+) -> dict[str, object]:
+    threshold = 85
+    candidate_count = len(candidates)
+    scores = [
+        int(candidate.get("quality_score", 0))
+        for candidate in candidates
+        if isinstance(candidate.get("quality_score"), int)
+    ]
+    review_ready_count = sum(
+        1
+        for candidate in candidates
+        if candidate.get("quality_status") == "review_ready"
+        and _studio_nonnegative_int(candidate.get("quality_score")) >= threshold
+    )
+    evidence_gap_count = sum(
+        int(candidate.get("evidence_gap_count", 0))
+        for candidate in candidates
+        if isinstance(candidate.get("evidence_gap_count"), int)
+    )
+    blockers = _studio_mission_quality_blockers(
+        candidate_count=candidate_count,
+        review_ready_count=review_ready_count,
+        evidence_gap_count=evidence_gap_count,
+        missing_artifacts=missing_artifacts,
+        total_candidate_count=total_candidate_count,
+    )
+    quality_gate = _studio_mission_quality_gate(
+        blockers,
+        candidate_count,
+        review_ready_count,
+    )
+    return {
+        "status": _studio_mission_quality_status(quality_gate),
+        "top_candidate_quality_gate": quality_gate,
+        "candidate_count": candidate_count,
+        "required_candidate_min": 1,
+        "required_candidate_max": 5,
+        "review_ready_threshold": threshold,
+        "review_ready_count": review_ready_count,
+        "average_quality_score": round(sum(scores) / len(scores)) if scores else 0,
+        "blockers": blockers,
+        "improvement_actions": _studio_mission_quality_improvement_actions(
+            candidates,
+            missing_artifacts,
+        ),
+    }
+
+
+def _studio_mission_quality_blockers(
+    *,
+    candidate_count: int,
+    review_ready_count: int,
+    evidence_gap_count: int,
+    missing_artifacts: list[str],
+    total_candidate_count: int,
+) -> list[str]:
+    blockers: list[str] = []
+    if missing_artifacts:
+        blockers.append(
+            "Missing required A+B artifacts: " + ", ".join(missing_artifacts)
+        )
+    if candidate_count == 0:
+        blockers.append("No Top 1-5 candidate is ready for review.")
+    if total_candidate_count > 5:
+        blockers.append("Candidate list needs Top 1-5 ranking review.")
+    if candidate_count and review_ready_count < candidate_count:
+        blockers.append("Some Top candidates still need quality review.")
+    if evidence_gap_count:
+        blockers.append("Evidence gaps remain in Top candidates.")
+    return [safe_preview_text(blocker) for blocker in blockers if safe_preview_text(blocker)]
+
+
+def _studio_mission_quality_gate(
+    blockers: list[str],
+    candidate_count: int,
+    review_ready_count: int,
+) -> str:
+    if candidate_count == 0:
+        return "blocked"
+    if blockers:
+        return "needs_review"
+    if review_ready_count == candidate_count:
+        return "passed"
+    return "needs_review"
+
+
+def _studio_mission_quality_status(quality_gate: str) -> str:
+    if quality_gate == "passed":
+        return "review_ready"
+    if quality_gate == "blocked":
+        return "blocked"
+    return "needs_review"
+
+
+def _studio_mission_quality_improvement_actions(
+    candidates: list[dict[str, object]],
+    missing_artifacts: list[str],
+) -> list[str]:
+    actions: list[str] = []
+    if missing_artifacts:
+        actions.append(
+            "Import missing authorized A+B artifacts: " + ", ".join(missing_artifacts)
+        )
+    if not candidates:
+        actions.append("Run authorized local research to produce Top 1-5 candidates.")
+        return [safe_preview_text(action) for action in actions if safe_preview_text(action)]
+
+    for candidate in candidates[:5]:
+        hypothesis_id = safe_preview_text(candidate.get("hypothesis_id", "candidate"))
+        if not candidate.get("affected_endpoint"):
+            actions.append(f"Map affected endpoint for {hypothesis_id}.")
+        if not candidate.get("affected_code_path"):
+            actions.append(f"Map affected code path for {hypothesis_id}.")
+        if not candidate.get("provenance_review_status"):
+            actions.append(f"Review provenance artifacts for {hypothesis_id}.")
+        if (
+            not candidate.get("evidence_review_status")
+            or _studio_nonnegative_int(candidate.get("evidence_need_count")) == 0
+        ):
+            actions.append(f"Define evidence needs for {hypothesis_id}.")
+        if (
+            not candidate.get("refutation_review_status")
+            or _studio_nonnegative_int(candidate.get("false_positive_check_count")) == 0
+        ):
+            actions.append(f"Add refutation questions for {hypothesis_id}.")
+        if not candidate.get("deduplication_review_status"):
+            actions.append(f"Review duplicate risk for {hypothesis_id}.")
+        if (
+            not candidate.get("validation_status")
+            or _studio_nonnegative_int(candidate.get("safe_validation_step_count")) == 0
+        ):
+            actions.append(f"Draft a non-destructive validation plan for {hypothesis_id}.")
+        if candidate.get("report_status") != "submission_blocked":
+            actions.append(f"Prepare a submission-blocked report draft for {hypothesis_id}.")
+        hallucination_guard = candidate.get("hallucination_guard", {})
+        if (
+            not isinstance(hallucination_guard, dict)
+            or hallucination_guard.get("status") != "cross_checked"
+        ):
+            actions.append(f"Cross-check model claims against local evidence for {hypothesis_id}.")
+        if _studio_nonnegative_int(candidate.get("evidence_gap_count")) > 0:
+            actions.append(f"Resolve evidence gaps for {hypothesis_id}.")
+
+    return [safe_preview_text(action) for action in actions[:8] if safe_preview_text(action)]
 
 
 def _studio_review_packet_items(value: object) -> list[str]:
@@ -3330,6 +3822,8 @@ def _studio_report_advisory_signal_labels(value: object) -> list[str]:
             label = _studio_report_fuzzing_signal_label(item)
         elif fact_type == "strategy_signal":
             label = _studio_report_strategy_signal_label(item)
+        elif fact_type == "knowledge_signal":
+            label = _studio_report_knowledge_signal_label(item)
         else:
             label = ""
         if label and label not in labels:
@@ -3384,6 +3878,17 @@ def _studio_report_strategy_signal_label(value: dict) -> str:
         return ""
     suffix = f" ({risk_family})" if risk_family else ""
     return f"Strategy advisory: {subject}{suffix}"
+
+
+def _studio_report_knowledge_signal_label(value: dict) -> str:
+    pattern_id = _studio_report_guidance_text(value.get("pattern_id", ""))
+    vuln_type = _studio_report_guidance_text(value.get("vuln_type", ""))
+    source = _studio_report_guidance_text(value.get("source", "local_knowledge"))
+    if not pattern_id and not vuln_type:
+        return ""
+    subject = pattern_id or vuln_type
+    suffix = f" ({vuln_type})" if pattern_id and vuln_type else ""
+    return f"Knowledge advisory: {subject}{suffix} from {source}"
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:
@@ -3809,7 +4314,7 @@ def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
         if (
             not isinstance(artifact, dict)
             or artifact.get("kind")
-            not in {"api", "har", "sarif", "sbom", "fuzzing", "strategy"}
+            not in {"api", "har", "sarif", "sbom", "fuzzing", "strategy", "knowledge"}
         ):
             continue
         source_path = artifact.get("source_path")
@@ -3840,6 +4345,8 @@ def _studio_surface_facts_from_file(kind: str, source_path: str) -> list[dict[st
         return _studio_sbom_surface_facts(payload)
     if kind == "fuzzing":
         return _studio_fuzzing_surface_facts(payload)
+    if kind == "knowledge":
+        return _studio_knowledge_surface_facts(payload)
     return []
 
 
@@ -4085,6 +4592,40 @@ def _studio_fuzzing_harness_status_by_symbol(plan: dict) -> dict[str, str]:
         if isinstance(target_symbol, str) and isinstance(status, str):
             status_by_symbol[target_symbol] = status
     return status_by_symbol
+
+
+def _studio_knowledge_surface_facts(payload: object) -> list[dict[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        entries = payload.get("patterns")
+    if not isinstance(entries, list):
+        return []
+    facts: list[dict[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        pattern_id = safe_preview_text(entry.get("pattern_id", entry.get("id", "")))
+        vuln_type = safe_preview_text(entry.get("vuln_type", entry.get("category", "")))
+        source = safe_preview_text(entry.get("source", "local_knowledge"))
+        if pattern_id == "[REDACTED]" or vuln_type == "[REDACTED]":
+            continue
+        if not pattern_id and not vuln_type:
+            continue
+        fact = {
+            "fact_type": "knowledge_signal",
+            "artifact_kind": "knowledge",
+            "advisory_only": "true",
+            "model_input_role": "few_shot_context_only",
+            "source": source or "local_knowledge",
+        }
+        if pattern_id:
+            fact["pattern_id"] = pattern_id
+        if vuln_type:
+            fact["vuln_type"] = vuln_type
+        facts.append(fact)
+    return facts[:5]
 
 
 def _studio_purl_ecosystem(purl: str) -> str:

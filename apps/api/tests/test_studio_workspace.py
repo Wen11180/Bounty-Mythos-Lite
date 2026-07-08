@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from app.studio_workspace import (
@@ -331,9 +332,26 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
                     "safety_gate": "local_static_analysis_only",
                     "input_refs": ["code", "api", "har"],
                     "target_candidates": ["H-001"],
+                    "review_focus": [
+                        "security_invariants",
+                        "affected_code_paths",
+                        "candidate_quality",
+                    ],
+                    "candidate_quality_gaps": ["H-002:missing_safe_validation_plan"],
                     "next_action": "Review top candidate invariants.",
                 }
             ],
+            "quality_summary": {
+                "status": "needs_review",
+                "top_candidate_quality_gate": "needs_review",
+                "candidate_count": 1,
+                "review_ready_count": 0,
+                "average_quality_score": 72,
+                "blockers": ["Some Top candidates still need quality review."],
+                "improvement_actions": [
+                    "Draft a non-destructive validation plan for H-002.",
+                ],
+            },
             "top_candidates": [
                 {
                     "hypothesis_id": "H-001",
@@ -363,13 +381,59 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     )
 
     dossier = updated["mission_dossiers"][0]
+    queue_audit = updated["agent_queue_audits"][0]
     markdown = Path(dossier["dossier_markdown_path"]).read_text(encoding="utf-8")
+    queue_json = json.loads(Path(queue_audit["agent_queue_path"]).read_text(encoding="utf-8"))
+    queue_markdown = Path(queue_audit["agent_queue_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
 
     assert dossier["report_submission_allowed"] is False
     assert dossier["validation_execution_allowed"] is False
+    assert dossier["agent_queue_path"] == queue_audit["agent_queue_path"]
+    assert dossier["agent_queue_markdown_path"] == queue_audit["agent_queue_markdown_path"]
+    assert queue_audit["task_count"] == 1
+    assert queue_audit["timeline_stage_count"] == 1
+    assert queue_audit["report_submission_allowed"] is False
+    assert queue_audit["validation_execution_allowed"] is False
     assert updated["runs"][0]["mission_dossier_path"] == dossier["dossier_path"]
+    assert updated["runs"][0]["agent_queue_path"] == queue_audit["agent_queue_path"]
+    assert queue_json["agent_queue"][0]["review_focus"] == [
+        "security_invariants",
+        "affected_code_paths",
+        "candidate_quality",
+    ]
+    assert queue_json["agent_queue"][0]["candidate_quality_gaps"] == [
+        "H-002:missing_safe_validation_plan",
+    ]
+    assert queue_json["quality_summary"]["top_candidate_quality_gate"] == "needs_review"
+    assert queue_json["task_timeline"][0] == {
+        "stage_id": "agent_queue:semantic_candidate_hunt",
+        "task_id": "semantic_candidate_hunt",
+        "attempt": 1,
+        "agent": "Semantic Auditor",
+        "status": "complete",
+        "safety_gate": "local_static_analysis_only",
+        "gate_decision": "review_recorded",
+        "input_summary": "Input refs: code, api, har",
+        "output_summary": (
+            "candidates: H-001; focus: security_invariants, affected_code_paths, "
+            "candidate_quality; quality gaps: H-002:missing_safe_validation_plan"
+        ),
+        "next_human_action": "Review top candidate invariants.",
+        "report_submission_allowed": False,
+        "validation_execution_allowed": False,
+    }
+    assert "# Mythos Studio agent queue audit" in queue_markdown
+    assert "quality gaps: H-002:missing_safe_validation_plan" in queue_markdown
+    assert "## Mission quality" in queue_markdown
+    assert "## Agent task timeline" in queue_markdown
+    assert "agent_queue:semantic_candidate_hunt" in queue_markdown
+    assert "gate: review_recorded" in queue_markdown
     assert "## Agent queue" in markdown
     assert "semantic_candidate_hunt: Semantic Auditor" in markdown
+    assert "focus: security_invariants, affected_code_paths, candidate_quality" in markdown
+    assert "quality gaps: H-002:missing_safe_validation_plan" in markdown
     assert "## Top candidates" in markdown
     assert "H-001: candidate; endpoint: GET /files/{file_id}/export" in markdown
     assert "Evidence needed: Confirm the owner boundary" in markdown
@@ -383,6 +447,8 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "Authorization: Bearer" not in markdown
     assert "execute_live_validation" not in markdown
     assert "submit_report" not in markdown
+    assert "execute_live_validation" not in queue_markdown
+    assert "submit_report" not in queue_markdown
 
 
 def test_report_export_markdown_skips_secret_like_section_items(tmp_path: Path):

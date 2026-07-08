@@ -65,6 +65,7 @@ export function StudioWorkbench() {
   const [sarifPath, setSarifPath] = useState("");
   const [fuzzingPath, setFuzzingPath] = useState("");
   const [strategyPath, setStrategyPath] = useState("");
+  const [knowledgePath, setKnowledgePath] = useState("");
   const [expectationsPath, setExpectationsPath] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [manifest, setManifest] = useState<StudioWorkspaceManifest>(emptyManifest);
@@ -227,6 +228,7 @@ export function StudioWorkbench() {
         { kind: "sarif", source_path: sarifPath },
         { kind: "fuzzing", source_path: fuzzingPath },
         { kind: "strategy", source_path: strategyPath },
+        { kind: "knowledge", source_path: knowledgePath },
       ]) {
         if (!artifact.source_path.trim()) {
           continue;
@@ -689,6 +691,19 @@ export function StudioWorkbench() {
                 value={strategyPath}
                 onChange={setStrategyPath}
               />
+              <TextField
+                browseEnabled={desktopPickerAvailable}
+                label="Knowledge file"
+                onBrowse={() =>
+                  handleSelectPath({
+                    mode: "file",
+                    setter: setKnowledgePath,
+                    title: "Select knowledge pattern file",
+                  })
+                }
+                value={knowledgePath}
+                onChange={setKnowledgePath}
+              />
             </div>
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
               <p className="font-semibold">Artifact readiness</p>
@@ -838,7 +853,20 @@ export function StudioWorkbench() {
                   }
                   warning
                 />
+                <StatusRow
+                  label="Candidate quality"
+                  value={`${missionPanel.qualitySummary.topCandidateQualityGate} (${missionPanel.qualitySummary.reviewReadyCount}/${missionPanel.qualitySummary.candidateCount} review-ready, avg ${missionPanel.qualitySummary.averageQualityScore})`}
+                  warning={!missionPanel.gates.topCandidateQualityGate}
+                />
               </dl>
+              <ListBlock
+                title="Mission quality blockers"
+                items={missionPanel.qualitySummary.blockers}
+              />
+              <ListBlock
+                title="Candidate improvement actions"
+                items={missionPanel.qualitySummary.improvementActions}
+              />
               <ListBlock
                 title="Research loop"
                 items={missionPanel.researchLoopStages.map(
@@ -953,6 +981,11 @@ export function StudioWorkbench() {
             {missionDossierExport.mission_dossier_markdown_path ? (
               <p className="mt-1 text-[var(--muted)]">
                 Mission dossier: {missionDossierExport.mission_dossier_markdown_path}
+              </p>
+            ) : null}
+            {missionDossierExport.agent_queue_markdown_path ? (
+              <p className="mt-1 text-[var(--muted)]">
+                Agent queue audit: {missionDossierExport.agent_queue_markdown_path}
               </p>
             ) : null}
             <p className="mt-1 text-[var(--muted)]">
@@ -1086,15 +1119,24 @@ function missionCandidateLine(
     `dedup ${candidate.deduplicationReviewStatus}`,
     `validation ${candidate.validationStatus}/${candidate.safeValidationStepCount}`,
     `quality ${candidate.qualityStatus}/${candidate.qualityScore} (${qualityReasons})`,
+    `hallucination ${candidate.hallucinationGuard.status}/${candidate.hallucinationGuard.modelOutputStatus}`,
     `report ${candidate.reportStatus}`,
   ].join("; ");
 }
 
-function agentQueueLine(task: ReturnType<typeof toStudioMissionPanel>["agentQueue"][number]): string {
+function agentQueueLine(
+  task: ReturnType<typeof toStudioMissionPanel>["agentQueue"][number],
+): string {
   const inputs = task.inputRefs.length > 0 ? task.inputRefs.join(", ") : "no refs";
+  const focus = task.reviewFocus.length > 0 ? `; focus ${task.reviewFocus.join(", ")}` : "";
+  const gaps =
+    task.candidateQualityGaps.length > 0
+      ? `; quality gaps ${task.candidateQualityGaps.join(", ")}`
+      : "";
   const candidates =
     task.targetCandidates.length > 0 ? `; candidates ${task.targetCandidates.join(", ")}` : "";
-  return `${task.taskId}: ${task.agent} - ${task.status}; gate ${task.safetyGate}; inputs ${inputs}${candidates}; ${task.nextAction}`;
+  const prefix = `${task.taskId}: ${task.agent} - ${task.status}`;
+  return `${prefix}; gate ${task.safetyGate}; inputs ${inputs}${focus}${candidates}${gaps}; ${task.nextAction}`;
 }
 
 function logTone(tone: LogEntry["tone"]): string {

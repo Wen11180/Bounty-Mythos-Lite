@@ -306,6 +306,10 @@ test("studio research API helpers keep reports submission-blocked", async () => 
           manifest: {
             mission_dossiers: [
               {
+                agent_queue_markdown_path:
+                  "C:/workspaces/acme-api/reports/pipeline_run_1-agent-queue.md",
+                agent_queue_path:
+                  "C:/workspaces/acme-api/reports/pipeline_run_1-agent-queue.json",
                 dossier_markdown_path:
                   "C:/workspaces/acme-api/reports/pipeline_run_1-mission-dossier.md",
                 dossier_path:
@@ -316,6 +320,10 @@ test("studio research API helpers keep reports submission-blocked", async () => 
               },
             ],
           },
+          agent_queue_markdown_path:
+            "C:/workspaces/acme-api/reports/pipeline_run_1-agent-queue.md",
+          agent_queue_path:
+            "C:/workspaces/acme-api/reports/pipeline_run_1-agent-queue.json",
           mission: {
             agent_queue: [],
             mode: "local_ai_vulnerability_research_workbench",
@@ -437,6 +445,10 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       dossier?.mission_dossier_markdown_path,
       "C:/workspaces/acme-api/reports/pipeline_run_1-mission-dossier.md",
     );
+    assert.equal(
+      dossier?.agent_queue_markdown_path,
+      "C:/workspaces/acme-api/reports/pipeline_run_1-agent-queue.md",
+    );
 
     const template = await createStudioWorkspaceBenchmarkTemplate(
       {
@@ -527,8 +539,19 @@ test("studio mission API helper reads the local workbench state without unsafe c
             human_review_required: true,
             report_submission_allowed: false,
             submission_blocked: true,
+            top_candidate_quality_gate: true,
             top_candidates_limited: true,
             validation_execution_allowed: false,
+          },
+          quality_summary: {
+            average_quality_score: 95,
+            blockers: [],
+            candidate_count: 1,
+            improvement_actions: [],
+            review_ready_count: 1,
+            review_ready_threshold: 85,
+            status: "review_ready",
+            top_candidate_quality_gate: "passed",
           },
           run_id: "pipeline_run_1",
           scope_guard_status: "scope_imported",
@@ -567,6 +590,8 @@ test("studio mission API helper reads the local workbench state without unsafe c
     assert.equal(mission?.mode, "local_ai_vulnerability_research_workbench");
     assert.equal(mission?.quality_gates.report_submission_allowed, false);
     assert.equal(mission?.quality_gates.validation_execution_allowed, false);
+    assert.equal(mission?.quality_gates.top_candidate_quality_gate, true);
+    assert.equal(mission?.quality_summary?.top_candidate_quality_gate, "passed");
     assert.equal(mission?.top_candidates[0]?.execution_allowed, false);
     assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
       "/mythos/studio/workspaces/mission",
