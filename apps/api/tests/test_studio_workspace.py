@@ -337,6 +337,68 @@ def test_report_export_markdown_includes_evidence_and_false_positive_checks(
     assert "Authorization: Bearer" not in markdown
 
 
+def test_report_export_markdown_includes_evidence_gaps(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "evidence_gaps": [
+                "code: missing_code_path",
+                "har: missing_required_artifact",
+                "Authorization: Bearer secret-token",
+            ],
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Evidence gaps" in markdown
+    assert "- code: missing_code_path" in markdown
+    assert "- har: missing_required_artifact" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
+def test_report_export_markdown_includes_validation_plan_and_safety_blockers(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "safe_validation_plan": [
+                "Prepare two authorized local test accounts.",
+                "Replay Authorization: Bearer secret-token",
+            ],
+            "safety_blockers": [
+                "execute_live_validation",
+                "submit_report",
+                "Cookie: session=secret-token",
+            ],
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Safe validation plan" in markdown
+    assert "- Prepare two authorized local test accounts." in markdown
+    assert "## Safety blockers" in markdown
+    assert "- execute_live_validation" in markdown
+    assert "- submit_report" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
 def test_report_export_markdown_skips_secret_like_repair_guidance(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
 

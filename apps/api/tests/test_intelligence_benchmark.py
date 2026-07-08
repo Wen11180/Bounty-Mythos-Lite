@@ -78,7 +78,12 @@ def test_studio_benchmark_fixtures_pass_quality_gate():
         for path in FIXTURE_ROOT.glob("*_candidates.json")
     )
 
-    assert fixture_names == ["ab_file_export", "ab_role_boundary"]
+    assert fixture_names == [
+        "ab_file_export",
+        "ab_money_flow",
+        "ab_role_boundary",
+        "ab_webhook_egress",
+    ]
 
     for fixture_name in fixture_names:
         candidates_payload = json.loads(

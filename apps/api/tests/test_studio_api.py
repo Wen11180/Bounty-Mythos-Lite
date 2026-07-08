@@ -29,7 +29,32 @@ def test_studio_report_candidate_guidance_skips_redacted_values():
         }
     )
 
-    assert _studio_report_candidate_guidance(record, {}) == {}
+    guidance = _studio_report_candidate_guidance(record, {})
+
+    assert "suggested_fix" not in guidance
+    assert "regression_test" not in guidance
+    assert "secret-token" not in str(guidance)
+
+
+def test_studio_report_candidate_guidance_includes_evidence_gap_labels():
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                }
+            ]
+        }
+    )
+
+    guidance = _studio_report_candidate_guidance(record, {})
+
+    assert guidance["evidence_gaps"] == [
+        "code: missing_required_artifact",
+        "api: missing_required_artifact",
+        "har: missing_required_artifact",
+    ]
 
 
 def override_session():
@@ -354,6 +379,11 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["suggested_fix"] in markdown
         assert "## Regression test" in markdown
         assert candidates[0]["regression_test"] in markdown
+        assert "## Safe validation plan" in markdown
+        assert candidates[0]["safe_validation_plan"][0] in markdown
+        assert "## Safety blockers" in markdown
+        assert "- execute_live_validation" in markdown
+        assert "- submit_report" in markdown
         assert "send_file(file_id)" not in str(export)
     finally:
         app.dependency_overrides.clear()

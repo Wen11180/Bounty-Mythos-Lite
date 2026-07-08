@@ -301,6 +301,18 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if false_positive_checks:
         lines.extend(["", "## False-positive checks"])
         lines.extend(f"- {item}" for item in false_positive_checks)
+    evidence_gaps = _markdown_list(report.get("evidence_gaps"))
+    if evidence_gaps:
+        lines.extend(["", "## Evidence gaps"])
+        lines.extend(f"- {item}" for item in evidence_gaps)
+    safe_validation_plan = _markdown_list(report.get("safe_validation_plan"))
+    if safe_validation_plan:
+        lines.extend(["", "## Safe validation plan"])
+        lines.extend(f"- {item}" for item in safe_validation_plan)
+    safety_blockers = _markdown_list(report.get("safety_blockers"))
+    if safety_blockers:
+        lines.extend(["", "## Safety blockers"])
+        lines.extend(f"- {item}" for item in safety_blockers)
     suggested_fix = _markdown_safe_text(report.get("suggested_fix"))
     if suggested_fix:
         lines.extend(["", "## Suggested fix", "", suggested_fix])

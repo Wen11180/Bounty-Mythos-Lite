@@ -1,0 +1,79 @@
+{
+  "candidates": [
+    {
+      "hypothesis_id": "H-AB-003",
+      "vuln_type": "ssrf_egress_gap",
+      "location": "POST /webhooks/{webhook_id}/deliveries/test",
+      "reason": "The route, API contract, authorized traffic, and advisory scanner signal all point to a webhook test-delivery path that needs an outbound destination boundary review.",
+      "broken_invariant": "Webhook test deliveries must restrict outbound requests to approved customer-controlled destinations and deny internal network targets.",
+      "impact_rationale": "A missing egress boundary could let an authorized user trigger server-side requests to internal services or cloud metadata endpoints.",
+      "repair_guidance": "Validate webhook destinations with an allowlist or strict denylist for private, loopback, link-local, and metadata ranges before dispatching the test request.",
+      "regression_test": "Add a local non-destructive egress-policy test proving private, loopback, link-local, and metadata URLs are rejected before outbound dispatch.",
+      "refutation_status": "unverified",
+      "duplicate_risk_score": 16,
+      "evidence_needed": [
+        "Authorized local code path proving the handler reaches the outbound webhook dispatcher.",
+        "OpenAPI route metadata for the webhook test-delivery endpoint.",
+        "Redacted HAR route metadata showing the endpoint exists in authorized traffic.",
+        "Advisory scanner signal tied to the same route, treated only as a prioritization hint."
+      ],
+      "false_positive_checks": [
+        "Does URL validation reject private, loopback, link-local, and metadata address ranges before dispatch?",
+        "Does DNS resolution happen inside a protected resolver that prevents rebinding to internal addresses?",
+        "Is the feature limited to pre-verified webhook destinations that the caller cannot freely edit?"
+      ],
+      "ranking_reasons": [
+        "impact:ssrf_internal_egress",
+        "traceable_source_fact",
+        "scanner_signal:advisory_only",
+        "refutation_status:unverified"
+      ],
+      "safe_validation_plan": [
+        "Review only local code and sanitized route metadata before any validation.",
+        "Use local unit fixtures for blocked URL categories instead of sending live outbound requests.",
+        "Keep any report draft submission-blocked until human evidence and redaction review."
+      ],
+      "safety_blockers": [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report"
+      ],
+      "report_readiness": {
+        "status": "submission_blocked",
+        "report_submission_allowed": false,
+        "next_allowed_action": "Review egress-boundary evidence, refutation checks, repair guidance, and safety blockers before exporting a report preview."
+      },
+      "source_facts": [
+        {
+          "artifact_kind": "code",
+          "fact_type": "route_handler",
+          "route_method": "POST",
+          "route_path": "/webhooks/{webhook_id}/deliveries/test",
+          "source_path": "src/webhook_routes.py",
+          "symbol_name": "send_test_delivery"
+        },
+        {
+          "artifact_kind": "api",
+          "fact_type": "openapi_route",
+          "route_method": "POST",
+          "route_path": "/webhooks/{id}/deliveries/test",
+          "operation_id": "sendWebhookTestDelivery"
+        },
+        {
+          "artifact_kind": "har",
+          "fact_type": "traffic_route",
+          "route_method": "POST",
+          "route_path": "/webhooks/42/deliveries/test",
+          "advisory_only": "true"
+        },
+        {
+          "artifact_kind": "sarif",
+          "fact_type": "scanner_signal",
+          "route_method": "POST",
+          "route_path": "/webhooks/{webhook_id}/deliveries/test",
+          "advisory_only": "true"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "candidates": [
+    {
+      "hypothesis_id": "H-AB-004",
+      "vuln_type": "server_authority_gap",
+      "location": "POST /checkout/{cart_id}/apply-credit",
+      "reason": "The route, API contract, and authorized traffic describe a checkout credit application path where money-impacting amounts must be recalculated server-side.",
+      "broken_invariant": "Checkout credits and payable totals must be computed from server-side price, entitlement, and balance records.",
+      "impact_rationale": "Client-controlled credit amounts could reduce payable totals or create unauthorized account credit.",
+      "repair_guidance": "Ignore client-supplied monetary totals and derive credit application amounts from server-side cart, price, balance, and entitlement records.",
+      "regression_test": "Add a local non-destructive checkout test proving tampered credit amounts are rejected or recalculated before totals are persisted.",
+      "refutation_status": "unverified",
+      "duplicate_risk_score": 22,
+      "evidence_needed": [
+        "Authorized local handler or service code showing how credit amount and payable total are computed.",
+        "OpenAPI route metadata for the credit application endpoint.",
+        "Redacted HAR route metadata showing the endpoint exists in authorized checkout traffic."
+      ],
+      "false_positive_checks": [
+        "Does the service recalculate credit amounts from server-side ledger records before persistence?",
+        "Is the client field only a display hint ignored by the backend?",
+        "Does the transaction layer enforce balance, entitlement, and final total invariants?"
+      ],
+      "ranking_reasons": [
+        "impact:money_flow_server_authority",
+        "traceable_source_fact",
+        "refutation_status:unverified"
+      ],
+      "safe_validation_plan": [
+        "Use local checkout fixtures only; do not touch live payment systems.",
+        "Compare server-side recalculation behavior with tampered local payload fixtures.",
+        "Keep any report draft submission-blocked until human evidence and redaction review."
+      ],
+      "safety_blockers": [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report"
+      ],
+      "report_readiness": {
+        "status": "submission_blocked",
+        "report_submission_allowed": false,
+        "next_allowed_action": "Review money-flow evidence, refutation checks, repair guidance, and safety blockers before exporting a report preview."
+      },
+      "source_facts": [
+        {
+          "artifact_kind": "code",
+          "fact_type": "route_handler",
+          "route_method": "POST",
+          "route_path": "/checkout/{cart_id}/apply-credit",
+          "source_path": "src/checkout_routes.py",
+          "symbol_name": "apply_credit"
+        },
+        {
+          "artifact_kind": "api",
+          "fact_type": "openapi_route",
+          "route_method": "POST",
+          "route_path": "/checkout/{id}/apply-credit",
+          "operation_id": "applyCheckoutCredit"
+        },
+        {
+          "artifact_kind": "har",
+          "fact_type": "traffic_route",
+          "route_method": "POST",
+          "route_path": "/checkout/123/apply-credit",
+          "advisory_only": "true"
+        }
+      ]
+    }
+  ]
+}

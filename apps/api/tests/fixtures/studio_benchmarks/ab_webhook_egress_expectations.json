@@ -1,0 +1,36 @@
+{
+  "draft_review_required": true,
+  "max_candidates": 5,
+  "expected_candidates": [
+    {
+      "name": "webhook test-delivery SSRF egress gap",
+      "route_method": "POST",
+      "route_path": "/webhooks/{webhook_id}/deliveries/test",
+      "vuln_type": "ssrf_egress_gap",
+      "required_artifacts": [
+        "code",
+        "api",
+        "har",
+        "sarif"
+      ],
+      "require_code_path": true,
+      "code_path": "webhook_routes.py:send_test_delivery",
+      "require_refutation_status": true,
+      "require_security_invariant": true,
+      "require_impact_rationale": true,
+      "require_repair_guidance": true,
+      "require_regression_test": true,
+      "max_duplicate_risk_score": 49
+    }
+  ],
+  "forbidden_text": [
+    "Authorization: Bearer",
+    "Cookie",
+    "access_token",
+    "secret-token"
+  ],
+  "notes": [
+    "Synthetic authorized A+B webhook egress benchmark fixture.",
+    "The SARIF scanner fact is advisory only; no live outbound request validation is allowed."
+  ]
+}

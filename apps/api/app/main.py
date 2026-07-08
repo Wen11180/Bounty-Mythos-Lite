@@ -2527,11 +2527,22 @@ def _studio_report_candidate_guidance(
         false_positive_checks = _studio_report_guidance_list(
             candidate.get("false_positive_checks", [])
         )
+        evidence_gaps = _studio_report_evidence_gap_labels(candidate.get("evidence_gaps", []))
+        safe_validation_plan = _studio_report_guidance_list(
+            candidate.get("safe_validation_plan", [])
+        )
+        safety_blockers = _studio_report_guidance_list(candidate.get("safety_blockers", []))
         guidance: dict[str, object] = {}
         if evidence_needed:
             guidance["evidence_needed"] = evidence_needed
         if false_positive_checks:
             guidance["false_positive_checks"] = false_positive_checks
+        if evidence_gaps:
+            guidance["evidence_gaps"] = evidence_gaps
+        if safe_validation_plan:
+            guidance["safe_validation_plan"] = safe_validation_plan
+        if safety_blockers:
+            guidance["safety_blockers"] = safety_blockers
         if suggested_fix:
             guidance["suggested_fix"] = suggested_fix
         if regression_test:
@@ -2554,6 +2565,20 @@ def _studio_report_guidance_list(value: object) -> list[str]:
         for item in value
         if (text := _studio_report_guidance_text(item))
     ]
+
+
+def _studio_report_evidence_gap_labels(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    labels: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        artifact_kind = _studio_report_guidance_text(item.get("artifact_kind", ""))
+        reason = _studio_report_guidance_text(item.get("reason", ""))
+        if artifact_kind and reason:
+            labels.append(f"{artifact_kind}: {reason}")
+    return labels
 
 
 def _latest_studio_run_id(manifest: dict) -> str | None:
