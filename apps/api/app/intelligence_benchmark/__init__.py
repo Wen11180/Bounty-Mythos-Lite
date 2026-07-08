@@ -55,6 +55,7 @@ def build_studio_expectations_template(candidates_payload: Any) -> dict:
             "require_regression_test": True,
             "require_policy_risk": True,
             "require_evidence_review": True,
+            "require_deduplication_review": True,
             "max_duplicate_risk_score": 49,
             "max_policy_risk_score": 49,
         }
@@ -278,6 +279,8 @@ def _candidate_quality_failures(
         failures.append("missing_policy_risk")
     if expected.get("require_evidence_review") is True and not _candidate_evidence_review_gate(candidate):
         failures.append("missing_evidence_review")
+    if expected.get("require_deduplication_review") is True and not _candidate_deduplication_review_gate(candidate):
+        failures.append("missing_deduplication_review")
     max_duplicate_risk_score = expected.get("max_duplicate_risk_score")
     if isinstance(max_duplicate_risk_score, int):
         duplicate_risk_score = _candidate_duplicate_risk_score(candidate)
@@ -540,6 +543,13 @@ def _candidate_evidence_review_gate(candidate: dict[str, Any]) -> bool:
         and evidence_review.get("redaction_required") is True
         and evidence_review.get("provenance_required") is True
     )
+
+
+def _candidate_deduplication_review_gate(candidate: dict[str, Any]) -> bool:
+    review = candidate.get("deduplication_review")
+    if not isinstance(review, dict):
+        return False
+    return bool(_text(review.get("status"))) and bool(_string_list(review.get("review_items")))
 
 
 def _candidate_security_invariant(candidate: dict[str, Any]) -> str:

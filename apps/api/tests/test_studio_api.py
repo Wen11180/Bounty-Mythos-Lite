@@ -337,6 +337,14 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert candidates[0]["ranking_reasons"]
         assert candidates[0]["refutation_status"] == "unverified"
         assert candidates[0]["duplicate_risk_score"] <= 49
+        assert candidates[0]["deduplication_review"] == {
+            "status": "needs_human_review",
+            "duplicate_risk_score": candidates[0]["duplicate_risk_score"],
+            "review_items": [
+                "Compare endpoint, code path, invariant, and impact against prior submissions.",
+                "Treat similar scanner, dependency, fuzzing, or strategy signals as advisory until novelty is reviewed.",
+            ],
+        }
         assert candidates[0]["policy_risk"] == "low"
         assert candidates[0]["policy_risk_score"] == 10
         assert candidates[0]["evidence_gaps"] == []
@@ -480,6 +488,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert "## Evidence review" in markdown
         assert "- Status: needs_human_review" in markdown
         assert candidates[0]["evidence_review"]["required_items"][0] in markdown
+        assert "## Deduplication review" in markdown
+        assert "- Status: needs_human_review" in markdown
+        assert candidates[0]["deduplication_review"]["review_items"][0] in markdown
         assert "## Evidence needs" in markdown
         assert candidates[0]["evidence_needed"][0] in markdown
         assert "## False-positive checks" in markdown

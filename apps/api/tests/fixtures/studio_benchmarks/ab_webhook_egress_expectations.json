@@ -38,7 +38,11 @@
       "require_impact_rationale": true,
       "require_repair_guidance": true,
       "require_regression_test": true,
-      "max_duplicate_risk_score": 49
+      "max_duplicate_risk_score": 49,
+      "require_policy_risk": true,
+      "require_evidence_review": true,
+      "max_policy_risk_score": 49,
+      "require_deduplication_review": true
     }
   ],
   "forbidden_text": [

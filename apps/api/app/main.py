@@ -2538,6 +2538,9 @@ def _studio_report_candidate_guidance(
         candidate_summary = _studio_report_candidate_summary(candidate)
         ranking_reasons = _studio_report_guidance_list(candidate.get("ranking_reasons", []))
         evidence_review = _studio_report_evidence_review(candidate.get("evidence_review", {}))
+        deduplication_review = _studio_report_deduplication_review(
+            candidate.get("deduplication_review", {})
+        )
         report_readiness = _studio_report_readiness(candidate.get("report_readiness", {}))
         guidance: dict[str, object] = {}
         if candidate_summary:
@@ -2548,6 +2551,8 @@ def _studio_report_candidate_guidance(
             guidance["report_readiness"] = report_readiness
         if evidence_review:
             guidance["evidence_review"] = evidence_review
+        if deduplication_review:
+            guidance["deduplication_review"] = deduplication_review
         if evidence_needed:
             guidance["evidence_needed"] = evidence_needed
         if false_positive_checks:
@@ -2599,6 +2604,22 @@ def _studio_report_evidence_review(value: object) -> dict[str, object]:
     required_items = _studio_report_guidance_list(value.get("required_items", []))
     if required_items:
         review["required_items"] = required_items
+    return review
+
+
+def _studio_report_deduplication_review(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    review: dict[str, object] = {}
+    status = _studio_report_guidance_text(value.get("status", ""))
+    if status:
+        review["status"] = status
+    duplicate_risk_score = value.get("duplicate_risk_score")
+    if isinstance(duplicate_risk_score, int):
+        review["duplicate_risk_score"] = max(0, min(100, duplicate_risk_score))
+    review_items = _studio_report_guidance_list(value.get("review_items", []))
+    if review_items:
+        review["review_items"] = review_items
     return review
 
 
@@ -2861,6 +2882,7 @@ def _studio_candidate_from_hypothesis(
             imported_surface_facts or [],
         )
     )
+    duplicate_risk_score = _studio_duplicate_risk_score(hypothesis)
     return {
         "hypothesis_id": safe_preview_text(hypothesis.get("hypothesis_id", "")),
         "vuln_type": safe_preview_text(hypothesis.get("vuln_type", "candidate")),
@@ -2895,7 +2917,8 @@ def _studio_candidate_from_hypothesis(
         "safe_verification": hypothesis.get("validation_mode") != "blocked",
         "priority_score": hypothesis.get("priority_score", 0),
         "refutation_status": safe_preview_text(hypothesis.get("refutation_status", "")),
-        "duplicate_risk_score": _studio_duplicate_risk_score(hypothesis),
+        "duplicate_risk_score": duplicate_risk_score,
+        "deduplication_review": _studio_deduplication_review(duplicate_risk_score),
         "policy_risk": _studio_policy_risk(hypothesis),
         "policy_risk_score": _studio_policy_risk_score(hypothesis),
         "evidence_gaps": _studio_candidate_evidence_gaps(candidate_source_facts),
@@ -2968,6 +2991,17 @@ def _studio_evidence_review(source_facts: list[dict]) -> dict[str, object]:
     return {
         "status": "needs_human_review",
         "required_items": items,
+    }
+
+
+def _studio_deduplication_review(duplicate_risk_score: int) -> dict[str, object]:
+    return {
+        "status": "needs_human_review",
+        "duplicate_risk_score": max(0, min(100, duplicate_risk_score)),
+        "review_items": [
+            "Compare endpoint, code path, invariant, and impact against prior submissions.",
+            "Treat similar scanner, dependency, fuzzing, or strategy signals as advisory until novelty is reviewed.",
+        ],
     }
 
 

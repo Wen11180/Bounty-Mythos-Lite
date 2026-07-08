@@ -72,7 +72,25 @@
           "route_path": "/checkout/123/apply-credit",
           "advisory_only": "true"
         }
-      ]
+      ],
+      "policy_risk": "low",
+      "policy_risk_score": 10,
+      "evidence_review": {
+        "status": "needs_human_review",
+        "required_items": [
+          "Confirm the affected endpoint and code path using authorized local artifacts.",
+          "Resolve evidence gaps and false-positive checks before validation.",
+          "Complete redaction review before report export or sharing."
+        ]
+      },
+      "deduplication_review": {
+        "status": "needs_human_review",
+        "duplicate_risk_score": 22,
+        "review_items": [
+          "Compare endpoint, code path, invariant, and impact against prior submissions.",
+          "Treat similar scanner, dependency, fuzzing, or strategy signals as advisory until novelty is reviewed."
+        ]
+      }
     }
   ]
 }
