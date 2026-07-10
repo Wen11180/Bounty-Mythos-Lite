@@ -8,9 +8,11 @@ It deliberately does not perform public-target scanning, exploit execution, dest
 
 The long-term product target follows `私人 AI 漏洞研究系统最终方案.md`. The short working reference is `docs/product/north-star.md`.
 
-The current implementation priority is A+B Autonomous Candidate Hunter: combine authorized policy/scope/API/HAR artifacts with authorized local code to produce a small set of high-quality vulnerability candidates, each with affected endpoint, affected code path, evidence needs, refutation questions, safe validation plan, and submission-blocked report readiness.
+The final product target is a Mythos / XBOW style autonomous vulnerability research system with real high-quality vulnerability discovery capability inside lawful boundaries. Given authorized scope, policy, API/HAR traffic, local code, and optional advisory material, the system should autonomously model the target, choose high-value attack surfaces, generate and refute vulnerability hypotheses, connect each candidate to traceable evidence, rank the Top 1-5 candidates, prepare safe validation work, and draft submission-blocked reports for human review.
 
-Preferred local software entrypoint: Mythos Studio. During development, run it from `apps/studio` after installing API and web dependencies. The Studio launcher opens the local `/studio` workspace without making the browser dashboard the primary experience.
+Current implementation is not yet that final autonomous discovery engine. It is the safety-first foundation and A+B Candidate Hunter workbench: policy/scope/API/HAR artifacts plus authorized local code are correlated into high-quality candidate records with affected endpoint, affected code path, evidence needs, refutation questions, safe validation plan, review loop state, and submission-blocked report readiness. The next implementation priority is turning the candidate-hunter review loop into an actual bounded autonomous discovery loop rather than only a review/export structure.
+
+Preferred local software entrypoint: Mythos Studio. During development, run it from `apps/studio` after installing API and web dependencies. The Studio launcher opens the local `/studio` workspace without making the browser dashboard the primary experience. It defaults to inline safe read-only worker dispatch, so Redis/Celery is not required for the local desktop campaign loop.
 
 ## Structure
 

@@ -1,6 +1,17 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -24,13 +35,20 @@ class ProgramRecord(Base):
 
 class ArtifactRecord(Base):
     __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "program_id",
+            "source_hash",
+            name="uq_artifacts_program_source_hash",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     program_id: Mapped[str | None] = mapped_column(ForeignKey("programs.id"), nullable=True)
     asset: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(50), nullable=False)
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    source_hash: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    source_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     ingestion_status: Mapped[str] = mapped_column(String(50), nullable=False)
     provenance: Mapped[dict] = mapped_column(JSON, nullable=False)
     payload_summary: Mapped[dict] = mapped_column(JSON, nullable=False)

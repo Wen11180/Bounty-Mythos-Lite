@@ -577,12 +577,36 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
       nextAllowedAction: "Review hypothesis board and plan non-destructive evidence work.",
       playbookId: "bola_idor",
       priorityScore: 69,
+      rawPriorityScore: null,
+      qualityGateReasons: [],
+      evidenceNeeded: [],
+      evidenceTraceSummary: {
+        artifactKinds: [],
+        reportSubmissionAllowed: false,
+        routeFactCount: 0,
+        sourceFactCount: 0,
+        sourceFactTypes: [],
+        traceStatus: "needs_evidence",
+        traceableSourceFactCount: 0,
+      },
+      reportReadiness: {
+        nextAllowedAction: "Review evidence gates before report drafting.",
+        reportSubmissionAllowed: false,
+        requiredEvidenceCount: 0,
+        safeValidationStepCount: 0,
+        status: "blocked_by_evidence_trace",
+        submissionBlocked: true,
+        traceStatus: "needs_evidence",
+      },
       queueKey: "reasoning_memory:bola_idor",
       refutationQuestionCount: 0,
+      requiredEvidence: [],
+      satisfiedEvidence: [],
       safetyGate: "Advisory memory only",
       source: "Mythos brain reasoning memory",
       surfaceKey: "file_id:export",
       title: "Review bola_idor reasoning memory",
+      topCandidateRank: null,
       validationStepCount: 0,
     },
   ]);
@@ -622,12 +646,36 @@ test("toCampaignControlSummary exposes autonomous hunt queue safety counts only"
         next_allowed_action: "Review validation plan before any execution.",
         playbook_id: "bola_idor",
         priority_score: 91,
+        raw_priority_score: 116,
+        quality_gate_reasons: ["required_evidence_missing", "Authorization: Bearer secret-token"],
+        evidence_needed: ["approved_test_object_id_matrix"],
+        evidence_trace_summary: {
+          artifact_kinds: ["api", "Authorization: Bearer secret-token"],
+          report_submission_allowed: true,
+          route_fact_count: 2,
+          source_fact_count: 3,
+          source_fact_types: ["route_handler", "session_token=secret-token"],
+          trace_status: "traceable",
+          traceable_source_fact_count: 3,
+        },
+        report_readiness: {
+          next_allowed_action: "Resolve required evidence gaps before report drafting.",
+          report_submission_allowed: true,
+          required_evidence_count: 2,
+          safe_validation_step_count: 2,
+          status: "blocked_by_required_evidence",
+          submission_blocked: false,
+          trace_status: "traceable",
+        },
         queue_key: "autonomous_hunt:run_1:hunt_queue_candidate_1",
         refutation_question_count: 3,
+        required_evidence: ["independent_refutation_or_static_rule", "policy"],
+        satisfied_evidence: ["local_code_or_har_correlation"],
         safety_gate: "awaiting_human_approval",
         source: "mythos_pipeline_autonomous_hunt_queue",
         surface_key: null,
         title: "Review autonomous hunt candidate candidate_1",
+        top_candidate_rank: 1,
         validation_step_count: 2,
       },
     ],
@@ -642,12 +690,36 @@ test("toCampaignControlSummary exposes autonomous hunt queue safety counts only"
       nextAllowedAction: "Review validation plan before any execution.",
       playbookId: "bola_idor",
       priorityScore: 91,
+      rawPriorityScore: 100,
+      qualityGateReasons: ["Required evidence missing", "[redacted]"],
+      evidenceNeeded: ["Approved test object id matrix"],
+      evidenceTraceSummary: {
+        artifactKinds: ["Api", "[redacted]"],
+        reportSubmissionAllowed: false,
+        routeFactCount: 2,
+        sourceFactCount: 3,
+        sourceFactTypes: ["Route handler", "[redacted]"],
+        traceStatus: "traceable",
+        traceableSourceFactCount: 3,
+      },
+      reportReadiness: {
+        nextAllowedAction: "Resolve required evidence gaps before report drafting.",
+        reportSubmissionAllowed: false,
+        requiredEvidenceCount: 2,
+        safeValidationStepCount: 2,
+        status: "blocked_by_required_evidence",
+        submissionBlocked: true,
+        traceStatus: "traceable",
+      },
       queueKey: "autonomous_hunt:run_1:hunt_queue_candidate_1",
       refutationQuestionCount: 3,
+      requiredEvidence: ["Independent refutation or static rule", "Policy"],
+      satisfiedEvidence: ["Local code or har correlation"],
       safetyGate: "Awaiting human approval",
       source: "Mythos pipeline autonomous hunt queue",
       surfaceKey: null,
       title: "Review autonomous hunt candidate candidate_1",
+      topCandidateRank: 1,
       validationStepCount: 2,
     },
   ]);
@@ -842,6 +914,7 @@ test("toCampaignControlSummary routes promotion block review to evidence review"
     "Review blocked promotion evidence before retrying candidate promotion.",
   );
   assert.equal(summary.promotionReviewProvenanceRefCount, 6);
+  assert.equal(summary.promotionReviewRequiredEvidenceBlockedCount, 0);
   assert.equal(summary.promotionReviewFindingPromotionAllowed, false);
   assert.equal(summary.promotionReviewReportSubmissionAllowed, false);
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|authorization/i);
@@ -870,6 +943,7 @@ test("toCampaignControlSummary routes reviewed validation feedback to finding pr
   assert.equal(summary.executionAllowed, false);
   assert.equal(summary.promotionReviewFindingPromotionAllowed, true);
   assert.equal(summary.promotionReviewReportSubmissionAllowed, false);
+  assert.equal(summary.promotionReviewRequiredEvidenceBlockedCount, 0);
   assert.equal(summary.promotionReviewValidationFeedbackReviewCount, 1);
   assert.equal(
     summary.promotionReviewNextAllowedAction,
@@ -1268,16 +1342,49 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
       human_approval_required: true,
       hypothesis: "BOLA may expose Authorization: Bearer secret-token",
       pipeline_run_id: "pipeline_run_1",
+      raw_priority_score: 111,
+      quality_gate_reasons: [
+        "required_evidence_missing",
+        "Authorization: Bearer secret-token",
+      ],
       evidence_focus: [
         "same_handler_authz_evidence",
         "Authorization: Bearer secret-token",
       ],
+      evidence_needed: [
+        "approved_test_object_id_matrix",
+        "Authorization: Bearer secret-token",
+      ],
+      evidence_trace_summary: {
+        artifact_kinds: ["api", "Authorization: Bearer secret-token"],
+        report_submission_allowed: true,
+        route_fact_count: 1,
+        source_fact_count: 2,
+        source_fact_types: ["authorization_gap_candidate", "session_token=secret-token"],
+        trace_status: "traceable",
+        traceable_source_fact_count: 2,
+      },
+      report_readiness: {
+        next_allowed_action: "Prepare a submission-blocked draft for human redaction review.",
+        report_submission_allowed: true,
+        required_evidence_count: 0,
+        safe_validation_step_count: 2,
+        status: "submission_blocked_draft_ready",
+        submission_blocked: false,
+        trace_status: "traceable",
+      },
       refutation_questions: [
         "Can same-handler authorization evidence refute the missing access-control check candidate?",
         "Can existing redacted artifacts disprove this?",
         "Does Scope Guard allow validation?",
       ],
       refutation_status: "needs_evidence",
+      required_evidence: [
+        "independent_refutation_or_static_rule",
+        "policy",
+        "Authorization: Bearer secret-token",
+      ],
+      satisfied_evidence: ["local_code_or_har_correlation"],
       report_submission_allowed: true,
       safety_notes: ["scope_guard_required", "human_review_required"],
       source_fact_types: ["authorization_gap_candidate", "sensitive_sink"],
@@ -1304,17 +1411,44 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
     candidateId: "hypothesis_1",
     candidateStatus: "Awaiting human review",
     dispatchAllowed: false,
+    evidenceNeeded: ["Approved test object id matrix", "[redacted]"],
+    evidenceTraceSummary: {
+      artifactKinds: ["Api", "[redacted]"],
+      reportSubmissionAllowed: false,
+      routeFactCount: 1,
+      sourceFactCount: 2,
+      sourceFactTypes: ["Access control gap candidate", "[redacted]"],
+      traceStatus: "traceable",
+      traceableSourceFactCount: 2,
+    },
+    reportReadiness: {
+      nextAllowedAction: "Prepare a submission-blocked draft for human redaction review.",
+      reportSubmissionAllowed: false,
+      requiredEvidenceCount: 0,
+      safeValidationStepCount: 2,
+      status: "submission_blocked_draft_ready",
+      submissionBlocked: true,
+      traceStatus: "traceable",
+    },
     evidenceFocus: ["Same handler authz evidence", "[redacted]"],
     executionAllowed: false,
     humanApprovalRequired: true,
     hypothesis: "[redacted]",
     pipelineRunId: "pipeline_run_1",
+    rawPriorityScore: 100,
+    qualityGateReasons: ["Required evidence missing", "[redacted]"],
     refutationQuestions: [
       "Can same-handler authorization evidence refute the missing access-control check candidate",
       "Can existing redacted artifacts disprove this",
       "Does Scope Guard allow validation",
     ],
     refutationStatus: "Needs evidence",
+    requiredEvidence: [
+      "Independent refutation or static rule",
+      "Policy",
+      "[redacted]",
+    ],
+    satisfiedEvidence: ["Local code or har correlation"],
     reportSubmissionAllowed: false,
     safetyNotes: ["Scope guard required", "Human review required"],
     sourceFactTypes: ["Access-control gap candidate", "Sensitive sink"],
@@ -1949,6 +2083,11 @@ test("toCampaignTimelineSummaries highlights research queue materialization safe
         blocked_action_count: 4,
         candidate_status: "awaiting_human_approval",
         human_approval_required: true,
+        required_evidence: [
+          "independent_refutation_or_static_rule",
+          "policy",
+          "Authorization: Bearer secret-token",
+        ],
         refutation_question_count: 3,
         validation_step_count: 2,
         raw_hypothesis: "Authorization: Bearer secret-token",
@@ -1977,6 +2116,11 @@ test("toCampaignTimelineSummaries highlights research queue materialization safe
       isResearchQueueMaterialized: true,
       outputRefCount: 1,
       refutationQuestionCount: 3,
+      requiredEvidence: [
+        "Independent refutation or static rule",
+        "Policy",
+        "[redacted]",
+      ],
       safetyGateState: "Manual review required",
       stageKey: "Research queue materialized",
       stageOrder: 12,
@@ -2007,6 +2151,11 @@ test("toCampaignTimelineSummaries highlights research plan audit counts without 
         priority_reason_count: 3,
         raw_hypothesis: "Authorization: Bearer secret-token",
         refutation_question_count: 3,
+        required_evidence: [
+          "independent_refutation_or_static_rule",
+          "policy",
+          "Authorization: Bearer secret-token",
+        ],
         source_fact_type_count: 1,
         triage_signal_count: 1,
       },
@@ -2037,6 +2186,11 @@ test("toCampaignTimelineSummaries highlights research plan audit counts without 
       outputRefCount: 1,
       priorityReasonCount: 3,
       refutationQuestionCount: 3,
+      requiredEvidence: [
+        "Independent refutation or static rule",
+        "Policy",
+        "[redacted]",
+      ],
       sourceFactTypeCount: 1,
       safetyGateState: "Advisory plan only",
       stageKey: "Research task review plan",
@@ -2972,6 +3126,7 @@ test("toCampaignFindingCandidateGateSummary exposes manual promotion readiness w
     promotionAuditLatestReason: "Blocked by research feedback gate",
     promotionAuditProvenanceRefCount: 2,
     promotionAuditReviewEvidenceRefCount: 2,
+    requiredEvidenceBlockedCount: 0,
     researchEvidenceRefCount: 2,
     researchFeedbackCount: 1,
     researchPromotionBlockedCount: 1,
@@ -3010,6 +3165,59 @@ test("toCampaignFindingCandidateGateSummary exposes ready report preview run ids
   assert.doesNotMatch(summary.nextAllowedAction, /eligible|ready|confirmed|submission|execute/i);
   assert.deepEqual(summary.readyRunIds, ["run_ready_1"]);
   assert.doesNotMatch(JSON.stringify(summary), /human approval/i);
+  assert.doesNotMatch(JSON.stringify(summary), /secret-token|authorization: bearer/i);
+});
+
+test("toCampaignFindingCandidateGateSummary blocks readiness on unresolved required evidence", () => {
+  const summary = toCampaignFindingCandidateGateSummary(
+    [
+      {
+        ...reportPreview,
+        run_id: "run_ready_1",
+        claim_ledger: [
+          {
+            ...reportPreview.claim_ledger[0],
+            claim_id: "claim_ready_1",
+            readiness_blockers: [],
+            review_evidence_refs: ["sanitized_request_response"],
+            review_status: "confirmed_observed_fact",
+            readiness_level: "human_reviewed_gated",
+            text: "Ready claim with Authorization: Bearer secret-token",
+          },
+        ],
+        evidence_refs: ["Authorization: Bearer secret-token"],
+      },
+    ],
+    [],
+    [
+      {
+        campaign_id: "campaign_1",
+        created_at: "2026-07-05T00:12:00Z",
+        id: "stage_required_evidence",
+        input_refs: ["campaign:campaign_1", "Authorization: Bearer secret-token"],
+        output_refs: ["research_plan:research_plan_1"],
+        payload: {
+          required_evidence: ["independent_refutation_or_static_rule", "policy"],
+        },
+        pipeline_run_id: "run_ready_1",
+        safety_gate_state: "advisory_plan_only",
+        stage_key: "research_task_review_plan",
+        stage_order: 8,
+        status: "auto_drafted",
+        stop_reason: null,
+        task_id: "task_1",
+      },
+    ],
+  );
+
+  assert.equal(summary.eligibleClaimCount, 1);
+  assert.equal(summary.requiredEvidenceBlockedCount, 1);
+  assert.equal(summary.status, "blocked_by_required_evidence");
+  assert.equal(
+    summary.nextAllowedAction,
+    "Resolve required evidence gaps before candidate promotion.",
+  );
+  assert.deepEqual(summary.readyRunIds, []);
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|authorization: bearer/i);
 });
 
@@ -3078,6 +3286,7 @@ test("toCampaignFindingCandidateGateSummary blocks readiness on advisory validat
   assert.equal(summary.researchFeedbackCount, 1);
   assert.equal(summary.researchPromotionBlockedCount, 1);
   assert.equal(summary.promotionAuditBlockedCount, 0);
+  assert.equal(summary.requiredEvidenceBlockedCount, 0);
   assert.equal(summary.status, "blocked_by_research_feedback");
   assert.equal(
     summary.nextAllowedAction,
@@ -3180,10 +3389,13 @@ test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates",
         priorityScore: 91,
         queueKey: "autonomous_hunt:run_1:hunt_queue_candidate_high",
         refutationQuestionCount: 2,
+        evidenceNeeded: ["approved test object id matrix"],
+        requiredEvidence: ["independent refutation or static rule", "Policy"],
         safetyGate: "Awaiting human approval",
         source: "Mythos pipeline autonomous hunt queue",
         surfaceKey: null,
         title: "Review autonomous hunt candidate candidate_high; Authorization: Bearer secret-token",
+        topCandidateRank: 1,
         validationStepCount: 2,
       },
     ],
@@ -3226,6 +3438,14 @@ test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates",
   assert.equal(summaries[0].researchQueueHandoff?.executionAllowed, false);
   assert.equal(summaries[0].researchQueueHandoff?.reviewHref, "/campaigns/campaign_1/tasks");
   assert.equal(summaries[0].researchQueueHandoff?.blockedActionCount, 3);
+  assert.equal(summaries[0].researchQueueHandoff?.topCandidateRank, 1);
+  assert.deepEqual(summaries[0].researchQueueHandoff?.requiredEvidence, [
+    "independent refutation or static rule",
+    "Policy",
+  ]);
+  assert.deepEqual(summaries[0].researchQueueHandoff?.evidenceNeeded, [
+    "approved test object id matrix",
+  ]);
   assert.equal(summaries[0].researchQueueHandoff?.validationStepCount, 2);
   assert.equal(summaries[0].researchQueueHandoff?.refutationQuestionCount, 2);
   assert.equal(summaries[0].chainConfidence, 74);
@@ -3349,6 +3569,14 @@ test("campaign control page exposes a safe launchpad without validation or submi
   assert.match(page, /name="policy_text"/);
   assert.match(page, /name="default_asset"/);
   assert.match(page, /name="allowed_tools"/);
+  assert.match(page, /name="authorized_code_path"/);
+  assert.match(page, /name="authorized_code_content"/);
+  assert.match(page, /authorizedCodeFilesFromForm/);
+  assert.match(page, /name="authorized_api_artifact_kind"/);
+  assert.match(page, /name="authorized_api_artifact_source"/);
+  assert.match(page, /name="authorized_api_artifact_payload"/);
+  assert.match(page, /authorizedApiArtifactsFromForm/);
+  assert.match(page, /jsonObjectValue/);
   assert.match(page, /Authorized tools/);
   assert.doesNotMatch(page, /Allowed tools/);
   assert.match(page, /name="autonomy_level"/);
@@ -3367,7 +3595,11 @@ test("campaign launch API helper creates and starts only the safe campaign loop"
   );
 
   assert.match(api, /export type AuthorizedCampaignLaunchInput/);
+  assert.match(api, /authorized_api_artifacts\?:/);
+  assert.match(api, /authorized_code_files\?:/);
   assert.match(api, /launchAuthorizedCampaign/);
+  assert.match(api, /launchStudioWorkspaceCampaignHunter/);
+  assert.match(api, /\/mythos\/studio\/workspaces\/campaigns\/launch/);
   assert.match(api, /\/mythos\/campaigns/);
   assert.match(api, /\/start/);
   assert.doesNotMatch(api, /executeValidation|approveValidation|submitReport/);
@@ -3442,6 +3674,7 @@ test("campaign detail page reads the audited control center and queues review it
   assert.match(page, /promotionReviewBlockedCount/);
   assert.match(page, /promotionReviewNextAllowedAction/);
   assert.match(page, /promotionReviewProvenanceRefCount/);
+  assert.match(page, /promotionReviewRequiredEvidenceBlockedCount/);
   assert.match(page, /Review requirements/);
   assert.match(page, /summary\.blockedReasons\.map/);
   assert.doesNotMatch(page, /Blocked Reasons/);
@@ -3469,6 +3702,11 @@ test("campaign detail page reads the audited control center and queues review it
   assert.match(page, /refutationQuestionCount/);
   assert.match(page, /validationStepCount/);
   assert.match(page, /blockedActionCount/);
+  assert.match(page, /rawPriorityScore/);
+  assert.match(page, /requiredEvidence/);
+  assert.match(page, /Required evidence/);
+  assert.match(page, /qualityGateReasons/);
+  assert.match(page, /Quality Gate Reasons/);
   assert.match(page, /Human review required/);
   assert.match(page, /label="Validation audits"/);
   assert.match(page, /label="Review items"/);
@@ -3647,6 +3885,8 @@ test("campaign hypothesis board page reads run candidates and stays read-only", 
   assert.match(page, /researchQueueHandoff/);
   assert.match(page, /candidate\.researchQueueHandoff\.reviewHref/);
   assert.match(page, /Review queue handoff/);
+  assert.match(page, /Required evidence/);
+  assert.match(page, /candidate\.researchQueueHandoff\.requiredEvidence/);
   assert.match(page, /Source/);
   assert.match(page, /candidate\.source/);
   assert.match(page, /Research audits/);
@@ -3951,6 +4191,8 @@ test("campaign report drafts page reads report previews and manual validation st
   assert.match(page, /Research feedback/);
   assert.match(page, /Claims needing review/);
   assert.match(page, /Promotion review holds/);
+  assert.match(page, /Required evidence holds/);
+  assert.match(page, /requiredEvidenceBlockedCount/);
   assert.match(page, /Promotion audit holds/);
   assert.match(page, /promotionAuditBlockedCount/);
   assert.match(page, /promotionAuditCreatedCount/);
@@ -4052,6 +4294,11 @@ test("campaign research task review page drafts review plans without execution",
   assert.match(page, /sourceFactTypes/);
   assert.match(page, /Candidate Triage Signals/);
   assert.match(page, /Candidate Evidence Focus/);
+  assert.match(page, /Candidate Required Evidence/);
+  assert.match(page, /requiredEvidence/);
+  assert.match(page, /Candidate Quality Gate Reasons/);
+  assert.match(page, /qualityGateReasons/);
+  assert.match(page, /rawPriorityScore/);
   assert.match(page, /Candidate Source Facts/);
   assert.match(page, /validationSteps/);
   assert.match(page, /blockedActions/);
@@ -4225,6 +4472,8 @@ test("campaign timeline page reads pipeline stage records and stays read-only", 
   assert.match(page, /refutationQuestionCount/);
   assert.match(page, /validationStepCount/);
   assert.match(page, /blockedActionCount/);
+  assert.match(page, /requiredEvidence/);
+  assert.match(page, /Required evidence/);
   assert.match(page, /evidenceFocusCount/);
   assert.match(page, /sourceFactTypeCount/);
   assert.match(page, /triageSignalCount/);

@@ -1,3 +1,5 @@
+import type { CampaignControlCenter } from "./campaigns-data";
+
 export type StudioWorkspaceManifest = {
   name?: string;
   artifacts?: Array<{
@@ -11,6 +13,25 @@ export type StudioWorkspaceManifest = {
     candidate_count?: number;
     benchmark_status?: string;
     benchmark_path?: string;
+    recorded_at?: string;
+    report_markdown_path?: string;
+    report_path?: string;
+  }>;
+  campaign_hunter_runs?: Array<{
+    campaign_id?: string;
+    campaign_name?: string;
+    campaign_status?: string;
+    suggestion_count?: number;
+    dispatched_task_count?: number;
+    autonomy_level?: string;
+    safety_gate?: string;
+    execution_allowed?: boolean;
+    recorded_at?: string;
+    report_markdown_path?: string;
+    report_path?: string;
+    report_status?: string;
+    validation_allowed?: boolean;
+    report_submission_allowed?: boolean;
   }>;
   benchmarks?: Array<{
     run_id?: string;
@@ -46,6 +67,21 @@ export type StudioMissionCandidateInput = {
   evidence_gap_count?: number;
   evidence_need_count?: number;
   evidence_review_status?: string;
+  evidence_trace_summary?: {
+    advisory_artifact_kinds?: string[];
+    code_path_traced?: boolean;
+    endpoint_traced?: boolean;
+    execution_allowed?: boolean;
+    independent_cross_check_count?: number;
+    missing_required_artifact_kinds?: string[];
+    next_action?: string;
+    present_required_artifact_kinds?: string[];
+    report_submission_allowed?: boolean;
+    required_artifact_kinds?: string[];
+    source_fact_count?: number;
+    status?: string;
+    validation_allowed?: boolean;
+  };
   execution_allowed?: boolean;
   false_positive_check_count?: number;
   hallucination_guard?: {
@@ -217,6 +253,224 @@ export type StudioCandidateHunterReviewLoopInput = {
   validation_allowed?: boolean;
 };
 
+export type StudioCandidateHunterExecutionLoopInput = {
+  active_work_items?: Array<{
+    assigned_agent?: string;
+    candidate_id?: string;
+    execution_allowed?: boolean;
+    gap?: string;
+    next_action?: string;
+    phase_id?: string;
+    report_submission_allowed?: boolean;
+    required_evidence?: string[];
+    validation_allowed?: boolean;
+    work_item_id?: string;
+  }>;
+  blocked_actions?: string[];
+  candidate_budget?: number;
+  candidate_evidence_matrix?: Array<{
+    advisory_sources?: string[];
+    affected_code_path?: string;
+    affected_endpoint?: string;
+    candidate_id?: string;
+    evidence_trace_status?: string;
+    execution_allowed?: boolean;
+    hunter_priority_score?: number;
+    impact_score?: number;
+    independent_cross_check_sources?: string[];
+    local_evidence_sources?: string[];
+    learning_evidence_needed_reasons?: string[];
+    missing_evidence?: string[];
+    missing_required_artifact_kinds?: string[];
+    policy_risk_score?: number;
+    quality_score?: number;
+    quality_status?: string;
+    ranking_signal_breakdown?: string[];
+    rejection_risk_score?: number;
+    report_submission_allowed?: boolean;
+    validation_allowed?: boolean;
+  }>;
+  candidate_evidence_summary?: {
+    advisory_artifact_kinds?: string[];
+    average_quality_score?: number;
+    candidate_count?: number;
+    code_path_traced_count?: number;
+    endpoint_traced_count?: number;
+    evidence_ready_candidate_ids?: string[];
+    local_artifact_kinds?: string[];
+    review_needed_candidate_ids?: string[];
+    review_needed_count?: number;
+    review_ready_count?: number;
+  };
+  candidate_promotion_allowed?: boolean;
+  completion_gate?: string;
+  current_phase?: string;
+  execution_allowed?: boolean;
+  iteration?: number;
+  loop_id?: string;
+  learning_feedback_target?: {
+    action_count?: number;
+    allowed_outcomes?: string[];
+    candidate_ids?: string[];
+    execution_allowed?: boolean;
+    learning_write_allowed?: boolean;
+    next_action?: string;
+    report_submission_allowed?: boolean;
+    safety_gate?: string;
+    source_loop_id?: string;
+    status?: string;
+    target_id?: string;
+    validation_allowed?: boolean;
+  };
+  learning_review_actions?: Array<{
+    action_id?: string;
+    allowed_outcomes?: string[];
+    candidate_id?: string;
+    evidence_ready?: boolean;
+    execution_allowed?: boolean;
+    learning_evidence_needed_reasons?: string[];
+    learning_signal_template?: {
+      human_review_required?: boolean;
+      learning_write_allowed?: boolean;
+      playbook_id?: string;
+      surface_key?: string;
+      target_relationships?: string[];
+    };
+    learning_write_allowed?: boolean;
+    missing_evidence?: string[];
+    missing_required_artifact_kinds?: string[];
+    next_action?: string;
+    report_submission_allowed?: boolean;
+    safety_gate?: string;
+    source_loop_id?: string;
+    suggested_outcome?: string;
+    trace_status?: string;
+    validation_allowed?: boolean;
+  }>;
+  refutation_queue?: Array<{
+    candidate_id?: string;
+    execution_allowed?: boolean;
+    missing_evidence?: string[];
+    missing_required_artifact_kinds?: string[];
+    next_action?: string;
+    priority_score?: number;
+    questions?: string[];
+    queue_id?: string;
+    report_submission_allowed?: boolean;
+    required_evidence?: string[];
+    safety_gate?: string;
+    trace_status?: string;
+    validation_allowed?: boolean;
+  }>;
+  deduplication_queue?: Array<{
+    affected_code_path?: string;
+    affected_endpoint?: string;
+    candidate_id?: string;
+    duplicate_risk_score?: number;
+    execution_allowed?: boolean;
+    next_action?: string;
+    priority_score?: number;
+    questions?: string[];
+    queue_id?: string;
+    report_submission_allowed?: boolean;
+    required_evidence?: string[];
+    safety_gate?: string;
+    similarity_keys?: string[];
+    validation_allowed?: boolean;
+  }>;
+  safe_validation_queue?: Array<{
+    affected_code_path?: string;
+    affected_endpoint?: string;
+    candidate_id?: string;
+    execution_allowed?: boolean;
+    next_action?: string;
+    plan_steps?: string[];
+    priority_score?: number;
+    queue_id?: string;
+    report_submission_allowed?: boolean;
+    required_approvals?: string[];
+    safety_gate?: string;
+    validation_allowed?: boolean;
+    validation_execution_allowed?: boolean;
+    validation_mode?: string;
+  }>;
+  report_draft_queue?: Array<{
+    affected_code_path?: string;
+    affected_endpoint?: string;
+    candidate_id?: string;
+    evidence_focus?: string[];
+    execution_allowed?: boolean;
+    next_action?: string;
+    priority_score?: number;
+    queue_id?: string;
+    redaction_checks?: string[];
+    report_status?: string;
+    report_submission_allowed?: boolean;
+    required_sections?: string[];
+    safety_gate?: string;
+    validation_allowed?: boolean;
+  }>;
+  ranked_top_candidates?: Array<{
+    affected_code_path?: string;
+    affected_endpoint?: string;
+    candidate_id?: string;
+    evidence_ready?: boolean;
+    execution_allowed?: boolean;
+    missing_evidence?: string[];
+    missing_required_artifact_kinds?: string[];
+    phase_id?: string;
+    priority_score?: number;
+    quality_status?: string;
+    rank?: number;
+    ranking_signal_breakdown?: string[];
+    reason?: string;
+    next_action?: string;
+    required_evidence?: string[];
+    report_submission_allowed?: boolean;
+    safety_gate?: string;
+    trace_status?: string;
+    validation_allowed?: boolean;
+  }>;
+  next_candidate_actions?: Array<{
+    candidate_id?: string;
+    execution_allowed?: boolean;
+    next_action?: string;
+    phase_id?: string;
+    priority_score?: number;
+    reason?: string;
+    report_submission_allowed?: boolean;
+    required_evidence?: string[];
+    safety_gate?: string;
+    validation_allowed?: boolean;
+  }>;
+  phase_count?: number;
+  phases?: Array<{
+    execution_allowed?: boolean;
+    input_refs?: string[];
+    label?: string;
+    output_refs?: string[];
+    phase_id?: string;
+    report_submission_allowed?: boolean;
+    safety_gate?: string;
+    status?: string;
+    validation_allowed?: boolean;
+  }>;
+  promotion_policy?: {
+    candidate_promotion_allowed?: boolean;
+    requires_human_review?: boolean;
+    requires_independent_refutation?: boolean;
+    requires_local_artifact_trace?: boolean;
+  };
+  report_submission_allowed?: boolean;
+  safety_gate?: string;
+  source_plan_id?: string;
+  source_review_loop_id?: string;
+  status?: string;
+  top_candidate_limit?: number;
+  validation_allowed?: boolean;
+  validation_execution_allowed?: boolean;
+};
+
 export type StudioMissionAgentTaskTimelineInput = {
   agent?: string;
   attempt?: number;
@@ -334,6 +588,7 @@ export type StudioMissionSummary = {
     present?: string[];
     required?: string[];
   };
+  attack_surface_model?: StudioAttackSurfaceModelInput;
   advisory_artifacts?: {
     present?: string[];
     supported?: string[];
@@ -344,6 +599,7 @@ export type StudioMissionSummary = {
   candidate_hunter_iteration?: StudioCandidateHunterIterationInput;
   candidate_hunter_plan?: StudioCandidateHunterPlanInput;
   candidate_hunter_review_loop?: StudioCandidateHunterReviewLoopInput;
+  candidate_hunter_execution_loop?: StudioCandidateHunterExecutionLoopInput;
   candidate_review_packets?: StudioCandidateReviewPacketInput[];
   mode?: string;
   next_actions?: string[];
@@ -375,6 +631,26 @@ export type StudioMissionSummary = {
   top_candidates?: StudioMissionCandidateInput[];
 };
 
+type StudioAttackSurfaceModelInput = {
+  advisory_signal_count?: number;
+  api_route_count?: number;
+  execution_allowed?: boolean;
+  har_route_count?: number;
+  methods?: string[];
+  next_action?: string;
+  report_submission_allowed?: boolean;
+  route_count?: number;
+  safety_gate?: string;
+  source_artifact_kinds?: string[];
+  status?: string;
+  top_routes?: Array<{
+    artifact_kinds?: string[];
+    method?: string;
+    path?: string;
+  }>;
+  validation_allowed?: boolean;
+};
+
 export type StudioMissionPanelCandidate = {
   affectedCodePath: string;
   affectedEndpoint: string;
@@ -384,6 +660,21 @@ export type StudioMissionPanelCandidate = {
   evidenceReviewStatus: string;
   executionAllowed: boolean;
   falsePositiveCheckCount: number;
+  evidenceTraceSummary: {
+    advisoryArtifactKinds: string[];
+    codePathTraced: boolean;
+    endpointTraced: boolean;
+    executionAllowed: boolean;
+    independentCrossCheckCount: number;
+    missingRequiredArtifactKinds: string[];
+    nextAction: string;
+    presentRequiredArtifactKinds: string[];
+    reportSubmissionAllowed: boolean;
+    requiredArtifactKinds: string[];
+    sourceFactCount: number;
+    status: string;
+    validationAllowed: boolean;
+  };
   hallucinationGuard: {
     advisorySources: string[];
     blockers: string[];
@@ -554,6 +845,225 @@ export type StudioCandidateHunterReviewLoop = {
   validationAllowed: boolean;
 };
 
+export type StudioCandidateHunterExecutionLoop = {
+  activeWorkItems: Array<{
+    assignedAgent: string;
+    candidateId: string;
+    executionAllowed: boolean;
+    gap: string;
+    nextAction: string;
+    phaseId: string;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    validationAllowed: boolean;
+    workItemId: string;
+  }>;
+  blockedActions: string[];
+  candidateBudget: number;
+  candidateEvidenceMatrix: Array<{
+    advisorySources: string[];
+    affectedCodePath: string;
+    affectedEndpoint: string;
+    candidateId: string;
+    executionAllowed: boolean;
+    hunterPriorityScore: number;
+    impactScore: number;
+    independentCrossCheckSources: string[];
+    learningEvidenceNeededReasons: string[];
+    localEvidenceSources: string[];
+    missingEvidence: string[];
+    missingRequiredArtifactKinds: string[];
+    policyRiskScore: number;
+    qualityScore: number;
+    qualityStatus: string;
+    rankingSignalBreakdown: string[];
+    rejectionRiskScore: number;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    traceStatus: string;
+    validationAllowed: boolean;
+  }>;
+  candidateEvidenceSummary: {
+    advisoryArtifactKinds: string[];
+    averageQualityScore: number;
+    candidateCount: number;
+    codePathTracedCount: number;
+    endpointTracedCount: number;
+    evidenceReadyCandidateIds: string[];
+    localArtifactKinds: string[];
+    reviewNeededCandidateIds: string[];
+    reviewNeededCount: number;
+    reviewReadyCount: number;
+  };
+  candidatePromotionAllowed: boolean;
+  completionGate: string;
+  currentPhase: string;
+  executionAllowed: boolean;
+  iteration: number;
+  learningFeedbackTarget: {
+    actionCount: number;
+    allowedOutcomes: string[];
+    candidateIds: string[];
+    executionAllowed: boolean;
+    learningWriteAllowed: boolean;
+    nextAction: string;
+    reportSubmissionAllowed: boolean;
+    safetyGate: string;
+    sourceLoopId: string;
+    status: string;
+    targetId: string;
+    validationAllowed: boolean;
+  };
+  learningReviewActions: Array<{
+    actionId: string;
+    allowedOutcomes: string[];
+    candidateId: string;
+    evidenceReady: boolean;
+    executionAllowed: boolean;
+    learningSignalTemplate?: {
+      humanReviewRequired: boolean;
+      learningWriteAllowed: boolean;
+      playbookId: string;
+      surfaceKey: string;
+      targetRelationships: string[];
+    };
+    learningWriteAllowed: boolean;
+    learningEvidenceNeededReasons: string[];
+    missingEvidence: string[];
+    missingRequiredArtifactKinds: string[];
+    nextAction: string;
+    reportSubmissionAllowed: boolean;
+    safetyGate: string;
+    sourceLoopId: string;
+    suggestedOutcome: string;
+    traceStatus: string;
+    validationAllowed: boolean;
+  }>;
+  refutationQueue: Array<{
+    candidateId: string;
+    executionAllowed: boolean;
+    missingEvidence: string[];
+    missingRequiredArtifactKinds: string[];
+    nextAction: string;
+    priorityScore: number;
+    questions: string[];
+    queueId: string;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    safetyGate: string;
+    traceStatus: string;
+    validationAllowed: boolean;
+  }>;
+  deduplicationQueue: Array<{
+    affectedCodePath: string;
+    affectedEndpoint: string;
+    candidateId: string;
+    duplicateRiskScore: number;
+    executionAllowed: boolean;
+    nextAction: string;
+    priorityScore: number;
+    questions: string[];
+    queueId: string;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    safetyGate: string;
+    similarityKeys: string[];
+    validationAllowed: boolean;
+  }>;
+  safeValidationQueue: Array<{
+    affectedCodePath: string;
+    affectedEndpoint: string;
+    candidateId: string;
+    executionAllowed: boolean;
+    nextAction: string;
+    planSteps: string[];
+    priorityScore: number;
+    queueId: string;
+    reportSubmissionAllowed: boolean;
+    requiredApprovals: string[];
+    safetyGate: string;
+    validationAllowed: boolean;
+    validationExecutionAllowed: boolean;
+    validationMode: string;
+  }>;
+  reportDraftQueue: Array<{
+    affectedCodePath: string;
+    affectedEndpoint: string;
+    candidateId: string;
+    evidenceFocus: string[];
+    executionAllowed: boolean;
+    nextAction: string;
+    priorityScore: number;
+    queueId: string;
+    redactionChecks: string[];
+    reportStatus: string;
+    reportSubmissionAllowed: boolean;
+    requiredSections: string[];
+    safetyGate: string;
+    validationAllowed: boolean;
+  }>;
+  rankedTopCandidates: Array<{
+    affectedCodePath: string;
+    affectedEndpoint: string;
+    candidateId: string;
+    evidenceReady: boolean;
+    executionAllowed: boolean;
+    missingEvidence: string[];
+    missingRequiredArtifactKinds: string[];
+    phaseId: string;
+    priorityScore: number;
+    qualityStatus: string;
+    rank: number;
+    rankingSignalBreakdown: string[];
+    reason: string;
+    nextAction: string;
+    requiredEvidence: string[];
+    reportSubmissionAllowed: boolean;
+    safetyGate: string;
+    traceStatus: string;
+    validationAllowed: boolean;
+  }>;
+  loopId: string;
+  nextCandidateActions: Array<{
+    candidateId: string;
+    executionAllowed: boolean;
+    nextAction: string;
+    phaseId: string;
+    priorityScore: number;
+    reason: string;
+    reportSubmissionAllowed: boolean;
+    requiredEvidence: string[];
+    safetyGate: string;
+    validationAllowed: boolean;
+  }>;
+  phaseCount: number;
+  phases: Array<{
+    executionAllowed: boolean;
+    inputRefs: string[];
+    label: string;
+    outputRefs: string[];
+    phaseId: string;
+    reportSubmissionAllowed: boolean;
+    safetyGate: string;
+    status: string;
+    validationAllowed: boolean;
+  }>;
+  promotionPolicy: {
+    candidatePromotionAllowed: boolean;
+    requiresHumanReview: boolean;
+    requiresIndependentRefutation: boolean;
+    requiresLocalArtifactTrace: boolean;
+  };
+  reportSubmissionAllowed: boolean;
+  safetyGate: string;
+  sourcePlanId: string;
+  sourceReviewLoopId: string;
+  status: string;
+  topCandidateLimit: number;
+  validationAllowed: boolean;
+  validationExecutionAllowed: boolean;
+};
+
 export type StudioMissionAgentTaskTimelineItem = {
   agent: string;
   attempt: number;
@@ -662,17 +1172,39 @@ export type StudioSubmissionBlockedReportSummary = {
   validationExecutionAllowed: boolean;
 };
 
+export type StudioAttackSurfaceModel = {
+  advisorySignalCount: number;
+  apiRouteCount: number;
+  executionAllowed: boolean;
+  harRouteCount: number;
+  methods: string[];
+  nextAction: string;
+  reportSubmissionAllowed: boolean;
+  routeCount: number;
+  safetyGate: string;
+  sourceArtifactKinds: string[];
+  status: string;
+  topRoutes: Array<{
+    artifactKinds: string[];
+    method: string;
+    path: string;
+  }>;
+  validationAllowed: boolean;
+};
+
 export type StudioMissionPanel = {
   advisoryContextLabel: string;
   agentHandoffPack: StudioAgentHandoffPack;
   agentQueue: StudioMissionAgentTask[];
   agentTaskTimeline: StudioMissionAgentTaskTimelineItem[];
   artifactCoverage: string;
+  attackSurfaceModel: StudioAttackSurfaceModel;
   blockedActions: string[];
   candidateHunterBacklog: StudioCandidateHunterBacklogItem[];
   candidateHunterIteration: StudioCandidateHunterIteration;
   candidateHunterPlan: StudioCandidateHunterPlan;
   candidateHunterReviewLoop: StudioCandidateHunterReviewLoop;
+  candidateHunterExecutionLoop: StudioCandidateHunterExecutionLoop;
   candidateReviewPackets: StudioCandidateReviewPacket[];
   candidateCountLabel: string;
   gates: {
@@ -740,12 +1272,31 @@ export type StudioCandidateInput = {
   report_readiness?: {
     next_allowed_action?: string;
     report_submission_allowed?: boolean;
+    required_evidence_count?: number;
+    safe_validation_step_count?: number;
     status?: string;
+    submission_blocked?: boolean;
+    trace_status?: string;
   };
   evidence_gaps?: Array<{
     artifact_kind?: string;
     reason?: string;
   }>;
+  evidence_trace_summary?: {
+    advisory_artifact_kinds?: string[];
+    code_path_traced?: boolean;
+    endpoint_traced?: boolean;
+    execution_allowed?: boolean;
+    independent_cross_check_count?: number;
+    missing_required_artifact_kinds?: string[];
+    next_action?: string;
+    present_required_artifact_kinds?: string[];
+    report_submission_allowed?: boolean;
+    required_artifact_kinds?: string[];
+    source_fact_count?: number;
+    status?: string;
+    validation_allowed?: boolean;
+  };
   suggested_fix?: string;
   regression_test?: string;
   safe_validation_plan?: string[];
@@ -753,19 +1304,31 @@ export type StudioCandidateInput = {
   safety_blockers?: string[];
   priority_score?: number;
   validation_mode?: string;
+  hunter_assessment?: {
+    evidence_focus?: string[];
+  } | null;
   source_facts?: Array<{
     advisory_only?: string;
     artifact_kind?: string;
+    authz_hint?: string;
+    execution_allowed?: boolean;
     ecosystem?: string;
     fact_type?: string;
     operation_id?: string;
     package_name?: string;
     package_version?: string;
+    report_submission_allowed?: boolean;
+    review_state?: string;
     route_method?: string;
     route_path?: string;
     severity?: string;
+    security_invariant?: string;
+    sink_count?: number;
+    sink_symbols?: string[];
     source_path?: string;
     symbol_name?: string;
+    root_cause?: string;
+    validation_allowed?: boolean;
     vulnerability_id?: string;
   }>;
 };
@@ -779,7 +1342,34 @@ export type StudioCandidateCard = {
   affectedCodePath: string;
   evidenceNeeds: string[];
   evidenceGaps: string[];
+  evidenceTraceSummary: {
+    advisoryArtifactKinds: string[];
+    codePathTraced: boolean;
+    endpointTraced: boolean;
+    executionAllowed: boolean;
+    independentCrossCheckCount: number;
+    missingRequiredArtifactKinds: string[];
+    nextAction: string;
+    presentRequiredArtifactKinds: string[];
+    reportSubmissionAllowed: boolean;
+    requiredArtifactKinds: string[];
+    sourceFactCount: number;
+    status: string;
+    validationAllowed: boolean;
+  };
+  semanticEvidence: {
+    authzHint: string;
+    executionAllowed: boolean;
+    reportSubmissionAllowed: boolean;
+    reviewState: string;
+    rootCause: string;
+    securityInvariant: string;
+    sinkCount: number;
+    sinkSymbols: string[];
+    validationAllowed: boolean;
+  };
   refutationQuestions: string[];
+  evidenceFocus: string[];
   rankingReasons: string[];
   brokenInvariant: string;
   repairGuidance: string;
@@ -788,7 +1378,11 @@ export type StudioCandidateCard = {
   reportReadiness: {
     nextAllowedAction: string;
     reportSubmissionAllowed: boolean;
+    requiredEvidenceCount: number;
+    safeValidationStepCount: number;
     status: string;
+    submissionBlocked: boolean;
+    traceStatus: string;
   };
   safeValidationPlan: string[];
   safetyBlockers: string[];
@@ -802,7 +1396,7 @@ export function toStudioWorkspaceSummary(
   return {
     name: safeText(manifest.name, "Untitled workspace"),
     artifactCount: manifest.artifacts?.length ?? 0,
-    runCount: manifest.runs?.length ?? 0,
+    runCount: (manifest.runs?.length ?? 0) + (manifest.campaign_hunter_runs?.length ?? 0),
     scopeGuardLabel: scopeGuardLabel(manifest.safety?.scope_guard_status),
     blockedActions: manifest.safety?.blocked_actions ?? [],
   };
@@ -888,6 +1482,37 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       validationExecutionAllowed: false,
     })),
     artifactCoverage: `${present.length}/${required.length} required artifacts`,
+    attackSurfaceModel: {
+      advisorySignalCount: mission?.attack_surface_model?.advisory_signal_count ?? 0,
+      apiRouteCount: mission?.attack_surface_model?.api_route_count ?? 0,
+      executionAllowed: false,
+      harRouteCount: mission?.attack_surface_model?.har_route_count ?? 0,
+      methods: (mission?.attack_surface_model?.methods ?? []).map((method) =>
+        safeText(method, "method"),
+      ),
+      nextAction: safeText(
+        mission?.attack_surface_model?.next_action,
+        "Import API/HAR/local code artifacts before surface modeling.",
+      ),
+      reportSubmissionAllowed: false,
+      routeCount: mission?.attack_surface_model?.route_count ?? 0,
+      safetyGate: safeText(
+        mission?.attack_surface_model?.safety_gate,
+        "authorized_artifacts_only",
+      ),
+      sourceArtifactKinds: (
+        mission?.attack_surface_model?.source_artifact_kinds ?? []
+      ).map((kind) => safeText(kind, "artifact")),
+      status: safeText(mission?.attack_surface_model?.status, "not_modeled"),
+      topRoutes: (mission?.attack_surface_model?.top_routes ?? []).map((route) => ({
+        artifactKinds: (route.artifact_kinds ?? []).map((kind) =>
+          safeText(kind, "artifact"),
+        ),
+        method: safeText(route.method, "METHOD"),
+        path: safeText(route.path, "Route needs review"),
+      })),
+      validationAllowed: false,
+    },
     blockedActions: mission?.blocked_actions ?? [],
     candidateHunterBacklog: (mission?.candidate_hunter_backlog ?? []).map((item) => ({
       candidateId: safeText(item.candidate_id, "mission"),
@@ -1060,6 +1685,194 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       status: safeText(mission?.candidate_hunter_review_loop?.status, "needs_review"),
       validationAllowed: false,
     },
+    candidateHunterExecutionLoop: {
+      activeWorkItems: (mission?.candidate_hunter_execution_loop?.active_work_items ?? []).map(
+        (item) => ({
+          assignedAgent: safeText(item.assigned_agent, "Human Reviewer"),
+          candidateId: safeText(item.candidate_id, "candidate"),
+          executionAllowed: false,
+          gap: safeText(item.gap, "needs_review"),
+          nextAction: safeText(item.next_action, "Human review required."),
+          phaseId: safeText(item.phase_id, "refutation"),
+          reportSubmissionAllowed: false,
+          requiredEvidence: item.required_evidence ?? [],
+          validationAllowed: false,
+          workItemId: safeText(item.work_item_id, "candidate_hunter_work_item"),
+        }),
+      ),
+      blockedActions: mission?.candidate_hunter_execution_loop?.blocked_actions ?? [],
+      candidateBudget: mission?.candidate_hunter_execution_loop?.candidate_budget ?? 5,
+      candidateEvidenceMatrix: (
+        mission?.candidate_hunter_execution_loop?.candidate_evidence_matrix ?? []
+      ).map((item) => ({
+        advisorySources: item.advisory_sources ?? [],
+        affectedCodePath: safeText(item.affected_code_path, ""),
+        affectedEndpoint: safeText(item.affected_endpoint, ""),
+        candidateId: safeText(item.candidate_id, "candidate"),
+        executionAllowed: false,
+        hunterPriorityScore: item.hunter_priority_score ?? 0,
+        impactScore: item.impact_score ?? 0,
+        independentCrossCheckSources: item.independent_cross_check_sources ?? [],
+        learningEvidenceNeededReasons: item.learning_evidence_needed_reasons ?? [],
+        localEvidenceSources: item.local_evidence_sources ?? [],
+        missingEvidence: item.missing_evidence ?? [],
+        missingRequiredArtifactKinds: item.missing_required_artifact_kinds ?? [],
+        policyRiskScore: item.policy_risk_score ?? 0,
+        qualityScore: item.quality_score ?? 0,
+        qualityStatus: safeText(item.quality_status, "needs_review"),
+        rankingSignalBreakdown: item.ranking_signal_breakdown ?? [],
+        rejectionRiskScore: item.rejection_risk_score ?? 0,
+        reportSubmissionAllowed: false,
+        requiredEvidence: learnedEvidenceRequiredEvidence(
+          item.learning_evidence_needed_reasons ?? [],
+        ),
+        traceStatus: safeText(item.evidence_trace_status, "needs_evidence"),
+        validationAllowed: false,
+      })),
+      candidateEvidenceSummary: {
+        advisoryArtifactKinds:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.advisory_artifact_kinds ?? [],
+        averageQualityScore:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.average_quality_score ?? 0,
+        candidateCount:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.candidate_count ?? 0,
+        codePathTracedCount:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.code_path_traced_count ?? 0,
+        endpointTracedCount:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.endpoint_traced_count ?? 0,
+        evidenceReadyCandidateIds:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.evidence_ready_candidate_ids ?? [],
+        localArtifactKinds:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.local_artifact_kinds ?? [],
+        reviewNeededCandidateIds:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.review_needed_candidate_ids ?? [],
+        reviewNeededCount:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.review_needed_count ?? 0,
+        reviewReadyCount:
+          mission?.candidate_hunter_execution_loop?.candidate_evidence_summary
+            ?.review_ready_count ?? 0,
+      },
+      rankedTopCandidates: toCandidateHunterRankedTopCandidates(
+        mission?.candidate_hunter_execution_loop,
+      ),
+      candidatePromotionAllowed: false,
+      completionGate: "human_review_required",
+      currentPhase: safeText(
+        mission?.candidate_hunter_execution_loop?.current_phase,
+        "report_draft_readiness",
+      ),
+      executionAllowed: false,
+      iteration: mission?.candidate_hunter_execution_loop?.iteration ?? 1,
+      learningFeedbackTarget: {
+        actionCount:
+          mission?.candidate_hunter_execution_loop?.learning_feedback_target
+            ?.action_count ?? 0,
+        allowedOutcomes:
+          mission?.candidate_hunter_execution_loop?.learning_feedback_target
+            ?.allowed_outcomes ?? [],
+        candidateIds:
+          mission?.candidate_hunter_execution_loop?.learning_feedback_target
+            ?.candidate_ids ?? [],
+        executionAllowed: false,
+        learningWriteAllowed: false,
+        nextAction: safeText(
+          mission?.candidate_hunter_execution_loop?.learning_feedback_target
+            ?.next_action,
+          "Record human-reviewed outcomes before updating future ranking.",
+        ),
+        reportSubmissionAllowed: false,
+        safetyGate: "human_review_required",
+        sourceLoopId: safeText(
+          mission?.candidate_hunter_execution_loop?.learning_feedback_target
+            ?.source_loop_id,
+          "candidate_hunter:bounded_execution_loop",
+        ),
+        status: safeText(
+          mission?.candidate_hunter_execution_loop?.learning_feedback_target?.status,
+          "awaiting_human_outcome",
+        ),
+        targetId: safeText(
+          mission?.candidate_hunter_execution_loop?.learning_feedback_target
+            ?.target_id,
+          "candidate_hunter:learning_feedback:next_actions",
+        ),
+        validationAllowed: false,
+      },
+      learningReviewActions: toCandidateHunterLearningReviewActions(
+        mission?.candidate_hunter_execution_loop,
+      ),
+      refutationQueue: toCandidateHunterRefutationQueue(
+        mission?.candidate_hunter_execution_loop,
+      ),
+      deduplicationQueue: toCandidateHunterDeduplicationQueue(
+        mission?.candidate_hunter_execution_loop,
+      ),
+      safeValidationQueue: toCandidateHunterSafeValidationQueue(
+        mission?.candidate_hunter_execution_loop,
+      ),
+      reportDraftQueue: toCandidateHunterReportDraftQueue(
+        mission?.candidate_hunter_execution_loop,
+      ),
+      loopId: safeText(
+        mission?.candidate_hunter_execution_loop?.loop_id,
+        "candidate_hunter:bounded_execution_loop",
+      ),
+      nextCandidateActions: (
+        mission?.candidate_hunter_execution_loop?.next_candidate_actions ?? []
+      ).map((item) => ({
+        candidateId: safeText(item.candidate_id, "candidate"),
+        executionAllowed: false,
+        nextAction: safeText(item.next_action, "Human review required."),
+        phaseId: safeText(item.phase_id, "refutation"),
+        priorityScore: item.priority_score ?? 0,
+        reason: safeText(item.reason, "needs_review"),
+        reportSubmissionAllowed: false,
+        requiredEvidence: item.required_evidence ?? [],
+        safetyGate: safeExecutionPhaseGate(item.safety_gate),
+        validationAllowed: false,
+      })),
+      phaseCount: mission?.candidate_hunter_execution_loop?.phase_count ?? 0,
+      phases: (mission?.candidate_hunter_execution_loop?.phases ?? []).map((phase) => ({
+        executionAllowed: false,
+        inputRefs: phase.input_refs ?? [],
+        label: safeText(phase.label, "Candidate hunter phase"),
+        outputRefs: phase.output_refs ?? [],
+        phaseId: safeText(phase.phase_id, "candidate_hunter_phase"),
+        reportSubmissionAllowed: false,
+        safetyGate: safeExecutionPhaseGate(phase.safety_gate),
+        status: safeText(phase.status, "needs_review"),
+        validationAllowed: false,
+      })),
+      promotionPolicy: {
+        candidatePromotionAllowed: false,
+        requiresHumanReview: true,
+        requiresIndependentRefutation: true,
+        requiresLocalArtifactTrace: true,
+      },
+      reportSubmissionAllowed: false,
+      safetyGate: "bounded_autonomous_review_only",
+      sourcePlanId: safeText(
+        mission?.candidate_hunter_execution_loop?.source_plan_id,
+        "candidate_hunter:autonomous_review_plan",
+      ),
+      sourceReviewLoopId: safeText(
+        mission?.candidate_hunter_execution_loop?.source_review_loop_id,
+        "candidate_hunter:next_review_loop",
+      ),
+      status: safeText(mission?.candidate_hunter_execution_loop?.status, "needs_review"),
+      topCandidateLimit: mission?.candidate_hunter_execution_loop?.top_candidate_limit ?? 5,
+      validationAllowed: false,
+      validationExecutionAllowed: false,
+    },
     candidateReviewPackets: (mission?.candidate_review_packets ?? []).map((packet) => ({
       candidateId: safeText(packet.candidate_id, "candidate"),
       checklist: (packet.checklist ?? []).map((item) => ({
@@ -1185,6 +1998,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       evidenceGapCount: candidate.evidence_gap_count ?? 0,
       evidenceNeedCount: candidate.evidence_need_count ?? 0,
       evidenceReviewStatus: safeText(candidate.evidence_review_status, "needs_human_review"),
+      evidenceTraceSummary: evidenceTraceSummaryFromInput(candidate.evidence_trace_summary),
       executionAllowed: candidate.execution_allowed === true,
       falsePositiveCheckCount: candidate.false_positive_check_count ?? 0,
       hallucinationGuard: {
@@ -1236,6 +2050,51 @@ export function toStudioMissionHandoffBrief(panel: StudioMissionPanel): string {
     panel.agentHandoffPack.blockedActions.length > 0
       ? panel.agentHandoffPack.blockedActions.join(", ")
       : panel.blockedActions.join(", ");
+  const nextCandidateAction = panel.candidateHunterExecutionLoop.nextCandidateActions[0];
+  const executionLoopSummary = nextCandidateAction
+    ? `Candidate hunter execution loop: ${panel.candidateHunterExecutionLoop.status}; current phase ${panel.candidateHunterExecutionLoop.currentPhase}; next action ${nextCandidateAction.candidateId} -> ${nextCandidateAction.phaseId} (${nextCandidateAction.priorityScore})`
+    : `Candidate hunter execution loop: ${panel.candidateHunterExecutionLoop.status}; current phase ${panel.candidateHunterExecutionLoop.currentPhase}; next action none`;
+  const nextCandidateActionLine = nextCandidateAction
+    ? `Next candidate action: ${nextCandidateAction.nextAction}`
+    : "Next candidate action: Review current Top candidates.";
+  const rankedTopCandidate = panel.candidateHunterExecutionLoop.rankedTopCandidates[0];
+  const rankedTopCandidateLine = rankedTopCandidate
+    ? `Ranked Top 1-5: #${rankedTopCandidate.rank} ${rankedTopCandidate.candidateId} ${rankedTopCandidate.reason} (${rankedTopCandidate.priorityScore})`
+    : "Ranked Top 1-5: none";
+  const rankedTopCandidateEvidenceLine = rankedTopCandidate
+    ? `Top candidate evidence: trace ${rankedTopCandidate.traceStatus}; ready ${rankedTopCandidate.evidenceReady ? "true" : "false"}; missing ${rankedTopCandidate.missingEvidence.join(", ") || "none"}; missing required artifacts ${rankedTopCandidate.missingRequiredArtifactKinds.join(", ") || "none"}`
+    : "Top candidate evidence: none";
+  const rankedTopCandidateNextActionLine = rankedTopCandidate
+    ? `Top candidate next action: ${rankedTopCandidate.nextAction}`
+    : "Top candidate next action: Review current Top candidates.";
+  const learningTarget = panel.candidateHunterExecutionLoop.learningFeedbackTarget;
+  const learningFeedbackLine = `Learning feedback: ${learningTarget.status}; candidates ${learningTarget.candidateIds.join(", ") || "none"}; outcomes ${learningTarget.allowedOutcomes.join(", ") || "confirmed, refuted, needs_more_evidence, duplicate"}`;
+  const learningActionLine = `Learning action: ${learningTarget.nextAction}`;
+  const learningReviewActionsLine =
+    panel.candidateHunterExecutionLoop.learningReviewActions.length > 0
+      ? `Learning review actions: ${panel.candidateHunterExecutionLoop.learningReviewActions
+          .map(
+            (action) =>
+              `${action.candidateId} -> ${action.suggestedOutcome}; write allowed ${action.learningWriteAllowed ? "true" : "false"}`,
+          )
+          .join(", ")}`
+      : "Learning review actions: none";
+  const refutationQueueItem = panel.candidateHunterExecutionLoop.refutationQueue[0];
+  const refutationQueueLine = refutationQueueItem
+    ? `Refutation queue: ${refutationQueueItem.candidateId} ${refutationQueueItem.traceStatus} (${refutationQueueItem.priorityScore})`
+    : "Refutation queue: none";
+  const deduplicationQueueItem = panel.candidateHunterExecutionLoop.deduplicationQueue[0];
+  const deduplicationQueueLine = deduplicationQueueItem
+    ? `Deduplication queue: ${deduplicationQueueItem.candidateId} duplicate risk ${deduplicationQueueItem.duplicateRiskScore}/100`
+    : "Deduplication queue: none";
+  const safeValidationQueueItem = panel.candidateHunterExecutionLoop.safeValidationQueue[0];
+  const safeValidationQueueLine = safeValidationQueueItem
+    ? `Safe validation queue: ${safeValidationQueueItem.candidateId} ${safeValidationQueueItem.validationMode}`
+    : "Safe validation queue: none";
+  const reportDraftQueueItem = panel.candidateHunterExecutionLoop.reportDraftQueue[0];
+  const reportDraftQueueLine = reportDraftQueueItem
+    ? `Report draft queue: ${reportDraftQueueItem.candidateId} ${reportDraftQueueItem.reportStatus}`
+    : "Report draft queue: none";
 
   return [
     "Mythos / MDASH / XBOW style local AI vulnerability research handoff",
@@ -1248,6 +2107,18 @@ export function toStudioMissionHandoffBrief(panel: StudioMissionPanel): string {
     `Report: ${panel.submissionBlockedReportSummary.status}; ready candidates ${panel.submissionBlockedReportSummary.readyCandidateIds.join(", ") || "none"}; gate ${panel.submissionBlockedReportSummary.safetyGate}`,
     `Candidate hunter plan: ${panel.candidateHunterPlan.status}; steps ${panel.candidateHunterPlan.stepCount}; next reviewer ${panel.candidateHunterPlan.nextReviewAgent}`,
     `Candidate hunter review loop: ${panel.candidateHunterReviewLoop.status}; active steps ${panel.candidateHunterReviewLoop.activeStepCount}; next reviewer ${panel.candidateHunterReviewLoop.nextReviewAgent}`,
+    executionLoopSummary,
+    rankedTopCandidateLine,
+    rankedTopCandidateEvidenceLine,
+    rankedTopCandidateNextActionLine,
+    nextCandidateActionLine,
+    refutationQueueLine,
+    deduplicationQueueLine,
+    safeValidationQueueLine,
+    reportDraftQueueLine,
+    learningFeedbackLine,
+    learningActionLine,
+    learningReviewActionsLine,
     `Next reviewer: ${panel.agentHandoffPack.nextReviewAgent}`,
     `Handoff items: ${panel.agentHandoffPack.handoffItemCount}`,
     handoffItems,
@@ -1328,7 +2199,10 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       affectedCodePath: codePath || "Code path needs review",
       evidenceNeeds: candidate.evidence_needed ?? [],
       evidenceGaps: evidenceGapsFromCandidate(candidate),
+      evidenceTraceSummary: evidenceTraceSummaryFromCandidate(candidate),
+      semanticEvidence: semanticEvidenceFromCandidate(candidate),
       refutationQuestions: candidate.false_positive_checks ?? [],
+      evidenceFocus: candidate.hunter_assessment?.evidence_focus ?? [],
       rankingReasons: candidate.ranking_reasons ?? [],
       brokenInvariant: safeText(candidate.broken_invariant, "Security invariant needs review."),
       repairGuidance: safeText(
@@ -1344,6 +2218,140 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       validationMode: safeText(candidate.validation_mode, "manual_review"),
     };
   });
+}
+
+export function toStudioCampaignHunterCandidateCards(
+  controlCenter: CampaignControlCenter | null,
+): StudioCandidateCard[] {
+  return (controlCenter?.research_queue_suggestions ?? []).slice(0, 5).map((suggestion, index) => {
+    const id = safeText(suggestion.queue_key, `campaign-hunter-${index + 1}`);
+    const requiredEvidence = suggestion.required_evidence ?? [];
+    const satisfiedEvidence = suggestion.satisfied_evidence ?? [];
+    const qualityGateReasons = suggestion.quality_gate_reasons ?? [];
+    const hasEvidenceGate = requiredEvidence.length > 0 || qualityGateReasons.length > 0;
+
+    return {
+      id,
+      title: safeText(suggestion.playbook_id, "campaign_hunter_candidate"),
+      severity: suggestion.priority_score >= 80 ? "high" : "medium",
+      status: hasEvidenceGate ? "needs_evidence" : "needs_review",
+      affectedEndpoint: safeText(suggestion.surface_key, "Endpoint needs review"),
+      affectedCodePath: "Code path needs review",
+      evidenceNeeds: requiredEvidence,
+      evidenceGaps: qualityGateReasons,
+      evidenceTraceSummary: {
+        advisoryArtifactKinds: ["campaign_hunter"],
+        codePathTraced: false,
+        endpointTraced: Boolean(suggestion.surface_key),
+        executionAllowed: false,
+        independentCrossCheckCount: 0,
+        missingRequiredArtifactKinds: requiredEvidence,
+        nextAction: safeText(
+          suggestion.next_allowed_action,
+          "Review candidate evidence and refutation questions before validation.",
+        ),
+        presentRequiredArtifactKinds: [],
+        reportSubmissionAllowed: false,
+        requiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
+        sourceFactCount: 0,
+        status: safeText(suggestion.candidate_status, "awaiting_evidence_review"),
+        validationAllowed: false,
+      },
+      semanticEvidence: {
+        authzHint: safeText(suggestion.playbook_id, "needs_review"),
+        executionAllowed: false,
+        reportSubmissionAllowed: false,
+        reviewState: "needs_human_review",
+        rootCause: "Campaign hunter candidate requires local evidence review.",
+        securityInvariant: "Authorization-sensitive routes need traceable policy, API, HAR, and code evidence.",
+        sinkCount: 0,
+        sinkSymbols: [],
+        validationAllowed: false,
+      },
+      refutationQuestions: [
+        `${suggestion.refutation_question_count ?? 0} refutation questions require review.`,
+      ],
+      evidenceFocus: [
+        ...requiredEvidence,
+        ...satisfiedEvidence.map((item) => `satisfied_evidence:${item}`),
+      ],
+      rankingReasons: [
+        `priority_score:${Math.max(0, Math.min(100, Math.round(suggestion.priority_score)))}`,
+        ...qualityGateReasons,
+        ...satisfiedEvidence.map((item) => `satisfied_evidence:${item}`),
+      ],
+      brokenInvariant: "Candidate invariant needs human review before promotion.",
+      repairGuidance: "Confirm the code path and authorization invariant before drafting remediation.",
+      regressionTest: "Draft a local regression test only after evidence review confirms the candidate.",
+      reason: safeText(suggestion.title, "Campaign hunter candidate requires review."),
+      reportReadiness: reportReadinessFromInput(
+        suggestion.report_readiness,
+        "Resolve campaign hunter evidence gates before exporting a report preview.",
+      ),
+      safeValidationPlan: [
+        `${suggestion.validation_step_count ?? 0} safe validation steps require human approval before execution.`,
+      ],
+      safetyBlockers: [
+        safeText(suggestion.safety_gate, "review_only_no_execution"),
+        "execution_blocked",
+        "report_submission_blocked",
+      ],
+      priorityScore: Math.max(0, Math.min(100, Math.round(suggestion.priority_score))),
+      validationMode: "human_approved_non_destructive_plan",
+    };
+  });
+}
+
+function evidenceTraceSummaryFromCandidate(
+  candidate: StudioCandidateInput,
+): StudioCandidateCard["evidenceTraceSummary"] {
+  return evidenceTraceSummaryFromInput(candidate.evidence_trace_summary);
+}
+
+function semanticEvidenceFromCandidate(
+  candidate: StudioCandidateInput,
+): StudioCandidateCard["semanticEvidence"] {
+  const fact = candidate.source_facts?.find(
+    (item) => item.root_cause || item.security_invariant || item.sink_symbols,
+  );
+  return {
+    authzHint: safeText(fact?.authz_hint, "needs_review"),
+    executionAllowed: false,
+    reportSubmissionAllowed: false,
+    reviewState: safeText(fact?.review_state, "needs_human_review"),
+    rootCause: safeText(fact?.root_cause, "Root cause needs review."),
+    securityInvariant: safeText(
+      fact?.security_invariant,
+      "Security invariant needs review.",
+    ),
+    sinkCount: fact?.sink_count ?? 0,
+    sinkSymbols: fact?.sink_symbols ?? [],
+    validationAllowed: false,
+  };
+}
+
+function evidenceTraceSummaryFromInput(
+  summary: StudioCandidateInput["evidence_trace_summary"],
+): StudioCandidateCard["evidenceTraceSummary"] {
+  return {
+    advisoryArtifactKinds: summary?.advisory_artifact_kinds ?? [],
+    codePathTraced: summary?.code_path_traced === true,
+    endpointTraced: summary?.endpoint_traced === true,
+    executionAllowed: false,
+    independentCrossCheckCount: summary?.independent_cross_check_count ?? 0,
+    missingRequiredArtifactKinds: summary?.missing_required_artifact_kinds ?? [],
+    nextAction: safeText(
+      summary?.next_action,
+      "Review trace summary and refutation questions before any validation.",
+    ),
+    presentRequiredArtifactKinds: summary?.present_required_artifact_kinds ?? [],
+    reportSubmissionAllowed: false,
+    requiredArtifactKinds:
+      summary?.required_artifact_kinds ?? ["scope", "policy", "code", "api", "har"],
+    sourceFactCount: summary?.source_fact_count ?? 0,
+    status: safeText(summary?.status, "needs_evidence"),
+    validationAllowed: false,
+  };
 }
 
 function artifactChecklistItem(
@@ -1374,9 +2382,24 @@ function reportReadinessFromCandidate(
       );
 
   return {
+    ...reportReadinessFromInput(candidate.report_readiness, nextAllowedAction),
     nextAllowedAction,
-    reportSubmissionAllowed: candidate.report_readiness?.report_submission_allowed === true,
-    status: safeText(candidate.report_readiness?.status, "submission_blocked"),
+  };
+}
+
+function reportReadinessFromInput(
+  readiness: StudioCandidateInput["report_readiness"],
+  fallbackNextAllowedAction: string,
+): StudioCandidateCard["reportReadiness"] {
+  const traceStatus = safeText(readiness?.trace_status, "needs_evidence");
+  return {
+    nextAllowedAction: safeText(readiness?.next_allowed_action, fallbackNextAllowedAction),
+    reportSubmissionAllowed: false,
+    requiredEvidenceCount: safeCount(readiness?.required_evidence_count) ?? 0,
+    safeValidationStepCount: safeCount(readiness?.safe_validation_step_count) ?? 0,
+    status: safeText(readiness?.status, "submission_blocked"),
+    submissionBlocked: true,
+    traceStatus: traceStatus === "traceable" ? "traceable" : "needs_evidence",
   };
 }
 
@@ -1477,6 +2500,610 @@ function missionResearchLoopLabel(value: string): string {
   return missionActionLabel(value);
 }
 
+const candidateHunterLearningOutcomes = [
+  "confirmed",
+  "refuted",
+  "needs_more_evidence",
+  "duplicate",
+];
+
+function toCandidateHunterLearningReviewActions(
+  loop: StudioCandidateHunterExecutionLoopInput | undefined,
+): StudioCandidateHunterExecutionLoop["learningReviewActions"] {
+  const evidenceReadyIds = new Set(
+    loop?.candidate_evidence_summary?.evidence_ready_candidate_ids ?? [],
+  );
+  const evidenceByCandidateId = new Map(
+    (loop?.candidate_evidence_matrix ?? []).map((item) => [
+      safeText(item.candidate_id, "candidate"),
+      item,
+    ]),
+  );
+  if ((loop?.learning_review_actions?.length ?? 0) > 0) {
+    const actions = (loop?.learning_review_actions ?? [])
+      .slice(0, 5)
+      .map((item) => {
+        const candidateId = safeText(item.candidate_id, "");
+        const suggestedOutcome = candidateHunterLearningOutcomes.includes(
+          safeText(item.suggested_outcome, ""),
+        )
+          ? safeText(item.suggested_outcome, "")
+          : "needs_more_evidence";
+
+        if (!candidateId) {
+          return null;
+        }
+        const evidence = evidenceByCandidateId.get(candidateId);
+        const missingEvidence =
+          (item.missing_evidence?.length ?? 0) > 0
+            ? item.missing_evidence ?? []
+            : evidence?.missing_evidence ?? [];
+        const missingRequiredArtifactKinds =
+          (item.missing_required_artifact_kinds?.length ?? 0) > 0
+            ? item.missing_required_artifact_kinds ?? []
+            : evidence?.missing_required_artifact_kinds ?? [];
+        const learningEvidenceNeededReasons =
+          (item.learning_evidence_needed_reasons?.length ?? 0) > 0
+            ? item.learning_evidence_needed_reasons ?? []
+            : evidence?.learning_evidence_needed_reasons ?? [];
+        const evidenceReady =
+          typeof item.evidence_ready === "boolean"
+            ? item.evidence_ready
+            : evidenceReadyIds.has(candidateId) &&
+              missingEvidence.length === 0 &&
+              missingRequiredArtifactKinds.length === 0;
+
+        const action: StudioCandidateHunterExecutionLoop["learningReviewActions"][number] = {
+          actionId: safeText(
+            item.action_id,
+            `candidate_hunter:learning_feedback:next_actions:${candidateId}`,
+          ),
+          allowedOutcomes: candidateHunterAllowedLearningOutcomes(item.allowed_outcomes),
+          candidateId,
+          evidenceReady,
+          executionAllowed: false,
+          learningEvidenceNeededReasons,
+          learningWriteAllowed: false,
+          missingEvidence,
+          missingRequiredArtifactKinds,
+          nextAction: `Review ${candidateId} and record a human outcome before updating future ranking.`,
+          reportSubmissionAllowed: false,
+          safetyGate: "human_review_required",
+          sourceLoopId: safeText(
+            item.source_loop_id,
+            "candidate_hunter:bounded_execution_loop",
+          ),
+          suggestedOutcome,
+          traceStatus: safeText(
+            item.trace_status,
+            safeText(evidence?.evidence_trace_status, "needs_evidence"),
+          ),
+          validationAllowed: false,
+        };
+        const learningSignalTemplate = toCandidateHunterLearningSignalTemplate(
+          item.learning_signal_template,
+        );
+        if (learningSignalTemplate) {
+          action.learningSignalTemplate = learningSignalTemplate;
+        }
+        return action;
+      })
+      .filter(
+        (item): item is StudioCandidateHunterExecutionLoop["learningReviewActions"][number] =>
+          item !== null,
+      );
+    if (actions.length > 0) {
+      return actions;
+    }
+  }
+
+  const target = loop?.learning_feedback_target;
+  const candidateIds = Array.from(
+    new Set(
+      ((target?.candidate_ids?.length ?? 0) > 0
+        ? target?.candidate_ids
+        : loop?.next_candidate_actions?.map((action) => action.candidate_id)) ?? [],
+    ),
+  )
+    .map((candidateId) => safeText(candidateId, "candidate"))
+    .filter((candidateId) => candidateId.length > 0);
+  const allowedOutcomes = candidateHunterAllowedLearningOutcomes(
+    target?.allowed_outcomes,
+  );
+  const sourceLoopId = safeText(
+    target?.source_loop_id,
+    "candidate_hunter:bounded_execution_loop",
+  );
+  const targetId = safeText(
+    target?.target_id,
+    "candidate_hunter:learning_feedback:next_actions",
+  );
+
+  return candidateIds.map((candidateId) => {
+    const evidence = evidenceByCandidateId.get(candidateId);
+    const missingEvidence = evidence?.missing_evidence ?? [];
+    const missingRequiredArtifactKinds =
+      evidence?.missing_required_artifact_kinds ?? [];
+    const learningEvidenceNeededReasons =
+      evidence?.learning_evidence_needed_reasons ?? [];
+    const suggestedOutcome =
+      evidenceReadyIds.has(candidateId) &&
+      missingEvidence.length === 0 &&
+      missingRequiredArtifactKinds.length === 0
+        ? "confirmed"
+        : "needs_more_evidence";
+
+    return {
+      actionId: `${targetId}:${candidateId}`,
+      allowedOutcomes,
+      candidateId,
+      evidenceReady:
+        evidenceReadyIds.has(candidateId) &&
+        missingEvidence.length === 0 &&
+        missingRequiredArtifactKinds.length === 0,
+      executionAllowed: false,
+      learningEvidenceNeededReasons,
+      learningWriteAllowed: false,
+      missingEvidence,
+      missingRequiredArtifactKinds,
+      nextAction: `Review ${candidateId} and record a human outcome before updating future ranking.`,
+      reportSubmissionAllowed: false,
+      safetyGate: "human_review_required",
+      sourceLoopId,
+      suggestedOutcome,
+      traceStatus: safeText(evidence?.evidence_trace_status, "needs_evidence"),
+      validationAllowed: false,
+    };
+  });
+}
+
+function toCandidateHunterRefutationQueue(
+  loop: StudioCandidateHunterExecutionLoopInput | undefined,
+): StudioCandidateHunterExecutionLoop["refutationQueue"] {
+  return (loop?.refutation_queue ?? [])
+    .slice(0, 5)
+    .map((item) => {
+      const candidateId = safeText(item.candidate_id, "");
+      if (!candidateId) {
+        return null;
+      }
+      return {
+        candidateId,
+        executionAllowed: false,
+        missingEvidence: item.missing_evidence ?? [],
+        missingRequiredArtifactKinds: item.missing_required_artifact_kinds ?? [],
+        nextAction: safeText(item.next_action, `Refute ${candidateId} using local evidence.`),
+        priorityScore: item.priority_score ?? 0,
+        questions: safeReviewQuestions(item.questions),
+        queueId: safeText(item.queue_id, `candidate_hunter:refutation:${candidateId}`),
+        reportSubmissionAllowed: false,
+        requiredEvidence: item.required_evidence ?? [],
+        safetyGate: "review_only_no_execution",
+        traceStatus: safeText(item.trace_status, "needs_evidence"),
+        validationAllowed: false,
+      };
+    })
+    .filter(
+      (item): item is StudioCandidateHunterExecutionLoop["refutationQueue"][number] =>
+        item !== null,
+    );
+}
+
+function learnedEvidenceRequiredEvidence(reasons: string[]): string[] {
+  const required = new Set<string>();
+  for (const reason of reasons) {
+    if (reason.includes("missing_evidence:independent_cross_check")) {
+      required.add("independent_refutation_or_static_rule");
+    }
+    if (reason.includes("missing_required_artifact:policy")) {
+      required.add("policy");
+    }
+  }
+  return Array.from(required);
+}
+
+function toCandidateHunterRankedTopCandidates(
+  loop: StudioCandidateHunterExecutionLoopInput | undefined,
+): StudioCandidateHunterExecutionLoop["rankedTopCandidates"] {
+  const evidenceByCandidateId = new Map(
+    (loop?.candidate_evidence_matrix ?? []).map((item) => [
+      safeText(item.candidate_id, ""),
+      item,
+    ]),
+  );
+  const provided = (loop?.ranked_top_candidates ?? [])
+    .slice(0, 5)
+    .map((item, index) => {
+      const candidateId = safeText(item.candidate_id, "");
+      if (!candidateId) {
+        return null;
+      }
+      const evidence = evidenceByCandidateId.get(candidateId);
+      const missingEvidence =
+        (evidence?.missing_evidence?.length ?? 0) > 0
+          ? evidence?.missing_evidence ?? []
+          : item.missing_evidence ?? [];
+      const missingRequiredArtifactKinds =
+        (evidence?.missing_required_artifact_kinds?.length ?? 0) > 0
+          ? evidence?.missing_required_artifact_kinds ?? []
+          : item.missing_required_artifact_kinds ?? [];
+      const traceStatus = safeText(
+        evidence?.evidence_trace_status,
+        safeText(item.trace_status, "needs_evidence"),
+      );
+      const evidenceReady = candidateHunterRankedEvidenceReady({
+        qualityStatus: safeText(evidence?.quality_status, safeText(item.quality_status, "needs_review")),
+        traceStatus,
+        missingEvidence,
+        missingRequiredArtifactKinds,
+      });
+      const phaseId = safeText(item.phase_id, "refutation");
+      return {
+        affectedCodePath: safeText(evidence?.affected_code_path, safeText(item.affected_code_path, "")),
+        affectedEndpoint: safeText(evidence?.affected_endpoint, safeText(item.affected_endpoint, "")),
+        candidateId,
+        evidenceReady,
+        executionAllowed: false,
+        missingEvidence,
+        missingRequiredArtifactKinds,
+        phaseId,
+        priorityScore: item.priority_score ?? 0,
+        qualityStatus: evidenceReady ? "review_ready" : "needs_review",
+        rank: item.rank ?? index + 1,
+        rankingSignalBreakdown: evidence?.ranking_signal_breakdown ?? item.ranking_signal_breakdown ?? [],
+        reason: candidateHunterRankedReason(safeText(item.reason, ""), {
+          evidenceReady,
+          missingEvidence,
+          missingRequiredArtifactKinds,
+        }),
+        nextAction: safeText(item.next_action, "Review ranked Top candidate."),
+        requiredEvidence: item.required_evidence ?? [],
+        reportSubmissionAllowed: false,
+        safetyGate: evidenceReady
+          ? safeRankedTopCandidateSafetyGate(item.safety_gate)
+          : "review_only_no_execution",
+        traceStatus,
+        validationAllowed: false,
+      };
+    })
+    .filter(
+      (item): item is StudioCandidateHunterExecutionLoop["rankedTopCandidates"][number] =>
+        item !== null,
+    );
+  if (provided.length > 0) {
+    return rankCandidateHunterTopCandidates(provided);
+  }
+
+  const ranked = (loop?.next_candidate_actions ?? [])
+    .slice(0, 5)
+    .map((item, index) => {
+      const candidateId = safeText(item.candidate_id, "");
+      if (!candidateId) {
+        return null;
+      }
+      const evidence = evidenceByCandidateId.get(candidateId);
+      const missingEvidence = evidence?.missing_evidence ?? [];
+      const missingRequiredArtifactKinds =
+        evidence?.missing_required_artifact_kinds ?? [];
+      const traceStatus = safeText(evidence?.evidence_trace_status, "needs_evidence");
+      const evidenceReady = candidateHunterRankedEvidenceReady({
+        qualityStatus: safeText(evidence?.quality_status, "needs_review"),
+        traceStatus,
+        missingEvidence,
+        missingRequiredArtifactKinds,
+      });
+      const phaseId = safeText(item.phase_id, "refutation");
+      return {
+        affectedCodePath: safeText(evidence?.affected_code_path, ""),
+        affectedEndpoint: safeText(evidence?.affected_endpoint, ""),
+        candidateId,
+        evidenceReady,
+        executionAllowed: false,
+        missingEvidence,
+        missingRequiredArtifactKinds,
+        phaseId,
+        priorityScore: item.priority_score ?? 0,
+        qualityStatus: evidenceReady ? "review_ready" : "needs_review",
+        rank: index + 1,
+        rankingSignalBreakdown: evidence?.ranking_signal_breakdown ?? [],
+        reason: candidateHunterRankedReason(safeText(item.reason, ""), {
+          evidenceReady,
+          missingEvidence,
+          missingRequiredArtifactKinds,
+        }),
+        nextAction: safeText(item.next_action, "Review ranked Top candidate."),
+        requiredEvidence: item.required_evidence ?? [],
+        reportSubmissionAllowed: false,
+        safetyGate: evidenceReady
+          ? safeRankedTopCandidateSafetyGate(item.safety_gate)
+          : "review_only_no_execution",
+        traceStatus,
+        validationAllowed: false,
+      };
+    })
+    .filter(
+      (item): item is StudioCandidateHunterExecutionLoop["rankedTopCandidates"][number] =>
+        item !== null,
+    );
+  return rankCandidateHunterTopCandidates(ranked);
+}
+
+function candidateHunterRankedEvidenceReady({
+  qualityStatus,
+  traceStatus,
+  missingEvidence,
+  missingRequiredArtifactKinds,
+}: {
+  qualityStatus: string;
+  traceStatus: string;
+  missingEvidence: string[];
+  missingRequiredArtifactKinds: string[];
+}): boolean {
+  return (
+    qualityStatus === "review_ready" &&
+    traceStatus === "traceable" &&
+    missingEvidence.length === 0 &&
+    missingRequiredArtifactKinds.length === 0
+  );
+}
+
+function candidateHunterRankedReason(
+  providedReason: string,
+  {
+    evidenceReady,
+    missingEvidence,
+    missingRequiredArtifactKinds,
+  }: {
+    evidenceReady: boolean;
+    missingEvidence: string[];
+    missingRequiredArtifactKinds: string[];
+  },
+): string {
+  if (evidenceReady) {
+    return providedReason || "review_ready";
+  }
+  if (providedReason.startsWith("missing_")) {
+    return providedReason;
+  }
+  if (missingRequiredArtifactKinds.length > 0) {
+    return "missing_required_evidence";
+  }
+  if (missingEvidence.length > 0) {
+    return "missing_evidence";
+  }
+  return providedReason || "needs_review";
+}
+
+function rankCandidateHunterTopCandidates(
+  items: StudioCandidateHunterExecutionLoop["rankedTopCandidates"],
+): StudioCandidateHunterExecutionLoop["rankedTopCandidates"] {
+  return [...items]
+    .sort((left, right) => {
+      if (left.evidenceReady !== right.evidenceReady) {
+        return left.evidenceReady ? -1 : 1;
+      }
+      if (left.priorityScore !== right.priorityScore) {
+        return right.priorityScore - left.priorityScore;
+      }
+      return left.candidateId.localeCompare(right.candidateId);
+    })
+    .slice(0, 5)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
+function safeRankedTopCandidateSafetyGate(value: unknown): string {
+  const gate = safeText(value, "review_only_no_execution");
+  return [
+    "authorized_artifacts_only",
+    "local_static_analysis_only",
+    "model_claims_unverified",
+    "review_only_no_execution",
+    "human_approval_required",
+    "submission_blocked_human_review",
+  ].includes(gate)
+    ? gate
+    : "review_only_no_execution";
+}
+
+function toCandidateHunterDeduplicationQueue(
+  loop: StudioCandidateHunterExecutionLoopInput | undefined,
+): StudioCandidateHunterExecutionLoop["deduplicationQueue"] {
+  return (loop?.deduplication_queue ?? [])
+    .slice(0, 5)
+    .map((item) => {
+      const candidateId = safeText(item.candidate_id, "");
+      if (!candidateId) {
+        return null;
+      }
+      return {
+        affectedCodePath: safeText(item.affected_code_path, ""),
+        affectedEndpoint: safeText(item.affected_endpoint, ""),
+        candidateId,
+        duplicateRiskScore: item.duplicate_risk_score ?? 0,
+        executionAllowed: false,
+        nextAction: safeText(item.next_action, `Deduplicate ${candidateId} before report readiness.`),
+        priorityScore: item.priority_score ?? 0,
+        questions: safeReviewQuestions(item.questions),
+        queueId: safeText(item.queue_id, `candidate_hunter:deduplication:${candidateId}`),
+        reportSubmissionAllowed: false,
+        requiredEvidence: item.required_evidence ?? [],
+        safetyGate: "review_only_no_execution",
+        similarityKeys: item.similarity_keys ?? [],
+        validationAllowed: false,
+      };
+    })
+    .filter(
+      (item): item is StudioCandidateHunterExecutionLoop["deduplicationQueue"][number] =>
+        item !== null,
+    );
+}
+
+function toCandidateHunterSafeValidationQueue(
+  loop: StudioCandidateHunterExecutionLoopInput | undefined,
+): StudioCandidateHunterExecutionLoop["safeValidationQueue"] {
+  return (loop?.safe_validation_queue ?? [])
+    .slice(0, 5)
+    .map((item) => {
+      const candidateId = safeText(item.candidate_id, "");
+      if (!candidateId) {
+        return null;
+      }
+      return {
+        affectedCodePath: safeText(item.affected_code_path, ""),
+        affectedEndpoint: safeText(item.affected_endpoint, ""),
+        candidateId,
+        executionAllowed: false,
+        nextAction: `Review and approve the non-destructive validation plan for ${candidateId}; execution remains blocked.`,
+        planSteps: safeValidationPlanSteps(item.plan_steps),
+        priorityScore: item.priority_score ?? 0,
+        queueId: safeText(item.queue_id, `candidate_hunter:safe_validation:${candidateId}`),
+        reportSubmissionAllowed: false,
+        requiredApprovals: [
+          "scope_guard_route_approval",
+          "human_validation_approval",
+          "redaction_review",
+        ],
+        safetyGate: "human_approval_required",
+        validationAllowed: false,
+        validationExecutionAllowed: false,
+        validationMode: "human_approved_non_destructive_plan",
+      };
+    })
+    .filter(
+      (item): item is StudioCandidateHunterExecutionLoop["safeValidationQueue"][number] =>
+        item !== null,
+    );
+}
+
+function toCandidateHunterReportDraftQueue(
+  loop: StudioCandidateHunterExecutionLoopInput | undefined,
+): StudioCandidateHunterExecutionLoop["reportDraftQueue"] {
+  return (loop?.report_draft_queue ?? [])
+    .slice(0, 5)
+    .map((item) => {
+      const candidateId = safeText(item.candidate_id, "");
+      if (!candidateId) {
+        return null;
+      }
+      return {
+        affectedCodePath: safeText(item.affected_code_path, ""),
+        affectedEndpoint: safeText(item.affected_endpoint, ""),
+        candidateId,
+        evidenceFocus: item.evidence_focus ?? [],
+        executionAllowed: false,
+        nextAction: `Draft a submission-blocked report for ${candidateId} and keep submission disabled pending human review.`,
+        priorityScore: item.priority_score ?? 0,
+        queueId: safeText(item.queue_id, `candidate_hunter:report_draft:${candidateId}`),
+        redactionChecks: item.redaction_checks ?? [],
+        reportStatus: "submission_blocked",
+        reportSubmissionAllowed: false,
+        requiredSections: safeReportSections(item.required_sections),
+        safetyGate: "submission_blocked_human_review",
+        validationAllowed: false,
+      };
+    })
+    .filter(
+      (item): item is StudioCandidateHunterExecutionLoop["reportDraftQueue"][number] =>
+        item !== null,
+    );
+}
+
+function candidateHunterAllowedLearningOutcomes(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return candidateHunterLearningOutcomes;
+  }
+  const outcomes = value.filter(
+    (outcome): outcome is string =>
+      typeof outcome === "string" && candidateHunterLearningOutcomes.includes(outcome),
+  );
+  return outcomes.length > 0 ? outcomes : candidateHunterLearningOutcomes;
+}
+
+function toCandidateHunterLearningSignalTemplate(value: unknown):
+  | StudioCandidateHunterExecutionLoop["learningReviewActions"][number]["learningSignalTemplate"]
+  | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const template = value as {
+    playbook_id?: unknown;
+    surface_key?: unknown;
+    target_relationships?: unknown;
+  };
+  const playbookId = safeText(template.playbook_id, "");
+  const surfaceKey = safeText(template.surface_key, "");
+  if (!playbookId || !surfaceKey) {
+    return undefined;
+  }
+  return {
+    humanReviewRequired: true,
+    learningWriteAllowed: false,
+    playbookId,
+    surfaceKey,
+    targetRelationships: Array.isArray(template.target_relationships)
+      ? template.target_relationships
+          .map((item) => safeText(item, ""))
+          .filter((item) => item.length > 0)
+      : [],
+  };
+}
+
+function safeExecutionPhaseGate(value: unknown): string {
+  const gate = safeText(value, "review_only_no_execution");
+  return [
+    "authorized_artifacts_only",
+    "local_static_analysis_only",
+    "model_claims_unverified",
+    "review_only_no_execution",
+    "human_approval_required",
+    "submission_blocked_human_review",
+  ].includes(gate)
+    ? gate
+    : "review_only_no_execution";
+}
+
+function safeReviewQuestions(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is string =>
+      typeof item === "string" &&
+      item.trim().length > 0 &&
+      !/live validation|execute|submit/i.test(item),
+  );
+}
+
+function safeValidationPlanSteps(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is string =>
+      typeof item === "string" &&
+      item.trim().length > 0 &&
+      !/execute|production|live validation/i.test(item),
+  );
+}
+
+function safeReportSections(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is string =>
+      typeof item === "string" &&
+      item.trim().length > 0 &&
+      !/raw|authorization|secret|token|cookie|credential/i.test(item),
+  );
+}
+
 function safeText(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function safeCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined;
 }

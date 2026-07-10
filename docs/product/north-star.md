@@ -2,11 +2,26 @@
 
 ## Long-Term Goal
 
-Bounty Mythos-Lite should become a lawful, safe, verifiable, reproducible, and auditable AI vulnerability research factory.
+Bounty Mythos-Lite should become a lawful, safe, verifiable, reproducible, and auditable AI vulnerability research factory with real Mythos / XBOW style high-quality vulnerability discovery capability.
 
 The long-term reference is `私人 AI 漏洞研究系统最终方案.md`.
 
-The system should turn authorized research inputs into high-quality vulnerability candidates, evidence needs, safe validation plans, submission-blocked report drafts, and repair guidance.
+The final system should accept an authorized target package and autonomously run a bounded research loop:
+
+```text
+authorized policy / scope / API / HAR / local code
+-> Scope Guard
+-> target and attack-surface modeling
+-> semantic code and API audit
+-> vulnerability hypothesis generation
+-> refutation, deduplication, and ranking
+-> safe validation work queue
+-> redacted evidence review
+-> submission-blocked report draft
+-> human review
+```
+
+The intended capability is not "summarize scanner output." It is to discover a small number of high-impact, evidence-traceable vulnerability candidates that a human bounty researcher would consider worth validating.
 
 ## Current Stage Goal
 
@@ -20,6 +35,8 @@ authorized program policy/scope
 ```
 
 This stage is not a generic dashboard effort. It should prove that the system can read authorized target materials, understand API and code surfaces together, and produce a small set of candidates worth human validation.
+
+Current implementation note: Mythos-Lite has the safety, artifact, candidate, report-readiness, and review-loop foundation, but it should not be described as already having final Mythos/XBOW-grade autonomous discovery execution. The next product gap is the real candidate-hunter execution loop: generate, refute, deduplicate, re-rank, request evidence, and iterate without inventing facts or bypassing human gates.
 
 ## Preferred Product Form
 
@@ -67,10 +84,11 @@ The system must not:
 ## Capability Path
 
 1. A+B Candidate Hunter: correlate policy/API/HAR/local code and produce high-value candidates.
-2. Static Analyzer Integration: ingest Semgrep, CodeQL, dependency, and language scanner results as advisory signals.
-3. Verifier Workspace: support local or human-approved non-destructive validation, evidence review, and finding promotion.
-4. Report and Patch Loop: produce submission-blocked reports, root-cause summaries, fix guidance, and regression test suggestions.
-5. Learning and Deep Research: use accepted, duplicate, rejected, and triager feedback to improve future ranking without granting execution permission.
+2. Autonomous Candidate-Hunter Loop: repeatedly generate, refute, deduplicate, rank, and improve candidates from traceable local evidence.
+3. Static Analyzer Integration: ingest Semgrep, CodeQL, dependency, and language scanner results as advisory signals.
+4. Verifier Workspace: support local or human-approved non-destructive validation, evidence review, and finding promotion.
+5. Report and Patch Loop: produce submission-blocked reports, root-cause summaries, fix guidance, and regression test suggestions.
+6. Learning and Deep Research: use accepted, duplicate, rejected, and triager feedback to improve future ranking without granting execution permission.
 
 ## Success Criteria
 

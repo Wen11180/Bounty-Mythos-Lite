@@ -30,6 +30,66 @@ def build_testing_session():
     return testing_session
 
 
+def validation_scope_guard_payload(
+    *,
+    asset: str = "api.example.com",
+    allowed_validation: list[str] | None = None,
+) -> dict:
+    return {
+        "scope_guard_rule": {
+            "asset": asset,
+            "scope_status": "in_scope",
+            "automation": "limited",
+            "allowed_validation": allowed_validation
+            if allowed_validation is not None
+            else ["two_account_authorization_check"],
+            "forbidden": [],
+            "human_approval_required": True,
+        }
+    }
+
+
+def test_campaign_api_derives_scope_from_policy_and_persists_parsed_rule():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Caller supplied scope must not grant authority",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "api.example.com is out of scope. No automation.",
+                "default_asset": "api.example.com",
+                "allowed_tools": ["two_account_authorization_check"],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["scope_status"] == "out_of_scope"
+
+        with testing_session() as session:
+            campaign = DatabaseRepository(session).get_campaign(response.json()["id"])
+            assert campaign is not None
+            assert campaign.payload["scope_guard_rule"] == {
+                "asset": "api.example.com",
+                "scope_status": "out_of_scope",
+                "automation": "none",
+                "allowed_validation": [],
+                "forbidden": [],
+                "human_approval_required": True,
+            }
+            assert "policy_text" not in campaign.payload
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_api_creates_lists_and_controls_campaign_lifecycle(monkeypatch):
     testing_session = build_testing_session()
 
@@ -51,7 +111,7 @@ def test_campaign_api_creates_lists_and_controls_campaign_lifecycle(monkeypatch)
                 "name": "Authorized autonomous research",
                 "autonomy_level": "level_1_local_validation",
                 "scope_status": "in_scope",
-                "policy_text": "Testing allowed. Authorization: Bearer secret-token",
+                "policy_text": "api.example.com is in scope. No automation. Authorization: Bearer secret-token",
                 "default_asset": "api.example.com",
                 "target_classes": ["idor"],
                 "allowed_tools": ["static_analyzer"],
@@ -113,7 +173,7 @@ def test_campaign_api_start_runs_first_safe_orchestrator_tick(monkeypatch):
                 "name": "Start orchestrator campaign",
                 "autonomy_level": "level_0_read_only",
                 "scope_status": "in_scope",
-                "policy_text": "Testing allowed. Authorization: Bearer secret-token",
+                "policy_text": "api.example.com is in scope. No automation. Authorization: Bearer secret-token",
                 "default_asset": "api.example.com",
                 "created_by": "operator",
                 "budget": {
@@ -169,6 +229,202 @@ def test_campaign_api_start_runs_first_safe_orchestrator_tick(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_campaign_launch_with_authorized_code_auto_materializes_hunt_queue(monkeypatch):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    def inline_dispatcher(*, campaign_task_id: str):
+        with testing_session() as session:
+            return run_agent_task(
+                campaign_task_id,
+                repository=DatabaseRepository(session),
+            )
+
+    monkeypatch.setattr(main_module, "dispatch_agent_task", inline_dispatcher)
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Authorized code-backed candidate hunt",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "authorized/service is in scope. No automation. Authorization: Bearer secret-token",
+                "default_asset": "authorized/service",
+                "target_classes": ["idor"],
+                "allowed_tools": ["static_analyzer"],
+                "created_by": "operator",
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                    }
+                ],
+                "budget": {
+                    "time_budget_minutes": 30,
+                    "token_budget": 1000,
+                    "tool_call_budget": 10,
+                    "validation_budget": 1,
+                },
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        start_response = client.post(f"/mythos/campaigns/{campaign_id}/start")
+
+        assert start_response.status_code == 200
+        assert start_response.json()["status"] == "running"
+
+        tasks_response = client.get(f"/mythos/campaigns/{campaign_id}/tasks")
+        control_response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+        maps_response = client.get(f"/mythos/campaigns/{campaign_id}/codebase-map")
+
+        assert tasks_response.status_code == 200
+        assert control_response.status_code == 200
+        assert maps_response.status_code == 200
+
+        tasks = tasks_response.json()
+        assert {task["task_type"]: task["status"] for task in tasks} == {
+            "report_chain_review": "completed",
+            "hypothesis_generation": "completed",
+            "attack_surface_mapping": "completed",
+            "campaign_observation": "completed",
+        }
+
+        codebase_map = maps_response.json()
+        assert codebase_map["maps"][0]["status"] == "mapped"
+        assert any(
+            fact["fact_type"] == "authorization_gap_candidate"
+            and fact["route_path"] == "/files/{file_id}/export"
+            for fact in codebase_map["facts"]
+        )
+
+        control_center = control_response.json()
+        hunt_suggestions = [
+            suggestion
+            for suggestion in control_center["research_queue_suggestions"]
+            if suggestion["source"] == "mythos_pipeline_autonomous_hunt_queue"
+        ]
+        assert len(hunt_suggestions) == 1
+        suggestion = hunt_suggestions[0]
+        assert suggestion["title"] == "Review autonomous hunt candidate codebase_fact_hypothesis_1"
+        assert suggestion["playbook_id"] == "bola_idor"
+        assert suggestion["candidate_status"] == "awaiting_human_approval"
+        assert suggestion["human_approval_required"] is True
+        assert suggestion["execution_allowed"] is False
+        assert suggestion["safety_gate"] == "awaiting_evidence_review"
+        assert suggestion["blocked_action_count"] == 4
+        assert suggestion["priority_score"] < suggestion["raw_priority_score"]
+        assert suggestion["required_evidence"] == ["independent_refutation_or_static_rule"]
+        assert suggestion["quality_gate_reasons"] == ["required_evidence_missing"]
+        assert "secret-token" not in str(control_center)
+        assert "Authorization" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_launch_with_authorized_api_artifact_auto_materializes_gated_hunt_queue(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    def inline_dispatcher(*, campaign_task_id: str):
+        with testing_session() as session:
+            return run_agent_task(
+                campaign_task_id,
+                repository=DatabaseRepository(session),
+            )
+
+    monkeypatch.setattr(main_module, "dispatch_agent_task", inline_dispatcher)
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        create_response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Authorized API-backed candidate hunt",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "authorized/service is in scope. No automation. Authorization: Bearer secret-token",
+                "default_asset": "authorized/service",
+                "target_classes": ["idor"],
+                "allowed_tools": ["static_analyzer"],
+                "created_by": "operator",
+                "authorized_api_artifacts": [
+                    {
+                        "kind": "openapi",
+                        "source_name": "openapi.json",
+                        "payload": {
+                            "paths": {
+                                "/teams/{team_id}/invite": {
+                                    "post": {"operationId": "inviteTeamMember"}
+                                }
+                            }
+                        },
+                    }
+                ],
+                "budget": {
+                    "time_budget_minutes": 30,
+                    "token_budget": 1000,
+                    "tool_call_budget": 10,
+                    "validation_budget": 1,
+                },
+            },
+        )
+        assert create_response.status_code == 200
+        campaign_id = create_response.json()["id"]
+
+        start_response = client.post(f"/mythos/campaigns/{campaign_id}/start")
+
+        assert start_response.status_code == 200
+        maps_response = client.get(f"/mythos/campaigns/{campaign_id}/codebase-map")
+        control_response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert maps_response.status_code == 200
+        assert control_response.status_code == 200
+
+        codebase_map = maps_response.json()
+        assert codebase_map["maps"][0]["route_count"] == 1
+        assert codebase_map["facts"][0]["source_path"] == "openapi.json"
+        assert codebase_map["facts"][0]["route_method"] == "POST"
+        assert codebase_map["facts"][0]["route_path"] == "/teams/{team_id}/invite"
+
+        control_center = control_response.json()
+        hunt_suggestion = next(
+            suggestion
+            for suggestion in control_center["research_queue_suggestions"]
+            if suggestion["source"] == "mythos_pipeline_autonomous_hunt_queue"
+        )
+        assert hunt_suggestion["playbook_id"] == "role_boundary"
+        assert hunt_suggestion["safety_gate"] == "awaiting_evidence_review"
+        assert hunt_suggestion["next_allowed_action"] == "Review validation plan before any execution."
+        assert hunt_suggestion["execution_allowed"] is False
+        assert hunt_suggestion["required_evidence"] == ["local_code_or_har_correlation"]
+        assert hunt_suggestion["quality_gate_reasons"] == ["required_evidence_missing"]
+        assert hunt_suggestion["priority_score"] < hunt_suggestion["raw_priority_score"]
+        assert "secret-token" not in str(control_center)
+        assert "Authorization" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_control_center_reports_tool_call_budget_usage_after_partial_dispatch(monkeypatch):
     testing_session = build_testing_session()
     dispatched_task_ids: list[str] = []
@@ -191,7 +447,7 @@ def test_campaign_control_center_reports_tool_call_budget_usage_after_partial_di
                 "name": "Partial dispatch budget campaign",
                 "autonomy_level": "level_0_read_only",
                 "scope_status": "in_scope",
-                "policy_text": "Testing allowed",
+                "policy_text": "api.example.com is in scope. No automation.",
                 "default_asset": "api.example.com",
                 "created_by": "operator",
                 "budget": {
@@ -299,7 +555,7 @@ def test_campaign_api_start_blocks_out_of_scope_without_dispatch():
                 "name": "Out of scope start",
                 "autonomy_level": "level_0_read_only",
                 "scope_status": "out_of_scope",
-                "policy_text": "Testing is not allowed",
+                "policy_text": "api.example.com is out of scope. No automation.",
                 "default_asset": "api.example.com",
                 "created_by": "operator",
             },
@@ -309,13 +565,11 @@ def test_campaign_api_start_blocks_out_of_scope_without_dispatch():
 
         start_response = client.post(f"/mythos/campaigns/{campaign_id}/start")
 
-        assert start_response.status_code == 200
-        assert start_response.json()["status"] == "blocked"
+        assert start_response.status_code == 409
+        assert start_response.json()["detail"] == "scope_not_in_scope"
         assert client.get(f"/mythos/campaigns/{campaign_id}/tasks").json() == []
         stages = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages").json()
-        assert stages[0]["stage_key"] == "campaign_tick"
-        assert stages[0]["status"] == "blocked"
-        assert stages[0]["stop_reason"] == "scope_not_in_scope"
+        assert stages == []
     finally:
         app.dependency_overrides.clear()
 
@@ -1036,6 +1290,7 @@ def test_campaign_control_center_moves_to_learning_after_finding_candidate():
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.update_campaign_status(campaign.id, "running")
             repository.upsert_campaign_budget(
@@ -1907,6 +2162,7 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.upsert_campaign_budget(
                 campaign_id=campaign.id,
@@ -1936,6 +2192,48 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
         dry_run = dry_run_response.json()
         run_id = dry_run["run_id"]
         queue_item = dry_run["autonomous_hunt_queue"][0]
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            run = repository.get_pipeline_run(run_id)
+            assert run is not None
+            payload = dict(run.payload)
+            queue = [dict(item) for item in payload["autonomous_hunt_queue"]]
+            queue[0]["required_evidence"] = [
+                "independent_refutation_or_static_rule",
+                "policy",
+            ]
+            queue[0]["top_candidate_rank"] = 1
+            queue[0]["evidence_trace_summary"] = {
+                "trace_status": "traceable",
+                "source_fact_count": 1,
+                "traceable_source_fact_count": 1,
+                "route_fact_count": 1,
+                "artifact_kinds": ["api"],
+                "source_fact_types": ["route_handler"],
+                "report_submission_allowed": False,
+            }
+            queue[0]["report_readiness"] = {
+                "status": "blocked_by_required_evidence",
+                "submission_blocked": True,
+                "report_submission_allowed": False,
+                "required_evidence_count": 2,
+                "safe_validation_step_count": len(
+                    dry_run["hypothesis_assessments"][0]["validation_plan"]["steps"]
+                ),
+                "trace_status": "traceable",
+                "next_allowed_action": "Resolve required evidence gaps before report drafting.",
+            }
+            queue_item["evidence_trace_summary"] = queue[0]["evidence_trace_summary"]
+            queue_item["report_readiness"] = queue[0]["report_readiness"]
+            payload["autonomous_hunt_queue"] = queue
+            run.payload = payload
+            session.add(run)
+            session.commit()
+        queue_item["required_evidence"] = [
+            "independent_refutation_or_static_rule",
+            "policy",
+        ]
+        queue_item["top_candidate_rank"] = 1
 
         control_center_response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
         assert control_center_response.status_code == 200
@@ -1951,9 +2249,14 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
         assert suggestion["title"] == f"Review autonomous hunt candidate {queue_item['candidate_id']}"
         assert suggestion["playbook_id"] == queue_item["playbook_id"]
         assert suggestion["priority_score"] == queue_item["priority_score"]
+        assert suggestion["top_candidate_rank"] == queue_item.get("top_candidate_rank")
         assert suggestion["safety_gate"] == "awaiting_human_approval"
         assert suggestion["next_allowed_action"] == "Review validation plan before any execution."
         assert suggestion["execution_allowed"] is False
+        assert suggestion["evidence_needed"] == queue_item.get("evidence_needed", [])
+        assert suggestion["evidence_trace_summary"] == queue_item["evidence_trace_summary"]
+        assert suggestion["report_readiness"] == queue_item["report_readiness"]
+        assert suggestion["required_evidence"] == queue_item["required_evidence"]
         matching_assessment = next(
             assessment
             for assessment in dry_run["hypothesis_assessments"]
@@ -2028,6 +2331,8 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
                     "blocked_action_count": len(queue_item["blocked_actions"]),
                     "candidate_id": queue_item["candidate_id"],
                     "candidate_status": matching_assessment["candidate_status"],
+                    "evidence_needed": queue_item.get("evidence_needed", []),
+                    "evidence_trace_summary": queue_item["evidence_trace_summary"],
                     "execution_allowed": False,
                     "dispatch_allowed": False,
                     "human_approval_required": True,
@@ -2038,8 +2343,12 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
                     "refutation_question_count": len(
                         matching_assessment["refutation"]["questions"]
                     ),
+                    "report_readiness": queue_item["report_readiness"],
                     "report_submission_allowed": False,
+                    "required_evidence": queue_item["required_evidence"],
+                    "satisfied_evidence": [],
                     "source": "mythos_pipeline_autonomous_hunt_queue",
+                    "top_candidate_rank": queue_item.get("top_candidate_rank"),
                     "validation_allowed": False,
                     "validation_step_count": len(
                         matching_assessment["validation_plan"]["steps"]
@@ -2086,6 +2395,13 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
             "human_approval_required": True,
             "blocked_actions": queue_item["blocked_actions"],
             "safety_notes": queue_item["safety_notes"],
+            "evidence_needed": suggestion["evidence_needed"],
+            "required_evidence": queue_item["required_evidence"],
+            "satisfied_evidence": [],
+            "evidence_trace_summary": queue_item["evidence_trace_summary"],
+            "report_readiness": queue_item["report_readiness"],
+            "raw_priority_score": None,
+            "quality_gate_reasons": [],
             "execution_allowed": False,
             "dispatch_allowed": False,
             "validation_allowed": False,
@@ -2226,8 +2542,10 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
             "priority_reason_count": expected_priority_reason_count,
             "raw_payload_processed": False,
             "refutation_question_count": len(candidate_context["refutation_questions"]),
-            "report_submission_allowed": False,
-            "source_fact_type_count": len(candidate_context["source_fact_types"]),
+                "required_evidence": queue_item["required_evidence"],
+                "report_submission_allowed": False,
+                "satisfied_evidence": [],
+                "source_fact_type_count": len(candidate_context["source_fact_types"]),
             "triage_signal_count": len(candidate_context["triage_signals"]),
             "validation_allowed": False,
         }
@@ -2257,7 +2575,9 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
             "priority_reason_count": expected_priority_reason_count,
             "raw_payload_processed": False,
             "refutation_question_count": len(candidate_context["refutation_questions"]),
+            "required_evidence": queue_item["required_evidence"],
             "report_submission_allowed": False,
+            "satisfied_evidence": [],
             "source_fact_type_count": len(candidate_context["source_fact_types"]),
             "triage_signal_count": len(candidate_context["triage_signals"]),
             "validation_allowed": False,
@@ -2736,6 +3056,195 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
             assert "Authorization" not in str(approval_record.payload)
             assert "secret-token" not in str(validation_record.payload)
             assert "Authorization" not in str(validation_record.payload)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_surfaces_learned_evidence_required_from_worker_queue():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Learned evidence queue campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="authorized/service",
+                target_classes=["idor"],
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=30,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            map_task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="attack_surface_mapping",
+                agent_type="target_model_agent",
+                title="Map authorized local code",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={
+                    "authorized_code_files": [
+                        {
+                            "path": "apps/api/routes/files.py",
+                            "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+""",
+                        }
+                    ],
+                },
+            )
+            hypothesis_task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="hypothesis_generation",
+                agent_type="hypothesis_agent",
+                title="Generate evidence-aware hypotheses",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            campaign_id = campaign.id
+            map_task_id = map_task.id
+            hypothesis_task_id = hypothesis_task.id
+
+        learning_response = client.post(
+            "/mythos/brain/learning-signals",
+            json={
+                "program_id": "program_example",
+                "playbook_id": "bola_idor",
+                "outcome": "informative",
+                "surface_key": "file_id:export",
+                "notes": "Candidate needed more evidence before ranking boost.",
+                "evidence_quality": "weak",
+                "target_relationships": [
+                    "candidate:H-001",
+                    "evidence_ready:false",
+                    "trace_status:needs_evidence",
+                    "missing_evidence:independent_cross_check",
+                    "missing_required_artifact:policy",
+                    "learned_evidence:lesson_evidence_needed_missing_evidence_independent_cross_check",
+                ],
+            },
+        )
+        assert learning_response.status_code == 200
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            assert run_agent_task(map_task_id, repository=repository)["status"] == "completed"
+            assert (
+                run_agent_task(hypothesis_task_id, repository=repository)["status"]
+                == "completed"
+            )
+            run = repository.list_pipeline_runs_for_program("program_example")[0]
+            queue_item = run.payload["autonomous_hunt_queue"][0]
+            expected_required_evidence = [
+                "independent_refutation_or_static_rule",
+                "policy",
+                "authz_bypass_or_misbind_trace",
+            ]
+            assert queue_item["next_action"] == "resolve_evidence_gaps"
+            assert queue_item["required_evidence"] == expected_required_evidence
+            assert queue_item["quality_gate_reasons"] == ["required_evidence_missing"]
+            assert queue_item["raw_priority_score"] > queue_item["priority_score"]
+
+        control_center_response = client.get(
+            f"/mythos/campaigns/{campaign_id}/control-center"
+        )
+        assert control_center_response.status_code == 200
+        control_center = control_center_response.json()
+        hunt_suggestion = next(
+            suggestion
+            for suggestion in control_center["research_queue_suggestions"]
+            if suggestion["source"] == "mythos_pipeline_autonomous_hunt_queue"
+        )
+        assert hunt_suggestion["required_evidence"] == expected_required_evidence
+        assert hunt_suggestion["quality_gate_reasons"] == ["required_evidence_missing"]
+        assert hunt_suggestion["raw_priority_score"] == queue_item["raw_priority_score"]
+        assert hunt_suggestion["human_approval_required"] is True
+        assert hunt_suggestion["execution_allowed"] is False
+        assert "secret-token" not in str(control_center)
+        assert "Authorization" not in str(control_center)
+
+        materialize_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/research-queue/tasks",
+            json={
+                "queue_key": hunt_suggestion["queue_key"],
+                "requester": "lead_reviewer",
+                "reason": "Review learned evidence gaps before any validation.",
+            },
+        )
+        assert materialize_response.status_code == 200
+        task = materialize_response.json()
+
+        review_response = client.get(
+            f"/mythos/campaigns/{campaign_id}/research-queue/tasks/{task['id']}/review"
+        )
+        assert review_response.status_code == 200
+        review = review_response.json()
+        assert review["autonomous_candidate_context"]["required_evidence"] == (
+            expected_required_evidence
+        )
+        assert review["autonomous_candidate_context"]["quality_gate_reasons"] == [
+            "required_evidence_missing"
+        ]
+        assert (
+            review["autonomous_candidate_context"]["raw_priority_score"]
+            == queue_item["raw_priority_score"]
+        )
+        assert review["latest_review_plan"] is not None
+
+        stages_response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+        assert stages_response.status_code == 200
+        materialized_stage = next(
+            stage
+            for stage in stages_response.json()
+            if stage["stage_key"] == "research_queue_materialized"
+        )
+        assert materialized_stage["payload"]["required_evidence"] == (
+            expected_required_evidence
+        )
+        assert materialized_stage["payload"]["quality_gate_reasons"] == [
+            "required_evidence_missing"
+        ]
+        assert materialized_stage["payload"]["raw_priority_score"] == queue_item[
+            "raw_priority_score"
+        ]
+        review_plan_stage = next(
+            stage
+            for stage in stages_response.json()
+            if stage["stage_key"] == "research_task_review_plan"
+        )
+        assert review_plan_stage["payload"]["required_evidence"] == (
+            expected_required_evidence
+        )
+        assert review_plan_stage["payload"]["quality_gate_reasons"] == [
+            "required_evidence_missing"
+        ]
+        assert review_plan_stage["payload"]["raw_priority_score"] == queue_item[
+            "raw_priority_score"
+        ]
+        assert "secret-token" not in str(review)
+        assert "Authorization" not in str(review)
+        assert "secret-token" not in str(stages_response.json())
+        assert "Authorization" not in str(stages_response.json())
     finally:
         app.dependency_overrides.clear()
 
@@ -3284,6 +3793,7 @@ def test_campaign_control_center_routes_promotion_block_to_evidence_review():
             "next_allowed_action": "Review blocked promotion evidence before retrying candidate promotion.",
             "provenance_ref_count": 6,
             "report_submission_allowed": False,
+            "required_evidence_blocked_count": 0,
             "validation_feedback_review_count": 0,
         }
         assert "secret-token" not in str(control_center)
@@ -3361,6 +3871,7 @@ def test_campaign_control_center_summarizes_research_feedback_before_promotion_a
             "next_allowed_action": "Review validation feedback before candidate promotion.",
             "provenance_ref_count": 6,
             "report_submission_allowed": False,
+            "required_evidence_blocked_count": 0,
             "validation_feedback_review_count": 0,
         }
         assert "secret-token" not in str(control_center)
@@ -3492,10 +4003,142 @@ def test_campaign_control_center_summarizes_reviewed_validation_feedback_before_
             "next_allowed_action": "Promote to finding candidate only after explicit human action.",
             "provenance_ref_count": 6,
             "report_submission_allowed": False,
+            "required_evidence_blocked_count": 0,
             "validation_feedback_review_count": 1,
         }
         assert "Observed with sanitized test accounts" not in str(control_center)
         assert "Reviewed sanitized evidence" not in str(control_center)
+        assert "secret-token" not in str(control_center)
+        assert "Authorization" not in str(control_center)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_blocks_finding_promotion_with_unresolved_required_evidence():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Unresolved required evidence campaign",
+                autonomy_level="level_2_test_account_validation",
+                scope_status="in_scope",
+                policy_text="Testing allowed. Authorization: Bearer secret-token",
+                default_asset="api.example.com",
+                allowed_tools=["two_account_authorization_check"],
+                created_by="operator",
+            )
+            repository.update_campaign_status(campaign.id, "running")
+            feedback_stage = repository.save_pipeline_stage(
+                pipeline_run_id="pipeline_run_1",
+                campaign_id=campaign.id,
+                task_id="campaign_task_1",
+                stage_key="research_task_validation_feedback",
+                stage_order=1,
+                status="evidence_recorded",
+                input_refs=[
+                    f"campaign:{campaign.id}",
+                    "campaign_task:campaign_task_1",
+                    "research_plan:research_plan_1",
+                    "validation_run:validation_run_1",
+                    "Authorization: Bearer secret-token",
+                ],
+                output_refs=["validation_run:validation_run_1"],
+                safety_gate_state="advisory_validation_feedback_only",
+                stop_reason=None,
+                payload={
+                    "source": "research_task_refutation_decision",
+                    "plan_id": "research_plan_1",
+                    "validation_run_id": "validation_run_1",
+                    "outcome": "observed",
+                    "evidence_ref_count": 2,
+                    "finding_confirmation_allowed": False,
+                    "finding_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                },
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id="pipeline_run_1",
+                campaign_id=campaign.id,
+                task_id="campaign_task_1",
+                stage_key="research_task_validation_feedback_review",
+                stage_order=2,
+                status="completed",
+                input_refs=[
+                    f"campaign:{campaign.id}",
+                    "campaign_task:campaign_task_1",
+                    f"pipeline_stage:{feedback_stage.id}",
+                    "validation_run:validation_run_1",
+                    "Authorization: Bearer secret-token",
+                ],
+                output_refs=[f"pipeline_stage:{feedback_stage.id}"],
+                safety_gate_state="manual_review_required",
+                stop_reason=None,
+                payload={
+                    "source": "human_validation_feedback_review",
+                    "reviewed_stage_id": feedback_stage.id,
+                    "decision": "allow_finding_promotion",
+                    "reviewer": "lead_reviewer",
+                    "rationale": "Reviewed sanitized evidence. Authorization: Bearer secret-token",
+                    "finding_confirmation_allowed": True,
+                    "report_submission_allowed": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            repository.save_pipeline_stage(
+                pipeline_run_id="pipeline_run_1",
+                campaign_id=campaign.id,
+                task_id="campaign_task_2",
+                stage_key="research_task_review_plan",
+                stage_order=3,
+                status="auto_drafted",
+                input_refs=[
+                    f"campaign:{campaign.id}",
+                    "campaign_task:campaign_task_2",
+                    "research_queue:autonomous_hunt:pipeline_run_1:hunt_queue_1",
+                    "Authorization: Bearer secret-token",
+                ],
+                output_refs=["research_plan:research_plan_2"],
+                safety_gate_state="advisory_plan_only",
+                stop_reason=None,
+                payload={
+                    "plan_id": "research_plan_2",
+                    "required_evidence": [
+                        "independent_refutation_or_static_rule",
+                        "policy",
+                    ],
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            campaign_id = campaign.id
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        control_center = response.json()
+        assert control_center["safe_next_action"] != "promote_finding_candidate"
+        assert control_center["safe_next_action"] == "review_evidence_or_report_drafts"
+        assert control_center["promotion_review"]["finding_promotion_allowed"] is False
+        assert control_center["promotion_review"]["latest_reason"] == "required_evidence_unresolved"
+        assert control_center["promotion_review"]["required_evidence_blocked_count"] == 1
+        assert control_center["promotion_review"]["validation_feedback_review_count"] == 1
+        assert control_center["promotion_review"]["report_submission_allowed"] is False
+        assert "independent_refutation_or_static_rule" not in str(control_center["promotion_review"])
+        assert "policy" not in str(control_center["promotion_review"])
         assert "secret-token" not in str(control_center)
         assert "Authorization" not in str(control_center)
     finally:
@@ -4489,6 +5132,7 @@ def test_validation_run_preflight_requires_scope_guard_after_approval():
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -4584,6 +5228,7 @@ def test_validation_run_preflight_blocks_exhausted_validation_budget_after_appro
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.upsert_campaign_budget(
                 campaign_id=campaign.id,
@@ -4680,6 +5325,9 @@ def test_validation_run_preflight_blocks_consumed_campaign_validation_budget():
                 default_asset="api.example.com",
                 allowed_tools=["static_analyzer"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(
+                    allowed_validation=["static_analyzer"]
+                ),
             )
             repository.upsert_campaign_budget(
                 campaign_id=campaign.id,
@@ -4797,6 +5445,9 @@ def test_validation_run_preflight_matches_approval_with_safe_url_asset():
                 default_asset="https://api.example.com/path?session=secret",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(
+                    asset="https://api.example.com/path"
+                ),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -4886,6 +5537,7 @@ def test_validation_run_preflight_blocks_modes_missing_from_campaign_allowlist()
                 default_asset="api.example.com",
                 allowed_tools=["static_local_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(allowed_validation=[]),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -4975,6 +5627,7 @@ def test_validation_run_preflight_blocks_expired_approval_record():
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -5066,6 +5719,7 @@ def test_validation_run_preflight_blocks_mismatched_scope_reference():
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -5156,6 +5810,7 @@ def test_validation_run_preflight_blocks_unapproved_allowed_accounts():
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -5246,6 +5901,7 @@ def test_validation_run_preflight_blocks_exhausted_approval_validation_budget():
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -5362,6 +6018,7 @@ def test_validation_run_preflight_blocks_empty_campaign_allowlist():
                 policy_text="Testing allowed",
                 default_asset="api.example.com",
                 created_by="operator",
+                payload=validation_scope_guard_payload(allowed_validation=[]),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -5450,6 +6107,7 @@ def test_validation_run_preflight_rejects_unbound_cross_campaign_approval_record
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             approved_task = repository.create_campaign_task(
                 campaign_id=approved_campaign.id,
@@ -5489,6 +6147,7 @@ def test_validation_run_preflight_rejects_unbound_cross_campaign_approval_record
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             target_task = repository.create_campaign_task(
                 campaign_id=target_campaign.id,
@@ -5552,6 +6211,7 @@ def test_validation_run_manual_result_records_redacted_evidence_after_preflight(
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -5722,6 +6382,7 @@ def test_validation_run_manual_result_retry_reuses_record_without_duplicate_feed
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.update_campaign_status(campaign.id, "running")
             repository.upsert_campaign_budget(
@@ -5842,6 +6503,7 @@ def test_validation_run_manual_result_retry_blocks_when_scope_changes_after_reco
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.update_campaign_status(campaign.id, "running")
             repository.upsert_campaign_budget(
@@ -5972,6 +6634,7 @@ def test_validation_run_manual_result_retry_rejects_different_payload_after_reco
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.update_campaign_status(campaign.id, "running")
             repository.upsert_campaign_budget(
@@ -6092,6 +6755,7 @@ def test_validation_run_manual_result_blocks_when_campaign_scope_changes_after_p
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -6219,6 +6883,7 @@ def test_validation_run_manual_result_keeps_redacted_only_evidence_in_gap_state(
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             task = repository.create_campaign_task(
                 campaign_id=campaign.id,
@@ -6742,6 +7407,7 @@ def test_validation_run_manual_result_requires_active_approval_after_preflight()
                 default_asset="api.example.com",
                 allowed_tools=["two_account_authorization_check"],
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.update_campaign_status(campaign.id, "running")
             repository.upsert_campaign_budget(
@@ -7673,7 +8339,7 @@ def test_campaign_control_center_returns_audited_read_only_summary():
                 "name": "Control center campaign",
                 "autonomy_level": "level_0_read_only",
                 "scope_status": "in_scope",
-                "policy_text": "Testing allowed. Authorization: Bearer secret-token",
+                "policy_text": "api.example.com is in scope. No automation. Authorization: Bearer secret-token",
                 "default_asset": "api.example.com",
                 "budget": {
                     "time_budget_minutes": 30,

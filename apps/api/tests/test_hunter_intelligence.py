@@ -193,6 +193,45 @@ def test_assess_hunter_intelligence_applies_boost_lesson_as_advisory_memory():
     assert "scope_guard_wins" in assessment.safety_notes
 
 
+def test_assess_hunter_intelligence_turns_relationship_lessons_into_evidence_focus():
+    intelligence = assess_hunter_intelligence(
+        target_model={
+            "objects": [{"name": "file_id"}],
+            "sensitive_actions": [
+                {"action": "export", "method": "GET", "path": "/files/{file_id}/export"}
+            ],
+        },
+        hypotheses=[
+            {
+                "hypothesis": "Changing file_id may export another user's private file.",
+                "vuln_type": "broken_access_control",
+                "risk_level": "high",
+                "policy_risk": "low",
+                "validation_mode": "two_account_authorization_check",
+            }
+        ],
+        refutation={"status": "passed", "reasons": []},
+        lessons=[
+            {
+                "playbook_id": "bola_idor",
+                "surface_pattern": "file_id:export",
+                "recommendation": "boost",
+                "score_delta": 6,
+                "reasons": [
+                    "lesson:boost:accepted_strong_evidence",
+                    "target_relationship:org_id>team_id>file_id",
+                ],
+                "safety_notes": ["advisory_memory_only"],
+            }
+        ],
+    )
+
+    assessment = intelligence.assessments[0]
+    assert "target_relationship:org_id>team_id>file_id" in assessment.reasons
+    assert "learned_target_relationship_review" in assessment.evidence_focus
+    assert "parent_child_authorization_matrix" in assessment.evidence_focus
+
+
 def test_assess_hunter_intelligence_skips_lessons_for_hard_safety_gates():
     intelligence = assess_hunter_intelligence(
         target_model={

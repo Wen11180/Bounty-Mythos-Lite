@@ -364,6 +364,7 @@ def _lessons_for_signal_group(
     strong = evidence_quality_counts.get("strong", 0)
     adequate = evidence_quality_counts.get("adequate", 0)
     weak = evidence_quality_counts.get("weak", 0)
+    candidate_gap_reasons = _candidate_evidence_gap_reasons(signals)
 
     lessons: list[MythosLesson] = []
     if accepted >= 2 and (strong >= 1 or adequate >= 2) and duplicate + rejected + na <= accepted:
@@ -420,7 +421,13 @@ def _lessons_for_signal_group(
             )
         )
 
-    if (accepted > 0 and weak > 0) or severity_delta_counts.get("down", 0) > 0:
+    evidence_needed_from_weak_acceptance = (
+        (accepted > 0 and weak > 0) or severity_delta_counts.get("down", 0) > 0
+    )
+    if evidence_needed_from_weak_acceptance or candidate_gap_reasons:
+        extra_reasons = [*(base_reasons or []), *candidate_gap_reasons]
+        if evidence_needed_from_weak_acceptance and candidate_gap_reasons:
+            extra_reasons.append("lesson:evidence_needed:candidate_gap")
         lessons.append(
             _lesson(
                 program_id=program_id,
@@ -428,8 +435,12 @@ def _lessons_for_signal_group(
                 surface_key=surface_key,
                 recommendation="evidence_needed",
                 score_delta=-4,
-                base_reason="lesson:evidence_needed:weak_accepted_evidence",
-                extra_reasons=base_reasons,
+                base_reason=(
+                    "lesson:evidence_needed:weak_accepted_evidence"
+                    if evidence_needed_from_weak_acceptance
+                    else "lesson:evidence_needed:candidate_gap"
+                ),
+                extra_reasons=extra_reasons,
                 signals=signals,
                 outcome_counts=outcome_counts,
                 evidence_quality_counts=evidence_quality_counts,
@@ -439,6 +450,48 @@ def _lessons_for_signal_group(
         )
 
     return lessons
+
+
+def _candidate_evidence_gap_reasons(signals: list[LearningSignal]) -> list[str]:
+    reasons: set[str] = set()
+    for signal in signals:
+        for relationship in signal.target_relationships:
+            if not isinstance(relationship, str) or not relationship:
+                continue
+            if relationship == "evidence_ready:false":
+                reasons.add("lesson:evidence_needed:candidate_evidence_not_ready")
+            elif relationship.startswith("trace_status:"):
+                trace_status = _safe_lesson_reason_value(
+                    relationship.removeprefix("trace_status:")
+                )
+                if trace_status and trace_status != "traceable":
+                    reasons.add(f"lesson:evidence_needed:trace_status:{trace_status}")
+            elif relationship.startswith("missing_evidence:"):
+                missing = _safe_lesson_reason_value(
+                    relationship.removeprefix("missing_evidence:")
+                )
+                if missing:
+                    reasons.add(f"lesson:evidence_needed:missing_evidence:{missing}")
+            elif relationship.startswith("missing_required_artifact:"):
+                missing = _safe_lesson_reason_value(
+                    relationship.removeprefix("missing_required_artifact:")
+                )
+                if missing:
+                    reasons.add(
+                        f"lesson:evidence_needed:missing_required_artifact:{missing}"
+                    )
+            elif relationship.startswith("learned_evidence:"):
+                learned = _safe_lesson_reason_value(
+                    relationship.removeprefix("learned_evidence:")
+                )
+                if learned:
+                    reasons.add(f"lesson:evidence_needed:learned_evidence:{learned}")
+    return sorted(reasons)
+
+
+def _safe_lesson_reason_value(value: str) -> str:
+    safe = _safe_memory_text(value, "")
+    return safe.replace(" ", "_").replace(":", "_")
 
 
 def _lesson(

@@ -311,6 +311,9 @@ def _apply_lesson(assessment: HunterAssessment, lesson: dict[str, Any]) -> None:
     for reason in lesson.get("reasons", []):
         if isinstance(reason, str):
             _append_reason(assessment, reason)
+            if reason.startswith("target_relationship:"):
+                _append_evidence_focus(assessment, "learned_target_relationship_review")
+                _append_evidence_focus(assessment, "parent_child_authorization_matrix")
     _merge_safety_notes(assessment, lesson)
 
 
@@ -337,6 +340,11 @@ def _surface_keys(target_model: dict[str, Any]) -> list[str]:
 def _append_reason(assessment: HunterAssessment, reason: str) -> None:
     if reason not in assessment.reasons:
         assessment.reasons.append(reason)
+
+
+def _append_evidence_focus(assessment: HunterAssessment, focus: str) -> None:
+    if focus not in assessment.evidence_focus:
+        assessment.evidence_focus.append(focus)
 
 
 def _merge_safety_notes(assessment: HunterAssessment, lesson: dict[str, Any]) -> None:

@@ -3,12 +3,14 @@ import fs from "node:fs/promises";
 import test from "node:test";
 import {
   toStudioArtifactChecklist,
+  toStudioCampaignHunterCandidateCards,
   toStudioCandidateCards,
   toStudioMissionHandoffBrief,
   toStudioMissionPanel,
   toStudioResearchReadiness,
   toStudioWorkspaceSummary,
 } from "./studio-data.ts";
+import type { StudioMissionSummary } from "./studio-data.ts";
 
 test("workspace summary maps manifest safety state", () => {
   const summary = toStudioWorkspaceSummary({
@@ -24,6 +26,23 @@ test("workspace summary maps manifest safety state", () => {
   assert.equal(summary.name, "acme-api");
   assert.equal(summary.scopeGuardLabel, "Missing scope");
   assert.deepEqual(summary.blockedActions, ["execute_live_validation"]);
+});
+
+test("workspace summary counts campaign hunter runs as desktop sessions", () => {
+  const summary = toStudioWorkspaceSummary({
+    name: "acme-api",
+    campaign_hunter_runs: [
+      {
+        campaign_id: "campaign-1",
+        execution_allowed: false,
+        report_submission_allowed: false,
+        validation_allowed: false,
+      },
+    ],
+    runs: [{ run_id: "run-1" }],
+  });
+
+  assert.equal(summary.runCount, 2);
 });
 
 test("candidate cards map missing endpoint and code path to review fallbacks", () => {
@@ -322,6 +341,32 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       report_submission_allowed: true,
     },
     mode: "local_ai_vulnerability_research_workbench",
+    attack_surface_model: {
+      status: "modeled",
+      source_artifact_kinds: ["api", "har", "knowledge", "sarif"],
+      route_count: 2,
+      api_route_count: 1,
+      har_route_count: 1,
+      advisory_signal_count: 2,
+      methods: ["GET"],
+      top_routes: [
+        {
+          method: "GET",
+          path: "/files/{file_id}/export",
+          artifact_kinds: ["api", "sarif"],
+        },
+        {
+          method: "GET",
+          path: "/files/123/export",
+          artifact_kinds: ["har"],
+        },
+      ],
+      next_action: "Review normalized API/HAR/code surface coverage before candidate promotion.",
+      safety_gate: "authorized_artifacts_only",
+      execution_allowed: true,
+      validation_allowed: true,
+      report_submission_allowed: true,
+    },
     agent_queue: [
       {
         task_id: "scope_guard_intake",
@@ -448,6 +493,21 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         evidence_gap_count: 0,
         evidence_need_count: 2,
         evidence_review_status: "needs_human_review",
+        evidence_trace_summary: {
+          advisory_artifact_kinds: ["sarif"],
+          code_path_traced: true,
+          endpoint_traced: true,
+          execution_allowed: true,
+          independent_cross_check_count: 1,
+          missing_required_artifact_kinds: [],
+          next_action: "Review trace summary and refutation questions before any validation.",
+          present_required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
+          report_submission_allowed: true,
+          required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
+          source_fact_count: 6,
+          status: "traceable",
+          validation_allowed: true,
+        },
         execution_allowed: false,
         false_positive_check_count: 2,
         hallucination_guard: {
@@ -490,6 +550,32 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.equal(panel.modeLabel, "Local AI vulnerability research workbench");
   assert.equal(panel.scopeGuardLabel, "Scope imported");
   assert.equal(panel.artifactCoverage, "5/5 required artifacts");
+  assert.deepEqual(panel.attackSurfaceModel, {
+    advisorySignalCount: 2,
+    apiRouteCount: 1,
+    executionAllowed: false,
+    harRouteCount: 1,
+    methods: ["GET"],
+    nextAction: "Review normalized API/HAR/code surface coverage before candidate promotion.",
+    reportSubmissionAllowed: false,
+    routeCount: 2,
+    safetyGate: "authorized_artifacts_only",
+    sourceArtifactKinds: ["api", "har", "knowledge", "sarif"],
+    status: "modeled",
+    topRoutes: [
+      {
+        artifactKinds: ["api", "sarif"],
+        method: "GET",
+        path: "/files/{file_id}/export",
+      },
+      {
+        artifactKinds: ["har"],
+        method: "GET",
+        path: "/files/123/export",
+      },
+    ],
+    validationAllowed: false,
+  });
   assert.equal(panel.advisoryContextLabel, "strategy");
   assert.equal(panel.candidateCountLabel, "1 Top candidate");
   assert.deepEqual(panel.safeNextActions, [
@@ -585,6 +671,21 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     safetyGate: "review_only_no_execution",
     reportSubmissionAllowed: false,
     validationExecutionAllowed: false,
+  });
+  assert.deepEqual(panel.topCandidates[0].evidenceTraceSummary, {
+    advisoryArtifactKinds: ["sarif"],
+    codePathTraced: true,
+    endpointTraced: true,
+    executionAllowed: false,
+    independentCrossCheckCount: 1,
+    missingRequiredArtifactKinds: [],
+    nextAction: "Review trace summary and refutation questions before any validation.",
+    presentRequiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
+    reportSubmissionAllowed: false,
+    requiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
+    sourceFactCount: 6,
+    status: "traceable",
+    validationAllowed: false,
   });
   assert.deepEqual(panel.candidateHunterBacklog, [
     {
@@ -983,6 +1084,71 @@ test("mission handoff brief summarizes review-only state for another session", (
       validation_allowed: true,
       report_submission_allowed: true,
     },
+    candidate_hunter_execution_loop: {
+      loop_id: "candidate_hunter:bounded_execution_loop",
+      status: "needs_review",
+      current_phase: "safe_validation_work",
+      next_candidate_actions: [
+        {
+          candidate_id: "H-001",
+          phase_id: "safe_validation_work",
+          priority_score: 85,
+          reason: "missing_safe_validation_plan",
+          required_evidence: ["non_destructive_validation_plan"],
+          next_action: "Draft non-destructive validation plan evidence for H-001.",
+          safety_gate: "human_approval_required",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      ranked_top_candidates: [
+        {
+          rank: 1,
+          candidate_id: "H-001",
+          phase_id: "safe_validation_work",
+          priority_score: 85,
+          reason: "missing_safe_validation_plan",
+          required_evidence: ["non_destructive_validation_plan"],
+          next_action: "Draft non-destructive validation plan evidence for H-001.",
+          affected_endpoint: "GET /files/{file_id}/export",
+          affected_code_path: "routes.py:export_file",
+          quality_status: "needs_review",
+          evidence_ready: false,
+          trace_status: "needs_evidence",
+          missing_evidence: ["non_destructive_validation_plan"],
+          missing_required_artifact_kinds: ["policy"],
+          safety_gate: "human_approval_required",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      learning_feedback_target: {
+        target_id: "candidate_hunter:learning_feedback:next_actions",
+        status: "awaiting_human_outcome",
+        source_loop_id: "candidate_hunter:bounded_execution_loop",
+        candidate_ids: ["H-001"],
+        action_count: 1,
+        allowed_outcomes: [
+          "confirmed",
+          "refuted",
+          "needs_more_evidence",
+          "duplicate",
+        ],
+        next_action: "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+        safety_gate: "human_review_required",
+        learning_write_allowed: true,
+        execution_allowed: true,
+        validation_allowed: true,
+        report_submission_allowed: true,
+      },
+      execution_allowed: true,
+      validation_allowed: true,
+      validation_execution_allowed: true,
+      report_submission_allowed: true,
+      candidate_promotion_allowed: true,
+    },
     agent_handoff_pack: {
       pack_id: "studio:agent_handoff:next_review",
       status: "needs_review",
@@ -1025,12 +1191,690 @@ test("mission handoff brief summarizes review-only state for another session", (
     brief,
     /Candidate hunter review loop: needs_review; active steps 1; next reviewer Evidence Planner/,
   );
+  assert.match(
+    brief,
+    /Candidate hunter execution loop: needs_review; current phase safe_validation_work; next action H-001 -> safe_validation_work \(85\)/,
+  );
+  assert.match(
+    brief,
+    /Ranked Top 1-5: #1 H-001 missing_safe_validation_plan \(85\)/,
+  );
+  assert.match(
+    brief,
+    /Top candidate evidence: trace needs_evidence; ready false; missing non_destructive_validation_plan; missing required artifacts policy/,
+  );
+  assert.match(
+    brief,
+    /Top candidate next action: Draft non-destructive validation plan evidence for H-001\./,
+  );
+  assert.match(
+    brief,
+    /Next candidate action: Draft non-destructive validation plan evidence for H-001\./,
+  );
+  assert.match(
+    brief,
+    /Learning feedback: awaiting_human_outcome; candidates H-001; outcomes confirmed, refuted, needs_more_evidence, duplicate/,
+  );
+  assert.match(
+    brief,
+    /Learning action: Record human-reviewed outcomes for candidate hunter next actions before updating future ranking\./,
+  );
+  assert.match(
+    brief,
+    /Learning review actions: H-001 -> needs_more_evidence; write allowed false/,
+  );
   assert.match(brief, /Next reviewer: Evidence Planner/);
   assert.match(brief, /handoff:H-001:draft_validation_plan/);
   assert.match(brief, /Safety gate: review_only_no_execution/);
   assert.match(brief, /Blocked actions: execute_live_validation, run_fuzzer, submit_report/);
   assert.match(brief, /No validation, fuzzing, or report submission is authorized/);
   assert.doesNotMatch(brief, /executeValidation|submitReport|send_file/);
+});
+
+test("mission panel maps bounded candidate hunter execution loop safely", () => {
+  const mission: StudioMissionSummary = {
+    candidate_hunter_execution_loop: {
+      loop_id: "candidate_hunter:bounded_execution_loop",
+      status: "needs_review",
+      iteration: 1,
+      source_review_loop_id: "candidate_hunter:next_review_loop",
+      source_plan_id: "candidate_hunter:autonomous_review_plan",
+      candidate_budget: 5,
+      top_candidate_limit: 5,
+      current_phase: "safe_validation_work",
+      phase_count: 1,
+      phases: [
+        {
+          phase_id: "safe_validation_work",
+          label: "Safe validation work planning",
+          status: "needs_review",
+          input_refs: ["top_1_to_5_candidates"],
+          output_refs: ["non_destructive_validation_plan"],
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      active_work_items: [
+        {
+          work_item_id: "H-002:draft_validation_plan",
+          candidate_id: "H-002",
+          gap: "missing_safe_validation_plan",
+          assigned_agent: "Evidence Planner",
+          phase_id: "safe_validation_work",
+          required_evidence: ["non_destructive_validation_plan"],
+          next_action: "Draft a non-destructive validation plan for H-002.",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      candidate_evidence_summary: {
+        candidate_count: 1,
+        review_ready_count: 0,
+        review_needed_count: 1,
+        endpoint_traced_count: 1,
+        code_path_traced_count: 1,
+        local_artifact_kinds: ["scope", "policy", "code", "api", "har"],
+        advisory_artifact_kinds: ["knowledge"],
+        average_quality_score: 85,
+        evidence_ready_candidate_ids: [],
+        review_needed_candidate_ids: ["H-001"],
+      },
+      candidate_evidence_matrix: [
+        {
+          candidate_id: "H-001",
+          affected_endpoint: "GET /files/{file_id}/export",
+          affected_code_path: "routes.py:export_file",
+          quality_score: 85,
+          hunter_priority_score: 96,
+          impact_score: 92,
+          rejection_risk_score: 15,
+          policy_risk_score: 20,
+          ranking_signal_breakdown: [
+            "quality_score:85",
+            "hunter_priority_floor:96",
+            "independent_cross_check_penalty:-10",
+            "final_priority_score:86",
+          ],
+          quality_status: "needs_review",
+          local_evidence_sources: ["code", "api", "har"],
+          advisory_sources: ["knowledge"],
+          independent_cross_check_sources: [],
+          missing_evidence: ["independent_cross_check"],
+          missing_required_artifact_kinds: ["policy"],
+          learning_evidence_needed_reasons: [
+            "lesson:evidence_needed:candidate_gap",
+            "lesson:evidence_needed:missing_evidence:independent_cross_check",
+            "lesson:evidence_needed:missing_required_artifact:policy",
+          ],
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      next_candidate_actions: [
+        {
+          candidate_id: "H-001",
+          phase_id: "refutation",
+          priority_score: 75,
+          reason: "missing_independent_cross_check",
+          required_evidence: ["independent_refutation_or_static_rule"],
+          next_action: "Add independent refutation or static-rule cross-check evidence for H-001.",
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      learning_feedback_target: {
+        target_id: "candidate_hunter:learning_feedback:next_actions",
+        status: "awaiting_human_outcome",
+        source_loop_id: "candidate_hunter:bounded_execution_loop",
+        candidate_ids: ["H-001"],
+        action_count: 1,
+        allowed_outcomes: [
+          "confirmed",
+          "refuted",
+          "needs_more_evidence",
+          "duplicate",
+        ],
+        next_action: "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+        safety_gate: "human_review_required",
+        learning_write_allowed: true,
+        execution_allowed: true,
+        validation_allowed: true,
+        report_submission_allowed: true,
+      },
+      learning_review_actions: [
+        {
+          action_id: "candidate_hunter:learning_feedback:next_actions:H-001",
+          candidate_id: "H-001",
+          source_loop_id: "candidate_hunter:bounded_execution_loop",
+          suggested_outcome: "refuted",
+          allowed_outcomes: [
+            "confirmed",
+            "refuted",
+            "needs_more_evidence",
+            "duplicate",
+            "unsafe_override",
+          ],
+          learning_signal_template: {
+            playbook_id: "bola_idor",
+            surface_key: "file_id:export",
+            target_relationships: [
+              "candidate:H-001",
+              "candidate_hunter:bounded_execution_loop",
+            ],
+            human_review_required: false,
+            learning_write_allowed: true,
+          },
+          next_action: "unsafe backend text should be replaced",
+          safety_gate: "unsafe_override",
+          learning_write_allowed: true,
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      promotion_policy: {
+        candidate_promotion_allowed: true,
+        requires_local_artifact_trace: false,
+        requires_independent_refutation: false,
+        requires_human_review: false,
+      },
+      blocked_actions: [
+        "execute_live_validation",
+        "run_fuzzer",
+        "submit_report",
+        "touch_real_user_data",
+        "store_raw_secret",
+      ],
+      safety_gate: "unsafe_override",
+      completion_gate: "unsafe_override",
+      execution_allowed: true,
+      validation_allowed: true,
+      validation_execution_allowed: true,
+      report_submission_allowed: true,
+      candidate_promotion_allowed: true,
+    },
+  };
+  const panel = toStudioMissionPanel(mission);
+
+  assert.deepEqual(panel.candidateHunterExecutionLoop, {
+    loopId: "candidate_hunter:bounded_execution_loop",
+    status: "needs_review",
+    iteration: 1,
+    sourceReviewLoopId: "candidate_hunter:next_review_loop",
+    sourcePlanId: "candidate_hunter:autonomous_review_plan",
+    candidateBudget: 5,
+    topCandidateLimit: 5,
+    currentPhase: "safe_validation_work",
+    phaseCount: 1,
+    phases: [
+      {
+        phaseId: "safe_validation_work",
+        label: "Safe validation work planning",
+        status: "needs_review",
+        inputRefs: ["top_1_to_5_candidates"],
+        outputRefs: ["non_destructive_validation_plan"],
+        safetyGate: "review_only_no_execution",
+        executionAllowed: false,
+        validationAllowed: false,
+        reportSubmissionAllowed: false,
+      },
+    ],
+    activeWorkItems: [
+      {
+        workItemId: "H-002:draft_validation_plan",
+        candidateId: "H-002",
+        gap: "missing_safe_validation_plan",
+        assignedAgent: "Evidence Planner",
+        phaseId: "safe_validation_work",
+        requiredEvidence: ["non_destructive_validation_plan"],
+        nextAction: "Draft a non-destructive validation plan for H-002.",
+        executionAllowed: false,
+        validationAllowed: false,
+        reportSubmissionAllowed: false,
+      },
+      ],
+    candidateEvidenceSummary: {
+      candidateCount: 1,
+      reviewReadyCount: 0,
+      reviewNeededCount: 1,
+      endpointTracedCount: 1,
+      codePathTracedCount: 1,
+      localArtifactKinds: ["scope", "policy", "code", "api", "har"],
+      advisoryArtifactKinds: ["knowledge"],
+      averageQualityScore: 85,
+      evidenceReadyCandidateIds: [],
+      reviewNeededCandidateIds: ["H-001"],
+    },
+    candidateEvidenceMatrix: [
+      {
+        candidateId: "H-001",
+        affectedEndpoint: "GET /files/{file_id}/export",
+        affectedCodePath: "routes.py:export_file",
+        qualityScore: 85,
+        hunterPriorityScore: 96,
+        impactScore: 92,
+        rejectionRiskScore: 15,
+        policyRiskScore: 20,
+        rankingSignalBreakdown: [
+          "quality_score:85",
+          "hunter_priority_floor:96",
+          "independent_cross_check_penalty:-10",
+          "final_priority_score:86",
+        ],
+        qualityStatus: "needs_review",
+        traceStatus: "needs_evidence",
+        localEvidenceSources: ["code", "api", "har"],
+        advisorySources: ["knowledge"],
+        independentCrossCheckSources: [],
+        missingEvidence: ["independent_cross_check"],
+        missingRequiredArtifactKinds: ["policy"],
+        learningEvidenceNeededReasons: [
+          "lesson:evidence_needed:candidate_gap",
+          "lesson:evidence_needed:missing_evidence:independent_cross_check",
+          "lesson:evidence_needed:missing_required_artifact:policy",
+        ],
+        requiredEvidence: ["independent_refutation_or_static_rule", "policy"],
+        executionAllowed: false,
+        validationAllowed: false,
+        reportSubmissionAllowed: false,
+      },
+    ],
+    rankedTopCandidates: [
+      {
+        rank: 1,
+        candidateId: "H-001",
+        phaseId: "refutation",
+        priorityScore: 75,
+        reason: "missing_independent_cross_check",
+        requiredEvidence: ["independent_refutation_or_static_rule"],
+        nextAction: "Add independent refutation or static-rule cross-check evidence for H-001.",
+        affectedEndpoint: "GET /files/{file_id}/export",
+        affectedCodePath: "routes.py:export_file",
+        qualityStatus: "needs_review",
+        evidenceReady: false,
+        traceStatus: "needs_evidence",
+        missingEvidence: ["independent_cross_check"],
+        missingRequiredArtifactKinds: ["policy"],
+        rankingSignalBreakdown: [
+          "quality_score:85",
+          "hunter_priority_floor:96",
+          "independent_cross_check_penalty:-10",
+          "final_priority_score:86",
+        ],
+        safetyGate: "review_only_no_execution",
+        executionAllowed: false,
+        validationAllowed: false,
+        reportSubmissionAllowed: false,
+      },
+    ],
+      nextCandidateActions: [
+        {
+          candidateId: "H-001",
+        phaseId: "refutation",
+        priorityScore: 75,
+        reason: "missing_independent_cross_check",
+        requiredEvidence: ["independent_refutation_or_static_rule"],
+        nextAction: "Add independent refutation or static-rule cross-check evidence for H-001.",
+        safetyGate: "review_only_no_execution",
+        executionAllowed: false,
+        validationAllowed: false,
+          reportSubmissionAllowed: false,
+        },
+      ],
+    learningFeedbackTarget: {
+      targetId: "candidate_hunter:learning_feedback:next_actions",
+      status: "awaiting_human_outcome",
+      sourceLoopId: "candidate_hunter:bounded_execution_loop",
+      candidateIds: ["H-001"],
+      actionCount: 1,
+      allowedOutcomes: [
+        "confirmed",
+        "refuted",
+        "needs_more_evidence",
+        "duplicate",
+      ],
+      nextAction: "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+      safetyGate: "human_review_required",
+      learningWriteAllowed: false,
+      executionAllowed: false,
+      validationAllowed: false,
+      reportSubmissionAllowed: false,
+    },
+    learningReviewActions: [
+      {
+        actionId: "candidate_hunter:learning_feedback:next_actions:H-001",
+        allowedOutcomes: [
+          "confirmed",
+          "refuted",
+          "needs_more_evidence",
+          "duplicate",
+        ],
+        candidateId: "H-001",
+        evidenceReady: false,
+        executionAllowed: false,
+        learningEvidenceNeededReasons: [
+          "lesson:evidence_needed:candidate_gap",
+          "lesson:evidence_needed:missing_evidence:independent_cross_check",
+          "lesson:evidence_needed:missing_required_artifact:policy",
+        ],
+        learningWriteAllowed: false,
+        missingEvidence: ["independent_cross_check"],
+        missingRequiredArtifactKinds: ["policy"],
+        learningSignalTemplate: {
+          playbookId: "bola_idor",
+          surfaceKey: "file_id:export",
+          targetRelationships: [
+            "candidate:H-001",
+            "candidate_hunter:bounded_execution_loop",
+          ],
+          humanReviewRequired: true,
+          learningWriteAllowed: false,
+        },
+        nextAction:
+          "Review H-001 and record a human outcome before updating future ranking.",
+        reportSubmissionAllowed: false,
+        safetyGate: "human_review_required",
+        sourceLoopId: "candidate_hunter:bounded_execution_loop",
+        suggestedOutcome: "refuted",
+        traceStatus: "needs_evidence",
+        validationAllowed: false,
+      },
+    ],
+    refutationQueue: [],
+    deduplicationQueue: [],
+    safeValidationQueue: [],
+    reportDraftQueue: [],
+    promotionPolicy: {
+      candidatePromotionAllowed: false,
+      requiresLocalArtifactTrace: true,
+      requiresIndependentRefutation: true,
+      requiresHumanReview: true,
+    },
+    blockedActions: [
+      "execute_live_validation",
+      "run_fuzzer",
+      "submit_report",
+      "touch_real_user_data",
+      "store_raw_secret",
+    ],
+    safetyGate: "bounded_autonomous_review_only",
+    completionGate: "human_review_required",
+    executionAllowed: false,
+    validationAllowed: false,
+    validationExecutionAllowed: false,
+    reportSubmissionAllowed: false,
+    candidatePromotionAllowed: false,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(panel.candidateHunterExecutionLoop),
+    /executeValidation|submitReport|send_file/i,
+  );
+});
+
+test("mission panel exposes bounded candidate hunter review queues safely", () => {
+  const mission: StudioMissionSummary = {
+    candidate_hunter_execution_loop: {
+      refutation_queue: [
+        {
+          queue_id: "candidate_hunter:refutation:H-001",
+          candidate_id: "H-001",
+          priority_score: 75,
+          trace_status: "needs_evidence",
+          missing_evidence: ["independent_cross_check"],
+          missing_required_artifact_kinds: ["policy"],
+          questions: ["Unsafe live validation question", "Can local evidence refute this?"],
+          required_evidence: ["policy", "independent_refutation_or_static_rule"],
+          next_action: "Refute with local evidence.",
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      deduplication_queue: [
+        {
+          queue_id: "candidate_hunter:deduplication:H-001",
+          candidate_id: "H-001",
+          priority_score: 72,
+          duplicate_risk_score: 72,
+          affected_endpoint: "GET /files/{file_id}/export",
+          affected_code_path: "routes.py:export_file",
+          similarity_keys: ["endpoint:GET /files/{file_id}/export"],
+          questions: ["Submit first?", "Does this overlap a prior report?"],
+          required_evidence: ["prior_submission_search"],
+          next_action: "Deduplicate before report readiness.",
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      safe_validation_queue: [
+        {
+          queue_id: "candidate_hunter:safe_validation:H-001",
+          candidate_id: "H-001",
+          priority_score: 92,
+          affected_endpoint: "GET /files/{file_id}/export",
+          affected_code_path: "routes.py:export_file",
+          validation_mode: "execute_live_validation",
+          plan_steps: [
+            "Use only local authorized test accounts.",
+            "Execute live validation against production.",
+          ],
+          required_approvals: ["scope_guard_route_approval"],
+          next_action: "Execute immediately.",
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          validation_execution_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      report_draft_queue: [
+        {
+          queue_id: "candidate_hunter:report_draft:H-001",
+          candidate_id: "H-001",
+          priority_score: 92,
+          report_status: "ready_to_submit",
+          affected_endpoint: "GET /files/{file_id}/export",
+          affected_code_path: "routes.py:export_file",
+          required_sections: ["impact_summary", "raw_authorization_header"],
+          evidence_focus: [
+            "learned_target_relationship_review",
+            "parent_child_authorization_matrix",
+          ],
+          redaction_checks: ["Remove raw secrets."],
+          next_action: "Submit immediately.",
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+    },
+  };
+
+  const panel = toStudioMissionPanel(mission);
+
+  assert.deepEqual(panel.candidateHunterExecutionLoop.refutationQueue, [
+    {
+      queueId: "candidate_hunter:refutation:H-001",
+      candidateId: "H-001",
+      priorityScore: 75,
+      traceStatus: "needs_evidence",
+      missingEvidence: ["independent_cross_check"],
+      missingRequiredArtifactKinds: ["policy"],
+      questions: ["Can local evidence refute this?"],
+      requiredEvidence: ["policy", "independent_refutation_or_static_rule"],
+      nextAction: "Refute with local evidence.",
+      safetyGate: "review_only_no_execution",
+      executionAllowed: false,
+      validationAllowed: false,
+      reportSubmissionAllowed: false,
+    },
+  ]);
+  assert.deepEqual(panel.candidateHunterExecutionLoop.deduplicationQueue, [
+    {
+      queueId: "candidate_hunter:deduplication:H-001",
+      candidateId: "H-001",
+      priorityScore: 72,
+      duplicateRiskScore: 72,
+      affectedEndpoint: "GET /files/{file_id}/export",
+      affectedCodePath: "routes.py:export_file",
+      similarityKeys: ["endpoint:GET /files/{file_id}/export"],
+      questions: ["Does this overlap a prior report?"],
+      requiredEvidence: ["prior_submission_search"],
+      nextAction: "Deduplicate before report readiness.",
+      safetyGate: "review_only_no_execution",
+      executionAllowed: false,
+      validationAllowed: false,
+      reportSubmissionAllowed: false,
+    },
+  ]);
+  assert.deepEqual(panel.candidateHunterExecutionLoop.safeValidationQueue, [
+    {
+      queueId: "candidate_hunter:safe_validation:H-001",
+      candidateId: "H-001",
+      priorityScore: 92,
+      affectedEndpoint: "GET /files/{file_id}/export",
+      affectedCodePath: "routes.py:export_file",
+      validationMode: "human_approved_non_destructive_plan",
+      planSteps: ["Use only local authorized test accounts."],
+      requiredApprovals: [
+        "scope_guard_route_approval",
+        "human_validation_approval",
+        "redaction_review",
+      ],
+      nextAction:
+        "Review and approve the non-destructive validation plan for H-001; execution remains blocked.",
+      safetyGate: "human_approval_required",
+      executionAllowed: false,
+      validationAllowed: false,
+      validationExecutionAllowed: false,
+      reportSubmissionAllowed: false,
+    },
+  ]);
+  assert.deepEqual(panel.candidateHunterExecutionLoop.reportDraftQueue, [
+    {
+      queueId: "candidate_hunter:report_draft:H-001",
+      candidateId: "H-001",
+      priorityScore: 92,
+      reportStatus: "submission_blocked",
+      affectedEndpoint: "GET /files/{file_id}/export",
+      affectedCodePath: "routes.py:export_file",
+      requiredSections: ["impact_summary"],
+      evidenceFocus: [
+        "learned_target_relationship_review",
+        "parent_child_authorization_matrix",
+      ],
+      redactionChecks: ["Remove raw secrets."],
+      nextAction:
+        "Draft a submission-blocked report for H-001 and keep submission disabled pending human review.",
+      safetyGate: "submission_blocked_human_review",
+      executionAllowed: false,
+      validationAllowed: false,
+      reportSubmissionAllowed: false,
+    },
+  ]);
+
+  const brief = toStudioMissionHandoffBrief(panel);
+  assert.match(brief, /Refutation queue: H-001 needs_evidence \(75\)/);
+  assert.match(brief, /Deduplication queue: H-001 duplicate risk 72\/100/);
+  assert.match(brief, /Safe validation queue: H-001 human_approved_non_destructive_plan/);
+  assert.match(brief, /Report draft queue: H-001 submission_blocked/);
+  assert.doesNotMatch(
+    JSON.stringify(panel.candidateHunterExecutionLoop),
+    /execute_live_validation|ready_to_submit|submitReport|send_file/i,
+  );
+});
+
+test("mission panel recomputes ranked Top candidate readiness from evidence matrix", () => {
+  const mission: StudioMissionSummary = {
+    candidate_hunter_execution_loop: {
+      candidate_evidence_matrix: [
+        {
+          candidate_id: "H-unsafe",
+          affected_endpoint: "GET /files/{file_id}/export",
+          affected_code_path: "routes.py:export_file",
+          quality_status: "review_ready",
+          quality_score: 95,
+          hunter_priority_score: 99,
+          impact_score: 90,
+          rejection_risk_score: 10,
+          policy_risk_score: 10,
+          missing_evidence: ["independent_cross_check"],
+          missing_required_artifact_kinds: ["policy"],
+        },
+        {
+          candidate_id: "H-ready",
+          affected_endpoint: "POST /admin/export",
+          affected_code_path: "admin.py:export",
+          quality_status: "review_ready",
+          quality_score: 88,
+          hunter_priority_score: 80,
+          impact_score: 85,
+          rejection_risk_score: 20,
+          policy_risk_score: 15,
+          missing_evidence: [],
+          missing_required_artifact_kinds: [],
+          evidence_trace_status: "traceable",
+        },
+      ],
+      ranked_top_candidates: [
+        {
+          rank: 1,
+          candidate_id: "H-unsafe",
+          phase_id: "report_draft_readiness",
+          priority_score: 100,
+          reason: "upstream_claimed_ready",
+          evidence_ready: true,
+          quality_status: "review_ready",
+          trace_status: "traceable",
+          missing_evidence: [],
+          missing_required_artifact_kinds: [],
+          safety_gate: "unsafe_override",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+        {
+          rank: 2,
+          candidate_id: "H-ready",
+          phase_id: "report_draft_readiness",
+          priority_score: 90,
+          reason: "review_ready",
+          evidence_ready: true,
+          quality_status: "review_ready",
+          trace_status: "traceable",
+        },
+      ],
+    },
+  };
+
+  const panel = toStudioMissionPanel(mission);
+  const ranked = panel.candidateHunterExecutionLoop.rankedTopCandidates;
+
+  assert.equal(ranked[0]?.candidateId, "H-ready");
+  assert.equal(ranked[0]?.rank, 1);
+  assert.equal(ranked[0]?.evidenceReady, true);
+  assert.equal(ranked[0]?.qualityStatus, "review_ready");
+  assert.equal(ranked[1]?.candidateId, "H-unsafe");
+  assert.equal(ranked[1]?.rank, 2);
+  assert.equal(ranked[1]?.evidenceReady, false);
+  assert.equal(ranked[1]?.qualityStatus, "needs_review");
+  assert.equal(ranked[1]?.reason, "missing_required_evidence");
+  assert.deepEqual(ranked[1]?.missingEvidence, ["independent_cross_check"]);
+  assert.deepEqual(ranked[1]?.missingRequiredArtifactKinds, ["policy"]);
+  assert.equal(ranked[1]?.safetyGate, "review_only_no_execution");
+  assert.equal(ranked[1]?.executionAllowed, false);
+  assert.equal(ranked[1]?.validationAllowed, false);
+  assert.equal(ranked[1]?.reportSubmissionAllowed, false);
 });
 
 test("artifact checklist marks required A+B authorized inputs before research", () => {
@@ -1182,8 +2026,12 @@ test("candidate cards expose report readiness gate", () => {
       risk: "high",
       report_readiness: {
         status: "submission_blocked",
-        report_submission_allowed: false,
+        report_submission_allowed: true,
+        required_evidence_count: 2,
+        safe_validation_step_count: 3,
         next_allowed_action: "Review evidence before exporting a report preview.",
+        submission_blocked: false,
+        trace_status: "traceable",
       },
       safe_verification: true,
     },
@@ -1191,6 +2039,10 @@ test("candidate cards expose report readiness gate", () => {
 
   assert.equal(card.reportReadiness.status, "submission_blocked");
   assert.equal(card.reportReadiness.reportSubmissionAllowed, false);
+  assert.equal(card.reportReadiness.requiredEvidenceCount, 2);
+  assert.equal(card.reportReadiness.safeValidationStepCount, 3);
+  assert.equal(card.reportReadiness.submissionBlocked, true);
+  assert.equal(card.reportReadiness.traceStatus, "traceable");
   assert.equal(
     card.reportReadiness.nextAllowedAction,
     "Review evidence before exporting a report preview.",
@@ -1220,6 +2072,109 @@ test("candidate cards expose artifact evidence gaps", () => {
   assert.deepEqual(card.evidenceGaps, [
     "code: missing_code_path",
     "har: missing_required_artifact",
+  ]);
+});
+
+test("candidate cards expose evidence trace summary safely", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-006",
+      vuln_type: "authorization",
+      risk: "high",
+      evidence_trace_summary: {
+        advisory_artifact_kinds: ["sarif"],
+        code_path_traced: true,
+        endpoint_traced: true,
+        execution_allowed: true,
+        independent_cross_check_count: 1,
+        missing_required_artifact_kinds: [],
+        next_action: "Review trace summary and refutation questions before any validation.",
+        present_required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
+        report_submission_allowed: true,
+        required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
+        source_fact_count: 6,
+        status: "traceable",
+        validation_allowed: true,
+      },
+      safe_verification: true,
+    },
+  ]);
+
+  assert.deepEqual(card.evidenceTraceSummary, {
+    advisoryArtifactKinds: ["sarif"],
+    codePathTraced: true,
+    endpointTraced: true,
+    executionAllowed: false,
+    independentCrossCheckCount: 1,
+    missingRequiredArtifactKinds: [],
+    nextAction: "Review trace summary and refutation questions before any validation.",
+    presentRequiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
+    reportSubmissionAllowed: false,
+    requiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
+    sourceFactCount: 6,
+    status: "traceable",
+    validationAllowed: false,
+  });
+});
+
+test("candidate cards expose semantic source evidence safely", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-006",
+      vuln_type: "authorization",
+      risk: "high",
+      source_facts: [
+        {
+          authz_hint: "missing_handler_authz_check",
+          fact_type: "authorization_gap_candidate",
+          root_cause: "missing_object_ownership_check",
+          security_invariant:
+            "Object-level actions must verify requester ownership or role before sensitive sinks run.",
+          sink_count: 1,
+          sink_symbols: ["delete_file"],
+          review_state: "needs_human_review",
+          execution_allowed: true,
+          validation_allowed: true,
+          report_submission_allowed: true,
+        },
+      ],
+      safe_verification: true,
+    },
+  ]);
+
+  assert.deepEqual(card.semanticEvidence, {
+    authzHint: "missing_handler_authz_check",
+    executionAllowed: false,
+    reportSubmissionAllowed: false,
+    reviewState: "needs_human_review",
+    rootCause: "missing_object_ownership_check",
+    securityInvariant:
+      "Object-level actions must verify requester ownership or role before sensitive sinks run.",
+    sinkCount: 1,
+    sinkSymbols: ["delete_file"],
+    validationAllowed: false,
+  });
+});
+
+test("candidate cards expose hunter evidence focus for learned relationship review", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-009",
+      vuln_type: "authorization",
+      risk: "high",
+      hunter_assessment: {
+        evidence_focus: [
+          "learned_target_relationship_review",
+          "parent_child_authorization_matrix",
+        ],
+      },
+      safe_verification: true,
+    },
+  ]);
+
+  assert.deepEqual(card.evidenceFocus, [
+    "learned_target_relationship_review",
+    "parent_child_authorization_matrix",
   ]);
 });
 
@@ -1285,6 +2240,87 @@ test("candidate cards keep unsafe candidates visibly blocked", () => {
   assert.equal(card.affectedEndpoint, "/webhook/test");
 });
 
+test("campaign hunter suggestions map into review-only Studio candidate cards", () => {
+  const [card] = toStudioCampaignHunterCandidateCards({
+    campaign: {
+      allowed_tools: [],
+      autonomy_level: "level_0_read_only",
+      created_at: "2026-07-09T00:00:00Z",
+      created_by: "mythos_studio",
+      default_asset: "api.example.com",
+      id: "campaign-1",
+      name: "Studio hunter",
+      program_id: "program_example",
+      scope_status: "in_scope",
+      status: "running",
+      target_classes: ["idor"],
+    },
+    budget: null,
+    tasks: [],
+    agent_runs: [],
+    approvals: [],
+    pipeline_stages: [],
+    blocked_reasons: [],
+    execution_allowed: false,
+    research_queue_suggestions: [
+      {
+        candidate_status: "awaiting_evidence_review",
+        execution_allowed: true,
+        next_allowed_action: "Review candidate evidence.",
+        playbook_id: "bola_idor",
+        priority_score: 91,
+        quality_gate_reasons: ["required_evidence_missing"],
+        queue_key: "candidate-1",
+        refutation_question_count: 2,
+        report_readiness: {
+          next_allowed_action: "Review trace gaps before drafting.",
+          report_submission_allowed: true,
+          required_evidence_count: 1,
+          safe_validation_step_count: 3,
+          status: "blocked_by_required_evidence",
+          submission_blocked: false,
+          trace_status: "traceable",
+        },
+        required_evidence: ["independent_refutation_or_static_rule"],
+        satisfied_evidence: ["local_code_or_har_correlation"],
+        safety_gate: "awaiting_evidence_review",
+        source: "mythos_pipeline_autonomous_hunt_queue",
+        surface_key: "GET /files/{file_id}/export",
+        title: "Review autonomous hunt candidate",
+        validation_step_count: 3,
+      },
+    ],
+    safe_next_action: "review_research_queue",
+  });
+
+  assert.equal(card.id, "candidate-1");
+  assert.equal(card.title, "bola_idor");
+  assert.equal(card.status, "needs_evidence");
+  assert.equal(card.affectedEndpoint, "GET /files/{file_id}/export");
+  assert.deepEqual(card.evidenceNeeds, ["independent_refutation_or_static_rule"]);
+  assert.deepEqual(card.evidenceGaps, ["required_evidence_missing"]);
+  assert.deepEqual(card.evidenceFocus, [
+    "independent_refutation_or_static_rule",
+    "satisfied_evidence:local_code_or_har_correlation",
+  ]);
+  assert.deepEqual(card.rankingReasons, [
+    "priority_score:91",
+    "required_evidence_missing",
+    "satisfied_evidence:local_code_or_har_correlation",
+  ]);
+  assert.equal(card.evidenceTraceSummary.executionAllowed, false);
+  assert.equal(card.evidenceTraceSummary.validationAllowed, false);
+  assert.equal(card.reportReadiness.reportSubmissionAllowed, false);
+  assert.equal(card.reportReadiness.status, "blocked_by_required_evidence");
+  assert.equal(card.reportReadiness.nextAllowedAction, "Review trace gaps before drafting.");
+  assert.equal(card.reportReadiness.requiredEvidenceCount, 1);
+  assert.equal(card.reportReadiness.safeValidationStepCount, 3);
+  assert.equal(card.reportReadiness.submissionBlocked, true);
+  assert.equal(card.reportReadiness.traceStatus, "traceable");
+  assert.equal(card.semanticEvidence.executionAllowed, false);
+  assert.equal(card.priorityScore, 91);
+});
+
 test("studio page exposes the four studio regions", async () => {
   const page = await fs.readFile(new URL("../app/studio/page.tsx", import.meta.url), "utf8");
   const workbench = await fs
@@ -1310,6 +2346,9 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /"use client"/);
   assert.match(workbench, /createStudioWorkspace/);
   assert.match(workbench, /importStudioWorkspaceArtifact/);
+  assert.match(workbench, /launchStudioWorkspaceCampaignHunter/);
+  assert.match(workbench, /toStudioCampaignHunterCandidateCards/);
+  assert.match(workbench, /exportStudioWorkspaceCampaignHunterReport/);
   assert.match(workbench, /runStudioWorkspaceResearch/);
   assert.match(workbench, /listStudioWorkspaceCandidates/);
   assert.match(workbench, /exportStudioWorkspaceReport/);
@@ -1318,6 +2357,7 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /createStudioWorkspaceBenchmarkTemplate/);
   assert.match(workbench, /Create workspace/);
   assert.match(workbench, /Start research/);
+  assert.match(workbench, /Launch campaign hunter/);
   assert.match(workbench, /Export report preview/);
   assert.match(workbench, /Export mission dossier/);
   assert.match(workbench, /Run benchmark/);
@@ -1331,10 +2371,31 @@ test("studio workbench can open an existing local workspace", async () => {
   );
 
   assert.match(workbench, /getStudioWorkspaceManifest/);
+  assert.match(workbench, /getCampaignControlCenter/);
   assert.match(workbench, /handleOpenWorkspace/);
   assert.match(workbench, /Open workspace/);
-  assert.match(workbench, /latestRunFromManifest/);
+  assert.match(workbench, /latestSessionFromManifest/);
+  assert.match(workbench, /reportExportFromLatestSession/);
+  assert.match(workbench, /campaign_hunter/);
+  assert.match(workbench, /toStudioCampaignHunterCandidateCards\(controlCenter\)/);
+  assert.match(workbench, /latestCampaignHunterId/);
   assert.match(workbench, /listStudioWorkspaceCandidates\(workspacePath/);
+});
+
+test("studio workbench restores exported report drafts from workspace manifest", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /reportExportFromLatestSession\(opened, latest\)/);
+  assert.match(workbench, /manifest\.runs \?\? \[\]/);
+  assert.match(workbench, /manifest\.campaign_hunter_runs \?\? \[\]/);
+  assert.match(workbench, /run\.report_markdown_path/);
+  assert.match(workbench, /Submission-blocked campaign hunter draft/);
+  assert.match(workbench, /Submission-blocked report draft/);
+  assert.match(workbench, /report_submission_allowed: false/);
+  assert.match(workbench, /restored_from_manifest: true/);
 });
 
 test("studio workbench reads mission summary for desktop workbench state", async () => {
@@ -1352,23 +2413,38 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /Research loop/);
   assert.match(workbench, /Agent queue/);
   assert.match(workbench, /missionPanel\.artifactCoverage/);
+  assert.match(workbench, /missionPanel\.attackSurfaceModel/);
   assert.match(workbench, /missionPanel\.agentQueue/);
   assert.match(workbench, /missionPanel\.agentTaskTimeline/);
   assert.match(workbench, /missionPanel\.studioTimelineSummary/);
   assert.match(workbench, /missionPanel\.submissionBlockedReportSummary/);
   assert.match(workbench, /missionPanel\.candidateReviewPackets/);
+  assert.match(workbench, /Redacted evidence review queue/);
   assert.match(workbench, /missionPanel\.agentHandoffPack/);
   assert.match(workbench, /missionPanel\.candidateHunterIteration/);
   assert.match(workbench, /missionPanel\.candidateHunterPlan/);
   assert.match(workbench, /missionPanel\.candidateHunterReviewLoop/);
+  assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.refutationQueue/);
+  assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.candidateEvidenceMatrix/);
+  assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.rankedTopCandidates/);
+  assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.deduplicationQueue/);
+  assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.safeValidationQueue/);
+  assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.reportDraftQueue/);
   assert.match(workbench, /Candidate hunter plan/);
   assert.match(workbench, /Candidate hunter plan steps/);
   assert.match(workbench, /Candidate hunter review loop/);
   assert.match(workbench, /Candidate hunter review loop steps/);
+  assert.match(workbench, /Candidate hunter refutation queue/);
+  assert.match(workbench, /Candidate hunter evidence matrix/);
+  assert.match(workbench, /Candidate hunter ranked Top 1-5/);
+  assert.match(workbench, /Candidate hunter deduplication queue/);
+  assert.match(workbench, /Candidate hunter safe validation queue/);
+  assert.match(workbench, /Candidate hunter report draft queue/);
   assert.match(workbench, /agentTaskTimelineLine/);
   assert.match(workbench, /studioTimelineSummaryLine/);
   assert.match(workbench, /submissionBlockedReportSummaryLine/);
   assert.match(workbench, /candidateReviewPacketLine/);
+  assert.match(workbench, /redactedEvidenceReviewLine/);
   assert.match(workbench, /agentHandoffPackLine/);
   assert.match(workbench, /agentHandoffItemLine/);
   assert.match(workbench, /candidateHunterIterationLine/);
@@ -1376,6 +2452,22 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /candidateHunterPlanStepLine/);
   assert.match(workbench, /candidateHunterReviewLoopLine/);
   assert.match(workbench, /candidateHunterReviewLoopStepLine/);
+  assert.match(workbench, /candidateHunterRefutationQueueLine/);
+  assert.match(workbench, /candidateHunterEvidenceMatrixLine/);
+  assert.match(workbench, /candidateHunterRankedTopCandidateLine/);
+  assert.match(workbench, /evidenceReady/);
+  assert.match(workbench, /traceStatus/);
+  assert.match(workbench, /missingEvidence/);
+  assert.match(workbench, /missingRequiredArtifactKinds/);
+  assert.match(workbench, /learningEvidenceNeededReasons/);
+  assert.match(workbench, /learned evidence/);
+  assert.match(workbench, /hunterPriorityScore/);
+  assert.match(workbench, /rankingSignalBreakdown/);
+  assert.match(workbench, /required evidence/);
+  assert.match(workbench, /candidateHunterDeduplicationQueueLine/);
+  assert.match(workbench, /candidateHunterSafeValidationQueueLine/);
+  assert.match(workbench, /candidateHunterReportDraftQueueLine/);
+  assert.match(workbench, /evidenceFocus/);
   assert.match(workbench, /task\.reviewFocus/);
   assert.match(workbench, /task\.candidateQualityGaps/);
   assert.match(workbench, /missionPanel\.researchLoopStages/);
@@ -1383,6 +2475,9 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.qualitySummary/);
   assert.match(workbench, /Mission quality blockers/);
   assert.match(workbench, /Candidate improvement actions/);
+  assert.match(workbench, /Attack surface model/);
+  assert.match(workbench, /attackSurfaceModelLine/);
+  assert.match(workbench, /attackSurfaceRouteLine/);
   assert.match(workbench, /missionPanel\.topCandidates/);
   assert.match(workbench, /candidate\.qualityStatus/);
   assert.match(workbench, /candidate\.qualityScore/);
@@ -1500,8 +2595,97 @@ test("studio workbench guides the first local research run", async () => {
   assert.match(workbench, /handleCreateWorkspace/);
   assert.match(workbench, /handleImportArtifacts/);
   assert.match(workbench, /handleStartResearch/);
+  assert.match(workbench, /handleRunLocalCandidateHunt/);
+  assert.match(workbench, /Run local candidate hunt/);
+  assert.match(workbench, /localCandidateHuntInputReady/);
+  assert.match(workbench, /recordCandidateHunterLearningOutcome/);
+  assert.match(workbench, /handleRecordCandidateHunterLearning/);
+  assert.match(workbench, /Candidate hunter learning feedback/);
   assert.match(workbench, /handleExportReport/);
   assert.doesNotMatch(workbench, /Submit report/);
+});
+
+test("studio workbench can run the local candidate hunter from authorized inputs", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /handleRunLocalCandidateHunt/);
+  assert.match(workbench, /busy === "candidate-hunt"/);
+  assert.match(workbench, /createStudioWorkspace/);
+  assert.match(workbench, /importStudioWorkspaceArtifact/);
+  assert.match(workbench, /toStudioResearchReadiness\(activeWorkspacePath/);
+  assert.match(workbench, /runStudioWorkspaceResearch/);
+  assert.match(workbench, /listStudioWorkspaceCandidates\(activeWorkspacePath/);
+  assert.match(workbench, /refreshMissionPanel\(activeWorkspacePath/);
+  assert.match(workbench, /Local candidate hunt/);
+  assert.match(workbench, /submission-blocked candidates/);
+  assert.match(workbench, /disabled=\{!localCandidateHuntInputReady\}/);
+  assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
+});
+
+test("studio workbench exposes a redacted evidence review queue", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /Redacted evidence review queue/);
+  assert.match(workbench, /Candidate evidence review packet/);
+  assert.match(workbench, /candidateEvidenceReviewPacketLines/);
+  assert.match(workbench, /missionPanel\.candidateReviewPackets\.map\(redactedEvidenceReviewLine\)/);
+  assert.match(workbench, /function redactedEvidenceReviewLine/);
+  assert.match(workbench, /Redaction review required before sharing evidence/);
+  assert.match(workbench, /raw secrets, tokens, cookies, authorization headers, and user data stay excluded/);
+  assert.match(workbench, /Evidence review remains read-only/);
+  assert.match(workbench, /redaction review/);
+  assert.match(workbench, /evidence needs/);
+  assert.match(workbench, /execution blocked/);
+  assert.match(workbench, /validation blocked/);
+  assert.match(workbench, /submission blocked/);
+  assert.doesNotMatch(workbench, /Authorization\s*[:=]|secret-token|raw_cookie|raw_token/i);
+  assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
+});
+
+test("studio workbench records candidate hunter learning only after human review", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /recordCandidateHunterLearningOutcome/);
+  assert.match(workbench, /handleRecordCandidateHunterLearning/);
+  assert.match(workbench, /toCandidateHunterLearningOutcome/);
+  assert.match(workbench, /studioLearningFallbackProfile/);
+  assert.match(workbench, /reviewer: "studio-human-review"/);
+  assert.match(workbench, /validation and submission remain blocked/);
+  assert.match(workbench, /learningProfile/);
+  assert.match(workbench, /Recent learning signal/);
+  assert.match(workbench, /Record suggested outcome/);
+  assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.learningReviewActions/);
+  assert.match(workbench, /learningSignalTemplate/);
+  assert.match(workbench, /playbook_id: action\.learningSignalTemplate\?\.playbookId/);
+  assert.match(
+    workbench,
+    /learning_evidence_needed_reasons: action\.learningEvidenceNeededReasons/,
+  );
+  assert.match(workbench, /target_relationships: action\.learningSignalTemplate\?\.targetRelationships/);
+  assert.match(workbench, /Learning signal template/);
+  assert.match(workbench, /playbook/);
+  assert.match(workbench, /surface/);
+  assert.match(workbench, /handleRecordCandidateCardLearning/);
+  assert.match(workbench, /Record needs-evidence learning/);
+  assert.match(workbench, /Record refuted learning/);
+  assert.match(workbench, /Record duplicate learning/);
+  assert.match(workbench, /handleRecordCandidateCardLearning\(candidate, "needs_more_evidence"\)/);
+  assert.match(workbench, /handleRecordCandidateCardLearning\(candidate, "refuted"\)/);
+  assert.match(workbench, /handleRecordCandidateCardLearning\(candidate, "duplicate"\)/);
+  assert.match(workbench, /human outcome \$\{outcome\}/);
+  assert.match(workbench, /candidate\.evidenceTraceSummary\.missingRequiredArtifactKinds/);
+  assert.match(workbench, /candidate\.reportReadiness\.nextAllowedAction/);
+  assert.doesNotMatch(workbench, /Record confirmed learning/);
+  assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
 });
 
 test("studio workbench runs local A+B benchmarks from expectation files", async () => {
@@ -1565,6 +2749,11 @@ test("studio workbench surfaces candidate rationale and ranking reasons", async 
 
   assert.match(workbench, /candidate\.reason/);
   assert.match(workbench, /Ranking reasons/);
+  assert.match(workbench, /Evidence focus/);
+  assert.match(workbench, /candidate\.evidenceFocus/);
+  assert.match(workbench, /Semantic evidence/);
+  assert.match(workbench, /candidate\.semanticEvidence/);
+  assert.match(workbench, /semanticEvidenceLine/);
 });
 
 test("studio workbench surfaces validation plan and safety blockers", async () => {

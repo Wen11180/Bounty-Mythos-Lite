@@ -10,12 +10,14 @@ import {
   createFindingCandidate,
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
+  exportStudioWorkspaceCampaignHunterReport,
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   listStudioWorkspaceCandidates,
   getStudioWorkspaceMission,
   getStudioWorkspaceMissionHandoff,
   materializeResearchQueueTask,
+  recordCandidateHunterLearningOutcome,
   recordClaimReviewDecision,
   recordManualObservation,
   runStudioWorkspaceBenchmark,
@@ -24,6 +26,7 @@ import {
   runSourceAuditScan,
   SourceAuditScanError,
   type Finding,
+  type ProgramIntelligenceProfile,
 } from "./api.ts";
 import type {
   CampaignPipelineStage,
@@ -49,6 +52,42 @@ const fallbackFinding: Finding = {
   title: "Fallback finding",
   validation_status: "report_ready",
   vuln_type: "idor",
+};
+
+const fallbackProgramProfile: ProgramIntelligenceProfile = {
+  applied_lessons: [],
+  attack_surface_memory: {
+    objects: [],
+    relationships: [],
+    roles: [],
+    run_count: 0,
+    sensitive_actions: [],
+  },
+  high_value_surfaces: [],
+  learning_summary: {
+    accepted_count: 0,
+    adequate_evidence_count: 0,
+    bounty_total: 0,
+    boosted_playbooks: [],
+    duplicate_count: 0,
+    evidence_score_delta: 0,
+    informative_count: 0,
+    na_count: 0,
+    penalized_playbooks: [],
+    rejected_count: 0,
+    severity_down_count: 0,
+    severity_up_count: 0,
+    strong_evidence_count: 0,
+    triager_feedback_count: 0,
+    weak_evidence_count: 0,
+  },
+  lesson_adjusted_surfaces: [],
+  program_id: "program_1",
+  program_name: "Program 1",
+  program_score: 0,
+  recent_learning_signals: [],
+  safety_notes: [],
+  skipped_lessons: [],
 };
 
 test("runSourceAuditScan posts only the local source audit request", async () => {
@@ -125,6 +164,221 @@ test("runSourceAuditScan exposes Scope Guard block reasons", async () => {
         assert.equal((error as SourceAuditScanError).detail, "repo_not_allowlisted");
         return true;
       },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recordCandidateHunterLearningOutcome posts only a Brain learning signal", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  let requestedBody: unknown = null;
+
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        ...fallbackProgramProfile,
+        recent_learning_signals: [
+          {
+            evidence_quality: "adequate",
+            id: "learning_signal_1",
+            notes:
+              "Candidate hunter outcome (confirmed) by analyst: Triager accepted the ownership boundary finding.",
+            outcome: "accepted",
+            playbook_id: "candidate_hunter:H-001",
+            program_id: "program_1",
+            surface_key: "account_settings",
+            triager_feedback: "Triager accepted the ownership boundary finding.",
+          },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json" }, status: 200 },
+    );
+  };
+
+  try {
+    const profile = await recordCandidateHunterLearningOutcome(
+      {
+        candidate_id: "H-001",
+        notes: "Triager accepted the ownership boundary finding.",
+        outcome: "confirmed",
+        program_id: "program_1",
+        reviewer: "analyst",
+        run_id: "run_1",
+        surface_key: "account_settings",
+      },
+      fallbackProgramProfile,
+    );
+
+    assert.match(requestedUrl, /\/mythos\/brain\/outcomes$/);
+    assert.deepEqual(requestedBody, {
+      evidence_quality: "adequate",
+      notes:
+        "Candidate hunter outcome (confirmed) by analyst: Triager accepted the ownership boundary finding.",
+      outcome: "accepted",
+      playbook_id: "candidate_hunter:H-001",
+      program_id: "program_1",
+      run_id: "run_1",
+      surface_key: "account_settings",
+      triager_feedback: "Triager accepted the ownership boundary finding.",
+    });
+    assert.equal(profile.recent_learning_signals[0]?.outcome, "accepted");
+    assert.doesNotMatch(
+      JSON.stringify(requestedBody),
+      /execution_allowed|validation_allowed|report_submission_allowed|executeValidation|submitReport|Authorization\s*[:=]|secret-token/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recordCandidateHunterLearningOutcome preserves a reviewed hunter playbook id", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody: unknown = null;
+
+  globalThis.fetch = async (_input, init) => {
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify(fallbackProgramProfile), {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    await recordCandidateHunterLearningOutcome(
+      {
+        candidate_id: "H-001",
+        notes: "Triager accepted the ownership boundary finding.",
+        outcome: "confirmed",
+        playbook_id: "bola_idor",
+        program_id: "program_1",
+        reviewer: "analyst",
+        run_id: "run_1",
+        surface_key: "account_settings",
+        target_relationships: ["org_id>team_id>file_id"],
+      },
+      fallbackProgramProfile,
+    );
+
+    assert.equal((requestedBody as { playbook_id?: string } | null)?.playbook_id, "bola_idor");
+    assert.deepEqual(
+      (requestedBody as { target_relationships?: string[] } | null)?.target_relationships,
+      ["org_id>team_id>file_id"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recordCandidateHunterLearningOutcome carries candidate evidence context safely", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody: unknown = null;
+
+  globalThis.fetch = async (_input, init) => {
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify(fallbackProgramProfile), {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    await recordCandidateHunterLearningOutcome(
+      {
+        candidate_id: "H-001",
+        evidence_ready: false,
+        missing_evidence: ["independent_cross_check"],
+        missing_required_artifact_kinds: ["policy"],
+        notes: "Needs independent evidence before ranking boost.",
+        outcome: "needs_more_evidence",
+        program_id: "program_1",
+        reviewer: "analyst",
+        run_id: "run_1",
+        surface_key: "account_settings",
+        target_relationships: ["candidate:H-001"],
+        trace_status: "needs_evidence",
+      },
+      fallbackProgramProfile,
+    );
+
+    assert.deepEqual(
+      (requestedBody as { target_relationships?: string[] } | null)
+        ?.target_relationships,
+      [
+        "candidate:H-001",
+        "evidence_ready:false",
+        "trace_status:needs_evidence",
+        "missing_evidence:independent_cross_check",
+        "missing_required_artifact:policy",
+      ],
+    );
+    assert.match(
+      (requestedBody as { notes?: string } | null)?.notes ?? "",
+      /evidence ready false; trace needs_evidence; missing evidence independent_cross_check; missing required artifacts policy/i,
+    );
+    assert.equal(
+      (requestedBody as { evidence_quality?: string } | null)?.evidence_quality,
+      "weak",
+    );
+    assert.doesNotMatch(
+      JSON.stringify(requestedBody),
+      /execution_allowed|validation_allowed|report_submission_allowed|Authorization\s*[:=]|secret-token/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recordCandidateHunterLearningOutcome carries learned evidence reasons safely", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody: unknown = null;
+
+  globalThis.fetch = async (_input, init) => {
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify(fallbackProgramProfile), {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    await recordCandidateHunterLearningOutcome(
+      {
+        candidate_id: "H-001",
+        learning_evidence_needed_reasons: [
+          "lesson:evidence_needed:candidate_gap",
+          "lesson:evidence_needed:missing_evidence:independent_cross_check",
+          "lesson:evidence_needed:missing_required_artifact:policy",
+        ],
+        notes: "Needs independent evidence before ranking boost.",
+        outcome: "needs_more_evidence",
+        program_id: "program_1",
+        reviewer: "analyst",
+        run_id: "run_1",
+        surface_key: "account_settings",
+      },
+      fallbackProgramProfile,
+    );
+
+    assert.deepEqual(
+      (requestedBody as { target_relationships?: string[] } | null)
+        ?.target_relationships,
+      [
+        "learned_evidence:lesson_evidence_needed_candidate_gap",
+        "learned_evidence:lesson_evidence_needed_missing_evidence_independent_cross_check",
+        "learned_evidence:lesson_evidence_needed_missing_required_artifact_policy",
+      ],
+    );
+    assert.match(
+      (requestedBody as { notes?: string } | null)?.notes ?? "",
+      /learned evidence lesson_evidence_needed_candidate_gap, lesson_evidence_needed_missing_evidence_independent_cross_check, lesson_evidence_needed_missing_required_artifact_policy/i,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(requestedBody),
+      /execution_allowed|validation_allowed|report_submission_allowed|Authorization\s*[:=]|secret-token/i,
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -301,6 +555,32 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       );
     }
 
+    if (url.endsWith("/mythos/studio/workspaces/campaigns/reports/export")) {
+      return new Response(
+        JSON.stringify({
+          campaign_id: "campaign_1",
+          manifest: {
+            campaign_hunter_runs: [
+              {
+                campaign_id: "campaign_1",
+                report_markdown_path:
+                  "C:/workspaces/acme-api/reports/campaign_1-campaign-hunter-report-draft.md",
+                report_submission_allowed: false,
+              },
+            ],
+          },
+          report: { submission_blocked: true, title: "Campaign hunter draft" },
+          report_markdown_path:
+            "C:/workspaces/acme-api/reports/campaign_1-campaign-hunter-report-draft.md",
+          report_submission_allowed: false,
+          run_id: "campaign_1",
+          submission_blocked: true,
+          title: "Campaign hunter draft",
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
     if (url.endsWith("/mythos/studio/workspaces/mission/export")) {
       return new Response(
         JSON.stringify({
@@ -436,6 +716,17 @@ test("studio research API helpers keep reports submission-blocked", async () => 
     );
     assert.equal(exported?.submission_blocked, true);
 
+    const hunterExport = await exportStudioWorkspaceCampaignHunterReport(
+      { campaign_id: "campaign_1", workspace_path: "C:/workspaces/acme-api" },
+      null,
+    );
+    assert.equal(hunterExport?.report_submission_allowed, false);
+    assert.equal(hunterExport?.submission_blocked, true);
+    assert.equal(
+      hunterExport?.report_markdown_path,
+      "C:/workspaces/acme-api/reports/campaign_1-campaign-hunter-report-draft.md",
+    );
+
     const dossier = await exportStudioWorkspaceMissionDossier(
       { run_id: "pipeline_run_1", workspace_path: "C:/workspaces/acme-api" },
       null,
@@ -481,12 +772,13 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       "/mythos/studio/workspaces/runs",
       "/mythos/studio/workspaces/candidates",
       "/mythos/studio/workspaces/reports/export",
+      "/mythos/studio/workspaces/campaigns/reports/export",
       "/mythos/studio/workspaces/mission/export",
       "/mythos/studio/workspaces/benchmarks/template",
       "/mythos/studio/workspaces/benchmarks/run",
     ]);
     assert.deepEqual(calls[3]?.body, {
-      run_id: "pipeline_run_1",
+      campaign_id: "campaign_1",
       workspace_path: "C:/workspaces/acme-api",
     });
     assert.deepEqual(calls[4]?.body, {
@@ -494,6 +786,10 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       workspace_path: "C:/workspaces/acme-api",
     });
     assert.deepEqual(calls[5]?.body, {
+      run_id: "pipeline_run_1",
+      workspace_path: "C:/workspaces/acme-api",
+    });
+    assert.deepEqual(calls[6]?.body, {
       expectations_path: "C:/authorized/studio-expectations.json",
       run_id: "pipeline_run_1",
       workspace_path: "C:/workspaces/acme-api",

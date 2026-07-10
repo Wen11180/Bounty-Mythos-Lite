@@ -12,6 +12,8 @@ async function launchCampaignAction(formData: FormData) {
   const launched = await launchAuthorizedCampaign({
     allowed_tools: splitList(formData.get("allowed_tools")),
     autonomy_level: formValue(formData, "autonomy_level", "level_0_read_only"),
+    authorized_api_artifacts: authorizedApiArtifactsFromForm(formData),
+    authorized_code_files: authorizedCodeFilesFromForm(formData),
     budget: {
       time_budget_minutes: numberValue(formData.get("time_budget_minutes")),
       token_budget: numberValue(formData.get("token_budget")),
@@ -103,6 +105,37 @@ export default async function CampaignsPage() {
               name="policy_text"
               defaultValue="Authorized testing only. No destructive testing, no real user data, no automatic submission."
               className="min-h-28 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
+            />
+          </label>
+          <LaunchField
+            label="Authorized code path"
+            name="authorized_code_path"
+            defaultValue=""
+          />
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Authorized code snippet</span>
+            <textarea
+              name="authorized_code_content"
+              defaultValue=""
+              className="min-h-28 rounded-md border border-[var(--line)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--accent)]"
+            />
+          </label>
+          <LaunchField
+            label="Authorized API artifact kind"
+            name="authorized_api_artifact_kind"
+            defaultValue=""
+          />
+          <LaunchField
+            label="Authorized API artifact source"
+            name="authorized_api_artifact_source"
+            defaultValue=""
+          />
+          <label className="grid gap-1 text-sm lg:col-span-2">
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Authorized API/HAR JSON</span>
+            <textarea
+              name="authorized_api_artifact_payload"
+              defaultValue=""
+              className="min-h-32 rounded-md border border-[var(--line)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--accent)]"
             />
           </label>
           <div className="grid gap-3 sm:grid-cols-4 lg:col-span-2">
@@ -221,6 +254,45 @@ function splitList(value: FormDataEntryValue | null): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function authorizedCodeFilesFromForm(formData: FormData): Array<{ content: string; path: string }> {
+  const path = optionalFormValue(formData.get("authorized_code_path"));
+  const content = optionalFormValue(formData.get("authorized_code_content"));
+  if (!path || !content) {
+    return [];
+  }
+  return [{ content, path }];
+}
+
+function authorizedApiArtifactsFromForm(
+  formData: FormData,
+): Array<{ kind: string; payload: Record<string, unknown>; source_name?: string | null }> {
+  const kind = optionalFormValue(formData.get("authorized_api_artifact_kind"));
+  const payloadText = optionalFormValue(formData.get("authorized_api_artifact_payload"));
+  if (!kind || !payloadText) {
+    return [];
+  }
+  const payload = jsonObjectValue(payloadText);
+  if (!payload) {
+    return [];
+  }
+  return [
+    {
+      kind,
+      payload,
+      source_name: optionalFormValue(formData.get("authorized_api_artifact_source")) ?? null,
+    },
+  ];
+}
+
+function jsonObjectValue(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function numberValue(value: FormDataEntryValue | null): number | undefined {

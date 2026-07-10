@@ -108,6 +108,10 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
           </div>
           <Field label="Reviewed claims" value={String(findingCandidateGate.eligibleClaimCount)} />
           <Field label="Research feedback" value={String(findingCandidateGate.researchFeedbackCount)} />
+          <Field
+            label="Required evidence holds"
+            value={String(findingCandidateGate.requiredEvidenceBlockedCount)}
+          />
           <Field label="Promotion review holds" value={String(findingCandidateGate.researchPromotionBlockedCount)} />
           <Field
             label="Promotion audit holds"
@@ -128,7 +132,9 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
           <Field
             label="Mode"
             value={
-              findingCandidateGate.status === "blocked_by_research_feedback"
+              findingCandidateGate.status === "blocked_by_required_evidence"
+                ? "Required evidence blocks promotion"
+                : findingCandidateGate.status === "blocked_by_research_feedback"
                 ? "Research feedback blocks promotion"
                 : findingCandidateGate.promotionAuditLatestReason
                 ? findingCandidateGate.promotionAuditLatestReason

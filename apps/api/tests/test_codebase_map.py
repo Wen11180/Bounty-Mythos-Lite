@@ -38,6 +38,10 @@ def export_file(file_id: str):
         "handler": "export_file",
         "mapping_mode": "static_code_snippet_analysis",
         "review_state": "needs_human_review",
+        "root_cause": "missing_object_ownership_check",
+        "security_invariant": (
+            "Object-level actions must verify requester ownership or role before sensitive sinks run."
+        ),
         "sink_count": 1,
         "sink_symbols": ["send_file"],
     }

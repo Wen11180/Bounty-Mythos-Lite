@@ -3,6 +3,7 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 
 const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./launcher.cjs");
+const { installStudioNavigationGuard } = require("./navigation-guard.cjs");
 const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
@@ -17,6 +18,7 @@ function spawnChild(command, args, cwd, env = {}) {
       ...process.env,
       DATABASE_URL: process.env.DATABASE_URL || "sqlite:///./bounty_mythos_studio.db",
       REDIS_URL: process.env.REDIS_URL || "redis://localhost:6379/0",
+      WORKER_DISPATCH_MODE: process.env.WORKER_DISPATCH_MODE || "inline",
       ...env,
     },
   });
@@ -25,8 +27,8 @@ function spawnChild(command, args, cwd, env = {}) {
   return child;
 }
 
-function startServices(config) {
-  const apiBaseUrl = process.env.API_BASE_URL || config.apiBaseUrl;
+function startServices(config, workspaceRoot) {
+  const studioWebOrigin = new URL(config.studioUrl).origin;
   spawnChild(
     "python",
     [
@@ -39,14 +41,19 @@ function startServices(config) {
       String(config.apiPort),
     ],
     path.join(root, "apps", "api"),
+    {
+      STUDIO_WORKSPACE_ROOT: workspaceRoot,
+      STUDIO_WEB_ORIGIN: studioWebOrigin,
+    },
   );
   spawnChild(
     "npm",
     ["run", "dev", "--", "--hostname", "127.0.0.1", "--port", String(config.webPort)],
     path.join(root, "apps", "web"),
     {
-      API_BASE_URL: apiBaseUrl,
-      NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || apiBaseUrl,
+      API_BASE_URL: config.apiBaseUrl,
+      NEXT_PUBLIC_API_BASE_URL: config.apiBaseUrl,
+      NEXT_PUBLIC_STUDIO_WORKSPACE_ROOT: workspaceRoot,
     },
   );
 }
@@ -67,6 +74,7 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       preload: path.join(__dirname, "preload.cjs"),
     },
   });
@@ -85,9 +93,12 @@ ipcMain.handle("mythos:select-directory", (event, options) => {
 app.whenReady().then(async () => {
   const window = createWindow();
   try {
+    const workspaceRoot =
+      process.env.STUDIO_WORKSPACE_ROOT || path.join(app.getPath("userData"), "workspaces");
     const config = await createStudioLaunchConfig();
-    startServices(config);
+    startServices(config, workspaceRoot);
     await waitForUrl(config.studioUrl);
+    installStudioNavigationGuard(window, config.studioUrl);
     window.loadURL(config.studioUrl);
   } catch (error) {
     window.loadURL(`data:text/html,${encodeURIComponent(startupErrorHtml(error))}`);

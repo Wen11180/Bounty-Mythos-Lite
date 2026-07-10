@@ -9,14 +9,17 @@ from app.main import app
 from app.mythos_chat import run_chat
 from app.cli import main as cli_main
 from app.codebase_map import CodebaseFactCandidate
+from app.config import get_settings
 from app.db import Base
 from app.db import get_session
 from app.mythos_finding import promote_pipeline_run_to_finding_candidate
 from app.mythos_report import build_report_preview_response
 from app.repository import DatabaseRepository
 from app.source_audit import (
+    ScopeCheck,
     SourceAuditBlocked,
     StaticFinding,
+    build_finding_json,
     build_source_hypotheses,
     load_scope_policy,
     normalize_semgrep_json,
@@ -56,6 +59,23 @@ def override_session():
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _configure_studio_workspace_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("STUDIO_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def controlled_source_audit_paths(tmp_path: Path) -> tuple[Path, Path]:
+    workspace = tmp_path / "source-audit-workspace"
+    repo = workspace / "code" / "target"
+    scope = workspace / "scope" / "scope.yaml"
+    repo.mkdir(parents=True)
+    scope.parent.mkdir(parents=True)
+    return repo, scope
 
 
 def test_run_source_audit_reads_allowed_local_repo_and_builds_markdown_report(tmp_path):
@@ -3472,6 +3492,94 @@ def test_source_hypotheses_rank_high_impact_sinks_before_lower_impact_sinks():
     assert "impact:sensitive_data_sink" in hypotheses[1].ranking_reasons
 
 
+def test_source_hypotheses_attach_semantic_evidence_to_authorization_candidates():
+    hypotheses = build_source_hypotheses(
+        [
+            CodebaseFactCandidate(
+                fact_type="authorization_gap_candidate",
+                source_path="routes.py",
+                symbol_name="delete_file",
+                route_method="DELETE",
+                route_path="/files/{file_id}",
+                authz_hint="missing_handler_authz_check",
+                sensitivity_label="high",
+                payload={
+                    "handler": "delete_file",
+                    "review_state": "needs_human_review",
+                    "sink_count": 1,
+                    "sink_symbols": ["delete_file"],
+                },
+            )
+        ],
+        [],
+    )
+
+    source_fact = hypotheses[0].source_facts[0]
+
+    assert source_fact["root_cause"] == "missing_object_ownership_check"
+    assert source_fact["security_invariant"] == (
+        "Object-level actions must verify requester ownership or role before sensitive sinks run."
+    )
+    assert source_fact["sink_symbols"] == ["delete_file"]
+    assert source_fact["sink_count"] == 1
+    assert source_fact["review_state"] == "needs_human_review"
+    assert source_fact["authz_hint"] == "missing_handler_authz_check"
+    assert source_fact["execution_allowed"] is False
+    assert source_fact["validation_allowed"] is False
+    assert source_fact["report_submission_allowed"] is False
+
+
+def test_finding_json_uses_semantic_evidence_for_submission_blocked_report_material():
+    hypotheses = build_source_hypotheses(
+        [
+            CodebaseFactCandidate(
+                fact_type="authorization_gap_candidate",
+                source_path="routes.py",
+                symbol_name="delete_file",
+                route_method="DELETE",
+                route_path="/files/{file_id}",
+                authz_hint="missing_handler_authz_check",
+                sensitivity_label="high",
+                payload={
+                    "handler": "delete_file",
+                    "review_state": "needs_human_review",
+                    "sink_count": 1,
+                    "sink_symbols": ["delete_file"],
+                },
+            )
+        ],
+        [],
+    )
+
+    finding = build_finding_json(
+        hypotheses,
+        [],
+        ScopeCheck(
+            allowed=True,
+            reason="repository is inside authorized local scope",
+            repo_path="target",
+        ),
+    )[0]
+
+    assert finding["root_cause"] == "missing_object_ownership_check"
+    assert finding["security_invariant"] == (
+        "Object-level actions must verify requester ownership or role before sensitive sinks run."
+    )
+    assert finding["semantic_evidence"] == {
+        "authz_hint": "missing_handler_authz_check",
+        "review_state": "needs_human_review",
+        "sink_count": 1,
+        "sink_symbols": ["delete_file"],
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert finding["status"] == "unverified_hypothesis"
+    assert finding["safe_reproduction"]["requires_human_review"] is True
+    assert "Authorization" not in str(finding)
+    assert "secret" not in str(finding).lower()
+
+
 def test_run_source_audit_integrates_authorized_bug_bounty_plan(tmp_path):
     repo = tmp_path / "target"
     repo.mkdir()
@@ -4298,8 +4406,7 @@ def test_cli_chat_reads_terminal_commands(monkeypatch, capsys):
 
 
 def test_source_audit_api_creates_pipeline_run_and_report_preview(tmp_path):
-    repo = tmp_path / "target"
-    repo.mkdir()
+    repo, scope = controlled_source_audit_paths(tmp_path)
     (repo / "routes.py").write_text(
         "\n".join(
             [
@@ -4312,7 +4419,6 @@ def test_source_audit_api_creates_pipeline_run_and_report_preview(tmp_path):
         ),
         encoding="utf-8",
     )
-    scope = tmp_path / "scope.yaml"
     scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -4447,8 +4553,7 @@ def test_source_audit_api_creates_pipeline_run_and_report_preview(tmp_path):
 
 
 def test_source_audit_api_accepts_patch_diff_metadata_for_v4_plan(tmp_path):
-    repo = tmp_path / "target"
-    repo.mkdir()
+    repo, scope = controlled_source_audit_paths(tmp_path)
     (repo / "routes.py").write_text(
         "\n".join(
             [
@@ -4461,7 +4566,6 @@ def test_source_audit_api_accepts_patch_diff_metadata_for_v4_plan(tmp_path):
         ),
         encoding="utf-8",
     )
-    scope = tmp_path / "scope.yaml"
     scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -4498,8 +4602,7 @@ def test_source_audit_api_accepts_patch_diff_metadata_for_v4_plan(tmp_path):
 
 
 def test_source_audit_api_promotes_candidate_only_after_manual_evidence_gates(tmp_path):
-    repo = tmp_path / "target"
-    repo.mkdir()
+    repo, scope = controlled_source_audit_paths(tmp_path)
     (repo / "routes.py").write_text(
         "\n".join(
             [
@@ -4512,7 +4615,6 @@ def test_source_audit_api_promotes_candidate_only_after_manual_evidence_gates(tm
         ),
         encoding="utf-8",
     )
-    scope = tmp_path / "scope.yaml"
     scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -4602,9 +4704,7 @@ def test_source_audit_api_promotes_candidate_only_after_manual_evidence_gates(tm
 
 
 def test_source_audit_api_blocks_unallowlisted_repo_without_pipeline_run(tmp_path):
-    repo = tmp_path / "target"
-    repo.mkdir()
-    scope = tmp_path / "scope.yaml"
+    repo, scope = controlled_source_audit_paths(tmp_path)
     scope.write_text("allowed_repos:\n  - C:/different/repo\n", encoding="utf-8")
     app.dependency_overrides[get_session] = override_session()
     try:

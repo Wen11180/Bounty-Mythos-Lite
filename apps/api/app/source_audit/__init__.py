@@ -978,7 +978,8 @@ def normalize_semgrep_json(payload: dict) -> list[StaticFinding]:
 
 
 def _source_fact_from_codebase_candidate(fact: CodebaseFactCandidate) -> dict:
-    return {
+    payload = fact.payload if isinstance(fact.payload, dict) else {}
+    source_fact = {
         "fact_ref": f"codebase_fact:{fact.fact_type}:{fact.route_path or fact.source_path}",
         "fact_type": fact.fact_type,
         "artifact_kind": "code",
@@ -987,6 +988,35 @@ def _source_fact_from_codebase_candidate(fact: CodebaseFactCandidate) -> dict:
         "source_path": safe_display_text(fact.source_path),
         "symbol_name": safe_display_text(fact.symbol_name or ""),
     }
+    if fact.fact_type == "authorization_gap_candidate":
+        source_fact.update(
+            {
+                "authz_hint": safe_display_text(fact.authz_hint or ""),
+                "root_cause": "missing_object_ownership_check",
+                "security_invariant": (
+                    "Object-level actions must verify requester ownership or role before sensitive sinks run."
+                ),
+                "sink_count": _safe_int(payload.get("sink_count")),
+                "sink_symbols": _safe_semantic_symbol_list(payload.get("sink_symbols")),
+                "review_state": safe_display_text(
+                    str(payload.get("review_state", "needs_human_review"))
+                ),
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return source_fact
+
+
+def _safe_semantic_symbol_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        safe_display_text(symbol)
+        for symbol in value
+        if isinstance(symbol, str) and safe_display_text(symbol)
+    ][:5]
 
 
 def build_source_hypotheses(
@@ -1293,7 +1323,9 @@ def build_finding_json(
             "confidence": "low",
             "status": "unverified_hypothesis",
             "affected_endpoint": hypothesis.location if " " in hypothesis.location else None,
-            "root_cause": hypothesis.reason,
+            "root_cause": _hypothesis_root_cause(hypothesis),
+            "security_invariant": _hypothesis_security_invariant(hypothesis),
+            "semantic_evidence": _hypothesis_semantic_evidence(hypothesis),
             "safe_reproduction": {
                 "environment": "local_or_authorized_test_env",
                 "requires_human_review": True,
@@ -1310,6 +1342,50 @@ def build_finding_json(
         }
         for hypothesis in hypotheses
     ]
+
+
+def _hypothesis_semantic_source_fact(hypothesis: VulnerabilityHypothesis) -> dict:
+    for fact in hypothesis.source_facts:
+        if not isinstance(fact, dict):
+            continue
+        if fact.get("root_cause") or fact.get("security_invariant"):
+            return fact
+    return {}
+
+
+def _hypothesis_root_cause(hypothesis: VulnerabilityHypothesis) -> str:
+    fact = _hypothesis_semantic_source_fact(hypothesis)
+    root_cause = fact.get("root_cause")
+    if isinstance(root_cause, str) and root_cause:
+        return safe_display_text(root_cause)
+    return hypothesis.reason
+
+
+def _hypothesis_security_invariant(hypothesis: VulnerabilityHypothesis) -> str:
+    fact = _hypothesis_semantic_source_fact(hypothesis)
+    invariant = fact.get("security_invariant")
+    if isinstance(invariant, str) and invariant:
+        return safe_display_text(invariant)
+    return "Candidate security invariant requires human review before validation."
+
+
+def _hypothesis_semantic_evidence(hypothesis: VulnerabilityHypothesis) -> dict[str, object]:
+    fact = _hypothesis_semantic_source_fact(hypothesis)
+    sink_symbols = fact.get("sink_symbols")
+    safe_sink_symbols = (
+        _safe_semantic_symbol_list(sink_symbols) if isinstance(sink_symbols, list) else []
+    )
+    return {
+        "authz_hint": safe_display_text(str(fact.get("authz_hint", ""))),
+        "review_state": safe_display_text(
+            str(fact.get("review_state", "needs_human_review"))
+        ),
+        "sink_count": _safe_int(fact.get("sink_count")),
+        "sink_symbols": safe_sink_symbols,
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
 
 
 def _source_audit_digest(result: SourceAuditResult) -> str:

@@ -104,6 +104,42 @@ test("createStudioLaunchConfig uses available local ports and API URLs", async (
   assert.equal(config.studioUrl, `http://127.0.0.1:${webPort}/studio`);
 });
 
+test("createStudioLaunchConfig rejects remote URL overrides", async () => {
+  const apiPort = await reserveAndReleasePort();
+  const webPort = await reserveAndReleasePort();
+
+  for (const [name, value] of [
+    ["MYTHOS_STUDIO_URL", "https://studio.example.test/studio"],
+    ["API_BASE_URL", "https://api.example.test"],
+    ["NEXT_PUBLIC_API_BASE_URL", "https://api.example.test"],
+  ]) {
+    await assert.rejects(
+      createStudioLaunchConfig({
+        MYTHOS_API_PORT: String(apiPort),
+        MYTHOS_WEB_PORT: String(webPort),
+        [name]: value,
+      }),
+      new RegExp(`${name} must use a loopback HTTP URL`),
+    );
+  }
+});
+
+test("createStudioLaunchConfig derives URLs instead of accepting loopback overrides", async () => {
+  const apiPort = await reserveAndReleasePort();
+  const webPort = await reserveAndReleasePort();
+
+  const config = await createStudioLaunchConfig({
+    MYTHOS_API_PORT: String(apiPort),
+    MYTHOS_WEB_PORT: String(webPort),
+    MYTHOS_STUDIO_URL: "http://127.0.0.1:9999/not-the-studio",
+    API_BASE_URL: "http://127.0.0.1:9998",
+    NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:9997",
+  });
+
+  assert.equal(config.apiBaseUrl, `http://127.0.0.1:${apiPort}`);
+  assert.equal(config.studioUrl, `http://127.0.0.1:${webPort}/studio`);
+});
+
 test("createStudioLaunchConfig never assigns the same API and Web port", async () => {
   const preferredPort = await reserveAndReleasePort();
 

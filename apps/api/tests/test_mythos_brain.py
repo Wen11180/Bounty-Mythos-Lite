@@ -571,6 +571,60 @@ def test_mythos_lessons_build_boost_duplicate_and_evidence_needed_rules():
     assert "lesson:evidence_needed:weak_accepted_evidence" in evidence_needed.reasons
 
 
+def test_mythos_lessons_turn_candidate_evidence_gaps_into_evidence_needed_rule():
+    lessons = build_mythos_lessons(
+        learning_signals=[
+            LearningSignal(
+                id="signal_candidate_gap_1",
+                program_id="program_example",
+                playbook_id="bola_idor",
+                outcome="informative",
+                surface_key="file_id:export",
+                evidence_quality="weak",
+                target_relationships=[
+                    "candidate:H-001",
+                    "evidence_ready:false",
+                    "trace_status:needs_evidence",
+                    "missing_evidence:independent_cross_check",
+                    "missing_required_artifact:policy",
+                    "learned_evidence:lesson_evidence_needed_missing_evidence_independent_cross_check",
+                    "learned_evidence:lesson_evidence_needed_missing_required_artifact_policy",
+                ],
+            )
+        ]
+    )
+
+    evidence_needed = [
+        lesson
+        for lesson in lessons
+        if lesson.recommendation == "evidence_needed"
+        and lesson.playbook_id == "bola_idor"
+        and lesson.surface_pattern == "file_id:export"
+    ]
+
+    assert len(evidence_needed) == 1
+    assert evidence_needed[0].score_delta <= 0
+    assert "lesson:evidence_needed:candidate_gap" in evidence_needed[0].reasons
+    assert (
+        "lesson:evidence_needed:missing_evidence:independent_cross_check"
+        in evidence_needed[0].reasons
+    )
+    assert (
+        "lesson:evidence_needed:missing_required_artifact:policy"
+        in evidence_needed[0].reasons
+    )
+    assert (
+        "lesson:evidence_needed:learned_evidence:lesson_evidence_needed_missing_evidence_independent_cross_check"
+        in evidence_needed[0].reasons
+    )
+    assert (
+        "lesson:evidence_needed:learned_evidence:lesson_evidence_needed_missing_required_artifact_policy"
+        in evidence_needed[0].reasons
+    )
+    assert "target_relationship:candidate:H-001" in evidence_needed[0].reasons
+    assert "advisory_memory_only" in evidence_needed[0].safety_notes
+
+
 def test_mythos_lessons_do_not_boost_from_single_strong_signal():
     lessons = build_mythos_lessons(
         [

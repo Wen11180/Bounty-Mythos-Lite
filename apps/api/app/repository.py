@@ -210,9 +210,14 @@ class DatabaseRepository:
         payload_summary: dict,
         derived_facts: dict,
     ) -> ArtifactRecord:
-        existing = self.session.scalars(
-            select(ArtifactRecord).where(ArtifactRecord.source_hash == source_hash)
-        ).first()
+        existing_query = select(ArtifactRecord).where(
+            ArtifactRecord.source_hash == source_hash
+        )
+        if program_id is None:
+            existing_query = existing_query.where(ArtifactRecord.program_id.is_(None))
+        else:
+            existing_query = existing_query.where(ArtifactRecord.program_id == program_id)
+        existing = self.session.scalars(existing_query).first()
         if existing is not None:
             existing.provenance = _append_duplicate_import_provenance(
                 existing.provenance,
@@ -1676,6 +1681,8 @@ def _contains_secret_like_value(value: Any) -> bool:
     if isinstance(value, str):
         return _is_secret_like(value)
     if isinstance(value, dict):
+        if _structured_secret_pair_value_keys(value):
+            return True
         for key, nested_value in value.items():
             if _is_secret_key(str(key)):
                 return True
@@ -1958,9 +1965,11 @@ def _safe_display_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_safe_display_value(item) for item in value)
     if isinstance(value, dict):
+        structured_secret_value_keys = _structured_secret_pair_value_keys(value)
         return {
             _safe_display_key(key): REDACTED
             if _is_secret_key(str(key))
+            or _is_structured_secret_value_key(key, structured_secret_value_keys)
             else _safe_display_value(nested_value)
             for key, nested_value in value.items()
         }
@@ -2031,8 +2040,28 @@ def _is_secret_key(value: str) -> bool:
             "secret",
             "password",
             "credential",
+            "session",
         )
     )
+
+
+def _structured_secret_pair_value_keys(value: dict) -> set[str]:
+    value_keys = {
+        key.lower()
+        for key in value
+        if isinstance(key, str) and key.lower() in {"value", "contents"}
+    }
+    if not value_keys:
+        return set()
+    for identifier_key in ("name", "key"):
+        identifier = value.get(identifier_key)
+        if isinstance(identifier, str) and _is_secret_key(identifier):
+            return value_keys
+    return set()
+
+
+def _is_structured_secret_value_key(key: Any, sensitive_keys: set[str]) -> bool:
+    return isinstance(key, str) and key.lower() in sensitive_keys
 
 
 def _is_secret_like(value: str) -> bool:

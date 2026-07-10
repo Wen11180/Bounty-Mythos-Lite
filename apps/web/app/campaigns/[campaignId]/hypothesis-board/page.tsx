@@ -181,6 +181,10 @@ export default async function CampaignHypothesisBoardPage({ params }: PageProps)
                           value={String(candidate.researchQueueHandoff.validationStepCount)}
                         />
                       </dl>
+                      <PreviewList
+                        label="Required evidence"
+                        values={candidate.researchQueueHandoff.requiredEvidence}
+                      />
                       <p className="break-words text-xs text-[var(--muted)]">
                         {candidate.researchQueueHandoff.nextAllowedAction}
                       </p>

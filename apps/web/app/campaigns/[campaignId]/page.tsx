@@ -154,6 +154,10 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                 <p className="text-xs font-semibold uppercase text-[var(--muted)]">Promotion review</p>
                 <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
                   <Field label="Blocked attempts" value={summary.promotionReviewBlockedCount} />
+                  <Field
+                    label="Evidence holds"
+                    value={summary.promotionReviewRequiredEvidenceBlockedCount}
+                  />
                   <Field label="Provenance refs" value={summary.promotionReviewProvenanceRefCount} />
                 </dl>
                 {summary.promotionReviewLatestReason ? (
@@ -280,6 +284,9 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                   </span>
                 </div>
                 <dl className="grid gap-2 sm:grid-cols-2">
+                  {suggestion.rawPriorityScore !== null ? (
+                    <Field label="Raw score" value={suggestion.rawPriorityScore} />
+                  ) : null}
                   <Field label="Playbook" value={suggestion.playbookId} />
                   <Field label="Surface" value={suggestion.surfaceKey ?? "No surface"} />
                   <Field label="Review gate" value={suggestion.safetyGate} />
@@ -308,6 +315,12 @@ export default async function CampaignDetailPage({ params }: PageProps) {
                 <p className="text-pretty text-[var(--muted)]">
                   {suggestion.nextAllowedAction}
                 </p>
+                {suggestion.requiredEvidence.length > 0 ? (
+                  <ListBlock title="Required evidence" items={suggestion.requiredEvidence} />
+                ) : null}
+                {suggestion.qualityGateReasons.length > 0 ? (
+                  <ListBlock title="Quality Gate Reasons" items={suggestion.qualityGateReasons} />
+                ) : null}
                 <form action={queueResearchReviewAction}>
                   <input type="hidden" name="queue_key" value={suggestion.queueKey} />
                   <button
@@ -423,6 +436,21 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="grid gap-1">
       <dt className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</dt>
       <dd className="break-words font-semibold">{value}</dd>
+    </div>
+  );
+}
+
+function ListBlock({ items, title }: { items: string[]; title: string }) {
+  return (
+    <div className="grid gap-2 border-t border-[var(--line)] pt-3">
+      <p className="text-xs font-semibold uppercase text-[var(--muted)]">{title}</p>
+      <ul className="grid gap-1 text-xs leading-5 text-[var(--muted)]">
+        {items.map((item) => (
+          <li key={item} className="break-words">
+            {item}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

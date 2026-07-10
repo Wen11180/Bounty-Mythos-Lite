@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.config import get_settings
+
 
 WORKSPACE_DIRS = (
     "policy",
@@ -21,6 +23,19 @@ WORKSPACE_DIRS = (
     "benchmarks",
     "reports",
     "runs",
+)
+IMPORTABLE_WORKSPACE_DIRS = (
+    "policy",
+    "scope",
+    "api",
+    "har",
+    "code",
+    "sbom",
+    "sarif",
+    "fuzzing",
+    "strategy",
+    "knowledge",
+    "evidence",
 )
 SECRET_MARKERS = (
     "authorization:",
@@ -45,6 +60,10 @@ SAFETY_BLOCKER_LABELS = {
 }
 
 
+class StudioWorkspaceAccessError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class StudioWorkspace:
     path: Path
@@ -58,10 +77,17 @@ class StudioArtifactImport:
 
 
 def create_workspace(root: str | Path, *, name: str) -> StudioWorkspace:
-    workspace_path = Path(root) / _safe_name(name)
+    workspace_root = _configured_workspace_root()
+    requested_root = Path(root).expanduser().resolve(strict=False)
+    if requested_root != workspace_root:
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+
+    workspace_path = workspace_root / _safe_name(name)
     workspace_path.mkdir(parents=True, exist_ok=True)
+    workspace_path = _workspace_directory(workspace_path)
     for child in WORKSPACE_DIRS:
         (workspace_path / child).mkdir(exist_ok=True)
+        _workspace_child_directory(workspace_path, child)
     if (workspace_path / "manifest.json").exists():
         return StudioWorkspace(
             path=workspace_path,
@@ -83,22 +109,27 @@ def create_workspace(root: str | Path, *, name: str) -> StudioWorkspace:
 
 
 def load_workspace_manifest(workspace_path: str | Path) -> dict[str, Any]:
-    manifest_path = Path(workspace_path) / "manifest.json"
-    return json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    path = _workspace_directory(workspace_path)
+    manifest_path = _workspace_file(path, "manifest.json", must_exist=True)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(manifest, dict):
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+    _validate_workspace_artifacts(path, manifest)
+    return manifest
 
 
 def import_workspace_artifact(
     workspace_path: str | Path, artifact: StudioArtifactImport
 ) -> dict[str, Any]:
-    path = Path(workspace_path)
+    path = _workspace_directory(workspace_path)
     manifest = load_workspace_manifest(path)
-    source_path = Path(artifact.source_path)
+    source_path = _authorized_artifact_source(path, artifact)
     sensitivity_label = _sensitivity_label(source_path)
 
     manifest["artifacts"].append(
         {
             "kind": artifact.kind,
-            "source_path": _safe_path_ref(artifact.source_path),
+            "source_path": _safe_path_ref(str(source_path)),
             "source_hash": _sha256(source_path),
             "sensitivity_label": sensitivity_label,
             "redaction_status": (
@@ -114,6 +145,136 @@ def import_workspace_artifact(
     return manifest
 
 
+def _workspace_directory(workspace_path: str | Path) -> Path:
+    path = Path(workspace_path).resolve(strict=False)
+    workspace_root = _configured_workspace_root()
+    try:
+        relative_path = path.relative_to(workspace_root)
+    except ValueError as exc:
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized") from exc
+    if len(relative_path.parts) != 1:
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+    if not path.exists():
+        raise FileNotFoundError(path)
+    path = path.resolve(strict=True)
+    if not path.is_dir():
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+    return path
+
+
+def _configured_workspace_root() -> Path:
+    root = Path(get_settings().studio_workspace_root).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve(strict=True)
+
+
+def _workspace_child_directory(workspace_path: Path, name: str) -> Path:
+    try:
+        child = (workspace_path / name).resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized") from exc
+    try:
+        child.relative_to(workspace_path)
+    except ValueError as exc:
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized") from exc
+    if not child.is_dir():
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+    return child
+
+
+def _workspace_file(
+    workspace_path: Path,
+    name: str,
+    *,
+    must_exist: bool,
+) -> Path:
+    path = (workspace_path / name).resolve(strict=False)
+    try:
+        path.relative_to(workspace_path)
+    except ValueError as exc:
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized") from exc
+    if must_exist and not path.exists():
+        raise FileNotFoundError(path)
+    return path
+
+
+def _authorized_artifact_source(
+    workspace_path: Path, artifact: StudioArtifactImport
+) -> Path:
+    if artifact.kind not in IMPORTABLE_WORKSPACE_DIRS:
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized")
+
+    kind_root = _workspace_child_directory(workspace_path, artifact.kind)
+    source_path = Path(artifact.source_path).resolve(strict=False)
+
+    if not source_path.is_relative_to(kind_root):
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized")
+    if not source_path.exists():
+        raise FileNotFoundError(source_path)
+    source_path = source_path.resolve(strict=True)
+    if _secret_like_text(str(source_path)):
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized")
+    return source_path
+
+
+def resolve_configured_workspace_artifact(
+    source_path: str | Path,
+    *,
+    kind: str,
+) -> Path:
+    workspace_root = _configured_workspace_root()
+    source = Path(source_path).resolve(strict=False)
+    try:
+        relative_path = source.relative_to(workspace_root)
+    except ValueError as exc:
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized") from exc
+    if len(relative_path.parts) < 3:
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized")
+    workspace_path = _workspace_directory(workspace_root / relative_path.parts[0])
+    return _authorized_artifact_source(
+        workspace_path,
+        StudioArtifactImport(kind=kind, source_path=str(source)),
+    )
+
+
+def resolve_workspace_file(
+    workspace_path: str | Path,
+    source_path: str | Path,
+    *,
+    directory: str,
+) -> Path:
+    if directory not in WORKSPACE_DIRS:
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized")
+    workspace = _workspace_directory(workspace_path)
+    directory_path = _workspace_child_directory(workspace, directory)
+    source = Path(source_path).resolve(strict=False)
+    if not source.is_relative_to(directory_path):
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized")
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(source)
+    source = source.resolve(strict=True)
+    if _secret_like_text(str(source)):
+        raise StudioWorkspaceAccessError("studio_artifact_not_authorized")
+    return source
+
+
+def _validate_workspace_artifacts(workspace_path: Path, manifest: dict[str, Any]) -> None:
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+        kind = artifact.get("kind")
+        source_path = artifact.get("source_path")
+        if not isinstance(kind, str) or not isinstance(source_path, str):
+            raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
+        _authorized_artifact_source(
+            workspace_path,
+            StudioArtifactImport(kind=kind, source_path=source_path),
+        )
+
+
 def record_workspace_run(
     workspace_path: str | Path,
     *,
@@ -122,7 +283,7 @@ def record_workspace_run(
     report_path: str | None,
     candidate_count: int,
 ) -> dict[str, Any]:
-    path = Path(workspace_path)
+    path = _workspace_directory(workspace_path)
     manifest = load_workspace_manifest(path)
     manifest["runs"].append(
         {
@@ -139,17 +300,51 @@ def record_workspace_run(
     return manifest
 
 
+def record_workspace_campaign_hunter_run(
+    workspace_path: str | Path,
+    *,
+    campaign_id: str,
+    campaign_name: str,
+    campaign_status: str,
+    dispatched_task_ids: list[str],
+    suggestion_count: int,
+) -> dict[str, Any]:
+    path = _workspace_directory(workspace_path)
+    manifest = load_workspace_manifest(path)
+    manifest.setdefault("campaign_hunter_runs", []).append(
+        {
+            "campaign_id": _markdown_text(campaign_id, ""),
+            "campaign_name": _markdown_text(campaign_name, "Campaign hunter"),
+            "campaign_status": _markdown_text(campaign_status, "unknown"),
+            "suggestion_count": suggestion_count,
+            "dispatched_task_count": len(dispatched_task_ids),
+            "dispatched_task_ids": [
+                _markdown_text(task_id, "") for task_id in dispatched_task_ids
+            ],
+            "autonomy_level": "level_0_read_only",
+            "safety_gate": "review_only_no_execution",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+            "recorded_at": _utc_now(),
+        }
+    )
+    _write_manifest(path, manifest)
+    return manifest
+
+
 def record_workspace_report_export(
     workspace_path: str | Path,
     *,
     run_id: str,
     report: dict[str, Any],
 ) -> dict[str, Any]:
-    path = Path(workspace_path)
+    path = _workspace_directory(workspace_path)
     manifest = load_workspace_manifest(path)
-    report_path = path / "reports" / f"{_safe_name(run_id)}-report-preview.json"
+    reports_dir = _workspace_child_directory(path, "reports")
+    report_path = reports_dir / f"{_safe_name(run_id)}-report-preview.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    markdown_path = path / "reports" / f"{_safe_name(run_id)}-report-draft.md"
+    markdown_path = reports_dir / f"{_safe_name(run_id)}-report-draft.md"
     markdown_path.write_text(_report_markdown(report), encoding="utf-8")
     report_ref = _safe_path_ref(str(report_path))
     markdown_ref = _safe_path_ref(str(markdown_path))
@@ -173,19 +368,47 @@ def record_workspace_report_export(
     return manifest
 
 
+def record_workspace_campaign_hunter_report_export(
+    workspace_path: str | Path,
+    *,
+    campaign_id: str,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    path = _workspace_directory(workspace_path)
+    manifest = load_workspace_manifest(path)
+    safe_campaign_id = _safe_name(campaign_id)
+    reports_dir = _workspace_child_directory(path, "reports")
+    report_path = reports_dir / f"{safe_campaign_id}-campaign-hunter-report-preview.json"
+    markdown_path = reports_dir / f"{safe_campaign_id}-campaign-hunter-report-draft.md"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    markdown_path.write_text(_report_markdown(report), encoding="utf-8")
+    report_ref = _safe_path_ref(str(report_path))
+    markdown_ref = _safe_path_ref(str(markdown_path))
+    for run in manifest.get("campaign_hunter_runs", []):
+        if isinstance(run, dict) and run.get("campaign_id") == campaign_id:
+            run["report_path"] = report_ref
+            run["report_markdown_path"] = markdown_ref
+            run["report_submission_allowed"] = False
+            run["report_status"] = "submission_blocked"
+            break
+    _write_manifest(path, manifest)
+    return manifest
+
+
 def record_workspace_mission_dossier(
     workspace_path: str | Path,
     *,
     run_id: str | None,
     mission: dict[str, Any],
 ) -> dict[str, Any]:
-    path = Path(workspace_path)
+    path = _workspace_directory(workspace_path)
     manifest = load_workspace_manifest(path)
     safe_run_id = _safe_name(run_id or "no-run")
-    dossier_path = path / "reports" / f"{safe_run_id}-mission-dossier.json"
-    markdown_path = path / "reports" / f"{safe_run_id}-mission-dossier.md"
-    agent_queue_path = path / "reports" / f"{safe_run_id}-agent-queue.json"
-    agent_queue_markdown_path = path / "reports" / f"{safe_run_id}-agent-queue.md"
+    reports_dir = _workspace_child_directory(path, "reports")
+    dossier_path = reports_dir / f"{safe_run_id}-mission-dossier.json"
+    markdown_path = reports_dir / f"{safe_run_id}-mission-dossier.md"
+    agent_queue_path = reports_dir / f"{safe_run_id}-agent-queue.json"
+    agent_queue_markdown_path = reports_dir / f"{safe_run_id}-agent-queue.md"
     safe_mission = dict(mission)
     safe_mission["readiness_audit"] = _safe_readiness_audit(
         mission.get("readiness_audit"),
@@ -206,6 +429,12 @@ def record_workspace_mission_dossier(
     safe_mission["candidate_hunter_review_loop"] = _safe_candidate_hunter_review_loop(
         mission.get("candidate_hunter_review_loop"),
         safe_mission["candidate_hunter_plan"],
+    )
+    safe_mission["candidate_hunter_execution_loop"] = (
+        _safe_candidate_hunter_execution_loop(
+            mission.get("candidate_hunter_execution_loop"),
+            safe_mission["candidate_hunter_review_loop"],
+        )
     )
     agent_queue_audit = _agent_queue_audit(run_id, mission)
     dossier_path.write_text(json.dumps(safe_mission, indent=2), encoding="utf-8")
@@ -304,10 +533,9 @@ def record_workspace_benchmark_result(
     run_id: str,
     result: dict[str, Any],
 ) -> dict[str, Any]:
-    path = Path(workspace_path)
+    path = _workspace_directory(workspace_path)
     manifest = load_workspace_manifest(path)
-    benchmark_dir = path / "benchmarks"
-    benchmark_dir.mkdir(exist_ok=True)
+    benchmark_dir = _workspace_child_directory(path, "benchmarks")
     benchmark_path = benchmark_dir / f"{_safe_name(run_id)}-benchmark-result.json"
     benchmark_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     benchmark_ref = _safe_path_ref(str(benchmark_path))
@@ -336,10 +564,9 @@ def record_workspace_benchmark_template(
     run_id: str,
     template: dict[str, Any],
 ) -> dict[str, Any]:
-    path = Path(workspace_path)
+    path = _workspace_directory(workspace_path)
     manifest = load_workspace_manifest(path)
-    benchmark_dir = path / "benchmarks"
-    benchmark_dir.mkdir(exist_ok=True)
+    benchmark_dir = _workspace_child_directory(path, "benchmarks")
     template_path = benchmark_dir / f"{_safe_name(run_id)}-expectations-template.json"
     template_path.write_text(json.dumps(template, indent=2), encoding="utf-8")
     template_ref = _safe_path_ref(str(template_path))
@@ -363,7 +590,8 @@ def record_workspace_benchmark_template(
 
 
 def _write_manifest(workspace_path: Path, manifest: dict[str, Any]) -> None:
-    (workspace_path / "manifest.json").write_text(
+    manifest_path = _workspace_file(workspace_path, "manifest.json", must_exist=False)
+    manifest_path.write_text(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
     )
@@ -421,8 +649,16 @@ def _report_markdown(report: dict[str, Any]) -> str:
     if ranking_reasons:
         lines.extend(["", "## Ranking reasons"])
         lines.extend(f"- {item}" for item in ranking_reasons)
+    evidence_focus = _markdown_list(report.get("evidence_focus"))
+    if evidence_focus:
+        lines.extend(["", "## Evidence focus"])
+        lines.extend(f"- {item}" for item in evidence_focus)
     lines.extend(_report_readiness_markdown_lines(report.get("report_readiness")))
     lines.extend(_evidence_review_markdown_lines(report.get("evidence_review")))
+    evidence_review_packet = _markdown_list(report.get("evidence_review_packet"))
+    if evidence_review_packet:
+        lines.extend(["", "## Evidence review packet"])
+        lines.extend(f"- {item}" for item in evidence_review_packet)
     lines.extend(_deduplication_review_markdown_lines(report.get("deduplication_review")))
     lines.extend(_refutation_review_markdown_lines(report.get("refutation_review")))
     lines.extend(_policy_review_markdown_lines(report.get("policy_review")))
@@ -530,6 +766,11 @@ def _mission_dossier_markdown(mission: dict[str, Any]) -> str:
             mission.get("candidate_hunter_review_loop")
         )
     )
+    lines.extend(
+        _candidate_hunter_execution_loop_markdown_lines(
+            mission.get("candidate_hunter_execution_loop")
+        )
+    )
     lines.extend(_studio_timeline_summary_markdown_lines(_mission_timeline_summary(mission)))
     lines.extend(
         _candidate_review_packets_markdown_lines(
@@ -632,6 +873,10 @@ def _agent_queue_audit(run_id: str | None, mission: dict[str, Any]) -> dict[str,
         mission.get("candidate_hunter_review_loop"),
         candidate_hunter_plan,
     )
+    candidate_hunter_execution_loop = _safe_candidate_hunter_execution_loop(
+        mission.get("candidate_hunter_execution_loop"),
+        candidate_hunter_review_loop,
+    )
     agent_handoff_pack = _safe_agent_handoff_pack(
         mission.get("agent_handoff_pack"),
         mission.get("candidate_hunter_backlog"),
@@ -661,6 +906,7 @@ def _agent_queue_audit(run_id: str | None, mission: dict[str, Any]) -> dict[str,
         "candidate_hunter_iteration": candidate_hunter_iteration,
         "candidate_hunter_plan": candidate_hunter_plan,
         "candidate_hunter_review_loop": candidate_hunter_review_loop,
+        "candidate_hunter_execution_loop": candidate_hunter_execution_loop,
         "quality_summary": _safe_quality_summary(quality_summary),
         "report_submission_allowed": False,
         "validation_execution_allowed": False,
@@ -1031,6 +1277,1092 @@ def _safe_candidate_hunter_review_loop_governance(
         or plan["required_consensus"],
         "candidate_promotion_allowed": False,
     }
+
+
+def _safe_candidate_hunter_execution_loop(
+    value: Any,
+    review_loop: dict[str, Any],
+) -> dict[str, Any]:
+    active_work_items = (
+        _safe_candidate_hunter_execution_work_items(value.get("active_work_items"))
+        if isinstance(value, dict)
+        else []
+    )
+    if not active_work_items:
+        active_work_items = [
+            _candidate_hunter_execution_work_item_from_review_step(step)
+            for step in _safe_candidate_hunter_review_loop_steps(
+                review_loop.get("active_steps")
+            )
+            if _queue_safe_text(step.get("work_item_id"))
+        ]
+    current_phase = (
+        _queue_safe_text(value.get("current_phase")) if isinstance(value, dict) else ""
+    ) or (
+        _queue_safe_text(active_work_items[0].get("phase_id"))
+        if active_work_items
+        else "report_draft_readiness"
+    )
+    phases = _safe_candidate_hunter_execution_phases(
+        value.get("phases") if isinstance(value, dict) else None,
+        active_work_items,
+    )
+    candidate_evidence_summary = _safe_candidate_hunter_evidence_summary(
+        value.get("candidate_evidence_summary") if isinstance(value, dict) else None
+    )
+    candidate_evidence_matrix = _safe_candidate_hunter_evidence_matrix(
+        value.get("candidate_evidence_matrix") if isinstance(value, dict) else None
+    )
+    next_candidate_actions = _safe_candidate_hunter_next_candidate_actions(
+        value.get("next_candidate_actions") if isinstance(value, dict) else None
+    )
+    learning_feedback_target = _safe_candidate_hunter_learning_feedback_target(
+        value.get("learning_feedback_target") if isinstance(value, dict) else None
+    )
+    return {
+        "loop_id": (
+            _queue_safe_text(value.get("loop_id")) if isinstance(value, dict) else ""
+        )
+        or "candidate_hunter:bounded_execution_loop",
+        "status": (
+            _queue_safe_text(value.get("status")) if isinstance(value, dict) else ""
+        )
+        or _queue_safe_text(review_loop.get("status"))
+        or "needs_review",
+        "iteration": value.get("iteration")
+        if isinstance(value, dict) and isinstance(value.get("iteration"), int)
+        else 1,
+        "source_review_loop_id": (
+            _queue_safe_text(value.get("source_review_loop_id"))
+            if isinstance(value, dict)
+            else ""
+        )
+        or _queue_safe_text(review_loop.get("loop_id"))
+        or "candidate_hunter:next_review_loop",
+        "source_plan_id": (
+            _queue_safe_text(value.get("source_plan_id")) if isinstance(value, dict) else ""
+        )
+        or _queue_safe_text(review_loop.get("source_plan_id"))
+        or "candidate_hunter:autonomous_review_plan",
+        "candidate_budget": 5,
+        "top_candidate_limit": 5,
+        "current_phase": current_phase,
+        "phase_count": len(phases),
+        "phases": phases,
+        "active_work_items": active_work_items,
+        "candidate_evidence_summary": candidate_evidence_summary,
+        "candidate_evidence_matrix": candidate_evidence_matrix,
+        "ranked_top_candidates": _safe_candidate_hunter_ranked_top_candidates(
+            value.get("ranked_top_candidates") if isinstance(value, dict) else None,
+            candidate_evidence_matrix,
+            next_candidate_actions,
+        ),
+        "next_candidate_actions": next_candidate_actions,
+        "refutation_queue": _safe_candidate_hunter_refutation_queue(
+            value.get("refutation_queue") if isinstance(value, dict) else None
+        ),
+        "deduplication_queue": _safe_candidate_hunter_deduplication_queue(
+            value.get("deduplication_queue") if isinstance(value, dict) else None
+        ),
+        "safe_validation_queue": _safe_candidate_hunter_safe_validation_queue(
+            value.get("safe_validation_queue") if isinstance(value, dict) else None
+        ),
+        "report_draft_queue": _safe_candidate_hunter_report_draft_queue(
+            value.get("report_draft_queue") if isinstance(value, dict) else None
+        ),
+        "learning_feedback_target": learning_feedback_target,
+        "learning_review_actions": _safe_candidate_hunter_learning_review_actions(
+            value.get("learning_review_actions") if isinstance(value, dict) else None,
+            learning_feedback_target,
+            candidate_evidence_matrix,
+        ),
+        "promotion_policy": {
+            "candidate_promotion_allowed": False,
+            "requires_local_artifact_trace": True,
+            "requires_independent_refutation": True,
+            "requires_human_review": True,
+        },
+        "blocked_actions": [
+            "execute_live_validation",
+            "run_fuzzer",
+            "submit_report",
+            "touch_real_user_data",
+            "store_raw_secret",
+        ],
+        "safety_gate": "bounded_autonomous_review_only",
+        "completion_gate": "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "validation_execution_allowed": False,
+        "report_submission_allowed": False,
+        "candidate_promotion_allowed": False,
+    }
+
+
+def _safe_candidate_hunter_refutation_queue(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        items.append(
+            {
+                "queue_id": _queue_safe_text(item.get("queue_id"))
+                or f"candidate_hunter:refutation:{candidate_id}",
+                "candidate_id": candidate_id,
+                "priority_score": _safe_int(item.get("priority_score")),
+                "trace_status": _queue_safe_text(item.get("trace_status"))
+                or "needs_evidence",
+                "missing_evidence": _queue_safe_list(item.get("missing_evidence")),
+                "missing_required_artifact_kinds": _queue_safe_list(
+                    item.get("missing_required_artifact_kinds")
+                ),
+                "questions": _safe_candidate_hunter_refutation_questions(
+                    item.get("questions")
+                ),
+                "required_evidence": _queue_safe_list(item.get("required_evidence")),
+                "next_action": _queue_safe_text(item.get("next_action")),
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items
+
+
+def _safe_candidate_hunter_ranked_top_candidates(
+    value: Any,
+    evidence_matrix: list[dict[str, Any]],
+    next_candidate_actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    evidence_by_candidate_id = {
+        _queue_safe_text(item.get("candidate_id")): item
+        for item in evidence_matrix
+        if _queue_safe_text(item.get("candidate_id"))
+    }
+    if isinstance(value, list):
+        items = _safe_candidate_hunter_ranked_top_candidate_items(
+            value,
+            evidence_by_candidate_id,
+        )
+        if items:
+            return _ranked_top_candidates_reordered(items)
+    ranked: list[dict[str, Any]] = []
+    for index, action in enumerate(next_candidate_actions[:5], start=1):
+        candidate_id = _queue_safe_text(action.get("candidate_id"))
+        if not candidate_id:
+            continue
+        evidence = evidence_by_candidate_id.get(candidate_id, {})
+        missing_evidence = _queue_safe_list(evidence.get("missing_evidence"))
+        missing_required = _queue_safe_list(
+            evidence.get("missing_required_artifact_kinds")
+        )
+        quality_status = _queue_safe_text(evidence.get("quality_status")) or "needs_review"
+        trace_status = _queue_safe_text(evidence.get("evidence_trace_status")) or "needs_evidence"
+        evidence_ready = _candidate_hunter_ranked_evidence_ready(
+            quality_status=quality_status,
+            trace_status=trace_status,
+            missing_evidence=missing_evidence,
+            missing_required_artifact_kinds=missing_required,
+        )
+        ranked.append(
+            {
+                "rank": index,
+                "candidate_id": candidate_id,
+                "phase_id": _queue_safe_text(action.get("phase_id")) or "refutation",
+                "priority_score": _safe_int(action.get("priority_score")),
+                "reason": _queue_safe_text(action.get("reason")) or "needs_review",
+                "required_evidence": _queue_safe_list(action.get("required_evidence")),
+                "next_action": _queue_safe_text(action.get("next_action")),
+                "affected_endpoint": _queue_safe_text(
+                    evidence.get("affected_endpoint")
+                ),
+                "affected_code_path": _queue_safe_text(
+                    evidence.get("affected_code_path")
+                ),
+                "quality_status": (
+                    "review_ready" if evidence_ready else "needs_review"
+                ),
+                "evidence_ready": evidence_ready,
+                "trace_status": trace_status,
+                "missing_evidence": missing_evidence,
+                "missing_required_artifact_kinds": missing_required,
+                "ranking_signal_breakdown": _queue_safe_list(
+                    evidence.get("ranking_signal_breakdown")
+                ),
+                "safety_gate": (
+                    _candidate_hunter_phase_safety_gate(
+                        _queue_safe_text(action.get("phase_id"))
+                    )
+                    if evidence_ready
+                    else "review_only_no_execution"
+                ),
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return _ranked_top_candidates_reordered(ranked)
+
+
+def _safe_candidate_hunter_ranked_top_candidate_items(
+    value: list[Any],
+    evidence_by_candidate_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(value[:5], start=1):
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        evidence = evidence_by_candidate_id.get(candidate_id, {})
+        missing_evidence = _queue_safe_list(evidence.get("missing_evidence"))
+        if not missing_evidence:
+            missing_evidence = _queue_safe_list(item.get("missing_evidence"))
+        missing_required = _queue_safe_list(
+            evidence.get("missing_required_artifact_kinds")
+        )
+        if not missing_required:
+            missing_required = _queue_safe_list(
+                item.get("missing_required_artifact_kinds")
+            )
+        quality_status = (
+            _queue_safe_text(evidence.get("quality_status"))
+            or _queue_safe_text(item.get("quality_status"))
+            or "needs_review"
+        )
+        trace_status = (
+            _queue_safe_text(evidence.get("evidence_trace_status"))
+            or _queue_safe_text(item.get("trace_status"))
+            or "needs_evidence"
+        )
+        evidence_ready = _candidate_hunter_ranked_evidence_ready(
+            quality_status=quality_status,
+            trace_status=trace_status,
+            missing_evidence=missing_evidence,
+            missing_required_artifact_kinds=missing_required,
+        )
+        phase_id = _queue_safe_text(item.get("phase_id")) or "refutation"
+        reason = _candidate_hunter_ranked_reason(
+            _queue_safe_text(item.get("reason")),
+            evidence_ready=evidence_ready,
+            missing_evidence=missing_evidence,
+            missing_required_artifact_kinds=missing_required,
+        )
+        items.append(
+            {
+                "rank": _safe_int(item.get("rank")) or index,
+                "candidate_id": candidate_id,
+                "phase_id": phase_id,
+                "priority_score": _safe_int(item.get("priority_score")),
+                "reason": reason,
+                "required_evidence": _queue_safe_list(item.get("required_evidence")),
+                "next_action": _queue_safe_text(item.get("next_action")),
+                "affected_endpoint": _queue_safe_text(
+                    evidence.get("affected_endpoint")
+                )
+                or _queue_safe_text(item.get("affected_endpoint")),
+                "affected_code_path": _queue_safe_text(
+                    evidence.get("affected_code_path")
+                )
+                or _queue_safe_text(item.get("affected_code_path")),
+                "quality_status": (
+                    "review_ready" if evidence_ready else "needs_review"
+                ),
+                "evidence_ready": evidence_ready,
+                "trace_status": trace_status,
+                "missing_evidence": missing_evidence,
+                "missing_required_artifact_kinds": missing_required,
+                "ranking_signal_breakdown": _queue_safe_list(
+                    evidence.get("ranking_signal_breakdown")
+                ),
+                "safety_gate": (
+                    _candidate_hunter_phase_safety_gate(phase_id)
+                    if evidence_ready
+                    else "review_only_no_execution"
+                ),
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items
+
+
+def _candidate_hunter_ranked_evidence_ready(
+    *,
+    quality_status: str,
+    trace_status: str,
+    missing_evidence: list[str],
+    missing_required_artifact_kinds: list[str],
+) -> bool:
+    return (
+        quality_status == "review_ready"
+        and trace_status == "traceable"
+        and not missing_evidence
+        and not missing_required_artifact_kinds
+    )
+
+
+def _candidate_hunter_ranked_reason(
+    provided_reason: str,
+    *,
+    evidence_ready: bool,
+    missing_evidence: list[str],
+    missing_required_artifact_kinds: list[str],
+) -> str:
+    if evidence_ready:
+        return provided_reason or "review_ready"
+    if provided_reason.startswith("missing_"):
+        return provided_reason
+    if missing_required_artifact_kinds:
+        return "missing_required_evidence"
+    if missing_evidence:
+        return "missing_evidence"
+    return provided_reason or "needs_review"
+
+
+def _ranked_top_candidates_reordered(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    ranked = sorted(
+        items,
+        key=lambda item: (
+            0 if item.get("evidence_ready") is True else 1,
+            -_safe_int(item.get("priority_score")),
+            _queue_safe_text(item.get("candidate_id")),
+        ),
+    )[:5]
+    for index, item in enumerate(ranked, start=1):
+        item["rank"] = index
+    return ranked
+
+
+def _safe_candidate_hunter_refutation_questions(value: Any) -> list[str]:
+    questions: list[str] = []
+    for item in _queue_safe_list(value):
+        lowered = item.lower()
+        if "live validation" in lowered or "execute" in lowered:
+            continue
+        questions.append(item)
+    return questions[:5]
+
+
+def _safe_candidate_hunter_deduplication_queue(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        items.append(
+            {
+                "queue_id": _queue_safe_text(item.get("queue_id"))
+                or f"candidate_hunter:deduplication:{candidate_id}",
+                "candidate_id": candidate_id,
+                "priority_score": _safe_int(item.get("priority_score")),
+                "duplicate_risk_score": _safe_int(item.get("duplicate_risk_score")),
+                "affected_endpoint": _queue_safe_text(item.get("affected_endpoint")),
+                "affected_code_path": _queue_safe_text(item.get("affected_code_path")),
+                "similarity_keys": _queue_safe_list(item.get("similarity_keys")),
+                "questions": _safe_candidate_hunter_deduplication_questions(
+                    item.get("questions")
+                ),
+                "required_evidence": _queue_safe_list(item.get("required_evidence")),
+                "next_action": _queue_safe_text(item.get("next_action")),
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items
+
+
+def _safe_candidate_hunter_deduplication_questions(value: Any) -> list[str]:
+    questions: list[str] = []
+    for item in _queue_safe_list(value):
+        lowered = item.lower()
+        if "submit" in lowered or "report submission" in lowered:
+            continue
+        questions.append(item)
+    return questions[:5]
+
+
+def _safe_candidate_hunter_safe_validation_queue(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        items.append(
+            {
+                "queue_id": _queue_safe_text(item.get("queue_id"))
+                or f"candidate_hunter:safe_validation:{candidate_id}",
+                "candidate_id": candidate_id,
+                "priority_score": _safe_int(item.get("priority_score")),
+                "affected_endpoint": _queue_safe_text(item.get("affected_endpoint")),
+                "affected_code_path": _queue_safe_text(item.get("affected_code_path")),
+                "validation_mode": "human_approved_non_destructive_plan",
+                "plan_steps": _safe_candidate_hunter_safe_validation_steps(
+                    item.get("plan_steps")
+                ),
+                "required_approvals": [
+                    "scope_guard_route_approval",
+                    "human_validation_approval",
+                    "redaction_review",
+                ],
+                "next_action": (
+                    f"Review and approve the non-destructive validation plan for {candidate_id}; execution remains blocked."
+                ),
+                "safety_gate": "human_approval_required",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "validation_execution_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items
+
+
+def _safe_candidate_hunter_safe_validation_steps(value: Any) -> list[str]:
+    steps: list[str] = []
+    for item in _queue_safe_list(value):
+        lowered = item.lower()
+        if "execute" in lowered or "production" in lowered or "live validation" in lowered:
+            continue
+        steps.append(item)
+    return steps[:5]
+
+
+def _safe_candidate_hunter_report_draft_queue(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        items.append(
+            {
+                "queue_id": _queue_safe_text(item.get("queue_id"))
+                or f"candidate_hunter:report_draft:{candidate_id}",
+                "candidate_id": candidate_id,
+                "priority_score": _safe_int(item.get("priority_score")),
+                "report_status": "submission_blocked",
+                "affected_endpoint": _queue_safe_text(item.get("affected_endpoint")),
+                "affected_code_path": _queue_safe_text(item.get("affected_code_path")),
+                "required_sections": _safe_candidate_hunter_report_sections(
+                    item.get("required_sections")
+                ),
+                "evidence_focus": [
+                    focus
+                    for focus in _queue_safe_list(item.get("evidence_focus"))
+                    if focus != "[REDACTED]"
+                ],
+                "redaction_checks": _safe_candidate_hunter_report_redaction_checks(
+                    item.get("redaction_checks")
+                ),
+                "next_action": (
+                    f"Draft a submission-blocked report for {candidate_id} and keep submission disabled pending human review."
+                ),
+                "safety_gate": "submission_blocked_human_review",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items
+
+
+def _safe_candidate_hunter_report_sections(value: Any) -> list[str]:
+    sections: list[str] = []
+    for item in _queue_safe_list(value):
+        lowered = item.lower()
+        if any(
+            token in lowered
+            for token in ("raw", "authorization", "secret", "token", "cookie", "credential")
+        ):
+            continue
+        sections.append(item)
+    return sections[:10]
+
+
+def _safe_candidate_hunter_report_redaction_checks(value: Any) -> list[str]:
+    checks = _queue_safe_list(value)
+    return checks or [
+        "Remove raw secrets, cookies, tokens, credentials, and authorization headers."
+    ]
+
+
+def _safe_candidate_hunter_learning_feedback_target(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "target_id": "candidate_hunter:learning_feedback:next_actions",
+            "status": "awaiting_human_outcome",
+            "source_loop_id": "candidate_hunter:bounded_execution_loop",
+            "candidate_ids": [],
+            "action_count": 0,
+            "allowed_outcomes": [
+                "confirmed",
+                "refuted",
+                "needs_more_evidence",
+                "duplicate",
+            ],
+            "next_action": "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+            "safety_gate": "human_review_required",
+            "learning_write_allowed": False,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    return {
+        "target_id": _queue_safe_text(value.get("target_id"))
+        or "candidate_hunter:learning_feedback:next_actions",
+        "status": _queue_safe_text(value.get("status")) or "awaiting_human_outcome",
+        "source_loop_id": _queue_safe_text(value.get("source_loop_id"))
+        or "candidate_hunter:bounded_execution_loop",
+        "candidate_ids": _queue_safe_list(value.get("candidate_ids")),
+        "action_count": _safe_int(value.get("action_count")),
+        "allowed_outcomes": [
+            outcome
+            for outcome in _queue_safe_list(value.get("allowed_outcomes"))
+            if outcome in {"confirmed", "refuted", "needs_more_evidence", "duplicate"}
+        ]
+        or ["confirmed", "refuted", "needs_more_evidence", "duplicate"],
+        "next_action": _queue_safe_text(value.get("next_action"))
+        or "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+        "safety_gate": "human_review_required",
+        "learning_write_allowed": False,
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _safe_candidate_hunter_learning_review_actions(
+    value: Any,
+    learning_feedback_target: dict[str, Any],
+    evidence_matrix: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    evidence_by_candidate_id = {
+        _queue_safe_text(item.get("candidate_id")): item
+        for item in evidence_matrix
+        if _queue_safe_text(item.get("candidate_id"))
+    }
+    if isinstance(value, list):
+        actions = _safe_candidate_hunter_learning_review_action_list(
+            value, evidence_by_candidate_id
+        )
+        if actions:
+            return actions
+
+    allowed_outcomes = _safe_candidate_hunter_allowed_learning_outcomes(
+        learning_feedback_target.get("allowed_outcomes")
+    )
+    source_loop_id = (
+        _queue_safe_text(learning_feedback_target.get("source_loop_id"))
+        or "candidate_hunter:bounded_execution_loop"
+    )
+    target_id = (
+        _queue_safe_text(learning_feedback_target.get("target_id"))
+        or "candidate_hunter:learning_feedback:next_actions"
+    )
+    actions: list[dict[str, Any]] = []
+    for candidate_id in _queue_safe_list(
+        learning_feedback_target.get("candidate_ids")
+    )[:5]:
+        evidence = evidence_by_candidate_id.get(candidate_id, {})
+        missing_evidence = (
+            _queue_safe_list(evidence.get("missing_evidence"))
+            if isinstance(evidence, dict)
+            else []
+        )
+        missing_required = (
+            _queue_safe_list(evidence.get("missing_required_artifact_kinds"))
+            if isinstance(evidence, dict)
+            else []
+        )
+        quality_status = (
+            _queue_safe_text(evidence.get("quality_status"))
+            if isinstance(evidence, dict)
+            else ""
+        )
+        suggested_outcome = (
+            "confirmed"
+            if quality_status == "review_ready"
+            and not missing_evidence
+            and not missing_required
+            else "needs_more_evidence"
+        )
+        actions.append(
+            {
+                "action_id": f"{target_id}:{candidate_id}",
+                "candidate_id": candidate_id,
+                "source_loop_id": source_loop_id,
+                "suggested_outcome": suggested_outcome,
+                "evidence_ready": (
+                    quality_status == "review_ready"
+                    and not missing_evidence
+                    and not missing_required
+                ),
+                "trace_status": (
+                    _queue_safe_text(evidence.get("evidence_trace_status"))
+                    if isinstance(evidence, dict)
+                    else ""
+                )
+                or "needs_evidence",
+                "missing_evidence": missing_evidence,
+                "missing_required_artifact_kinds": missing_required,
+                "allowed_outcomes": allowed_outcomes,
+                "next_action": (
+                    f"Review {candidate_id} and record a human outcome before updating future ranking."
+                ),
+                "safety_gate": "human_review_required",
+                "learning_write_allowed": False,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return actions
+
+
+def _safe_candidate_hunter_learning_review_action_list(
+    value: list[Any],
+    evidence_by_candidate_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        target_id = (
+            _queue_safe_text(item.get("action_id")).rsplit(":", 1)[0]
+            or "candidate_hunter:learning_feedback:next_actions"
+        )
+        suggested_outcome = _queue_safe_text(item.get("suggested_outcome"))
+        if suggested_outcome not in {
+            "confirmed",
+            "refuted",
+            "needs_more_evidence",
+            "duplicate",
+        }:
+            suggested_outcome = "needs_more_evidence"
+        evidence = evidence_by_candidate_id.get(candidate_id, {})
+        fallback_missing_evidence = (
+            _queue_safe_list(evidence.get("missing_evidence"))
+            if isinstance(evidence, dict)
+            else []
+        )
+        fallback_missing_required = (
+            _queue_safe_list(evidence.get("missing_required_artifact_kinds"))
+            if isinstance(evidence, dict)
+            else []
+        )
+        missing_evidence = _queue_safe_list(item.get("missing_evidence"))
+        if not missing_evidence:
+            missing_evidence = fallback_missing_evidence
+        missing_required = _queue_safe_list(
+            item.get("missing_required_artifact_kinds")
+        )
+        if not missing_required:
+            missing_required = fallback_missing_required
+        evidence_ready = item.get("evidence_ready") is True
+        if "evidence_ready" not in item and isinstance(evidence, dict):
+            evidence_ready = (
+                _queue_safe_text(evidence.get("quality_status")) == "review_ready"
+                and not missing_evidence
+                and not missing_required
+            )
+        trace_status = _queue_safe_text(item.get("trace_status"))
+        if not trace_status and isinstance(evidence, dict):
+            trace_status = _queue_safe_text(evidence.get("evidence_trace_status"))
+        action = {
+            "action_id": f"{target_id}:{candidate_id}",
+            "candidate_id": candidate_id,
+            "source_loop_id": _queue_safe_text(item.get("source_loop_id"))
+            or "candidate_hunter:bounded_execution_loop",
+            "suggested_outcome": suggested_outcome,
+            "evidence_ready": evidence_ready,
+            "trace_status": trace_status or "needs_evidence",
+            "missing_evidence": missing_evidence,
+            "missing_required_artifact_kinds": missing_required,
+            "allowed_outcomes": _safe_candidate_hunter_allowed_learning_outcomes(
+                item.get("allowed_outcomes")
+            ),
+            "next_action": (
+                f"Review {candidate_id} and record a human outcome before updating future ranking."
+            ),
+            "safety_gate": "human_review_required",
+            "learning_write_allowed": False,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+        template = _safe_candidate_hunter_learning_signal_template(
+            item.get("learning_signal_template")
+        )
+        if template:
+            action["learning_signal_template"] = template
+        actions.append(action)
+    return actions
+
+
+def _safe_candidate_hunter_learning_signal_template(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    playbook_id = _queue_safe_text(value.get("playbook_id"))
+    surface_key = _queue_safe_text(value.get("surface_key"))
+    if not playbook_id or not surface_key:
+        return {}
+    return {
+        "playbook_id": playbook_id,
+        "surface_key": surface_key,
+        "target_relationships": _queue_safe_list(value.get("target_relationships")),
+        "human_review_required": True,
+        "learning_write_allowed": False,
+    }
+
+
+def _safe_candidate_hunter_allowed_learning_outcomes(value: Any) -> list[str]:
+    outcomes = [
+        outcome
+        for outcome in _queue_safe_list(value)
+        if outcome in {"confirmed", "refuted", "needs_more_evidence", "duplicate"}
+    ]
+    return outcomes or ["confirmed", "refuted", "needs_more_evidence", "duplicate"]
+
+
+def _safe_candidate_hunter_next_candidate_actions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    actions: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        actions.append(
+            {
+                "candidate_id": candidate_id,
+                "phase_id": _queue_safe_text(item.get("phase_id")) or "refutation",
+                "priority_score": _safe_int(item.get("priority_score")),
+                "reason": _queue_safe_text(item.get("reason")) or "needs_review",
+                "required_evidence": _queue_safe_list(item.get("required_evidence")),
+                "next_action": _queue_safe_text(item.get("next_action")),
+                "safety_gate": _candidate_hunter_phase_safety_gate(
+                    _queue_safe_text(item.get("phase_id"))
+                ),
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return actions
+
+
+def _safe_candidate_hunter_evidence_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "candidate_count": 0,
+            "review_ready_count": 0,
+            "review_needed_count": 0,
+            "endpoint_traced_count": 0,
+            "code_path_traced_count": 0,
+            "local_artifact_kinds": [],
+            "advisory_artifact_kinds": [],
+            "average_quality_score": 0,
+            "evidence_ready_candidate_ids": [],
+            "review_needed_candidate_ids": [],
+        }
+    return {
+        "candidate_count": _safe_int(value.get("candidate_count")),
+        "review_ready_count": _safe_int(value.get("review_ready_count")),
+        "review_needed_count": _safe_int(value.get("review_needed_count")),
+        "endpoint_traced_count": _safe_int(value.get("endpoint_traced_count")),
+        "code_path_traced_count": _safe_int(value.get("code_path_traced_count")),
+        "local_artifact_kinds": _queue_safe_list(value.get("local_artifact_kinds")),
+        "advisory_artifact_kinds": _queue_safe_list(
+            value.get("advisory_artifact_kinds")
+        ),
+        "average_quality_score": _safe_int(value.get("average_quality_score")),
+        "evidence_ready_candidate_ids": _queue_safe_list(
+            value.get("evidence_ready_candidate_ids")
+        ),
+        "review_needed_candidate_ids": _queue_safe_list(
+            value.get("review_needed_candidate_ids")
+        ),
+    }
+
+
+def _safe_candidate_hunter_evidence_matrix(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _queue_safe_text(item.get("candidate_id"))
+        if not candidate_id:
+            continue
+        rows.append(
+            {
+                "candidate_id": candidate_id,
+                "affected_endpoint": _queue_safe_text(item.get("affected_endpoint")),
+                "affected_code_path": _queue_safe_text(item.get("affected_code_path")),
+                "quality_score": _safe_int(item.get("quality_score")),
+                "hunter_priority_score": _safe_int(item.get("hunter_priority_score")),
+                "impact_score": _safe_int(item.get("impact_score")),
+                "rejection_risk_score": _safe_int(item.get("rejection_risk_score")),
+                "policy_risk_score": _safe_int(item.get("policy_risk_score")),
+                "ranking_signal_breakdown": (
+                    _queue_safe_list(item.get("ranking_signal_breakdown"))
+                    or _safe_candidate_hunter_ranking_signal_breakdown(item)
+                ),
+                "quality_status": _queue_safe_text(item.get("quality_status"))
+                or "needs_review",
+                "local_evidence_sources": _queue_safe_list(
+                    item.get("local_evidence_sources")
+                ),
+                "advisory_sources": _queue_safe_list(item.get("advisory_sources")),
+                "independent_cross_check_sources": _queue_safe_list(
+                    item.get("independent_cross_check_sources")
+                ),
+                "missing_evidence": _queue_safe_list(item.get("missing_evidence")),
+                "missing_required_artifact_kinds": _queue_safe_list(
+                    item.get("missing_required_artifact_kinds")
+                ),
+                "learning_evidence_needed_reasons": _queue_safe_list(
+                    item.get("learning_evidence_needed_reasons")
+                ),
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return rows
+
+
+def _safe_int(value: Any) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+def _safe_candidate_hunter_ranking_signal_breakdown(item: dict[str, Any]) -> list[str]:
+    hunter_priority_score = _safe_int(item.get("hunter_priority_score"))
+    if not hunter_priority_score:
+        return []
+    quality_score = _safe_int(item.get("quality_score"))
+    score = max(quality_score, hunter_priority_score)
+    breakdown = [
+        f"quality_score:{quality_score}",
+        f"hunter_priority_floor:{hunter_priority_score}",
+    ]
+    for missing_item in _queue_safe_list(item.get("missing_evidence")):
+        score -= 10
+        breakdown.append(f"{missing_item}_penalty:-10")
+    if _queue_safe_text(item.get("evidence_trace_status")) == "traceable":
+        score += 20
+        breakdown.append("traceable_evidence_bonus:+20")
+    cross_check_bonus = min(10, 5 * _safe_int(item.get("independent_cross_check_count")))
+    if cross_check_bonus:
+        score += cross_check_bonus
+        breakdown.append(f"independent_cross_check_bonus:+{cross_check_bonus}")
+    breakdown.append(f"final_priority_score:{max(0, score)}")
+    return breakdown
+
+
+def _safe_candidate_hunter_execution_work_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value[:10]:
+        if not isinstance(item, dict):
+            continue
+        work_item_id = _queue_safe_text(item.get("work_item_id"))
+        if not work_item_id:
+            continue
+        gap = _queue_safe_text(item.get("gap"))
+        items.append(
+            {
+                "work_item_id": work_item_id,
+                "candidate_id": _queue_safe_text(item.get("candidate_id")),
+                "gap": gap,
+                "assigned_agent": _queue_safe_text(item.get("assigned_agent"))
+                or "Human Reviewer",
+                "phase_id": _queue_safe_text(item.get("phase_id"))
+                or _candidate_hunter_phase_for_gap(gap),
+                "required_evidence": _queue_safe_list(item.get("required_evidence")),
+                "next_action": _queue_safe_text(item.get("next_action")),
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        )
+    return items
+
+
+def _candidate_hunter_execution_work_item_from_review_step(
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    gap = _queue_safe_text(step.get("gap"))
+    return {
+        "work_item_id": _queue_safe_text(step.get("work_item_id")),
+        "candidate_id": _queue_safe_text(step.get("candidate_id")),
+        "gap": gap,
+        "assigned_agent": _queue_safe_text(step.get("assigned_agent"))
+        or "Human Reviewer",
+        "phase_id": _candidate_hunter_phase_for_gap(gap),
+        "required_evidence": _queue_safe_list(step.get("required_evidence")),
+        "next_action": _queue_safe_text(step.get("next_action")),
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _safe_candidate_hunter_execution_phases(
+    value: Any,
+    active_work_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        phases: list[dict[str, Any]] = []
+        for item in value[:8]:
+            if not isinstance(item, dict):
+                continue
+            phase_id = _queue_safe_text(item.get("phase_id"))
+            if not phase_id:
+                continue
+            phases.append(
+                {
+                    "phase_id": phase_id,
+                    "label": _queue_safe_text(item.get("label"))
+                    or _candidate_hunter_phase_label(phase_id),
+                    "status": _queue_safe_text(item.get("status")) or "needs_review",
+                    "input_refs": _queue_safe_list(item.get("input_refs")),
+                    "output_refs": _queue_safe_list(item.get("output_refs")),
+                    "safety_gate": _candidate_hunter_phase_safety_gate(phase_id),
+                    "execution_allowed": False,
+                    "validation_allowed": False,
+                    "report_submission_allowed": False,
+                }
+            )
+        if phases:
+            return phases
+    active_phases = {
+        _queue_safe_text(item.get("phase_id")) for item in active_work_items
+    }
+    return [
+        {
+            "phase_id": phase_id,
+            "label": _candidate_hunter_phase_label(phase_id),
+            "status": "needs_review" if phase_id in active_phases else "complete",
+            "input_refs": input_refs,
+            "output_refs": output_refs,
+            "safety_gate": _candidate_hunter_phase_safety_gate(phase_id),
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+        for phase_id, input_refs, output_refs in (
+            (
+                "surface_modeling",
+                ["scope", "policy", "api", "har"],
+                ["affected_endpoints", "surface_facts"],
+            ),
+            (
+                "semantic_audit",
+                ["code", "api", "har"],
+                ["affected_code_paths", "security_invariants"],
+            ),
+            (
+                "hypothesis_generation",
+                ["surface_facts", "security_invariants"],
+                ["candidate_hypotheses"],
+            ),
+            ("refutation", ["candidate_hypotheses"], ["false_positive_questions"]),
+            (
+                "deduplication",
+                ["candidate_hypotheses"],
+                ["candidate_similarity_review"],
+            ),
+            (
+                "ranking",
+                ["candidate_hypotheses", "refutation_notes"],
+                ["top_1_to_5_candidates"],
+            ),
+            (
+                "safe_validation_work",
+                ["top_1_to_5_candidates"],
+                ["non_destructive_validation_plan"],
+            ),
+            (
+                "report_draft_readiness",
+                ["evidence_review", "safe_validation_plan"],
+                ["submission_blocked_report_draft"],
+            ),
+        )
+    ]
+
+
+def _candidate_hunter_phase_for_gap(gap: str) -> str:
+    by_gap = {
+        "missing_ab_artifacts": "surface_modeling",
+        "missing_endpoint": "surface_modeling",
+        "missing_code_path": "semantic_audit",
+        "missing_provenance_review": "hypothesis_generation",
+        "missing_evidence_needs": "refutation",
+        "missing_refutation_checks": "refutation",
+        "missing_cross_validation_consensus": "refutation",
+        "evidence_gaps_need_review": "refutation",
+        "missing_deduplication_review": "deduplication",
+        "missing_safe_validation_plan": "safe_validation_work",
+        "missing_submission_blocked_report": "report_draft_readiness",
+    }
+    return by_gap.get(gap, "refutation")
+
+
+def _candidate_hunter_phase_label(phase_id: str) -> str:
+    labels = {
+        "surface_modeling": "Attack surface modeling",
+        "semantic_audit": "Semantic code/API audit",
+        "hypothesis_generation": "High-value hypothesis generation",
+        "refutation": "Refutation review",
+        "deduplication": "Candidate deduplication",
+        "ranking": "Top candidate ranking",
+        "safe_validation_work": "Safe validation work planning",
+        "report_draft_readiness": "Submission-blocked report draft readiness",
+    }
+    return labels.get(phase_id, "Candidate hunter phase")
+
+
+def _candidate_hunter_phase_safety_gate(phase_id: str) -> str:
+    gates = {
+        "surface_modeling": "authorized_artifacts_only",
+        "semantic_audit": "local_static_analysis_only",
+        "hypothesis_generation": "model_claims_unverified",
+        "safe_validation_work": "human_approval_required",
+        "report_draft_readiness": "submission_blocked_human_review",
+    }
+    return gates.get(phase_id, "review_only_no_execution")
 
 
 def _unique_queue_values(values: Any) -> list[str]:
@@ -2413,6 +3745,200 @@ def _candidate_hunter_review_loop_markdown_lines(value: Any) -> list[str]:
     return lines
 
 
+def _candidate_hunter_execution_loop_markdown_lines(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    loop_id = _markdown_safe_text(value.get("loop_id"))
+    if not loop_id:
+        return []
+    status = _markdown_safe_text(value.get("status")) or "needs_review"
+    current_phase = _markdown_safe_text(value.get("current_phase"))
+    source_review_loop_id = _markdown_safe_text(value.get("source_review_loop_id"))
+    phase_count = _markdown_summary_value(value.get("phase_count"))
+    candidate_budget = _markdown_summary_value(value.get("candidate_budget"))
+    lines = [
+        "",
+        "## Candidate hunter execution loop",
+        f"- {loop_id}: {status}; source review loop: {source_review_loop_id}; current phase: {current_phase}; phases: {phase_count}; candidate budget: {candidate_budget}",
+        "- Gates: bounded_autonomous_review_only; completion: human_review_required; execution allowed: false; validation allowed: false; report submission allowed: false; candidate promotion allowed: false",
+    ]
+    phases = value.get("phases")
+    if isinstance(phases, list):
+        for item in phases[:8]:
+            if not isinstance(item, dict):
+                continue
+            phase_id = _markdown_safe_text(item.get("phase_id"))
+            label = _markdown_safe_text(item.get("label"))
+            phase_status = _markdown_safe_text(item.get("status"))
+            safety_gate = _markdown_safe_text(item.get("safety_gate"))
+            if phase_id:
+                lines.append(
+                    f"- {phase_id}: {label} ({phase_status}, {safety_gate})"
+                )
+    active_work_items = value.get("active_work_items")
+    if isinstance(active_work_items, list) and active_work_items:
+        lines.append("- Active work items:")
+        for item in active_work_items[:10]:
+            if not isinstance(item, dict):
+                continue
+            work_item_id = _markdown_safe_text(item.get("work_item_id"))
+            phase_id = _markdown_safe_text(item.get("phase_id"))
+            assigned_agent = _markdown_safe_text(item.get("assigned_agent"))
+            next_action = _markdown_safe_text(item.get("next_action"))
+            if work_item_id:
+                lines.append(
+                    f"  - {work_item_id}: {assigned_agent}; phase: {phase_id}; next: {next_action}"
+                )
+    candidate_evidence_matrix = value.get("candidate_evidence_matrix")
+    if isinstance(candidate_evidence_matrix, list) and candidate_evidence_matrix:
+        lines.append("- Candidate evidence matrix:")
+        for item in candidate_evidence_matrix[:5]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = _markdown_safe_text(item.get("candidate_id"))
+            if not candidate_id:
+                continue
+            endpoint = _markdown_safe_text(item.get("affected_endpoint"))
+            code_path = _markdown_safe_text(item.get("affected_code_path"))
+            missing = ", ".join(_markdown_list(item.get("missing_evidence")))
+            missing_required = ", ".join(
+                _markdown_list(item.get("missing_required_artifact_kinds"))
+            )
+            learned = ", ".join(
+                _markdown_list(item.get("learning_evidence_needed_reasons"))
+            )
+            lines.append(
+                f"  - {candidate_id}: endpoint: {endpoint}; code: {code_path}; "
+                f"missing evidence: {missing or 'none'}; "
+                f"missing required artifacts: {missing_required or 'none'}; "
+                f"learned evidence: {learned or 'none'}; "
+                "execution allowed: false; validation allowed: false; report submission allowed: false"
+            )
+    ranked_top_candidates = value.get("ranked_top_candidates")
+    if isinstance(ranked_top_candidates, list) and ranked_top_candidates:
+        lines.append("- Ranked Top 1-5:")
+        for item in ranked_top_candidates[:5]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = _markdown_safe_text(item.get("candidate_id"))
+            reason = _markdown_safe_text(item.get("reason"))
+            priority_score = _markdown_summary_value(item.get("priority_score"))
+            rank = _markdown_summary_value(item.get("rank"))
+            ranking = ", ".join(_markdown_list(item.get("ranking_signal_breakdown")))
+            required = ", ".join(_markdown_list(item.get("required_evidence")))
+            missing_required = ", ".join(
+                _markdown_list(item.get("missing_required_artifact_kinds"))
+            )
+            next_action = _markdown_safe_text(item.get("next_action"))
+            safety_gate = _markdown_safe_text(item.get("safety_gate"))
+            if not candidate_id:
+                continue
+            line = (
+                f"  - #{rank} {candidate_id}: {reason}; priority: {priority_score}; "
+                f"evidence ready: {str(item.get('evidence_ready') is True).lower()}; "
+                f"trace: {_markdown_safe_text(item.get('trace_status')) or 'needs_evidence'}; "
+                f"missing evidence: {', '.join(_markdown_list(item.get('missing_evidence'))) or 'none'}; "
+                f"missing required artifacts: {missing_required or 'none'}; "
+                f"gate: {safety_gate}; execution allowed: false; validation allowed: false; report submission allowed: false"
+            )
+            if required:
+                line += f"; required: {required}"
+            if next_action:
+                line += f"; next: {next_action}"
+            if ranking:
+                line += f"; ranking: {ranking}"
+            lines.append(line)
+    refutation_queue = value.get("refutation_queue")
+    if isinstance(refutation_queue, list) and refutation_queue:
+        lines.append("- Refutation queue:")
+        for item in refutation_queue[:5]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = _markdown_safe_text(item.get("candidate_id"))
+            trace_status = _markdown_safe_text(item.get("trace_status"))
+            missing = ", ".join(_markdown_list(item.get("missing_evidence")))
+            required = ", ".join(_markdown_list(item.get("required_evidence")))
+            next_action = _markdown_safe_text(item.get("next_action"))
+            if candidate_id:
+                line = f"  - {candidate_id}: {trace_status}; missing: {missing or 'none'}"
+                if required:
+                    line += f"; required: {required}"
+                if next_action:
+                    line += f"; next: {next_action}"
+                lines.append(line)
+    deduplication_queue = value.get("deduplication_queue")
+    if isinstance(deduplication_queue, list) and deduplication_queue:
+        lines.append("- Deduplication queue:")
+        for item in deduplication_queue[:5]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = _markdown_safe_text(item.get("candidate_id"))
+            duplicate_risk_score = _markdown_summary_value(
+                item.get("duplicate_risk_score")
+            )
+            required = ", ".join(_markdown_list(item.get("required_evidence")))
+            next_action = _markdown_safe_text(item.get("next_action"))
+            if candidate_id:
+                line = f"  - {candidate_id}: duplicate risk {duplicate_risk_score}/100"
+                if required:
+                    line += f"; required: {required}"
+                if next_action:
+                    line += f"; next: {next_action}"
+                lines.append(line)
+    safe_validation_queue = value.get("safe_validation_queue")
+    if isinstance(safe_validation_queue, list) and safe_validation_queue:
+        lines.append("- Safe validation queue:")
+        for item in safe_validation_queue[:5]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = _markdown_safe_text(item.get("candidate_id"))
+            validation_mode = _markdown_safe_text(item.get("validation_mode"))
+            plan_count = len(_markdown_list(item.get("plan_steps")))
+            next_action = _markdown_safe_text(item.get("next_action"))
+            if candidate_id:
+                line = (
+                    f"  - {candidate_id}: {validation_mode}; plan steps: {plan_count}; "
+                    "execution allowed: false; validation allowed: false"
+                )
+                if next_action:
+                    line += f"; next: {next_action}"
+                lines.append(line)
+    report_draft_queue = value.get("report_draft_queue")
+    if isinstance(report_draft_queue, list) and report_draft_queue:
+        lines.append("- Report draft queue:")
+        for item in report_draft_queue[:5]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = _markdown_safe_text(item.get("candidate_id"))
+            report_status = _markdown_safe_text(item.get("report_status"))
+            section_count = len(_markdown_list(item.get("required_sections")))
+            next_action = _markdown_safe_text(item.get("next_action"))
+            if candidate_id:
+                line = (
+                    f"  - {candidate_id}: {report_status}; sections: {section_count}; "
+                    "report submission allowed: false"
+                )
+                if next_action:
+                    line += f"; next: {next_action}"
+                lines.append(line)
+    learning_review_actions = value.get("learning_review_actions")
+    if isinstance(learning_review_actions, list) and learning_review_actions:
+        parts: list[str] = []
+        for item in learning_review_actions[:5]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = _markdown_safe_text(item.get("candidate_id"))
+            suggested_outcome = _markdown_safe_text(item.get("suggested_outcome"))
+            write_allowed = _markdown_summary_value(item.get("learning_write_allowed"))
+            if candidate_id:
+                parts.append(
+                    f"{candidate_id} -> {suggested_outcome}; write allowed: {write_allowed}"
+                )
+        if parts:
+            lines.append("- Learning review actions: " + "; ".join(parts))
+    return lines
+
+
 def _markdown_summary_value(value: Any) -> str:
     if isinstance(value, bool):
         return str(value).lower()
@@ -2766,13 +4292,17 @@ def _utc_now() -> str:
 
 __all__ = [
     "StudioArtifactImport",
+    "StudioWorkspaceAccessError",
     "StudioWorkspace",
     "create_workspace",
     "import_workspace_artifact",
     "load_workspace_manifest",
     "record_workspace_benchmark_result",
     "record_workspace_benchmark_template",
+    "record_workspace_campaign_hunter_report_export",
     "record_workspace_mission_dossier",
     "record_workspace_report_export",
     "record_workspace_run",
+    "resolve_configured_workspace_artifact",
+    "resolve_workspace_file",
 ]

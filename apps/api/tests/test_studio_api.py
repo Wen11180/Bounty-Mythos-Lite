@@ -1,20 +1,25 @@
 from hashlib import sha256
 import json
 from pathlib import Path
+from shutil import copy2, copytree
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
+from app.config import get_settings
 from app.main import (
     app,
     _studio_candidate_hunter_backlog,
     _studio_candidate_hunter_iteration,
+    _studio_candidate_hunter_execution_loop,
     _studio_candidate_hunter_plan,
     _studio_candidate_hunter_review_loop,
+    _studio_candidates_for_run,
     _studio_fuzzing_surface_facts,
     _studio_knowledge_surface_facts,
     _studio_mission_agent_queue,
@@ -22,9 +27,66 @@ from app.main import (
     _studio_report_candidate_guidance,
 )
 from app.repository import DatabaseRepository
+from app.repository import seed_sample_data
+from app.worker.tasks import run_agent_task
+import app.main as main_module
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _configure_studio_workspace_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("STUDIO_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_studio_manifest_rejects_workspace_outside_configured_root(tmp_path: Path):
+    outside_workspace = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside_workspace.mkdir()
+
+    response = client.get(
+        "/mythos/studio/workspaces/manifest",
+        params={"workspace_path": str(outside_workspace)},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "studio_workspace_not_authorized"}
+
+
+def test_studio_workspace_creation_uses_configured_root_not_request_root(tmp_path: Path):
+    response = client.post(
+        "/mythos/studio/workspaces",
+        json={
+            "root_path": str(tmp_path.parent),
+            "name": "acme-api",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["path"] == str(tmp_path / "acme-api")
+
+
+def test_studio_api_allows_only_configured_loopback_web_origin():
+    response = client.options(
+        "/mythos/studio/workspaces",
+        headers={
+            "Origin": "http://127.0.0.1:3000",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    external_response = client.options(
+        "/mythos/studio/workspaces",
+        headers={
+            "Origin": "https://example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
+    assert "access-control-allow-origin" not in external_response.headers
 
 
 def test_studio_report_candidate_guidance_skips_redacted_values():
@@ -69,6 +131,34 @@ def test_studio_report_candidate_guidance_includes_evidence_gap_labels():
         "api: missing_required_artifact",
         "har: missing_required_artifact",
     ]
+
+
+def test_studio_report_candidate_guidance_includes_hunter_evidence_focus():
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-001",
+                    "vuln_type": "authorization_gap",
+                    "hunter_assessment": {
+                        "evidence_focus": [
+                            "learned_target_relationship_review",
+                            "parent_child_authorization_matrix",
+                            "Authorization: Bearer secret-token",
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    guidance = _studio_report_candidate_guidance(record, {})
+
+    assert guidance["evidence_focus"] == [
+        "learned_target_relationship_review",
+        "parent_child_authorization_matrix",
+    ]
+    assert "secret-token" not in str(guidance)
 
 
 def test_studio_report_candidate_guidance_includes_advisory_signal_labels():
@@ -201,6 +291,21 @@ def test_studio_mission_candidate_summary_includes_safe_review_packet():
             "evidence_gaps": [
                 {"artifact_kind": "api", "reason": "missing_required_artifact"},
             ],
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "required_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+                "present_required_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+                "advisory_artifact_kinds": ["sarif"],
+                "missing_required_artifact_kinds": [],
+                "source_fact_count": 6,
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+                "next_action": "Review trace summary and refutation questions before any validation.",
+                "execution_allowed": True,
+                "validation_allowed": True,
+                "report_submission_allowed": True,
+            },
         }
     )
 
@@ -216,6 +321,21 @@ def test_studio_mission_candidate_summary_includes_safe_review_packet():
     ]
     assert summary["safety_blockers"] == ["Requires human approval before validation."]
     assert summary["evidence_gaps"] == ["api: missing_required_artifact"]
+    assert summary["evidence_trace_summary"] == {
+        "status": "traceable",
+        "required_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+        "present_required_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+        "advisory_artifact_kinds": ["sarif"],
+        "missing_required_artifact_kinds": [],
+        "source_fact_count": 6,
+        "endpoint_traced": True,
+        "code_path_traced": True,
+        "independent_cross_check_count": 1,
+        "next_action": "Review trace summary and refutation questions before any validation.",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
     assert summary["hallucination_guard"] == {
         "status": "blocked",
         "model_output_status": "unverified_claim_not_fact",
@@ -696,6 +816,1369 @@ def test_studio_candidate_hunter_review_loop_summarizes_next_review_cycle():
     assert "send_file" not in str(review_loop)
 
 
+def test_studio_candidate_hunter_execution_loop_materializes_bounded_safe_state_machine():
+    review_loop = {
+        "loop_id": "candidate_hunter:next_review_loop",
+        "status": "needs_review",
+        "source_plan_id": "candidate_hunter:autonomous_review_plan",
+        "active_step_count": 1,
+        "next_review_agent": "Evidence Planner",
+        "review_agents": ["Evidence Planner"],
+        "required_evidence": ["non_destructive_validation_plan"],
+        "active_steps": [
+            {
+                "step_id": "candidate_hunter:plan:H-weak:draft_validation_plan",
+                "work_item_id": "H-weak:draft_validation_plan",
+                "candidate_id": "H-weak",
+                "assigned_agent": "Evidence Planner",
+                "gap": "missing_safe_validation_plan",
+                "required_evidence": ["non_destructive_validation_plan"],
+                "next_action": "Draft a non-destructive validation plan for H-weak.",
+                "success_criteria": [
+                    "No validation, fuzzing, or report submission is executed.",
+                ],
+                "safety_gate": "unsafe_override",
+                "execution_allowed": True,
+                "validation_allowed": True,
+                "report_submission_allowed": True,
+            }
+        ],
+        "governance_summary": {
+            "claim_promotion_rule": "no_verified_evidence_no_high_confidence",
+            "required_consensus": ["authorized_local_artifact_evidence"],
+            "candidate_promotion_allowed": True,
+        },
+        "blocked_actions": [
+            "execute_live_validation",
+            "run_fuzzer",
+            "submit_report",
+        ],
+        "safety_gate": "unsafe_override",
+        "completion_gate": "unsafe_override",
+        "execution_allowed": True,
+        "validation_allowed": True,
+        "report_submission_allowed": True,
+    }
+
+    execution_loop = _studio_candidate_hunter_execution_loop(review_loop)
+
+    assert execution_loop == {
+        "loop_id": "candidate_hunter:bounded_execution_loop",
+        "status": "needs_review",
+        "iteration": 1,
+        "source_review_loop_id": "candidate_hunter:next_review_loop",
+        "source_plan_id": "candidate_hunter:autonomous_review_plan",
+        "candidate_budget": 5,
+        "top_candidate_limit": 5,
+        "current_phase": "safe_validation_work",
+        "phase_count": 8,
+        "phases": [
+            {
+                "phase_id": "surface_modeling",
+                "label": "Attack surface modeling",
+                "status": "complete",
+                "input_refs": ["scope", "policy", "api", "har"],
+                "output_refs": ["affected_endpoints", "surface_facts"],
+                "safety_gate": "authorized_artifacts_only",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "phase_id": "semantic_audit",
+                "label": "Semantic code/API audit",
+                "status": "complete",
+                "input_refs": ["code", "api", "har"],
+                "output_refs": ["affected_code_paths", "security_invariants"],
+                "safety_gate": "local_static_analysis_only",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "phase_id": "hypothesis_generation",
+                "label": "High-value hypothesis generation",
+                "status": "complete",
+                "input_refs": ["surface_facts", "security_invariants"],
+                "output_refs": ["candidate_hypotheses"],
+                "safety_gate": "model_claims_unverified",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "phase_id": "refutation",
+                "label": "Refutation review",
+                "status": "needs_review",
+                "input_refs": ["candidate_hypotheses"],
+                "output_refs": ["false_positive_questions"],
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "phase_id": "deduplication",
+                "label": "Candidate deduplication",
+                "status": "complete",
+                "input_refs": ["candidate_hypotheses"],
+                "output_refs": ["candidate_similarity_review"],
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "phase_id": "ranking",
+                "label": "Top candidate ranking",
+                "status": "complete",
+                "input_refs": ["candidate_hypotheses", "refutation_notes"],
+                "output_refs": ["top_1_to_5_candidates"],
+                "safety_gate": "review_only_no_execution",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "phase_id": "safe_validation_work",
+                "label": "Safe validation work planning",
+                "status": "needs_review",
+                "input_refs": ["top_1_to_5_candidates"],
+                "output_refs": ["non_destructive_validation_plan"],
+                "safety_gate": "human_approval_required",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+            {
+                "phase_id": "report_draft_readiness",
+                "label": "Submission-blocked report draft readiness",
+                "status": "pending",
+                "input_refs": ["evidence_review", "safe_validation_plan"],
+                "output_refs": ["submission_blocked_report_draft"],
+                "safety_gate": "submission_blocked_human_review",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            },
+        ],
+        "active_work_items": [
+            {
+                "work_item_id": "H-weak:draft_validation_plan",
+                "candidate_id": "H-weak",
+                "gap": "missing_safe_validation_plan",
+                "assigned_agent": "Evidence Planner",
+                "phase_id": "safe_validation_work",
+                "required_evidence": ["non_destructive_validation_plan"],
+                "next_action": "Draft a non-destructive validation plan for H-weak.",
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "report_submission_allowed": False,
+            }
+        ],
+        "candidate_evidence_summary": {
+            "candidate_count": 0,
+            "review_ready_count": 0,
+            "review_needed_count": 0,
+            "endpoint_traced_count": 0,
+            "code_path_traced_count": 0,
+            "local_artifact_kinds": [],
+            "advisory_artifact_kinds": [],
+            "average_quality_score": 0,
+            "evidence_ready_candidate_ids": [],
+            "review_needed_candidate_ids": [],
+        },
+        "candidate_evidence_matrix": [],
+        "ranked_top_candidates": [],
+        "next_candidate_actions": [],
+        "refutation_queue": [],
+        "deduplication_queue": [],
+        "safe_validation_queue": [],
+        "report_draft_queue": [],
+        "learning_feedback_target": {
+            "target_id": "candidate_hunter:learning_feedback:next_actions",
+            "status": "awaiting_human_outcome",
+            "source_loop_id": "candidate_hunter:bounded_execution_loop",
+            "candidate_ids": [],
+            "action_count": 0,
+            "allowed_outcomes": [
+                "confirmed",
+                "refuted",
+                "needs_more_evidence",
+                "duplicate",
+            ],
+            "next_action": "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+            "safety_gate": "human_review_required",
+            "learning_write_allowed": False,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+        "learning_review_actions": [],
+        "promotion_policy": {
+            "candidate_promotion_allowed": False,
+            "requires_local_artifact_trace": True,
+            "requires_independent_refutation": True,
+            "requires_human_review": True,
+        },
+        "blocked_actions": [
+            "execute_live_validation",
+            "run_fuzzer",
+            "submit_report",
+            "touch_real_user_data",
+            "store_raw_secret",
+        ],
+        "safety_gate": "bounded_autonomous_review_only",
+        "completion_gate": "human_review_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "validation_execution_allowed": False,
+        "report_submission_allowed": False,
+        "candidate_promotion_allowed": False,
+    }
+    assert "executeValidation" not in str(execution_loop)
+    assert "submitReport" not in str(execution_loop)
+    assert "send_file" not in str(execution_loop)
+
+
+def test_studio_candidate_hunter_execution_loop_summarizes_candidate_evidence_coverage():
+    review_loop = {
+        "loop_id": "candidate_hunter:next_review_loop",
+        "status": "needs_review",
+        "source_plan_id": "candidate_hunter:autonomous_review_plan",
+        "active_steps": [],
+    }
+    candidates = [
+        {
+            "hypothesis_id": "H-ready",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 95,
+            "quality_status": "review_ready",
+            "provenance_artifacts": ["scope", "policy", "code", "api", "har"],
+            "hallucination_guard": {
+                "local_evidence_sources": ["code", "api", "har"],
+                "advisory_sources": ["knowledge"],
+                "independent_cross_check_sources": ["sarif"],
+                "blockers": [],
+            },
+            "execution_allowed": True,
+            "validation_allowed": True,
+            "report_submission_allowed": True,
+        },
+        {
+            "hypothesis_id": "H-weak",
+            "affected_endpoint": "",
+            "affected_code_path": "",
+            "quality_score": 55,
+            "quality_status": "needs_review",
+            "provenance_artifacts": ["scope", "policy", "code"],
+            "hallucination_guard": {
+                "local_evidence_sources": ["code"],
+                "advisory_sources": [],
+                "independent_cross_check_sources": [],
+                "blockers": [
+                    "missing_endpoint_or_code_path_trace",
+                    "missing_independent_cross_check",
+                ],
+            },
+            "execution_allowed": True,
+            "validation_allowed": True,
+            "report_submission_allowed": True,
+        },
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop(review_loop, candidates)
+
+    assert execution_loop["candidate_evidence_summary"] == {
+        "candidate_count": 2,
+        "review_ready_count": 1,
+        "review_needed_count": 1,
+        "endpoint_traced_count": 1,
+        "code_path_traced_count": 1,
+        "local_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+        "advisory_artifact_kinds": ["knowledge", "sarif"],
+        "average_quality_score": 75,
+        "evidence_ready_candidate_ids": ["H-ready"],
+        "review_needed_candidate_ids": ["H-weak"],
+    }
+    assert execution_loop["candidate_evidence_matrix"] == [
+        {
+            "candidate_id": "H-ready",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 95,
+            "quality_status": "review_ready",
+            "local_evidence_sources": ["code", "api", "har"],
+            "advisory_sources": ["knowledge"],
+            "independent_cross_check_sources": ["sarif"],
+            "missing_evidence": [],
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+        {
+            "candidate_id": "H-weak",
+            "affected_endpoint": "",
+            "affected_code_path": "",
+            "quality_score": 55,
+            "quality_status": "needs_review",
+            "local_evidence_sources": ["code"],
+            "advisory_sources": [],
+            "independent_cross_check_sources": [],
+            "missing_evidence": [
+                "affected_endpoint",
+                "affected_code_path",
+                "independent_cross_check",
+            ],
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+    ]
+    assert execution_loop["next_candidate_actions"] == [
+        {
+            "candidate_id": "H-ready",
+            "phase_id": "report_draft_readiness",
+            "priority_score": 95,
+            "reason": "candidate_evidence_ready",
+            "required_evidence": ["submission_blocked_report_draft"],
+            "next_action": "Prepare submission-blocked report readiness review for H-ready.",
+            "safety_gate": "submission_blocked_human_review",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+        {
+            "candidate_id": "H-weak",
+            "phase_id": "surface_modeling",
+            "priority_score": 25,
+            "reason": "missing_affected_endpoint",
+            "required_evidence": ["affected_endpoint", "api_har_route_trace"],
+            "next_action": "Trace affected endpoint evidence for H-weak from authorized API/HAR artifacts.",
+            "safety_gate": "authorized_artifacts_only",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+    ]
+    assert execution_loop["learning_feedback_target"] == {
+        "target_id": "candidate_hunter:learning_feedback:next_actions",
+        "status": "awaiting_human_outcome",
+        "source_loop_id": "candidate_hunter:bounded_execution_loop",
+        "candidate_ids": ["H-ready", "H-weak"],
+        "action_count": 2,
+        "allowed_outcomes": [
+            "confirmed",
+            "refuted",
+            "needs_more_evidence",
+            "duplicate",
+        ],
+        "next_action": "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+        "safety_gate": "human_review_required",
+        "learning_write_allowed": False,
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert execution_loop["learning_review_actions"] == [
+        {
+            "action_id": "candidate_hunter:learning_feedback:next_actions:H-ready",
+            "candidate_id": "H-ready",
+            "source_loop_id": "candidate_hunter:bounded_execution_loop",
+            "suggested_outcome": "confirmed",
+            "evidence_ready": True,
+            "trace_status": "needs_evidence",
+            "missing_evidence": [],
+            "missing_required_artifact_kinds": [],
+            "allowed_outcomes": [
+                "confirmed",
+                "refuted",
+                "needs_more_evidence",
+                "duplicate",
+            ],
+            "next_action": "Review H-ready and record a human outcome before updating future ranking.",
+            "safety_gate": "human_review_required",
+            "learning_write_allowed": False,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+        {
+            "action_id": "candidate_hunter:learning_feedback:next_actions:H-weak",
+            "candidate_id": "H-weak",
+            "source_loop_id": "candidate_hunter:bounded_execution_loop",
+            "suggested_outcome": "needs_more_evidence",
+            "evidence_ready": False,
+            "trace_status": "needs_evidence",
+            "missing_evidence": [
+                "affected_endpoint",
+                "affected_code_path",
+                "independent_cross_check",
+            ],
+            "missing_required_artifact_kinds": [],
+            "allowed_outcomes": [
+                "confirmed",
+                "refuted",
+                "needs_more_evidence",
+                "duplicate",
+            ],
+            "next_action": "Review H-weak and record a human outcome before updating future ranking.",
+            "safety_gate": "human_review_required",
+            "learning_write_allowed": False,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+    ]
+    assert execution_loop["candidate_evidence_matrix"][0]["execution_allowed"] is False
+    assert "Authorization: Bearer" not in str(execution_loop)
+
+
+def test_studio_candidate_hunter_learning_actions_include_hunter_lesson_template():
+    candidates = [
+        {
+            "hypothesis_id": "codebase_fact_hypothesis_1",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 90,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "hunter_assessment": {
+                "playbook_id": "bola_idor",
+                "hunter_priority_score": 76,
+            },
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        }
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["learning_review_actions"] == [
+        {
+            "action_id": "candidate_hunter:learning_feedback:next_actions:codebase_fact_hypothesis_1",
+            "candidate_id": "codebase_fact_hypothesis_1",
+            "source_loop_id": "candidate_hunter:bounded_execution_loop",
+            "suggested_outcome": "confirmed",
+            "evidence_ready": True,
+            "trace_status": "traceable",
+            "missing_evidence": [],
+            "missing_required_artifact_kinds": [],
+            "allowed_outcomes": [
+                "confirmed",
+                "refuted",
+                "needs_more_evidence",
+                "duplicate",
+            ],
+            "learning_signal_template": {
+                "playbook_id": "bola_idor",
+                "surface_key": "file_id:export",
+                "target_relationships": [
+                    "candidate:codebase_fact_hypothesis_1",
+                    "candidate_hunter:bounded_execution_loop",
+                ],
+                "human_review_required": True,
+                "learning_write_allowed": False,
+            },
+            "next_action": "Review codebase_fact_hypothesis_1 and record a human outcome before updating future ranking.",
+            "safety_gate": "human_review_required",
+            "learning_write_allowed": False,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+
+
+def test_studio_candidate_hunter_execution_loop_ranks_traceable_ab_candidate_first():
+    candidates = [
+        {
+            "hypothesis_id": "H-high-raw",
+            "affected_endpoint": "GET /exports/{export_id}",
+            "affected_code_path": "routes.py:export",
+            "quality_score": 99,
+            "quality_status": "review_ready",
+            "hallucination_guard": {
+                "local_evidence_sources": ["code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "needs_evidence",
+                "missing_required_artifact_kinds": ["scope", "policy"],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        },
+        {
+            "hypothesis_id": "H-traceable",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 84,
+            "quality_status": "review_ready",
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        },
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert [
+        item["candidate_id"] for item in execution_loop["next_candidate_actions"]
+    ] == ["H-traceable", "H-high-raw"]
+    assert execution_loop["candidate_evidence_matrix"][0][
+        "missing_required_artifact_kinds"
+    ] == ["scope", "policy"]
+    assert execution_loop["candidate_evidence_matrix"][1]["evidence_trace_status"] == (
+        "traceable"
+    )
+    assert execution_loop["next_candidate_actions"][0]["priority_score"] > (
+        execution_loop["next_candidate_actions"][1]["priority_score"]
+    )
+    assert execution_loop["next_candidate_actions"][0]["execution_allowed"] is False
+    assert execution_loop["next_candidate_actions"][0]["validation_allowed"] is False
+    assert (
+        execution_loop["next_candidate_actions"][0]["report_submission_allowed"]
+        is False
+    )
+
+
+def test_studio_candidate_hunter_execution_loop_prioritizes_hunter_assessment_signal():
+    candidates = [
+        {
+            "hypothesis_id": "H-generic-quality",
+            "affected_endpoint": "GET /exports/{export_id}",
+            "affected_code_path": "routes.py:export",
+            "quality_score": 95,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "report_status": "submission_blocked",
+            "safe_validation_plan": ["Use local authorized fixtures only."],
+            "hunter_assessment": {
+                "hunter_priority_score": 60,
+                "impact_score": 70,
+                "rejection_risk_score": 35,
+                "policy_risk_score": 20,
+            },
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        },
+        {
+            "hypothesis_id": "H-hunter-high-signal",
+            "affected_endpoint": "POST /teams/{team_id}/invites",
+            "affected_code_path": "teams.py:create_invite",
+            "quality_score": 72,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "report_status": "submission_blocked",
+            "safe_validation_plan": ["Use local authorized fixtures only."],
+            "hunter_assessment": {
+                "hunter_priority_score": 96,
+                "impact_score": 92,
+                "rejection_risk_score": 15,
+                "policy_risk_score": 20,
+            },
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        },
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert [
+        item["candidate_id"] for item in execution_loop["next_candidate_actions"]
+    ] == ["H-hunter-high-signal", "H-generic-quality"]
+    assert execution_loop["candidate_evidence_matrix"][1]["hunter_priority_score"] == 96
+    assert execution_loop["candidate_evidence_matrix"][1]["impact_score"] == 92
+    assert execution_loop["candidate_evidence_matrix"][1]["rejection_risk_score"] == 15
+    assert execution_loop["candidate_evidence_matrix"][1][
+        "ranking_signal_breakdown"
+    ] == [
+        "quality_score:72",
+        "hunter_priority_floor:96",
+        "traceable_evidence_bonus:+20",
+        "independent_cross_check_bonus:+5",
+        "final_priority_score:121",
+    ]
+    assert execution_loop["next_candidate_actions"][0]["priority_score"] == 121
+    assert execution_loop["ranked_top_candidates"] == [
+        {
+            "rank": 1,
+            "candidate_id": "H-hunter-high-signal",
+            "phase_id": "report_draft_readiness",
+            "priority_score": 121,
+            "reason": "candidate_evidence_ready",
+            "required_evidence": ["submission_blocked_report_draft"],
+            "next_action": "Prepare submission-blocked report readiness review for H-hunter-high-signal.",
+            "affected_endpoint": "POST /teams/{team_id}/invites",
+            "affected_code_path": "teams.py:create_invite",
+            "quality_status": "review_ready",
+            "evidence_ready": True,
+            "trace_status": "traceable",
+            "missing_evidence": [],
+            "missing_required_artifact_kinds": [],
+            "ranking_signal_breakdown": [
+                "quality_score:72",
+                "hunter_priority_floor:96",
+                "traceable_evidence_bonus:+20",
+                "independent_cross_check_bonus:+5",
+                "final_priority_score:121",
+            ],
+            "safety_gate": "submission_blocked_human_review",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+        {
+            "rank": 2,
+            "candidate_id": "H-generic-quality",
+            "phase_id": "report_draft_readiness",
+            "priority_score": 120,
+            "reason": "candidate_evidence_ready",
+            "required_evidence": ["submission_blocked_report_draft"],
+            "next_action": "Prepare submission-blocked report readiness review for H-generic-quality.",
+            "affected_endpoint": "GET /exports/{export_id}",
+            "affected_code_path": "routes.py:export",
+            "quality_status": "review_ready",
+            "evidence_ready": True,
+            "trace_status": "traceable",
+            "missing_evidence": [],
+            "missing_required_artifact_kinds": [],
+            "ranking_signal_breakdown": [
+                "quality_score:95",
+                "hunter_priority_floor:60",
+                "traceable_evidence_bonus:+20",
+                "independent_cross_check_bonus:+5",
+                "final_priority_score:120",
+            ],
+            "safety_gate": "submission_blocked_human_review",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+    ]
+    assert execution_loop["safe_validation_queue"][0]["candidate_id"] == (
+        "H-hunter-high-signal"
+    )
+    assert execution_loop["report_draft_queue"][0]["candidate_id"] == (
+        "H-hunter-high-signal"
+    )
+    assert execution_loop["next_candidate_actions"][0]["execution_allowed"] is False
+    assert execution_loop["safe_validation_queue"][0]["validation_execution_allowed"] is False
+    assert execution_loop["report_draft_queue"][0]["report_submission_allowed"] is False
+
+
+def test_studio_candidate_hunter_execution_loop_uses_learning_evidence_needed_reasons():
+    candidates = [
+        {
+            "hypothesis_id": "H-learned-gap",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 90,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "report_status": "submission_blocked",
+            "safe_validation_plan": ["Use local authorized fixtures only."],
+            "hunter_assessment": {
+                "playbook_id": "bola_idor",
+                "hunter_priority_score": 88,
+                "impact_score": 90,
+                "rejection_risk_score": 15,
+                "policy_risk_score": 20,
+                "reasons": [
+                    "lesson:evidence_needed:candidate_gap",
+                    "lesson:evidence_needed:missing_evidence:independent_cross_check",
+                    "lesson:evidence_needed:missing_required_artifact:policy",
+                ],
+            },
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        }
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["candidate_evidence_matrix"][0]["missing_evidence"] == [
+        "learned_independent_cross_check"
+    ]
+    assert execution_loop["candidate_evidence_matrix"][0][
+        "missing_required_artifact_kinds"
+    ] == ["policy"]
+    assert execution_loop["candidate_evidence_matrix"][0][
+        "learning_evidence_needed_reasons"
+    ] == [
+        "lesson:evidence_needed:candidate_gap",
+        "lesson:evidence_needed:missing_evidence:independent_cross_check",
+        "lesson:evidence_needed:missing_required_artifact:policy",
+    ]
+    assert execution_loop["next_candidate_actions"][0] == {
+        "candidate_id": "H-learned-gap",
+        "phase_id": "surface_modeling",
+        "priority_score": 90,
+        "reason": "missing_ab_artifacts",
+        "required_evidence": ["policy"],
+        "next_action": (
+            "Attach required A+B artifacts for H-learned-gap before report readiness."
+        ),
+        "safety_gate": "authorized_artifacts_only",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert execution_loop["ranked_top_candidates"][0]["evidence_ready"] is False
+    assert "learned_independent_cross_check" in execution_loop["ranked_top_candidates"][
+        0
+    ]["missing_evidence"]
+
+
+def test_studio_candidate_hunter_execution_loop_routes_missing_ab_artifacts_before_report_readiness():
+    candidates = [
+        {
+            "hypothesis_id": "H-missing-ab",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 95,
+            "quality_status": "review_ready",
+            "hallucination_guard": {
+                "local_evidence_sources": ["code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "needs_evidence",
+                "missing_required_artifact_kinds": ["scope", "policy"],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        }
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["candidate_evidence_summary"]["evidence_ready_candidate_ids"] == []
+    assert execution_loop["candidate_evidence_summary"]["review_needed_candidate_ids"] == [
+        "H-missing-ab"
+    ]
+    assert execution_loop["next_candidate_actions"] == [
+        {
+            "candidate_id": "H-missing-ab",
+            "phase_id": "surface_modeling",
+            "priority_score": 70,
+            "reason": "missing_ab_artifacts",
+            "required_evidence": ["scope", "policy"],
+            "next_action": "Attach required A+B artifacts for H-missing-ab before report readiness.",
+            "safety_gate": "authorized_artifacts_only",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert execution_loop["ranked_top_candidates"][0]["missing_required_artifact_kinds"] == [
+        "scope",
+        "policy",
+    ]
+    assert execution_loop["safe_validation_queue"] == []
+    assert execution_loop["report_draft_queue"] == []
+
+
+def test_studio_candidate_hunter_execution_loop_builds_refutation_queue_from_trace_gaps():
+    candidates = [
+        {
+            "hypothesis_id": "H-needs-cross-check",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 88,
+            "quality_status": "needs_review",
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": [],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 0,
+            },
+        },
+        {
+            "hypothesis_id": "H-missing-policy",
+            "affected_endpoint": "POST /webhooks/test",
+            "affected_code_path": "webhooks.py:test_webhook",
+            "quality_score": 80,
+            "quality_status": "needs_review",
+            "hallucination_guard": {
+                "local_evidence_sources": ["code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "needs_evidence",
+                "missing_required_artifact_kinds": ["scope", "policy"],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        },
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["refutation_queue"] == [
+        {
+            "queue_id": "candidate_hunter:refutation:H-needs-cross-check",
+            "candidate_id": "H-needs-cross-check",
+            "priority_score": 78,
+            "trace_status": "traceable",
+            "missing_evidence": ["independent_cross_check"],
+            "missing_required_artifact_kinds": [],
+            "questions": [
+                "Can an independent static rule, SARIF finding, fuzzing plan, or local fixture challenge this candidate without live execution?",
+                "Does a local two-account or role-fixture review refute the suspected impact?",
+            ],
+            "required_evidence": ["independent_refutation_or_static_rule"],
+            "next_action": "Refute H-needs-cross-check using independent local evidence before report readiness.",
+            "safety_gate": "review_only_no_execution",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+        {
+            "queue_id": "candidate_hunter:refutation:H-missing-policy",
+            "candidate_id": "H-missing-policy",
+            "priority_score": 60,
+            "trace_status": "needs_evidence",
+            "missing_evidence": [],
+            "missing_required_artifact_kinds": ["scope", "policy"],
+            "questions": [
+                "Which required A+B artifacts are still missing from the candidate evidence trace?",
+                "Can the candidate be downgraded until scope, policy, code, API, and HAR provenance are all present?",
+            ],
+            "required_evidence": ["scope", "policy"],
+            "next_action": "Refute H-missing-policy using independent local evidence before report readiness.",
+            "safety_gate": "review_only_no_execution",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        },
+    ]
+    assert "execute_live_validation" not in str(execution_loop["refutation_queue"])
+
+
+def test_studio_candidate_hunter_execution_loop_routes_semantic_gaps_before_report_draft():
+    candidates = [
+        {
+            "hypothesis_id": "H-semantic-gap",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 92,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "report_status": "submission_blocked",
+            "safe_validation_plan": ["Use local authorized fixtures only."],
+            "evidence_gaps": [
+                {"artifact_kind": "semantic", "reason": "missing_root_cause"},
+                {"artifact_kind": "semantic", "reason": "missing_security_invariant"},
+                {"artifact_kind": "semantic", "reason": "missing_sink_symbols"},
+            ],
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        }
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["candidate_evidence_summary"]["review_ready_count"] == 0
+    assert execution_loop["candidate_evidence_summary"]["review_needed_count"] == 1
+    assert execution_loop["candidate_evidence_summary"]["evidence_ready_candidate_ids"] == []
+    assert execution_loop["candidate_evidence_summary"]["review_needed_candidate_ids"] == [
+        "H-semantic-gap"
+    ]
+    assert execution_loop["candidate_evidence_matrix"][0]["missing_evidence"] == [
+        "semantic_evidence"
+    ]
+    assert execution_loop["next_candidate_actions"] == [
+        {
+            "candidate_id": "H-semantic-gap",
+            "phase_id": "semantic_audit",
+            "priority_score": 107,
+            "reason": "missing_semantic_evidence",
+            "required_evidence": [
+                "root_cause",
+                "security_invariant",
+                "sink_symbols",
+            ],
+            "next_action": "Complete semantic root cause, invariant, and sink-symbol review for H-semantic-gap from authorized local code.",
+            "safety_gate": "local_static_analysis_only",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert execution_loop["refutation_queue"][0]["candidate_id"] == "H-semantic-gap"
+    assert execution_loop["refutation_queue"][0]["required_evidence"] == [
+        "root_cause",
+        "security_invariant",
+        "sink_symbols",
+    ]
+    assert execution_loop["safe_validation_queue"] == []
+    assert execution_loop["report_draft_queue"] == []
+    assert "submit_report" in execution_loop["blocked_actions"]
+    assert execution_loop["report_submission_allowed"] is False
+
+
+def test_studio_candidate_hunter_execution_loop_routes_summarized_semantic_gap_labels():
+    candidates = [
+        {
+            "hypothesis_id": "H-summary-semantic-gap",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 88,
+            "quality_status": "review_ready",
+            "evidence_gaps": [
+                "semantic: missing_root_cause",
+                "semantic: missing_security_invariant",
+                "semantic: missing_sink_symbols",
+            ],
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        }
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["candidate_evidence_matrix"][0]["missing_evidence"] == [
+        "semantic_evidence"
+    ]
+    assert execution_loop["next_candidate_actions"][0]["reason"] == (
+        "missing_semantic_evidence"
+    )
+    assert execution_loop["next_candidate_actions"][0]["required_evidence"] == [
+        "root_cause",
+        "security_invariant",
+        "sink_symbols",
+    ]
+    assert execution_loop["candidate_evidence_summary"]["evidence_ready_candidate_ids"] == []
+    assert execution_loop["candidate_evidence_summary"]["review_needed_candidate_ids"] == [
+        "H-summary-semantic-gap"
+    ]
+
+
+def test_studio_candidate_hunter_execution_loop_builds_deduplication_queue_from_duplicate_risk():
+    candidates = [
+        {
+            "hypothesis_id": "H-duplicate-risk",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 86,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 72,
+            "deduplication_review": {
+                "status": "needs_human_review",
+                "duplicate_risk_score": 72,
+            },
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+        },
+        {
+            "hypothesis_id": "H-novel",
+            "affected_endpoint": "POST /webhooks/test",
+            "affected_code_path": "webhooks.py:test_webhook",
+            "quality_score": 80,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 20,
+            "deduplication_review": {
+                "status": "needs_human_review",
+                "duplicate_risk_score": 20,
+            },
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+        },
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["candidate_evidence_summary"]["evidence_ready_candidate_ids"] == [
+        "H-novel"
+    ]
+    assert execution_loop["candidate_evidence_summary"]["review_needed_candidate_ids"] == [
+        "H-duplicate-risk"
+    ]
+    assert execution_loop["deduplication_queue"] == [
+        {
+            "queue_id": "candidate_hunter:deduplication:H-duplicate-risk",
+            "candidate_id": "H-duplicate-risk",
+            "priority_score": 72,
+            "duplicate_risk_score": 72,
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "similarity_keys": [
+                "endpoint:GET /files/{file_id}/export",
+                "code_path:routes.py:export_file",
+            ],
+            "questions": [
+                "Does this candidate overlap an existing report, prior candidate, scanner finding, or known program pattern?",
+                "Is the affected endpoint, code path, invariant, and impact distinct enough to keep this candidate in the Top 1-5?",
+            ],
+            "required_evidence": [
+                "prior_submission_search",
+                "endpoint_code_path_similarity_review",
+            ],
+            "next_action": "Deduplicate H-duplicate-risk against prior candidates before promotion or report readiness.",
+            "safety_gate": "review_only_no_execution",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert "H-novel" not in str(execution_loop["deduplication_queue"])
+    assert "submit_report" not in str(execution_loop["deduplication_queue"])
+    duplicate_action = next(
+        action
+        for action in execution_loop["next_candidate_actions"]
+        if action["candidate_id"] == "H-duplicate-risk"
+    )
+    assert duplicate_action == {
+        "candidate_id": "H-duplicate-risk",
+        "phase_id": "deduplication",
+        "priority_score": 86,
+        "reason": "duplicate_risk_needs_review",
+        "required_evidence": [
+            "prior_submission_search",
+            "endpoint_code_path_similarity_review",
+        ],
+        "next_action": "Deduplicate H-duplicate-risk against prior candidates before report readiness.",
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    duplicate_learning_action = next(
+        action
+        for action in execution_loop["learning_review_actions"]
+        if action["candidate_id"] == "H-duplicate-risk"
+    )
+    assert duplicate_learning_action["suggested_outcome"] == "duplicate"
+
+
+def test_studio_candidate_hunter_execution_loop_builds_safe_validation_queue_for_ready_candidates():
+    candidates = [
+        {
+            "hypothesis_id": "H-ready",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 90,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "safe_validation_plan": [
+                "Use only local authorized test accounts.",
+                "Confirm cross-object access is denied without touching real user data.",
+            ],
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        },
+        {
+            "hypothesis_id": "H-needs-refutation",
+            "affected_endpoint": "POST /webhooks/test",
+            "affected_code_path": "webhooks.py:test_webhook",
+            "quality_score": 91,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "safe_validation_plan": ["Prepare a local review only."],
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": [],
+            },
+        },
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["safe_validation_queue"] == [
+        {
+            "queue_id": "candidate_hunter:safe_validation:H-ready",
+            "candidate_id": "H-ready",
+            "priority_score": 115,
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "validation_mode": "human_approved_non_destructive_plan",
+            "plan_steps": [
+                "Use only local authorized test accounts.",
+            ],
+            "required_approvals": [
+                "scope_guard_route_approval",
+                "human_validation_approval",
+                "redaction_review",
+            ],
+            "next_action": "Review and approve the non-destructive validation plan for H-ready; execution remains blocked.",
+            "safety_gate": "human_approval_required",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "validation_execution_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert "H-needs-refutation" not in str(execution_loop["safe_validation_queue"])
+    assert "execute_live_validation" not in str(execution_loop["safe_validation_queue"])
+
+
+def test_studio_candidate_hunter_execution_loop_keeps_ready_candidate_in_top_budget():
+    candidates = [
+        {
+            "hypothesis_id": f"H-missing-ab-{index}",
+            "affected_endpoint": f"GET /raw/{index}",
+            "affected_code_path": f"routes.py:raw_{index}",
+            "quality_score": 99 - index,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "safe_validation_plan": ["Prepare a local review only."],
+            "report_status": "submission_blocked",
+            "hallucination_guard": {
+                "local_evidence_sources": ["code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "needs_evidence",
+                "missing_required_artifact_kinds": ["scope", "policy"],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        }
+        for index in range(5)
+    ]
+    candidates.append(
+        {
+            "hypothesis_id": "H-ready-sixth",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 90,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "safe_validation_plan": ["Use only local authorized test accounts."],
+            "report_status": "submission_blocked",
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        }
+    )
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert "H-ready-sixth" in [
+        item["candidate_id"] for item in execution_loop["candidate_evidence_matrix"]
+    ]
+    assert execution_loop["safe_validation_queue"][0]["candidate_id"] == "H-ready-sixth"
+    assert execution_loop["report_draft_queue"][0]["candidate_id"] == "H-ready-sixth"
+    assert execution_loop["safe_validation_queue"][0]["execution_allowed"] is False
+    assert execution_loop["report_draft_queue"][0]["report_submission_allowed"] is False
+
+
+def test_studio_candidate_hunter_execution_loop_builds_submission_blocked_report_draft_queue():
+    candidates = [
+        {
+            "hypothesis_id": "H-ready",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_score": 90,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "report_status": "submission_blocked",
+            "safe_validation_plan": ["Use only local authorized test accounts."],
+            "hunter_assessment": {
+                "evidence_focus": [
+                    "learned_target_relationship_review",
+                    "parent_child_authorization_matrix",
+                    "Authorization: Bearer secret-token",
+                ],
+            },
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": ["sarif"],
+            },
+            "evidence_trace_summary": {
+                "status": "traceable",
+                "missing_required_artifact_kinds": [],
+                "endpoint_traced": True,
+                "code_path_traced": True,
+                "independent_cross_check_count": 1,
+            },
+        },
+        {
+            "hypothesis_id": "H-needs-refutation",
+            "affected_endpoint": "POST /webhooks/test",
+            "affected_code_path": "webhooks.py:test_webhook",
+            "quality_score": 91,
+            "quality_status": "review_ready",
+            "duplicate_risk_score": 10,
+            "report_status": "submission_blocked",
+            "safe_validation_plan": ["Prepare a local review only."],
+            "hallucination_guard": {
+                "local_evidence_sources": ["scope", "policy", "code", "api", "har"],
+                "independent_cross_check_sources": [],
+            },
+        },
+    ]
+
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert execution_loop["report_draft_queue"] == [
+        {
+            "queue_id": "candidate_hunter:report_draft:H-ready",
+            "candidate_id": "H-ready",
+            "priority_score": 115,
+            "report_status": "submission_blocked",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "required_sections": [
+                "impact_summary",
+                "affected_endpoint_and_code_path",
+                "evidence_trace",
+                "safe_validation_plan",
+                "redaction_review",
+            ],
+            "evidence_focus": [
+                "learned_target_relationship_review",
+                "parent_child_authorization_matrix",
+            ],
+            "redaction_checks": [
+                "Remove raw secrets, cookies, tokens, credentials, and authorization headers.",
+                "Use only normalized endpoint, code path, and evidence summaries.",
+            ],
+            "next_action": "Draft a submission-blocked report for H-ready and keep submission disabled pending human review.",
+            "safety_gate": "submission_blocked_human_review",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert "H-needs-refutation" not in str(execution_loop["report_draft_queue"])
+    assert "submit_report" not in str(execution_loop["report_draft_queue"])
+    assert "secret-token" not in str(execution_loop["report_draft_queue"])
+
+
+def test_studio_candidate_hunter_execution_loop_uses_next_candidate_action_as_current_phase():
+    execution_loop = _studio_candidate_hunter_execution_loop(
+        {
+            "loop_id": "candidate_hunter:next_review_loop",
+            "status": "needs_review",
+            "source_plan_id": "candidate_hunter:autonomous_review_plan",
+            "active_steps": [],
+        },
+        [
+            {
+                "hypothesis_id": "H-weak",
+                "affected_endpoint": "",
+                "affected_code_path": "",
+                "quality_score": 55,
+                "quality_status": "needs_review",
+                "provenance_artifacts": ["scope", "policy", "code"],
+                "hallucination_guard": {
+                    "local_evidence_sources": ["code"],
+                    "advisory_sources": [],
+                    "independent_cross_check_sources": [],
+                },
+            }
+        ],
+    )
+
+    assert execution_loop["current_phase"] == "surface_modeling"
+    assert execution_loop["next_candidate_actions"][0]["phase_id"] == "surface_modeling"
+    phase_by_id = {
+        phase["phase_id"]: phase for phase in execution_loop["phases"]
+    }
+    assert phase_by_id["surface_modeling"]["status"] == "needs_review"
+    assert phase_by_id["semantic_audit"]["status"] == "pending"
+    assert phase_by_id["report_draft_readiness"]["status"] == "pending"
+    assert execution_loop["execution_allowed"] is False
+    assert execution_loop["validation_allowed"] is False
+    assert execution_loop["report_submission_allowed"] is False
+
+
 def test_studio_fuzzing_surface_facts_ignore_executable_plans():
     facts = _studio_fuzzing_surface_facts(
         {
@@ -871,6 +2354,36 @@ def write_sarif_artifact(tmp_path: Path) -> Path:
     return sarif_path
 
 
+def stage_workspace_artifacts(
+    workspace_path: str | Path,
+    artifacts: tuple[tuple[str, Path], ...],
+) -> list[tuple[str, Path]]:
+    workspace = Path(workspace_path)
+    staged: list[tuple[str, Path]] = []
+    code_path_rewrites: dict[str, str] = {}
+
+    for kind, source_path in artifacts:
+        source = Path(source_path)
+        destination = workspace / kind / source.name
+        if source.is_dir():
+            copytree(source, destination)
+        else:
+            copy2(source, destination)
+        staged.append((kind, destination))
+        if kind == "code":
+            code_path_rewrites[str(source.resolve())] = str(destination.resolve())
+
+    for kind, source_path in staged:
+        if kind != "scope":
+            continue
+        scope_text = source_path.read_text(encoding="utf-8")
+        for source_code_path, staged_code_path in code_path_rewrites.items():
+            scope_text = scope_text.replace(source_code_path, staged_code_path)
+        source_path.write_text(scope_text, encoding="utf-8")
+
+    return staged
+
+
 def test_create_workspace_and_import_scope_updates_manifest(tmp_path: Path):
     response = client.post(
         "/mythos/studio/workspaces",
@@ -883,6 +2396,10 @@ def test_create_workspace_and_import_scope_updates_manifest(tmp_path: Path):
 
     scope_path = tmp_path / "scope.yaml"
     scope_path.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
+    scope_path = stage_workspace_artifacts(
+        workspace["path"],
+        (("scope", scope_path),),
+    )[0][1]
 
     import_response = client.post(
         "/mythos/studio/workspaces/imports",
@@ -911,12 +2428,245 @@ def test_import_missing_policy_source_returns_404(tmp_path: Path):
         json={
             "workspace_path": response.json()["path"],
             "kind": "policy",
-            "source_path": str(tmp_path / "missing-policy.md"),
+            "source_path": str(
+                Path(response.json()["path"]) / "policy" / "missing-policy.md"
+            ),
         },
     )
 
     assert import_response.status_code == 404
     assert import_response.json()["detail"] == "artifact_source_not_found"
+
+
+def test_studio_import_rejects_existing_source_outside_workspace(tmp_path: Path):
+    workspace_response = client.post(
+        "/mythos/studio/workspaces",
+        json={"root_path": str(tmp_path), "name": "acme-api"},
+    )
+    assert workspace_response.status_code == 200
+    external_policy = tmp_path.parent / f"{tmp_path.name}-policy.md"
+    external_policy.write_text("in scope api.example.com", encoding="utf-8")
+
+    response = client.post(
+        "/mythos/studio/workspaces/imports",
+        json={
+            "workspace_path": workspace_response.json()["path"],
+            "kind": "policy",
+            "source_path": str(external_policy),
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "studio_artifact_not_authorized"}
+
+
+def test_studio_workspace_can_launch_campaign_hunter_from_authorized_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
+    policy_path = write_policy_artifact(tmp_path)
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+
+    override_get_session, testing_session = studio_test_session_override()
+    with testing_session() as session:
+        seed_sample_data(session)
+
+    def inline_dispatcher(*, campaign_task_id: str):
+        with testing_session() as session:
+            return run_agent_task(
+                campaign_task_id,
+                repository=DatabaseRepository(session),
+            )
+
+    monkeypatch.setattr(main_module, "dispatch_agent_task", inline_dispatcher)
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "acme-api"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
+            ("scope", scope_path),
+            ("policy", policy_path),
+            ("code", repo),
+            ("api", api_path),
+            ("har", har_path),
+        )):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        launch_response = client.post(
+            "/mythos/studio/workspaces/campaigns/launch",
+            json={
+                "workspace_path": workspace_path,
+                "name": "Studio campaign hunter",
+                "default_asset": "api.example.com",
+            },
+        )
+
+        assert launch_response.status_code == 200
+        body = launch_response.json()
+        campaign = body["campaign"]
+        assert campaign["status"] == "running"
+        assert campaign["autonomy_level"] == "level_0_read_only"
+        assert body["execution_allowed"] is False
+        assert body["validation_allowed"] is False
+        assert body["report_submission_allowed"] is False
+        assert len(body["dispatched_task_ids"]) == 4
+        manifest = body["manifest"]
+        hunter_run = manifest["campaign_hunter_runs"][-1]
+        assert hunter_run["campaign_id"] == campaign["id"]
+        assert hunter_run["campaign_name"] == "Studio campaign hunter"
+        assert hunter_run["campaign_status"] == "running"
+        assert hunter_run["suggestion_count"] == len(
+            body["control_center"]["research_queue_suggestions"]
+        )
+        assert hunter_run["dispatched_task_count"] == 4
+        assert hunter_run["autonomy_level"] == "level_0_read_only"
+        assert hunter_run["safety_gate"] == "review_only_no_execution"
+        assert hunter_run["execution_allowed"] is False
+        assert hunter_run["validation_allowed"] is False
+        assert hunter_run["report_submission_allowed"] is False
+
+        control_center = body["control_center"]
+        hunt_suggestion = next(
+            suggestion
+            for suggestion in control_center["research_queue_suggestions"]
+            if suggestion["source"] == "mythos_pipeline_autonomous_hunt_queue"
+        )
+        assert hunt_suggestion["title"] == (
+            "Review autonomous hunt candidate codebase_fact_hypothesis_1"
+        )
+        assert hunt_suggestion["playbook_id"] == "bola_idor"
+        assert hunt_suggestion["safety_gate"] == "awaiting_evidence_review"
+        assert hunt_suggestion["required_evidence"] == [
+            "independent_refutation_or_static_rule"
+        ]
+        assert hunt_suggestion["execution_allowed"] is False
+
+        export_response = client.post(
+            "/mythos/studio/workspaces/campaigns/reports/export",
+            json={
+                "workspace_path": workspace_path,
+                "campaign_id": campaign["id"],
+            },
+        )
+        assert export_response.status_code == 200
+        export = export_response.json()
+        assert export["campaign_id"] == campaign["id"]
+        assert export["run_id"] == campaign["id"]
+        assert export["submission_blocked"] is True
+        assert export["report_submission_allowed"] is False
+        assert export["report_markdown_path"].endswith(
+            "-campaign-hunter-report-draft.md"
+        )
+        assert export["manifest"]["campaign_hunter_runs"][-1][
+            "report_markdown_path"
+        ].endswith("-campaign-hunter-report-draft.md")
+        assert export["manifest"]["campaign_hunter_runs"][-1][
+            "report_submission_allowed"
+        ] is False
+        assert export["report"]["report_readiness"] == {
+            "status": "submission_blocked",
+            "report_submission_allowed": False,
+            "next_allowed_action": "Resolve campaign hunter evidence gates before report submission review.",
+        }
+        assert export["report"]["evidence_review"]["required_items"] == [
+            "independent_refutation_or_static_rule"
+        ]
+        assert export["report"]["candidate_readiness"] == [
+            {
+                "queue_key": hunt_suggestion["queue_key"],
+                "top_candidate_rank": hunt_suggestion["top_candidate_rank"],
+                "status": "blocked_by_required_evidence",
+                "submission_blocked": True,
+                "report_submission_allowed": False,
+                "required_evidence_count": 1,
+                "safe_validation_step_count": hunt_suggestion[
+                    "validation_step_count"
+                ],
+                "trace_status": "traceable",
+                "next_allowed_action": "Resolve required evidence gaps before report drafting.",
+            }
+        ]
+        assert export["report"]["evidence_review_packet"] == [
+            "Required artifacts: scope, policy, code, api, har.",
+            "Evidence needs: independent_refutation_or_static_rule, redacted_route_authorization_trace, test_account_role_matrix, sanitized_request_response_diff.",
+            "Evidence gaps: required_evidence_missing.",
+            "Satisfied local evidence: local_code_or_har_correlation, local_code_or_api_schema_correlation.",
+            (
+                f"Candidate readiness: {hunt_suggestion['queue_key']} status "
+                "blocked_by_required_evidence; trace traceable; required evidence 1; "
+                f"safe validation steps {hunt_suggestion['validation_step_count']}."
+            ),
+            "Redaction review required before sharing evidence; raw secrets, tokens, cookies, authorization headers, and user data stay excluded.",
+            "Evidence review remains read-only: execution blocked, validation blocked, report submission blocked.",
+        ]
+        markdown = Path(export["report_markdown_path"]).read_text(encoding="utf-8")
+        assert "Submission status: blocked" in markdown
+        assert "Report submission allowed: false" in markdown
+        assert "## Evidence review packet" in markdown
+        assert "- Required artifacts: scope, policy, code, api, har." in markdown
+        assert (
+            "- Evidence needs: independent_refutation_or_static_rule, redacted_route_authorization_trace, test_account_role_matrix, sanitized_request_response_diff."
+            in markdown
+        )
+        assert "- Evidence gaps: required_evidence_missing." in markdown
+        assert (
+            "- Satisfied local evidence: local_code_or_har_correlation, local_code_or_api_schema_correlation."
+            in markdown
+        )
+        assert "Candidate readiness:" in markdown
+        assert "status blocked_by_required_evidence; trace traceable" in markdown
+        assert (
+            "- Evidence review remains read-only: execution blocked, validation blocked, report submission blocked."
+            in markdown
+        )
+        assert "Campaign hunter report export is local and submission-blocked." in markdown
+        assert "secret-token" not in str(export)
+        assert "Authorization" not in str(export)
+
+        map_response = client.get(
+            f"/mythos/campaigns/{campaign['id']}/codebase-map"
+        )
+        assert map_response.status_code == 200
+        facts = map_response.json()["facts"]
+        assert any(
+            fact["fact_type"] == "route_handler"
+            and fact["route_path"] == "/files/{file_id}/export"
+            for fact in facts
+        )
+        assert "secret-token" not in str(body)
+        assert "Authorization" not in str(body)
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
@@ -952,14 +2702,14 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
             ("sarif", sarif_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -1039,6 +2789,21 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
                 "Confirm every candidate claim is traceable to imported authorized artifacts.",
                 "Review only normalized artifact summaries; raw paths, headers, tokens, and bodies remain excluded.",
             ],
+        }
+        assert candidates[0]["evidence_trace_summary"] == {
+            "status": "traceable",
+            "required_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+            "present_required_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+            "advisory_artifact_kinds": ["sarif"],
+            "missing_required_artifact_kinds": [],
+            "source_fact_count": len(candidates[0]["source_facts"]),
+            "endpoint_traced": True,
+            "code_path_traced": True,
+            "independent_cross_check_count": 1,
+            "next_action": "Review trace summary and refutation questions before any validation.",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
         }
         assert candidates[0]["suggested_fix"] == (
             "Enforce the affected authorization or input boundary in the backend service layer before returning sensitive data or performing state changes."
@@ -1263,7 +3028,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
@@ -1271,7 +3036,7 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             ("har", har_path),
             ("sarif", sarif_path),
             ("knowledge", knowledge_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -1303,6 +3068,32 @@ def test_studio_mission_summary_exposes_desktop_workbench_state(tmp_path: Path):
             "required": ["scope", "policy", "code", "api", "har"],
             "present": ["scope", "policy", "code", "api", "har"],
             "missing": [],
+        }
+        assert mission["attack_surface_model"] == {
+            "status": "modeled",
+            "source_artifact_kinds": ["api", "har", "knowledge", "sarif"],
+            "route_count": 2,
+            "api_route_count": 1,
+            "har_route_count": 1,
+            "advisory_signal_count": 2,
+            "methods": ["GET"],
+            "top_routes": [
+                {
+                    "method": "GET",
+                    "path": "/files/{file_id}/export",
+                    "artifact_kinds": ["api", "sarif"],
+                },
+                {
+                    "method": "GET",
+                    "path": "/files/123/export",
+                    "artifact_kinds": ["har"],
+                },
+            ],
+            "next_action": "Review normalized API/HAR/code surface coverage before candidate promotion.",
+            "safety_gate": "authorized_artifacts_only",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
         }
         assert 1 <= mission["candidate_count"] <= 5
         assert mission["quality_gates"] == {
@@ -1932,13 +3723,13 @@ def test_studio_mission_export_writes_review_only_dossier(tmp_path: Path):
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2053,7 +3844,7 @@ Authorization: Bearer secret-token
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
@@ -2061,7 +3852,7 @@ Authorization: Bearer secret-token
             ("har", har_path),
             ("strategy", strategy_path),
             ("knowledge", knowledge_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2136,13 +3927,13 @@ def test_studio_run_uses_imported_policy_artifact_for_audit_hash(tmp_path: Path)
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2201,13 +3992,13 @@ def test_studio_candidates_include_imported_api_surface_context(tmp_path: Path):
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2298,13 +4089,13 @@ def test_studio_candidates_include_imported_har_context_without_secrets(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2417,13 +4208,13 @@ def test_studio_candidates_match_imported_api_and_har_template_routes(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2470,6 +4261,272 @@ def test_studio_candidates_match_imported_api_and_har_template_routes(
         app.dependency_overrides.clear()
 
 
+def test_studio_candidates_prioritize_modeled_attack_surface_matches(
+    tmp_path: Path,
+):
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+    sarif_path = write_sarif_artifact(tmp_path)
+    manifest = {
+        "artifacts": [
+            {"kind": "scope", "source_path": str(tmp_path / "scope.yaml")},
+            {"kind": "policy", "source_path": str(tmp_path / "policy.md")},
+            {"kind": "api", "source_path": str(api_path)},
+            {"kind": "har", "source_path": str(har_path)},
+            {"kind": "sarif", "source_path": str(sarif_path)},
+        ]
+    }
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": f"H-GENERIC-{index}",
+                    "vuln_type": "authorization_gap",
+                    "location": f"GET /generic/{index}",
+                    "priority_score": 55,
+                }
+                for index in range(1, 6)
+            ]
+            + [
+                {
+                    "hypothesis_id": "H-SURFACE",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "priority_score": 20,
+                }
+            ]
+        }
+    )
+
+    candidates = _studio_candidates_for_run(record, manifest)
+
+    assert len(candidates) == 5
+    assert candidates[0]["hypothesis_id"] == "H-SURFACE"
+    assert candidates[0]["priority_score"] > candidates[1]["priority_score"]
+    assert (
+        "surface_model_priority: matched api, har, sarif route evidence"
+        in candidates[0]["ranking_reasons"]
+    )
+    assert "H-GENERIC-5" not in {
+        candidate["hypothesis_id"] for candidate in candidates
+    }
+    assert candidates[0]["safe_verification"] is True
+    assert candidates[0]["report_readiness"]["report_submission_allowed"] is False
+
+
+def test_studio_candidates_inherit_worker_assessment_candidate_ids():
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis": "Review GET /files/{file_id}/export for object authorization boundary drift.",
+                    "vuln_type": "authorization_boundary",
+                    "validation_mode": "two_account_authorization_check",
+                    "priority_score": 70,
+                    "source_facts": [
+                        {
+                            "fact_type": "authorization_gap_candidate",
+                            "artifact_kind": "code",
+                            "source_path": "routes.py",
+                            "symbol_name": "export_file",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "root_cause": "missing_object_ownership_check",
+                            "security_invariant": "File exports require owner or admin authorization.",
+                            "sink_symbols": ["send_file"],
+                        }
+                    ],
+                }
+            ],
+            "hypothesis_assessments": [
+                {
+                    "candidate_id": "codebase_fact_hypothesis_1",
+                    "hypothesis_index": 0,
+                }
+            ],
+        }
+    )
+
+    candidates = _studio_candidates_for_run(record, {})
+    execution_loop = _studio_candidate_hunter_execution_loop({}, candidates)
+
+    assert candidates[0]["hypothesis_id"] == "codebase_fact_hypothesis_1"
+    assert execution_loop["candidate_evidence_matrix"][0]["candidate_id"] == (
+        "codebase_fact_hypothesis_1"
+    )
+    assert execution_loop["learning_feedback_target"]["candidate_ids"] == [
+        "codebase_fact_hypothesis_1"
+    ]
+
+
+def test_studio_candidates_redact_raw_secret_source_fact_fields():
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-RAW-SECRET",
+                    "hypothesis": "Review GET /files/{file_id}/export.",
+                    "vuln_type": "authorization_boundary",
+                    "validation_mode": "two_account_authorization_check",
+                    "priority_score": 70,
+                    "source_facts": [
+                        {
+                            "fact_type": "authorization_gap_candidate",
+                            "artifact_kind": "code",
+                            "source_path": "routes.py",
+                            "symbol_name": "export_file",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "request_headers": {
+                                "Authorization": "Bearer secret-token",
+                                "Cookie": "session=secret-token",
+                            },
+                            "request_body": "password=secret-token",
+                            "raw_url": "/files/123/export?download_token=secret-token",
+                            "root_cause": "missing_object_ownership_check",
+                            "security_invariant": "File exports require owner or admin authorization.",
+                            "sink_symbols": ["send_file"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    candidates = _studio_candidates_for_run(record, {})
+
+    assert candidates[0]["source_facts"][0]["route_path"] == "/files/{file_id}/export"
+    serialized = str(candidates)
+    assert "secret-token" not in serialized
+    assert "Authorization" not in serialized
+    assert "Cookie" not in serialized
+    assert "session=" not in serialized
+    assert "password=" not in serialized
+    assert "download_token" not in serialized
+
+
+def test_studio_candidates_require_semantic_evidence_for_report_readiness(
+    tmp_path: Path,
+):
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+    manifest = {
+        "artifacts": [
+            {"kind": "scope", "source_path": str(tmp_path / "scope.yaml")},
+            {"kind": "policy", "source_path": str(tmp_path / "policy.md")},
+            {"kind": "api", "source_path": str(api_path)},
+            {"kind": "har", "source_path": str(har_path)},
+        ]
+    }
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-SEMANTIC-GAP",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "priority_score": 80,
+                    "source_facts": [
+                        {
+                            "fact_type": "authorization_gap_candidate",
+                            "artifact_kind": "code",
+                            "source_path": "routes.py",
+                            "symbol_name": "export_file",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    candidate = _studio_candidates_for_run(record, manifest)[0]
+
+    assert candidate["evidence_gaps"] == [
+        {"artifact_kind": "semantic", "reason": "missing_root_cause"},
+        {"artifact_kind": "semantic", "reason": "missing_security_invariant"},
+        {"artifact_kind": "semantic", "reason": "missing_sink_symbols"},
+    ]
+    assert candidate["evidence_review"]["status"] == "needs_human_review"
+    assert (
+        "Review semantic root cause, security invariant, and sink symbols before report drafting."
+        in candidate["evidence_review"]["required_items"]
+    )
+    assert candidate["report_readiness"] == {
+        "status": "submission_blocked",
+        "report_submission_allowed": False,
+        "next_allowed_action": (
+            "Resolve semantic evidence gaps before exporting a report preview."
+        ),
+    }
+
+
+def test_studio_candidates_prioritize_complete_semantic_evidence_before_gap_candidates(
+    tmp_path: Path,
+):
+    manifest = {
+        "artifacts": [
+            {"kind": "scope", "source_path": str(tmp_path / "scope.yaml")},
+            {"kind": "policy", "source_path": str(tmp_path / "policy.md")},
+        ]
+    }
+    record = SimpleNamespace(
+        payload={
+            "hypotheses": [
+                {
+                    "hypothesis_id": "H-SEMANTIC-GAP",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "priority_score": 80,
+                    "source_facts": [
+                        {
+                            "fact_type": "authorization_gap_candidate",
+                            "artifact_kind": "code",
+                            "source_path": "routes.py",
+                            "symbol_name": "export_file",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                        }
+                    ],
+                },
+                {
+                    "hypothesis_id": "H-SEMANTIC-COMPLETE",
+                    "vuln_type": "authorization_gap",
+                    "location": "GET /files/{file_id}/export",
+                    "priority_score": 70,
+                    "source_facts": [
+                        {
+                            "fact_type": "authorization_gap_candidate",
+                            "artifact_kind": "code",
+                            "source_path": "routes.py",
+                            "symbol_name": "export_file",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                            "root_cause": "missing_object_ownership_check",
+                            "security_invariant": "File exports require owner or admin authorization.",
+                            "sink_symbols": ["send_file"],
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+
+    candidates = _studio_candidates_for_run(record, manifest)
+
+    assert [candidate["hypothesis_id"] for candidate in candidates[:2]] == [
+        "H-SEMANTIC-COMPLETE",
+        "H-SEMANTIC-GAP",
+    ]
+    assert (
+        "semantic_evidence_priority: root cause, invariant, and sink symbols present"
+        in candidates[0]["ranking_reasons"]
+    )
+    assert candidates[0]["priority_score"] > candidates[1]["priority_score"]
+    assert candidates[0]["report_readiness"]["report_submission_allowed"] is False
+
+
 def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
     tmp_path: Path,
 ):
@@ -2503,14 +4560,14 @@ def test_studio_candidates_include_imported_sarif_scanner_context_as_advisory(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
             ("sarif", sarif_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2640,14 +4697,14 @@ def test_studio_candidates_include_imported_sbom_dependency_context_as_advisory(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
             ("sbom", sbom_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2758,14 +4815,14 @@ def test_studio_candidates_include_imported_fuzzing_plan_context_as_advisory(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
             ("fuzzing", fuzzing_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={
@@ -2903,14 +4960,14 @@ def test_studio_candidates_include_imported_strategy_context_as_advisory(
         assert workspace_response.status_code == 200
         workspace_path = workspace_response.json()["path"]
 
-        for kind, source_path in (
+        for kind, source_path in stage_workspace_artifacts(workspace_path, (
             ("scope", scope_path),
             ("policy", policy_path),
             ("code", repo),
             ("api", api_path),
             ("har", har_path),
             ("strategy", strategy_path),
-        ):
+        )):
             import_response = client.post(
                 "/mythos/studio/workspaces/imports",
                 json={

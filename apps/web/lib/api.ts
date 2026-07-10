@@ -11,6 +11,7 @@ import type {
 } from "./campaigns-data";
 import type {
   StudioAgentHandoffPackInput,
+  StudioCandidateHunterExecutionLoopInput,
   StudioCandidateHunterPlanInput,
   StudioCandidateHunterReviewLoopInput,
   StudioCandidateInput,
@@ -61,6 +62,15 @@ export type CampaignListItem = CampaignControlCenter["campaign"] & {
 export type AuthorizedCampaignLaunchInput = {
   allowed_tools: string[];
   autonomy_level: string;
+  authorized_api_artifacts?: Array<{
+    kind: string;
+    payload: Record<string, unknown>;
+    source_name?: string | null;
+  }>;
+  authorized_code_files?: Array<{
+    content: string;
+    path: string;
+  }>;
   budget?: {
     time_budget_minutes?: number;
     token_budget?: number;
@@ -546,6 +556,24 @@ export type StudioWorkspaceRunResponse = {
   manifest: StudioWorkspaceManifest;
 };
 
+export type StudioWorkspaceCampaignLaunchRequest = {
+  workspace_path: string;
+  default_asset?: string;
+  name?: string;
+  program_id?: string;
+};
+
+export type StudioWorkspaceCampaignLaunchResponse = {
+  campaign: CampaignListItem;
+  control_center: CampaignControlCenter;
+  dispatched_task_ids: string[];
+  execution_allowed: false;
+  manifest: StudioWorkspaceManifest;
+  report_submission_allowed: false;
+  safety_gate: string;
+  validation_allowed: false;
+};
+
 export type StudioWorkspaceCandidatesResponse = {
   run_id: string | null;
   candidates: StudioCandidateInput[];
@@ -562,6 +590,7 @@ export type StudioWorkspaceMissionHandoffResponse = {
   agent_handoff_pack: StudioAgentHandoffPackInput;
   candidate_hunter_plan: StudioCandidateHunterPlanInput;
   candidate_hunter_review_loop: StudioCandidateHunterReviewLoopInput;
+  candidate_hunter_execution_loop: StudioCandidateHunterExecutionLoopInput;
   safety_gate: string;
   completion_gate: string;
   execution_allowed: false;
@@ -572,6 +601,11 @@ export type StudioWorkspaceMissionHandoffResponse = {
 export type StudioReportExportRequest = {
   workspace_path: string;
   run_id: string;
+};
+
+export type StudioCampaignHunterReportExportRequest = {
+  workspace_path: string;
+  campaign_id: string;
 };
 
 export type StudioMissionDossierExportRequest = {
@@ -791,6 +825,11 @@ export type ValidationRunManualResultRequest = {
 export type LearningOutcome = "accepted" | "duplicate" | "informative" | "na" | "rejected";
 export type LearningSeverityDelta = "up" | "down" | "same";
 export type LearningEvidenceQuality = "strong" | "adequate" | "weak";
+export type CandidateHunterLearningOutcome =
+  | "confirmed"
+  | "duplicate"
+  | "needs_more_evidence"
+  | "refuted";
 
 export type LearningSignal = {
   id?: string | null;
@@ -818,6 +857,24 @@ export type LearningOutcomeRequest = {
   severity_delta?: LearningSeverityDelta | null;
   evidence_quality?: LearningEvidenceQuality | null;
   triager_feedback?: string | null;
+  target_relationships?: string[];
+};
+
+export type CandidateHunterLearningOutcomeRequest = {
+  candidate_id: string;
+  evidence_ready?: boolean;
+  learning_evidence_needed_reasons?: string[];
+  missing_evidence?: string[];
+  missing_required_artifact_kinds?: string[];
+  outcome: CandidateHunterLearningOutcome;
+  reviewer: string;
+  notes: string;
+  playbook_id?: string | null;
+  program_id?: string | null;
+  run_id?: string | null;
+  surface_key?: string | null;
+  target_relationships?: string[];
+  trace_status?: string | null;
 };
 
 export type AttackSurfaceAction = {
@@ -1196,6 +1253,13 @@ export function runStudioWorkspaceResearch(
   return apiPost("/mythos/studio/workspaces/runs", request, fallback);
 }
 
+export function launchStudioWorkspaceCampaignHunter(
+  request: StudioWorkspaceCampaignLaunchRequest,
+  fallback: StudioWorkspaceCampaignLaunchResponse | null,
+): Promise<StudioWorkspaceCampaignLaunchResponse | null> {
+  return apiPost("/mythos/studio/workspaces/campaigns/launch", request, fallback);
+}
+
 export function listStudioWorkspaceCandidates(
   workspacePath: string,
   runId: string | null,
@@ -1237,6 +1301,13 @@ export function exportStudioWorkspaceReport(
   fallback: StudioReportExportResponse | null,
 ): Promise<StudioReportExportResponse | null> {
   return apiPost("/mythos/studio/workspaces/reports/export", request, fallback);
+}
+
+export function exportStudioWorkspaceCampaignHunterReport(
+  request: StudioCampaignHunterReportExportRequest,
+  fallback: StudioReportExportResponse | null,
+): Promise<StudioReportExportResponse | null> {
+  return apiPost("/mythos/studio/workspaces/campaigns/reports/export", request, fallback);
 }
 
 export function exportStudioWorkspaceMissionDossier(
@@ -1530,6 +1601,118 @@ export function recordMythosBrainOutcome(
   fallback: ProgramIntelligenceProfile,
 ): Promise<ProgramIntelligenceProfile> {
   return apiPost("/mythos/brain/outcomes", request, fallback);
+}
+
+const candidateHunterLearningOutcomeMap: Record<CandidateHunterLearningOutcome, LearningOutcome> = {
+  confirmed: "accepted",
+  duplicate: "duplicate",
+  needs_more_evidence: "informative",
+  refuted: "rejected",
+};
+
+const candidateHunterLearningEvidenceQualityMap: Record<
+  CandidateHunterLearningOutcome,
+  LearningEvidenceQuality
+> = {
+  confirmed: "adequate",
+  duplicate: "adequate",
+  needs_more_evidence: "weak",
+  refuted: "adequate",
+};
+
+function candidateHunterLearningContextValue(value: string): string {
+  return value.replace(/[\r\n:]/g, "_").trim().slice(0, 80);
+}
+
+function candidateHunterLearningEvidenceRelationships(
+  request: CandidateHunterLearningOutcomeRequest,
+): string[] {
+  const relationships = [...(request.target_relationships ?? [])];
+  if (typeof request.evidence_ready === "boolean") {
+    relationships.push(`evidence_ready:${request.evidence_ready ? "true" : "false"}`);
+  }
+  if (request.trace_status) {
+    relationships.push(
+      `trace_status:${candidateHunterLearningContextValue(request.trace_status)}`,
+    );
+  }
+  for (const missing of (request.missing_evidence ?? []).slice(0, 5)) {
+    relationships.push(
+      `missing_evidence:${candidateHunterLearningContextValue(missing)}`,
+    );
+  }
+  for (const missing of (request.missing_required_artifact_kinds ?? []).slice(0, 5)) {
+    relationships.push(
+      `missing_required_artifact:${candidateHunterLearningContextValue(missing)}`,
+    );
+  }
+  for (const reason of (request.learning_evidence_needed_reasons ?? []).slice(0, 5)) {
+    relationships.push(
+      `learned_evidence:${candidateHunterLearningContextValue(reason)}`,
+    );
+  }
+  return Array.from(new Set(relationships.filter((item) => item.length > 0))).slice(0, 20);
+}
+
+function candidateHunterLearningEvidenceNote(
+  request: CandidateHunterLearningOutcomeRequest,
+): string {
+  if (
+    typeof request.evidence_ready !== "boolean" &&
+    !request.trace_status &&
+    (request.missing_evidence?.length ?? 0) === 0 &&
+    (request.missing_required_artifact_kinds?.length ?? 0) === 0 &&
+    (request.learning_evidence_needed_reasons?.length ?? 0) === 0
+  ) {
+    return "";
+  }
+
+  const missingEvidence =
+    request.missing_evidence?.map(candidateHunterLearningContextValue).join(", ") ||
+    "none";
+  const missingRequired =
+    request.missing_required_artifact_kinds
+      ?.map(candidateHunterLearningContextValue)
+      .join(", ") || "none";
+  const traceStatus = candidateHunterLearningContextValue(
+    request.trace_status ?? "needs_evidence",
+  );
+  const learnedEvidence =
+    request.learning_evidence_needed_reasons
+      ?.map(candidateHunterLearningContextValue)
+      .join(", ") || "none";
+  const evidenceReady =
+    typeof request.evidence_ready === "boolean"
+      ? request.evidence_ready
+        ? "true"
+        : "false"
+      : "unknown";
+  return ` evidence ready ${evidenceReady}; trace ${traceStatus}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequired}; learned evidence ${learnedEvidence}.`;
+}
+
+export function recordCandidateHunterLearningOutcome(
+  request: CandidateHunterLearningOutcomeRequest,
+  fallback: ProgramIntelligenceProfile,
+): Promise<ProgramIntelligenceProfile> {
+  const evidenceNote = candidateHunterLearningEvidenceNote(request);
+  const notes = `Candidate hunter outcome (${request.outcome}) by ${request.reviewer}: ${request.notes}${evidenceNote ? `;${evidenceNote}` : ""}`;
+  const targetRelationships = candidateHunterLearningEvidenceRelationships(request);
+
+  return recordMythosBrainOutcome(
+    {
+      evidence_quality: candidateHunterLearningEvidenceQualityMap[request.outcome],
+      notes,
+      outcome: candidateHunterLearningOutcomeMap[request.outcome],
+      playbook_id: request.playbook_id ?? `candidate_hunter:${request.candidate_id}`,
+      program_id: request.program_id ?? null,
+      run_id: request.run_id ?? null,
+      surface_key: request.surface_key ?? request.candidate_id,
+      target_relationships:
+        targetRelationships.length > 0 ? targetRelationships : undefined,
+      triager_feedback: request.notes,
+    },
+    fallback,
+  );
 }
 
 export function evaluateScopeGuard(

@@ -102,12 +102,20 @@ export type CampaignControlCenter = {
     next_allowed_action: string;
     playbook_id: string;
     priority_score: number;
+    raw_priority_score?: number | null;
+    quality_gate_reasons?: string[];
+    evidence_needed?: string[];
+    evidence_trace_summary?: CampaignEvidenceTraceSummaryRaw;
+    report_readiness?: CampaignReportReadinessRaw;
     queue_key: string;
     refutation_question_count?: number;
+    required_evidence?: string[];
+    satisfied_evidence?: string[];
     safety_gate: string;
     source: string;
     surface_key: string | null;
     title: string;
+    top_candidate_rank?: number | null;
     validation_step_count?: number;
   }[];
   research_review_plans?: CampaignResearchReviewPlan[];
@@ -121,24 +129,73 @@ export type CampaignPromotionReview = {
   next_allowed_action: string;
   provenance_ref_count: number;
   report_submission_allowed: false;
+  required_evidence_blocked_count?: number;
   validation_feedback_review_count?: number;
 };
 
 export type CampaignResearchQueueSuggestion = {
   blockedActionCount: number;
   candidateStatus: string | null;
+  evidenceTraceSummary: CampaignEvidenceTraceSummary;
+  reportReadiness: CampaignReportReadiness;
   executionAllowed: boolean;
   humanApprovalRequired: boolean;
   nextAllowedAction: string;
   playbookId: string;
   priorityScore: number;
+  rawPriorityScore: number | null;
+  qualityGateReasons: string[];
+  evidenceNeeded: string[];
   queueKey: string;
   refutationQuestionCount: number;
+  requiredEvidence: string[];
+  satisfiedEvidence: string[];
   safetyGate: string;
   source: string;
   surfaceKey: string | null;
   title: string;
+  topCandidateRank: number | null;
   validationStepCount: number;
+};
+
+export type CampaignEvidenceTraceSummaryRaw = {
+  artifact_kinds?: string[];
+  report_submission_allowed?: boolean;
+  route_fact_count?: number;
+  source_fact_count?: number;
+  source_fact_types?: string[];
+  trace_status?: string;
+  traceable_source_fact_count?: number;
+};
+
+export type CampaignEvidenceTraceSummary = {
+  artifactKinds: string[];
+  reportSubmissionAllowed: false;
+  routeFactCount: number;
+  sourceFactCount: number;
+  sourceFactTypes: string[];
+  traceStatus: string;
+  traceableSourceFactCount: number;
+};
+
+export type CampaignReportReadinessRaw = {
+  next_allowed_action?: string;
+  report_submission_allowed?: boolean;
+  required_evidence_count?: number;
+  safe_validation_step_count?: number;
+  status?: string;
+  submission_blocked?: boolean;
+  trace_status?: string;
+};
+
+export type CampaignReportReadiness = {
+  nextAllowedAction: string;
+  reportSubmissionAllowed: false;
+  requiredEvidenceCount: number;
+  safeValidationStepCount: number;
+  status: string;
+  submissionBlocked: true;
+  traceStatus: string;
 };
 
 export type CampaignControlSummary = {
@@ -158,6 +215,7 @@ export type CampaignControlSummary = {
   promotionReviewLatestReason: string | null;
   promotionReviewNextAllowedAction: string;
   promotionReviewProvenanceRefCount: number;
+  promotionReviewRequiredEvidenceBlockedCount: number;
   promotionReviewReportSubmissionAllowed: boolean;
   promotionReviewValidationFeedbackReviewCount: number;
   researchQueueSuggestions: CampaignResearchQueueSuggestion[];
@@ -229,13 +287,20 @@ export type CampaignAutonomousCandidateContext = {
   candidate_id: string;
   candidate_status: string;
   dispatch_allowed: boolean;
+  evidence_needed?: string[];
+  evidence_trace_summary?: CampaignEvidenceTraceSummaryRaw;
+  report_readiness?: CampaignReportReadinessRaw;
   evidence_focus?: string[];
   execution_allowed: boolean;
   human_approval_required: boolean;
   hypothesis: string;
   pipeline_run_id: string;
+  raw_priority_score?: number | null;
+  quality_gate_reasons?: string[];
   refutation_questions: string[];
   refutation_status: string;
+  required_evidence?: string[];
+  satisfied_evidence?: string[];
   report_submission_allowed: boolean;
   safety_notes: string[];
   source_fact_types?: string[];
@@ -337,13 +402,20 @@ export type CampaignAutonomousCandidateContextSummary = {
   candidateId: string;
   candidateStatus: string;
   dispatchAllowed: boolean;
+  evidenceNeeded: string[];
+  evidenceTraceSummary: CampaignEvidenceTraceSummary;
+  reportReadiness: CampaignReportReadiness;
   evidenceFocus: string[];
   executionAllowed: boolean;
   humanApprovalRequired: boolean;
   hypothesis: string;
   pipelineRunId: string;
+  rawPriorityScore: number | null;
+  qualityGateReasons: string[];
   refutationQuestions: string[];
   refutationStatus: string;
+  requiredEvidence: string[];
+  satisfiedEvidence: string[];
   reportSubmissionAllowed: boolean;
   safetyNotes: string[];
   sourceFactTypes: string[];
@@ -629,6 +701,7 @@ export type CampaignTimelineSummary = {
   promotionProvenanceRefCount?: number;
   refutationAnswerCount?: number;
   refutationQuestionCount?: number;
+  requiredEvidence?: string[];
   reportSubmissionAllowed?: boolean;
   reviewEvidenceRefCount?: number;
   safetyGateState: string;
@@ -860,6 +933,7 @@ export type CampaignFindingCandidateGateSummary = {
   promotionAuditLatestReason: string | null;
   promotionAuditProvenanceRefCount: number;
   promotionAuditReviewEvidenceRefCount: number;
+  requiredEvidenceBlockedCount: number;
   researchEvidenceRefCount: number;
   researchFeedbackCount: number;
   researchPromotionBlockedCount: number;
@@ -907,14 +981,17 @@ export type CampaignHypothesisBoardSummary = {
 
 export type CampaignHypothesisResearchQueueHandoff = {
   blockedActionCount: number;
+  evidenceNeeded: string[];
   executionAllowed: boolean;
   humanApprovalRequired: boolean;
   nextAllowedAction: string;
   queueKey: string;
   refutationQuestionCount: number;
+  requiredEvidence: string[];
   reviewHref: string;
   safetyGate: string;
   title: string;
+  topCandidateRank: number | null;
   validationStepCount: number;
 };
 
@@ -1314,6 +1391,10 @@ export function toCampaignControlSummary(
       0,
       Math.round(controlCenter.promotion_review?.provenance_ref_count ?? 0),
     ),
+    promotionReviewRequiredEvidenceBlockedCount: Math.max(
+      0,
+      Math.round(controlCenter.promotion_review?.required_evidence_blocked_count ?? 0),
+    ),
     promotionReviewReportSubmissionAllowed: false,
     promotionReviewValidationFeedbackReviewCount: Math.max(
       0,
@@ -1332,12 +1413,20 @@ export function toCampaignControlSummary(
       ),
       playbookId: safeText(suggestion.playbook_id, "playbook"),
       priorityScore: Math.max(0, Math.min(100, Math.round(suggestion.priority_score))),
+      rawPriorityScore: percentScore(suggestion.raw_priority_score),
+      qualityGateReasons: safeLabelList(suggestion.quality_gate_reasons ?? [], 5),
+      evidenceNeeded: safeLabelList(suggestion.evidence_needed ?? [], 5),
+      evidenceTraceSummary: safeEvidenceTraceSummary(suggestion.evidence_trace_summary),
+      reportReadiness: safeReportReadiness(suggestion.report_readiness),
       queueKey: safeText(suggestion.queue_key, "reasoning_memory"),
       refutationQuestionCount: Math.max(0, Math.round(suggestion.refutation_question_count ?? 0)),
+      requiredEvidence: safeLabelList(suggestion.required_evidence ?? [], 5),
+      satisfiedEvidence: safeLabelList(suggestion.satisfied_evidence ?? [], 5),
       safetyGate: safeText(humanize(suggestion.safety_gate), "Advisory memory only"),
       source: safeText(humanize(suggestion.source), "Mythos brain reasoning memory"),
       surfaceKey: suggestion.surface_key ? safeText(suggestion.surface_key, "surface") : null,
       title: safeText(suggestion.title, "Review reasoning memory"),
+      topCandidateRank: safeTopCandidateRank(suggestion.top_candidate_rank),
       validationStepCount: Math.max(0, Math.round(suggestion.validation_step_count ?? 0)),
     })),
     safeNextAction: safeNextActionLabel(controlCenter.safe_next_action),
@@ -1475,15 +1564,22 @@ function toCampaignAutonomousCandidateContextSummary(
       safeText(humanize(context.candidate_status), "Awaiting human review"),
     ),
     dispatchAllowed: false,
+    evidenceNeeded: safeLabelList(context.evidence_needed ?? [], 6),
+    evidenceTraceSummary: safeEvidenceTraceSummary(context.evidence_trace_summary),
+    reportReadiness: safeReportReadiness(context.report_readiness),
     evidenceFocus: safeLabelList(context.evidence_focus ?? [], 4),
     executionAllowed: false,
     humanApprovalRequired: context.human_approval_required !== false,
     hypothesis: safeReasonText(context.hypothesis),
     pipelineRunId: safeText(context.pipeline_run_id, "pipeline_run"),
+    rawPriorityScore: percentScore(context.raw_priority_score),
+    qualityGateReasons: safeLabelList(context.quality_gate_reasons ?? [], 6),
     refutationQuestions: context.refutation_questions
       .slice(0, 8)
       .map((question) => safeText(question, "Refutation question redacted")),
     refutationStatus: safeText(humanize(context.refutation_status), "Needs evidence"),
+    requiredEvidence: safeLabelList(context.required_evidence ?? [], 6),
+    satisfiedEvidence: safeLabelList(context.satisfied_evidence ?? [], 6),
     reportSubmissionAllowed: false,
     safetyNotes: context.safety_notes
       .slice(0, 8)
@@ -1898,6 +1994,9 @@ export function toCampaignTimelineSummaries(
         : {}),
       ...(isResearchPlan
         ? { evidenceStepCount: safeCount(payload.evidence_step_count) ?? 0 }
+        : {}),
+      ...(isResearchQueueMaterialized || isResearchPlan
+        ? { requiredEvidence: safeLabelList(stringList(payload.required_evidence), 6) }
         : {}),
       ...(isResearchPlan || isResearchRefutationDecision
         ? {
@@ -2394,11 +2493,31 @@ export function toCampaignFindingCandidateGateSummary(
   const researchPromotionBlockedCount = researchFeedbackEvidence.filter(
     (feedback) => feedback.findingPromotionAllowed === false,
   ).length;
+  const requiredEvidenceBlockedCount = pipelineStages.filter((stage) => {
+    if (stage.stage_key !== "research_task_review_plan") {
+      return false;
+    }
+    if (!stage.task_id) {
+      return false;
+    }
+    const requiredEvidence = stringList(asRecord(stage.payload).required_evidence);
+    if (requiredEvidence.length === 0) {
+      return false;
+    }
+    return !pipelineStages.some(
+      (nextStage) =>
+        nextStage.task_id === stage.task_id
+        && nextStage.stage_key === "research_task_refutation_decision"
+        && nextStage.status !== "needs_evidence",
+    );
+  }).length;
   const status =
     previews.length === 0
       ? "no_report_preview"
       : promotionBlockedStages.length > 0
         ? "blocked_by_promotion_audit"
+        : requiredEvidenceBlockedCount > 0
+        ? "blocked_by_required_evidence"
         : researchPromotionBlockedCount > 0
         ? "blocked_by_research_feedback"
         : eligibleClaimCount > 0
@@ -2412,6 +2531,8 @@ export function toCampaignFindingCandidateGateSummary(
     nextAllowedAction:
       status === "blocked_by_promotion_audit"
         ? "Review blocked promotion evidence before retrying candidate promotion."
+        : status === "blocked_by_required_evidence"
+        ? "Resolve required evidence gaps before candidate promotion."
         : status === "blocked_by_research_feedback"
         ? "Review validation feedback before candidate promotion."
         : status === "ready_for_manual_promotion"
@@ -2432,6 +2553,7 @@ export function toCampaignFindingCandidateGateSummary(
         latestPromotionCreatedPayload.review_evidence_ref_count,
         latestPromotionCreatedPayload.review_evidence_refs,
       ) ?? 0,
+    requiredEvidenceBlockedCount,
     researchEvidenceRefCount: researchFeedbackEvidence.reduce(
       (total, feedback) => total + feedback.evidenceRefCount,
       0,
@@ -2665,16 +2787,67 @@ function researchQueueHandoffForCandidate(
 
   return {
     blockedActionCount: suggestion.blockedActionCount,
+    evidenceNeeded: suggestion.evidenceNeeded,
     executionAllowed: false,
     humanApprovalRequired: suggestion.humanApprovalRequired,
     nextAllowedAction: safeText(suggestion.nextAllowedAction, "Review validation plan before any execution."),
     queueKey: safeText(suggestion.queueKey, "autonomous_hunt"),
     refutationQuestionCount: suggestion.refutationQuestionCount,
+    requiredEvidence: suggestion.requiredEvidence,
     reviewHref: `/campaigns/${encodeURIComponent(campaignId)}/tasks`,
     safetyGate: safeText(suggestion.safetyGate, "Review gate"),
     title: safeText(suggestion.title, "Review autonomous hunt candidate"),
+    topCandidateRank: suggestion.topCandidateRank,
     validationStepCount: suggestion.validationStepCount,
   };
+}
+
+function safeEvidenceTraceSummary(
+  summary: CampaignEvidenceTraceSummaryRaw | null | undefined,
+): CampaignEvidenceTraceSummary {
+  const traceStatus = safeText(summary?.trace_status, "needs_evidence");
+  return {
+    artifactKinds: safeLabelList(summary?.artifact_kinds ?? [], 5),
+    reportSubmissionAllowed: false,
+    routeFactCount: safeCount(summary?.route_fact_count) ?? 0,
+    sourceFactCount: safeCount(summary?.source_fact_count) ?? 0,
+    sourceFactTypes: safeLabelList(summary?.source_fact_types ?? [], 6),
+    traceStatus: traceStatus === "traceable" ? "traceable" : "needs_evidence",
+    traceableSourceFactCount: safeCount(summary?.traceable_source_fact_count) ?? 0,
+  };
+}
+
+function safeReportReadiness(
+  readiness: CampaignReportReadinessRaw | null | undefined,
+): CampaignReportReadiness {
+  const allowedStatuses = new Set([
+    "blocked_by_required_evidence",
+    "blocked_by_evidence_trace",
+    "needs_safe_validation_plan",
+    "submission_blocked_draft_ready",
+  ]);
+  const status = safeText(readiness?.status, "blocked_by_evidence_trace");
+  const traceStatus = safeText(readiness?.trace_status, "needs_evidence");
+  return {
+    nextAllowedAction: safeText(
+      readiness?.next_allowed_action,
+      "Review evidence gates before report drafting.",
+    ),
+    reportSubmissionAllowed: false,
+    requiredEvidenceCount: safeCount(readiness?.required_evidence_count) ?? 0,
+    safeValidationStepCount: safeCount(readiness?.safe_validation_step_count) ?? 0,
+    status: allowedStatuses.has(status) ? status : "blocked_by_evidence_trace",
+    submissionBlocked: true,
+    traceStatus: traceStatus === "traceable" ? "traceable" : "needs_evidence",
+  };
+}
+
+function safeTopCandidateRank(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const rank = Math.round(value);
+  return rank >= 1 && rank <= 5 ? rank : null;
 }
 
 export function toCampaignAttackSurfaceMapView(

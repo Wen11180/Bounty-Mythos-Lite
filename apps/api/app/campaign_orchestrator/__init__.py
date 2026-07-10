@@ -171,8 +171,11 @@ def _read_only_task_payload(campaign: CampaignRecord, task_type: str) -> dict:
     }
     campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
     authorized_code_files = campaign_payload.get("authorized_code_files")
+    authorized_api_artifacts = campaign_payload.get("authorized_api_artifacts")
     if task_type == "attack_surface_mapping" and isinstance(authorized_code_files, list):
         payload["authorized_code_files"] = authorized_code_files
+    if task_type == "attack_surface_mapping" and isinstance(authorized_api_artifacts, list):
+        payload["authorized_api_artifacts"] = authorized_api_artifacts
     return payload
 
 

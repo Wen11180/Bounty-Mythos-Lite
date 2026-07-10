@@ -5,6 +5,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.repository import DatabaseRepository, seed_sample_data
 from app.worker import tasks as worker_tasks
+from app.config import get_settings
 from app.worker.tasks import dispatch_agent_task, ping, run_agent_task
 
 
@@ -41,7 +42,32 @@ def test_dispatch_agent_task_enqueues_only_campaign_task_id(monkeypatch):
     assert calls == [(("campaign_task_1",), {})]
     assert result == {
         "campaign_task_id": "campaign_task_1",
+        "dispatch_mode": "celery",
         "celery_task_id": "celery_task_1",
+    }
+
+
+def test_dispatch_agent_task_can_run_inline_without_celery(monkeypatch):
+    monkeypatch.setenv("WORKER_DISPATCH_MODE", "inline")
+    get_settings.cache_clear()
+    calls: list[str] = []
+
+    def fake_run(campaign_task_id: str):
+        calls.append(campaign_task_id)
+        return {"status": "completed", "task_id": campaign_task_id}
+
+    monkeypatch.setattr(worker_tasks.run_agent_task_from_queue, "run", fake_run)
+
+    try:
+        result = dispatch_agent_task(campaign_task_id="campaign_task_1")
+    finally:
+        get_settings.cache_clear()
+
+    assert calls == ["campaign_task_1"]
+    assert result == {
+        "campaign_task_id": "campaign_task_1",
+        "dispatch_mode": "inline",
+        "result": {"status": "completed", "task_id": "campaign_task_1"},
     }
 
 
@@ -123,9 +149,18 @@ def test_run_agent_task_reconciles_existing_dispatched_agent_run():
 
         agent_runs = repository.list_campaign_agent_runs(campaign.id)
         updated_task = repository.list_campaign_tasks(campaign.id)[0]
+        pipeline_runs = [
+            run
+            for run in repository.list_pipeline_runs()
+            if run.program_id == campaign.program_id and run.asset == campaign.default_asset
+        ]
         assert result["status"] == "completed"
         assert result["agent_run_id"] == dispatched_run.id
         assert len(agent_runs) == 1
+        assert len(pipeline_runs) == 1
+        assert pipeline_runs[0].payload["hypotheses"][0]["hypothesis_id"] == (
+            "campaign_worker_hypothesis_1"
+        )
         assert agent_runs[0].id == dispatched_run.id
         assert agent_runs[0].status == "completed"
         assert any(ref.startswith("pipeline_run:") for ref in agent_runs[0].output_refs)
@@ -224,6 +259,122 @@ def export_file(file_id: str, current_user = Depends(require_user)):
         session.close()
 
 
+def test_run_agent_task_maps_authorized_api_and_har_artifacts_into_route_facts():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="API artifact map campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized API and HAR",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_api_artifacts": [
+                    {
+                        "kind": "openapi",
+                        "source_name": "openapi.json",
+                        "payload": {
+                            "paths": {
+                                "/files/{file_id}/export": {
+                                    "parameters": [
+                                        {
+                                            "name": "file_id",
+                                            "in": "path",
+                                            "required": True,
+                                        },
+                                        {
+                                            "name": "Authorization",
+                                            "in": "header",
+                                        },
+                                    ],
+                                    "get": {
+                                        "operationId": "exportFile",
+                                        "security": [{"bearerAuth": []}],
+                                        "parameters": [
+                                            {"name": "download", "in": "query"},
+                                            {"name": "session_token", "in": "query"},
+                                        ],
+                                        "requestBody": {
+                                            "content": {
+                                                "application/json": {
+                                                    "schema": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "format": {"type": "string"},
+                                                            "password": {"type": "string"},
+                                                        },
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        },
+                    },
+                    {
+                        "kind": "har",
+                        "source_name": "capture.har",
+                        "payload": {
+                            "log": {
+                                "entries": [
+                                    {
+                                        "request": {
+                                            "method": "GET",
+                                            "url": "https://authorized.example/files/123/export?token=secret-token",
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                ],
+                "authorization": "Bearer secret-token",
+            },
+        )
+
+        result = run_agent_task(task.id, repository=repository)
+
+        assert result["status"] == "completed"
+        maps = repository.list_campaign_codebase_maps(campaign.id)
+        facts = repository.list_campaign_codebase_facts(campaign.id)
+        route_facts = [fact for fact in facts if fact.fact_type == "route_handler"]
+
+        assert len(maps) == 1
+        assert maps[0].route_count == 2
+        assert maps[0].payload["mapping_mode"] == "authorized_attack_surface_analysis"
+        assert maps[0].payload["api_artifact_route_count"] == 2
+        assert {fact.source_path for fact in route_facts} == {
+            "capture.har",
+            "openapi.json",
+        }
+        assert {
+            (fact.route_method, fact.route_path, fact.symbol_name)
+            for fact in route_facts
+        } == {
+            ("GET", "/[REDACTED]", "har_get_[REDACTED]"),
+            ("GET", "/files/{file_id}/export", "exportFile"),
+        }
+        assert all(
+            fact.payload["mapping_mode"] == "authorized_api_artifact"
+            for fact in route_facts
+        )
+        assert "secret-token" not in str(maps + facts)
+        assert "Bearer" not in str(maps + facts)
+    finally:
+        session.close()
+
+
 def test_run_agent_task_generates_hypothesis_from_codebase_facts():
     repository, session = build_repository()
     try:
@@ -288,12 +439,14 @@ def export_file(file_id: str):
         assessment = payload["hypothesis_assessments"][0]
 
         assert pipeline_runs[0].hypothesis_count == 1
+        assert hypothesis["hypothesis_id"] == "codebase_fact_hypothesis_1"
         assert hypothesis["hypothesis"] == (
             "Review GET /files/{file_id}/export for object authorization boundary drift."
         )
         assert hypothesis["source_facts"] == [
             {
                 "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "artifact_kind": "code",
                 "fact_type": "route_handler",
                 "route_method": "GET",
                 "route_path": "/files/{file_id}/export",
@@ -302,6 +455,7 @@ def export_file(file_id: str):
             },
             {
                 "fact_ref": "codebase_fact:authz_check:owner_or_admin_check",
+                "artifact_kind": "code",
                 "authz_hint": "owner_or_admin_check",
                 "fact_type": "authz_check",
                 "source_path": "apps/api/routes/files.py",
@@ -309,6 +463,7 @@ def export_file(file_id: str):
             },
             {
                 "fact_ref": "codebase_fact:sensitive_sink:send_file",
+                "artifact_kind": "code",
                 "fact_type": "sensitive_sink",
                 "source_path": "apps/api/routes/files.py",
                 "symbol_name": "send_file",
@@ -335,6 +490,460 @@ def export_file(file_id: str):
         assert assessment["validation_plan"]["human_approval_required"] is True
         assert "secret-token" not in str(payload)
         assert "Bearer" not in str(payload)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_correlates_api_artifact_with_code_route_and_gates_api_only_candidate():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="API plus code hypothesis campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized code and API",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                    }
+                ],
+                "authorized_api_artifacts": [
+                    {
+                        "kind": "openapi",
+                        "source_name": "openapi.json",
+                        "payload": {
+                            "paths": {
+                                "/files/{file_id}/export": {
+                                    "get": {"operationId": "exportFile"}
+                                },
+                                "/teams/{team_id}/invite": {
+                                    "parameters": [
+                                        {
+                                            "name": "team_id",
+                                            "in": "path",
+                                            "required": True,
+                                        }
+                                    ],
+                                    "post": {"operationId": "inviteTeamMember"}
+                                },
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate correlated hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        assert run_agent_task(map_task.id, repository=repository)["status"] == "completed"
+        assert (
+            run_agent_task(hypothesis_task.id, repository=repository)["status"]
+            == "completed"
+        )
+
+        pipeline_run = repository.list_pipeline_runs_for_program("program_example")[0]
+        payload = pipeline_run.payload
+
+        assert pipeline_run.hypothesis_count == 2
+        file_assessment = next(
+            assessment
+            for assessment in payload["hypothesis_assessments"]
+            if assessment["hypothesis"]["hypothesis_id"] == "codebase_fact_hypothesis_1"
+        )
+        team_assessment = next(
+            assessment
+            for assessment in payload["hypothesis_assessments"]
+            if assessment["hypothesis"]["hypothesis_id"] == "codebase_fact_hypothesis_2"
+        )
+
+        file_source_facts = file_assessment["hypothesis"]["source_facts"]
+        assert [
+            fact["artifact_kind"]
+            for fact in file_source_facts
+            if fact["fact_type"] == "route_handler"
+        ] == ["code", "api"]
+        assert "api_artifact_candidate" not in file_assessment["hunter_assessment"]["reasons"]
+
+        assert team_assessment["hypothesis"]["source_facts"][0]["artifact_kind"] == "api"
+        assert team_assessment["hypothesis"]["source_facts"][0]["api_shape"] == {
+            "path_parameters": ["team_id"]
+        }
+        assert "api_artifact_candidate" in team_assessment["hunter_assessment"]["reasons"]
+        assert "api_shape:object_identifier_present" in team_assessment[
+            "hunter_assessment"
+        ]["reasons"]
+        assert "missing_evidence:declared_authentication_or_scope_model" in team_assessment[
+            "hunter_assessment"
+        ]["reasons"]
+        assert "declared_authentication_or_scope_model" in team_assessment[
+            "hypothesis"
+        ]["evidence_needed"]
+        assert (
+            "Resolve the declared authentication or scope model before preparing validation evidence."
+            in team_assessment["validation_plan"]["steps"]
+        )
+        team_queue_item = next(
+            item
+            for item in payload["autonomous_hunt_queue"]
+            if item["candidate_id"] == team_assessment["candidate_id"]
+        )
+        assert team_queue_item["status"] == "awaiting_evidence_review"
+        assert team_queue_item["next_action"] == "resolve_evidence_gaps"
+        assert team_queue_item["required_evidence"] == [
+            "local_code_or_har_correlation",
+            "declared_authentication_or_scope_model",
+        ]
+        assert team_queue_item["quality_gate_reasons"] == ["required_evidence_missing"]
+        assert team_queue_item["human_approval_required"] is True
+        assert "secret-token" not in str(payload)
+        assert "Bearer" not in str(payload)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_marks_api_har_route_correlation_as_satisfied_evidence():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="API HAR correlated hypothesis campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized API and HAR",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_api_artifacts": [
+                    {
+                        "kind": "openapi",
+                        "source_name": "openapi.json",
+                        "payload": {
+                            "paths": {
+                                "/files/123/export": {
+                                    "get": {"operationId": "exportFile"}
+                                }
+                            }
+                        },
+                    },
+                    {
+                        "kind": "har",
+                        "source_name": "traffic.har",
+                        "payload": {
+                            "log": {
+                                "entries": [
+                                    {
+                                        "request": {
+                                            "method": "GET",
+                                            "url": "https://authorized.example/files/123/export",
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate correlated API HAR hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        assert run_agent_task(map_task.id, repository=repository)["status"] == "completed"
+        assert (
+            run_agent_task(hypothesis_task.id, repository=repository)["status"]
+            == "completed"
+        )
+
+        payload = repository.list_pipeline_runs()[0].payload
+        assessment = payload["hypothesis_assessments"][0]
+        hunter = assessment["hunter_assessment"]
+        hunt_queue = payload["autonomous_hunt_queue"][0]
+
+        assert [
+            fact["artifact_kind"]
+            for fact in assessment["hypothesis"]["source_facts"]
+            if fact["fact_type"] == "route_handler"
+        ] == ["api", "har"]
+        assert "api_artifact_candidate" in hunter["reasons"]
+        assert "evidence_satisfied:local_code_or_har_correlation" in hunter["reasons"]
+        assert "evidence_satisfied:local_code_or_api_schema_correlation" in hunter[
+            "reasons"
+        ]
+        assert "cross_artifact_route_correlation" in hunter["evidence_focus"]
+        assert hunt_queue["status"] == "awaiting_human_approval"
+        assert hunt_queue["next_action"] == "review_validation_plan"
+        assert hunt_queue["satisfied_evidence"] == [
+            "local_code_or_har_correlation",
+            "local_code_or_api_schema_correlation",
+        ]
+        assert "required_evidence" not in hunt_queue
+        assert "quality_gate_reasons" not in hunt_queue
+        assert hunt_queue["human_approval_required"] is True
+        assert hunt_queue["blocked_actions"] == [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "bypass_scope_guard",
+        ]
+        assert "Authorization" not in str(payload)
+        assert "secret-token" not in str(payload)
+    finally:
+        session.close()
+
+
+def test_run_agent_task_correlates_template_routes_with_concrete_har_path():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Template route correlation campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map template route with concrete traffic",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                    }
+                ],
+                "authorized_api_artifacts": [
+                    {
+                        "kind": "openapi",
+                        "source_name": "openapi.json",
+                        "payload": {
+                            "paths": {
+                                "/files/{file_id}/export": {
+                                    "parameters": [
+                                        {
+                                            "name": "file_id",
+                                            "in": "path",
+                                            "required": True,
+                                        },
+                                        {
+                                            "name": "Authorization",
+                                            "in": "header",
+                                        },
+                                    ],
+                                    "get": {
+                                        "operationId": "exportFile",
+                                        "security": [{"bearerAuth": []}],
+                                        "parameters": [
+                                            {"name": "download", "in": "query"},
+                                            {"name": "session_token", "in": "query"},
+                                        ],
+                                        "requestBody": {
+                                            "content": {
+                                                "application/json": {
+                                                    "schema": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "format": {"type": "string"},
+                                                            "password": {"type": "string"},
+                                                        },
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        },
+                    },
+                    {
+                        "kind": "har",
+                        "source_name": "traffic.har",
+                        "payload": {
+                            "log": {
+                                "entries": [
+                                    {
+                                        "request": {
+                                            "method": "GET",
+                                            "url": "https://authorized.example/files/123/export",
+                                            "headers": [
+                                                {
+                                                    "name": "Authorization",
+                                                    "value": "Bearer secret-token",
+                                                }
+                                            ],
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate template-correlated hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        assert run_agent_task(map_task.id, repository=repository)["status"] == "completed"
+        assert (
+            run_agent_task(hypothesis_task.id, repository=repository)["status"]
+            == "completed"
+        )
+
+        pipeline_run = repository.list_pipeline_runs_for_program("program_example")[0]
+        payload = pipeline_run.payload
+
+        assert pipeline_run.hypothesis_count == 1
+        assessment = payload["hypothesis_assessments"][0]
+        hunter = assessment["hunter_assessment"]
+        hunt_queue = payload["autonomous_hunt_queue"][0]
+
+        assert [
+            fact["artifact_kind"]
+            for fact in assessment["hypothesis"]["source_facts"]
+            if fact["fact_type"] == "route_handler"
+        ] == ["code", "api", "har"]
+        api_fact = next(
+            fact
+            for fact in assessment["hypothesis"]["source_facts"]
+            if fact["fact_type"] == "route_handler" and fact["artifact_kind"] == "api"
+        )
+        assert api_fact["api_shape"] == {
+            "path_parameters": ["file_id"],
+            "query_parameters": ["download"],
+            "body_fields": ["format"],
+            "request_body_present": True,
+            "security_declared": True,
+        }
+        assert "codebase_route_candidate" in hunter["reasons"]
+        assert "authorization_gap_candidate" in hunter["reasons"]
+        assert "sensitive_sink_present" in hunter["reasons"]
+        assert "evidence_satisfied:local_code_or_har_correlation" in hunter["reasons"]
+        assert "evidence_satisfied:local_code_or_api_schema_correlation" in hunter[
+            "reasons"
+        ]
+        assert "api_shape:object_identifier_present" in hunter["reasons"]
+        assert "api_shape:request_body_present" in hunter["reasons"]
+        assert "cross_artifact_route_correlation" in hunter["evidence_focus"]
+        assert "api_object_identifier_shape" in hunter["evidence_focus"]
+        assert "request_body_field_review" in hunter["evidence_focus"]
+        assert "approved_test_object_id_matrix" in assessment["hypothesis"][
+            "evidence_needed"
+        ]
+        assert "request_body_field_policy_review" in assessment["hypothesis"][
+            "evidence_needed"
+        ]
+        assert "declared_authentication_or_scope_model" not in assessment[
+            "hypothesis"
+        ]["evidence_needed"]
+        validation_steps = assessment["validation_plan"]["steps"]
+        assert (
+            "Map API object identifier fields to approved test objects before any two-account comparison."
+            in validation_steps
+        )
+        assert (
+            "Review request body field names locally; do not store raw body values or secrets."
+            in validation_steps
+        )
+        assert (
+            "Use only redacted HAR method and path evidence; ignore headers, cookies, and request values."
+            in validation_steps
+        )
+        assert not any("raw body values" in step and "secret-token" in step for step in validation_steps)
+        assert hunt_queue["status"] == "awaiting_evidence_review"
+        assert hunt_queue["next_action"] == "resolve_evidence_gaps"
+        assert hunt_queue["satisfied_evidence"] == [
+            "local_code_or_har_correlation",
+            "local_code_or_api_schema_correlation",
+        ]
+        assert hunt_queue["evidence_needed"] == assessment["hypothesis"][
+            "evidence_needed"
+        ]
+        assert hunt_queue["safe_validation_plan"] == validation_steps
+        assert hunt_queue["safe_validation_step_count"] == len(validation_steps)
+        assert hunt_queue["validation_plan_status"] == "approval_required"
+        assert hunt_queue["required_evidence"] == [
+            "independent_refutation_or_static_rule"
+        ]
+        assert "local_code_or_har_correlation" not in hunt_queue["required_evidence"]
+        assert "local_code_or_api_schema_correlation" not in hunt_queue[
+            "required_evidence"
+        ]
+        assert hunt_queue["quality_gate_reasons"] == ["required_evidence_missing"]
+        assert hunt_queue["human_approval_required"] is True
+        assert hunt_queue["blocked_actions"] == [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "bypass_scope_guard",
+        ]
+        assert "Authorization" not in str(payload)
+        assert "secret-token" not in str(payload)
+        assert "session_token" not in str(payload)
+        assert "password" not in str(payload)
+        assert "execute_live_validation" in hunt_queue["blocked_actions"]
+        assert "submit_report" in hunt_queue["blocked_actions"]
     finally:
         session.close()
 
@@ -442,106 +1051,37 @@ def create_team_invite(team_id: str):
         ]
         assert all(item["validation_plan"]["human_approval_required"] is True for item in assessments)
         assert all(item["candidate_status"] == "needs_human_review" for item in assessments)
-        assert [item["hunter_assessment"] for item in assessments] == [
-            {
-                "duplicate_risk_score": 25,
-                "evidence_focus": [
-                    "two_test_accounts",
-                    "same_object_id_cross_account_diff",
-                    "request_response_diff",
-                ],
-                "hunter_priority_score": 68,
-                "hypothesis": "Review GET /files/{file_id}/export for object authorization boundary drift.",
-                "impact_score": 78,
-                "next_action": "Prepare human-approved, test-account-only validation.",
-                "playbook_id": "bola_idor",
-                "playbook_label": "BOLA / IDOR object boundary",
-                "policy_risk_score": 35,
-                "reasons": [
-                    "codebase_route_candidate",
-                    "sensitive_sink_present",
-                    "human_approval_required",
-                ],
-                "recommendation": "needs_human_review",
-                "rejection_risk_score": 30,
-                "safety_notes": [
-                    "advisory_only",
-                    "scope_guard_required",
-                    "human_review_required",
-                    "no_live_requests",
-                ],
-            },
-            {
-                "duplicate_risk_score": 20,
-                "evidence_focus": [
-                    "role_matrix_snapshot",
-                    "member_vs_admin_request_diff",
-                    "permission_denial_expected_result",
-                ],
-                "hunter_priority_score": 72,
-                "hypothesis": "Review POST /teams/{team_id}/invites for object authorization boundary drift.",
-                "impact_score": 82,
-                "next_action": "Prepare human-approved, test-account-only validation.",
-                "playbook_id": "role_boundary",
-                "playbook_label": "Role boundary / privilege escalation",
-                "policy_risk_score": 35,
-                "reasons": [
-                    "codebase_route_candidate",
-                    "sensitive_sink_present",
-                    "human_approval_required",
-                ],
-                "recommendation": "needs_human_review",
-                "rejection_risk_score": 30,
-                "safety_notes": [
-                    "advisory_only",
-                    "scope_guard_required",
-                    "human_review_required",
-                    "no_live_requests",
-                ],
-            },
+        file_hunter = assessments[0]["hunter_assessment"]
+        role_hunter = assessments[1]["hunter_assessment"]
+        assert file_hunter["playbook_id"] == "bola_idor"
+        assert file_hunter["hunter_priority_score"] == 56
+        assert "refutation_evidence:same_handler_object_authz" in file_hunter["reasons"]
+        assert "missing_evidence:authz_bypass_or_misbind_trace" in file_hunter["reasons"]
+        assert "same_handler_object_authz_trace" in file_hunter["evidence_focus"]
+        assert "authz_bypass_or_misbind_trace" in file_hunter["evidence_focus"]
+        assert role_hunter["playbook_id"] == "role_boundary"
+        assert role_hunter["hunter_priority_score"] == 72
+        assert "refutation_evidence:same_handler_object_authz" not in role_hunter["reasons"]
+        assert hypotheses[0]["hunter_assessment"] == assessments[0]["hunter_assessment"]
+        assert hypotheses[1]["hunter_assessment"] == assessments[1]["hunter_assessment"]
+        assert hypotheses[0]["priority_score"] == assessments[0]["hunter_assessment"][
+            "hunter_priority_score"
         ]
-        assert hunt_queue == [
-            {
-                "blocked_actions": [
-                    "execute_live_validation",
-                    "touch_real_user_data",
-                    "submit_report",
-                    "bypass_scope_guard",
-                ],
-                "candidate_id": "codebase_fact_hypothesis_2",
-                "human_approval_required": True,
-                "next_action": "review_validation_plan",
-                "playbook_id": "role_boundary",
-                "priority_score": 72,
-                "queue_id": "hunt_queue_codebase_fact_hypothesis_2",
-                "safety_notes": [
-                    "scope_guard_required",
-                    "non_destructive_validation_only",
-                    "human_review_required",
-                ],
-                "status": "awaiting_human_approval",
-            },
-            {
-                "blocked_actions": [
-                    "execute_live_validation",
-                    "touch_real_user_data",
-                    "submit_report",
-                    "bypass_scope_guard",
-                ],
-                "candidate_id": "codebase_fact_hypothesis_1",
-                "human_approval_required": True,
-                "next_action": "review_validation_plan",
-                "playbook_id": "bola_idor",
-                "priority_score": 68,
-                "queue_id": "hunt_queue_codebase_fact_hypothesis_1",
-                "safety_notes": [
-                    "scope_guard_required",
-                    "non_destructive_validation_only",
-                    "human_review_required",
-                ],
-                "status": "awaiting_human_approval",
-            },
+        assert hypotheses[1]["priority_score"] == assessments[1]["hunter_assessment"][
+            "hunter_priority_score"
         ]
+        assert [item["candidate_id"] for item in hunt_queue] == [
+            "codebase_fact_hypothesis_2",
+            "codebase_fact_hypothesis_1",
+        ]
+        assert [item["top_candidate_rank"] for item in hunt_queue] == [1, 2]
+        assert hunt_queue[0]["evidence_trace_summary"]["trace_status"] == "traceable"
+        assert hunt_queue[0]["report_readiness"]["status"] == "needs_safe_validation_plan"
+        assert hunt_queue[0]["report_readiness"]["report_submission_allowed"] is False
+        assert hunt_queue[1]["required_evidence"] == ["authz_bypass_or_misbind_trace"]
+        assert hunt_queue[1]["report_readiness"]["status"] == "blocked_by_required_evidence"
+        assert all(item["human_approval_required"] is True for item in hunt_queue)
+        assert all("execute_live_validation" in item["blocked_actions"] for item in hunt_queue)
         assert "secret-token" not in str(payload)
         assert "Bearer" not in str(payload)
     finally:
@@ -619,19 +1159,624 @@ def create_team_invite(team_id: str):
         role_assessment = assessments[1]["hunter_assessment"]
 
         assert file_assessment["playbook_id"] == "bola_idor"
-        assert file_assessment["hunter_priority_score"] == 76
+        assert file_assessment["hunter_priority_score"] == 64
         assert "lesson:applied:boost" in file_assessment["reasons"]
         assert "lesson:boost:accepted_strong_evidence" in file_assessment["reasons"]
+        assert "refutation_evidence:same_handler_object_authz" in file_assessment["reasons"]
         assert "advisory_memory_only" in file_assessment["safety_notes"]
         assert role_assessment["hunter_priority_score"] == 72
-        assert payload["autonomous_hunt_queue"][0]["candidate_id"] == "codebase_fact_hypothesis_1"
-        assert payload["autonomous_hunt_queue"][0]["priority_score"] == 76
-        assert payload["autonomous_hunt_queue"][0]["status"] == "awaiting_human_approval"
-        assert payload["autonomous_hunt_queue"][0]["human_approval_required"] is True
+        assert payload["autonomous_hunt_queue"][0]["candidate_id"] == "codebase_fact_hypothesis_2"
+        file_queue_item = next(
+            item
+            for item in payload["autonomous_hunt_queue"]
+            if item["candidate_id"] == "codebase_fact_hypothesis_1"
+        )
+        assert file_queue_item["raw_priority_score"] == 64
+        assert file_queue_item["priority_score"] == 39
+        assert file_queue_item["status"] == "awaiting_evidence_review"
+        assert file_queue_item["human_approval_required"] is True
         assert "secret-token" not in str(payload)
         assert "Bearer" not in str(payload)
     finally:
         session.close()
+
+
+def test_run_agent_task_routes_evidence_needed_lessons_to_evidence_review_queue():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Evidence-needed lesson code hunt campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="authorized/service",
+            target_classes=["idor"],
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.save_learning_signal(
+            program_id="program_example",
+            playbook_id="bola_idor",
+            outcome="informative",
+            surface_key="file_id:export",
+            notes="Candidate needed more evidence before ranking boost.",
+            evidence_quality="weak",
+            target_relationships=[
+                "candidate:H-001",
+                "evidence_ready:false",
+                "trace_status:needs_evidence",
+                "missing_evidence:independent_cross_check",
+                "missing_required_artifact:policy",
+                "learned_evidence:lesson_evidence_needed_missing_evidence_independent_cross_check",
+            ],
+        )
+        map_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map authorized local code",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={
+                "authorized_code_files": [
+                    {
+                        "path": "apps/api/routes/files.py",
+                        "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    authorize_owner_or_admin(file_id)
+    return send_file(file_id)
+""",
+                    }
+                ],
+            },
+        )
+        hypothesis_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate evidence-aware hypotheses",
+            input_refs=[f"campaign:{campaign.id}"],
+            payload={},
+        )
+
+        run_agent_task(map_task.id, repository=repository)
+        run_agent_task(hypothesis_task.id, repository=repository)
+
+        payload = repository.list_pipeline_runs()[0].payload
+        hunter = payload["hypothesis_assessments"][0]["hunter_assessment"]
+        hunt_queue = payload["autonomous_hunt_queue"][0]
+
+        assert "lesson:applied:evidence_needed" in hunter["reasons"]
+        assert "lesson:evidence_needed:missing_evidence:independent_cross_check" in hunter[
+            "reasons"
+        ]
+        assert hunt_queue["next_action"] == "resolve_evidence_gaps"
+        assert hunt_queue["required_evidence"] == [
+            "independent_refutation_or_static_rule",
+            "policy",
+            "authz_bypass_or_misbind_trace",
+        ]
+        assert hunt_queue["status"] == "awaiting_evidence_review"
+        assert hunt_queue["human_approval_required"] is True
+        assert hunt_queue["blocked_actions"] == [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "bypass_scope_guard",
+        ]
+        assert "secret-token" not in str(payload)
+        assert "Bearer" not in str(payload)
+    finally:
+        session.close()
+
+
+def test_worker_hunt_queue_demotes_duplicate_risk_before_ranking():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "high_duplicate_risk",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 95,
+                    "duplicate_risk_score": 80,
+                    "reasons": [
+                        "codebase_route_candidate",
+                        "lesson:applied:duplicate_watch",
+                    ],
+                },
+            },
+            {
+                "candidate_id": "clean_code_backed_candidate",
+                "hunter_assessment": {
+                    "playbook_id": "role_boundary",
+                    "hunter_priority_score": 72,
+                    "duplicate_risk_score": 20,
+                    "reasons": ["codebase_route_candidate"],
+                },
+            },
+        ]
+    )
+
+    assert queue[0]["candidate_id"] == "clean_code_backed_candidate"
+    duplicate_item = queue[1]
+    assert duplicate_item["candidate_id"] == "high_duplicate_risk"
+    assert duplicate_item["raw_priority_score"] == 95
+    assert duplicate_item["priority_score"] < queue[0]["priority_score"]
+    assert duplicate_item["status"] == "awaiting_deduplication_review"
+    assert duplicate_item["next_action"] == "deduplicate_candidate"
+    assert duplicate_item["required_evidence"] == [
+        "prior_submission_search",
+        "candidate_similarity_review",
+    ]
+    assert duplicate_item["quality_gate_reasons"] == ["duplicate_risk_high"]
+    assert duplicate_item["human_approval_required"] is True
+    assert duplicate_item["blocked_actions"] == [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report",
+        "bypass_scope_guard",
+    ]
+
+
+def test_worker_hunt_queue_routes_direct_missing_evidence_reasons_to_review():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "missing_independent_review",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 88,
+                    "duplicate_risk_score": 10,
+                    "reasons": [
+                        "codebase_route_candidate",
+                        "missing_evidence:independent_cross_check",
+                        "missing_required_artifact:policy",
+                    ],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                            "artifact_kind": "code",
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    queue_item = queue[0]
+    assert queue_item["status"] == "awaiting_evidence_review"
+    assert queue_item["next_action"] == "resolve_evidence_gaps"
+    assert queue_item["required_evidence"] == [
+        "independent_refutation_or_static_rule",
+        "policy",
+    ]
+    assert queue_item["raw_priority_score"] == 88
+    assert queue_item["priority_score"] == 63
+    assert queue_item["quality_gate_reasons"] == ["required_evidence_missing"]
+    assert queue_item["human_approval_required"] is True
+
+
+def test_worker_hunt_queue_accepts_cross_artifact_route_correlation_as_evidence():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "api_har_correlated_candidate",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 88,
+                    "duplicate_risk_score": 10,
+                    "reasons": [
+                        "codebase_route_candidate",
+                        "api_artifact_candidate",
+                    ],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "api_artifact:route:GET:/files/{file_id}/export",
+                            "artifact_kind": "api",
+                            "fact_type": "route_handler",
+                        },
+                        {
+                            "fact_ref": "har_artifact:route:GET:/files/{file_id}/export",
+                            "artifact_kind": "har",
+                            "fact_type": "route_handler",
+                        },
+                    ]
+                },
+            }
+        ]
+    )
+
+    queue_item = queue[0]
+    assert queue_item["status"] == "awaiting_human_approval"
+    assert queue_item["next_action"] == "review_validation_plan"
+    assert queue_item["priority_score"] == 88
+    assert queue_item["satisfied_evidence"] == [
+        "local_code_or_har_correlation",
+        "local_code_or_api_schema_correlation",
+    ]
+    assert queue_item["evidence_trace_summary"] == {
+        "trace_status": "traceable",
+        "source_fact_count": 2,
+        "traceable_source_fact_count": 2,
+        "route_fact_count": 2,
+        "artifact_kinds": ["api", "har"],
+        "source_fact_types": ["route_handler"],
+        "report_submission_allowed": False,
+    }
+    assert queue_item["report_readiness"] == {
+        "status": "needs_safe_validation_plan",
+        "submission_blocked": True,
+        "report_submission_allowed": False,
+        "required_evidence_count": 0,
+        "safe_validation_step_count": 0,
+        "trace_status": "traceable",
+        "next_allowed_action": "Draft a non-destructive validation plan before report drafting.",
+    }
+    assert "required_evidence" not in queue_item
+    assert "quality_gate_reasons" not in queue_item
+    assert "raw_priority_score" not in queue_item
+    assert queue_item["human_approval_required"] is True
+    assert queue_item["blocked_actions"] == [
+        "execute_live_validation",
+        "touch_real_user_data",
+        "submit_report",
+        "bypass_scope_guard",
+    ]
+
+
+def test_worker_hunt_queue_returns_ranked_top_five_candidates_only():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": f"candidate_{score}",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": score,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+            }
+            for score in [30, 90, 70, 95, 50, 85]
+        ]
+    )
+
+    assert [item["candidate_id"] for item in queue] == [
+        "candidate_95",
+        "candidate_90",
+        "candidate_85",
+        "candidate_70",
+        "candidate_50",
+    ]
+    assert [item["top_candidate_rank"] for item in queue] == [1, 2, 3, 4, 5]
+    assert "candidate_30" not in [item["candidate_id"] for item in queue]
+    assert all(item["human_approval_required"] is True for item in queue)
+    assert all("submit_report" in item["blocked_actions"] for item in queue)
+
+
+def test_worker_hunt_queue_demotes_same_route_duplicate_candidates():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "same_route_lower",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 78,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "api_artifact:route:GET:/files/{file_id}/export",
+                            "artifact_kind": "api",
+                            "fact_type": "route_handler",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                        }
+                    ]
+                },
+            },
+            {
+                "candidate_id": "unique_route",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 82,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "api_artifact:route:GET:/teams/{team_id}/members",
+                            "artifact_kind": "api",
+                            "fact_type": "route_handler",
+                            "route_method": "GET",
+                            "route_path": "/teams/{team_id}/members",
+                        }
+                    ]
+                },
+            },
+            {
+                "candidate_id": "same_route_best",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 90,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "har_artifact:route:GET:/files/{file_id}/export",
+                            "artifact_kind": "har",
+                            "fact_type": "route_handler",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+
+    assert [item["candidate_id"] for item in queue] == [
+        "same_route_best",
+        "unique_route",
+        "same_route_lower",
+    ]
+    assert [item["top_candidate_rank"] for item in queue] == [1, 2, 3]
+    lower_duplicate = queue[2]
+    assert lower_duplicate["priority_score"] == 58
+    assert lower_duplicate["raw_priority_score"] == 78
+    assert lower_duplicate["status"] == "awaiting_deduplication_review"
+    assert lower_duplicate["next_action"] == "deduplicate_candidate"
+    assert lower_duplicate["required_evidence"] == [
+        "prior_submission_search",
+        "candidate_similarity_review",
+    ]
+    assert lower_duplicate["quality_gate_reasons"] == ["similar_candidate_shape"]
+    assert all("_candidate_similarity_key" not in item for item in queue)
+    assert all(item["human_approval_required"] is True for item in queue)
+
+
+def test_worker_hunt_queue_evidence_trace_summary_filters_sensitive_labels():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "sensitive_trace_labels",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 72,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                            "artifact_kind": "Authorization",
+                            "fact_type": "session_token",
+                        },
+                        {
+                            "fact_ref": "codebase_fact:route_handler:/teams/{team_id}/members",
+                            "artifact_kind": "code",
+                            "fact_type": "route_handler",
+                        },
+                    ]
+                },
+            }
+        ]
+    )
+
+    summary = queue[0]["evidence_trace_summary"]
+    assert summary == {
+        "trace_status": "needs_evidence",
+        "source_fact_count": 2,
+        "traceable_source_fact_count": 1,
+        "route_fact_count": 1,
+        "artifact_kinds": ["code"],
+        "source_fact_types": ["route_handler"],
+        "report_submission_allowed": False,
+    }
+    assert "Authorization" not in str(summary)
+    assert "session_token" not in str(summary)
+    assert queue[0]["report_readiness"] == {
+        "status": "blocked_by_evidence_trace",
+        "submission_blocked": True,
+        "report_submission_allowed": False,
+        "required_evidence_count": 0,
+        "safe_validation_step_count": 0,
+        "trace_status": "needs_evidence",
+        "next_allowed_action": "Confirm candidate source facts are traceable before report drafting.",
+    }
+
+
+def test_worker_hunt_queue_marks_traceable_planned_candidate_report_draft_ready():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "report_ready_candidate",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 88,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "evidence_needed": ["approved_test_object_id_matrix"],
+                    "source_facts": [
+                        {
+                            "fact_ref": "api_artifact:route:GET:/files/{file_id}/export",
+                            "artifact_kind": "api",
+                            "fact_type": "route_handler",
+                        },
+                        {
+                            "fact_ref": "har_artifact:route:GET:/files/{file_id}/export",
+                            "artifact_kind": "har",
+                            "fact_type": "route_handler",
+                        },
+                    ],
+                },
+                "validation_plan": {
+                    "status": "approval_required",
+                    "steps": [
+                        "Confirm scope and approved test accounts before validation.",
+                        "Use only redacted HAR method and path evidence.",
+                    ],
+                },
+            }
+        ]
+    )
+
+    queue_item = queue[0]
+    assert queue_item["report_readiness"] == {
+        "status": "submission_blocked_draft_ready",
+        "submission_blocked": True,
+        "report_submission_allowed": False,
+        "required_evidence_count": 0,
+        "safe_validation_step_count": 2,
+        "trace_status": "traceable",
+        "next_allowed_action": "Prepare a submission-blocked draft for human redaction review.",
+    }
+    assert queue_item["safe_validation_step_count"] == 2
+    assert queue_item["evidence_trace_summary"]["trace_status"] == "traceable"
+    assert "required_evidence" not in queue_item
+
+
+def test_worker_hunt_queue_deduplicates_template_and_concrete_route_shapes():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "api_template_route",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 88,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "api_artifact:route:GET:/files/{file_id}/export",
+                            "artifact_kind": "api",
+                            "fact_type": "route_handler",
+                            "route_method": "GET",
+                            "route_path": "/files/{file_id}/export",
+                        }
+                    ]
+                },
+            },
+            {
+                "candidate_id": "har_concrete_route",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 84,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "har_artifact:route:GET:/files/123/export",
+                            "artifact_kind": "har",
+                            "fact_type": "route_handler",
+                            "route_method": "GET",
+                            "route_path": "/files/123/export",
+                        }
+                    ]
+                },
+            },
+            {
+                "candidate_id": "different_concrete_route",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 80,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "har_artifact:route:GET:/teams/123/members",
+                            "artifact_kind": "har",
+                            "fact_type": "route_handler",
+                            "route_method": "GET",
+                            "route_path": "/teams/123/members",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+
+    assert [item["candidate_id"] for item in queue] == [
+        "api_template_route",
+        "different_concrete_route",
+        "har_concrete_route",
+    ]
+    concrete_duplicate = queue[2]
+    assert concrete_duplicate["priority_score"] == 64
+    assert concrete_duplicate["raw_priority_score"] == 84
+    assert concrete_duplicate["status"] == "awaiting_deduplication_review"
+    assert concrete_duplicate["required_evidence"] == [
+        "prior_submission_search",
+        "candidate_similarity_review",
+    ]
+    assert concrete_duplicate["quality_gate_reasons"] == ["similar_candidate_shape"]
+    assert all("_candidate_similarity_key" not in item for item in queue)
+
+
+def test_worker_hunt_queue_demotes_untraceable_candidate_before_ranking():
+    queue = worker_tasks._worker_autonomous_hunt_queue(
+        [
+            {
+                "candidate_id": "untraceable_high_score",
+                "hunter_assessment": {
+                    "playbook_id": "bola_idor",
+                    "hunter_priority_score": 90,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {"source_facts": []},
+            },
+            {
+                "candidate_id": "traceable_lower_score",
+                "hunter_assessment": {
+                    "playbook_id": "role_boundary",
+                    "hunter_priority_score": 70,
+                    "duplicate_risk_score": 10,
+                    "reasons": ["codebase_route_candidate"],
+                },
+                "hypothesis": {
+                    "source_facts": [
+                        {
+                            "fact_ref": "codebase_fact:route_handler:/teams/{team_id}/invites",
+                            "artifact_kind": "code",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+
+    assert queue[0]["candidate_id"] == "traceable_lower_score"
+    untraceable_item = queue[1]
+    assert untraceable_item["candidate_id"] == "untraceable_high_score"
+    assert untraceable_item["status"] == "awaiting_evidence_review"
+    assert untraceable_item["next_action"] == "resolve_evidence_gaps"
+    assert untraceable_item["required_evidence"] == ["traceable_source_fact"]
+    assert untraceable_item["quality_gate_reasons"] == ["source_trace_missing"]
+    assert untraceable_item["raw_priority_score"] == 90
+    assert untraceable_item["priority_score"] < queue[0]["priority_score"]
 
 
 def test_run_agent_task_does_not_borrow_hypothesis_facts_from_unrelated_files():
@@ -704,6 +1849,7 @@ def admin_archive(file_id: str):
         assert payload["hypotheses"][0]["source_facts"] == [
             {
                 "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "artifact_kind": "code",
                 "fact_type": "route_handler",
                 "route_method": "GET",
                 "route_path": "/files/{file_id}/export",
@@ -785,6 +1931,7 @@ def admin_archive(file_id: str):
         assert payload["hypotheses"][0]["source_facts"] == [
             {
                 "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "artifact_kind": "code",
                 "fact_type": "route_handler",
                 "route_method": "GET",
                 "route_path": "/files/{file_id}/export",
@@ -866,6 +2013,7 @@ def export_file(file_id: str):
         assert payload["hypotheses"][0]["source_facts"] == [
             {
                 "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "artifact_kind": "code",
                 "fact_type": "route_handler",
                 "route_method": "GET",
                 "route_path": "/files/{file_id}/export",
@@ -945,6 +2093,7 @@ def export_file(file_id: str):
         assert payload["hypotheses"][0]["source_facts"] == [
             {
                 "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "artifact_kind": "code",
                 "fact_type": "route_handler",
                 "route_method": "GET",
                 "route_path": "/files/{file_id}/export",
@@ -1025,6 +2174,7 @@ send_file("startup-check")
         assert payload["hypotheses"][0]["source_facts"] == [
             {
                 "fact_ref": "codebase_fact:route_handler:/files/{file_id}/export",
+                "artifact_kind": "code",
                 "fact_type": "route_handler",
                 "route_method": "GET",
                 "route_path": "/files/{file_id}/export",
@@ -1204,8 +2354,35 @@ def export_file(file_id: str):
             "route_handler",
             "sensitive_sink",
         }
+        persisted_gap = next(
+            fact for fact in facts if fact.fact_type == "authorization_gap_candidate"
+        )
+        assert persisted_gap.payload["root_cause"] == "missing_object_ownership_check"
+        assert persisted_gap.payload["security_invariant"] == (
+            "Object-level actions must verify requester ownership or role before sensitive sinks run."
+        )
+        assert persisted_gap.payload["sink_symbols"] == ["send_file"]
+        source_gap = next(
+            fact
+            for fact in assessment["hypothesis"]["source_facts"]
+            if fact["fact_type"] == "authorization_gap_candidate"
+        )
+        assert source_gap["root_cause"] == "missing_object_ownership_check"
+        assert source_gap["security_invariant"] == (
+            "Object-level actions must verify requester ownership or role before sensitive sinks run."
+        )
+        assert source_gap["sink_symbols"] == ["send_file"]
+        assert source_gap["sink_count"] == 1
+        assert source_gap["review_state"] == "needs_human_review"
+        assert source_gap["execution_allowed"] is False
+        assert source_gap["validation_allowed"] is False
+        assert source_gap["report_submission_allowed"] is False
         assert "missing_handler_authz_check" in assessment["exploit_chain"]["primitives"]
-        assert hunt_queue["status"] == "awaiting_human_approval"
+        assert hunt_queue["status"] == "awaiting_evidence_review"
+        assert hunt_queue["next_action"] == "resolve_evidence_gaps"
+        assert hunt_queue["required_evidence"] == ["independent_refutation_or_static_rule"]
+        assert hunt_queue["quality_gate_reasons"] == ["required_evidence_missing"]
+        assert hunt_queue["raw_priority_score"] > hunt_queue["priority_score"]
         assert hunt_queue["human_approval_required"] is True
         assert hunt_queue["blocked_actions"] == [
             "execute_live_validation",
@@ -1297,9 +2474,21 @@ def create_team_invite(team_id: str):
         }
         assert "authorization_gap_candidate" in file_hunter["reasons"]
         assert file_hunter["hunter_priority_score"] > role_hunter["hunter_priority_score"]
-        assert payload["autonomous_hunt_queue"][0]["candidate_id"] == file_assessment["candidate_id"]
-        assert payload["autonomous_hunt_queue"][0]["status"] == "awaiting_human_approval"
-        assert payload["autonomous_hunt_queue"][0]["human_approval_required"] is True
+        file_queue_item = next(
+            item
+            for item in payload["autonomous_hunt_queue"]
+            if item["candidate_id"] == file_assessment["candidate_id"]
+        )
+        assert payload["autonomous_hunt_queue"][0]["candidate_id"] == role_assessment["candidate_id"]
+        assert file_queue_item["status"] == "awaiting_evidence_review"
+        assert file_queue_item["next_action"] == "resolve_evidence_gaps"
+        assert file_queue_item["required_evidence"] == [
+            "independent_refutation_or_static_rule"
+        ]
+        assert file_queue_item["quality_gate_reasons"] == [
+            "required_evidence_missing"
+        ]
+        assert file_queue_item["human_approval_required"] is True
         assert file_assessment["refutation"]["questions"][0] == (
             "Can same-handler authorization evidence refute the missing access-control check candidate?"
         )

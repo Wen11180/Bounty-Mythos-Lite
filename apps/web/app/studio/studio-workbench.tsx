@@ -6,20 +6,27 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createStudioWorkspace,
   createStudioWorkspaceBenchmarkTemplate,
+  exportStudioWorkspaceCampaignHunterReport,
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
+  getCampaignControlCenter,
   getStudioWorkspaceManifest,
   getStudioWorkspaceMission,
   importStudioWorkspaceArtifact,
+  launchStudioWorkspaceCampaignHunter,
   listStudioWorkspaceCandidates,
+  recordCandidateHunterLearningOutcome,
   runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
+  type CandidateHunterLearningOutcome,
+  type ProgramIntelligenceProfile,
   type StudioBenchmarkRunResponse,
   type StudioMissionDossierExportResponse,
   type StudioReportExportResponse,
 } from "@/lib/api";
 import {
   toStudioArtifactChecklist,
+  toStudioCampaignHunterCandidateCards,
   toStudioCandidateCards,
   toStudioMissionHandoffBrief,
   toStudioMissionPanel,
@@ -75,10 +82,12 @@ export function StudioWorkbench() {
     toStudioMissionPanel(null),
   );
   const [latestRunId, setLatestRunId] = useState<string | null>(null);
+  const [latestCampaignHunterId, setLatestCampaignHunterId] = useState<string | null>(null);
   const [reportExport, setReportExport] = useState<StudioReportExportResponse | null>(null);
   const [missionDossierExport, setMissionDossierExport] =
     useState<StudioMissionDossierExportResponse | null>(null);
   const [benchmarkResult, setBenchmarkResult] = useState<StudioBenchmarkRunResponse | null>(null);
+  const [learningProfile, setLearningProfile] = useState<ProgramIntelligenceProfile | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([
@@ -146,6 +155,9 @@ export function StudioWorkbench() {
     () => artifactChecklist.filter((item) => !item.required),
     [artifactChecklist],
   );
+  const localCandidateHuntInputReady = [policyPath, scopePath, codePath, apiPath, harPath].every(
+    (value) => value.trim(),
+  );
   const benchmarkEvidenceGaps = benchmarkResult?.benchmark.evidence_gaps ?? [];
 
   useEffect(() => {
@@ -168,18 +180,23 @@ export function StudioWorkbench() {
         return;
       }
       setManifest(opened);
-      const latest = latestRunFromManifest(opened);
-      setLatestRunId(latest);
-      setReportExport(null);
+      const latest = latestSessionFromManifest(opened);
+      setLatestRunId(latest.kind === "research" ? latest.id : null);
+      setLatestCampaignHunterId(latest.kind === "campaign_hunter" ? latest.id : null);
+      setReportExport(reportExportFromLatestSession(opened, latest));
       setMissionDossierExport(null);
       setBenchmarkResult(null);
-      if (latest) {
-        const listed = await listStudioWorkspaceCandidates(workspacePath, latest, {
+      if (latest.kind === "research" && latest.id) {
+        const listed = await listStudioWorkspaceCandidates(workspacePath, latest.id, {
           candidates: [],
-          run_id: latest,
+          run_id: latest.id,
         });
         setCandidates(toStudioCandidateCards(listed.candidates));
-        await refreshMissionPanel(workspacePath, latest);
+        await refreshMissionPanel(workspacePath, latest.id);
+      } else if (latest.kind === "campaign_hunter" && latest.id) {
+        const controlCenter = await getCampaignControlCenter(latest.id, null);
+        setCandidates(toStudioCampaignHunterCandidateCards(controlCenter));
+        setMissionPanel(toStudioMissionPanel(null));
       } else {
         setCandidates([]);
         setMissionPanel(toStudioMissionPanel(null));
@@ -206,6 +223,7 @@ export function StudioWorkbench() {
       setCandidates([]);
       setMissionPanel(toStudioMissionPanel(null));
       setLatestRunId(null);
+      setLatestCampaignHunterId(null);
       setReportExport(null);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
@@ -223,18 +241,7 @@ export function StudioWorkbench() {
     setBusy("import");
     try {
       let updated: StudioWorkspaceManifest | null = manifest;
-      for (const artifact of [
-        { kind: "policy", source_path: policyPath },
-        { kind: "scope", source_path: scopePath },
-        { kind: "code", source_path: codePath },
-        { kind: "api", source_path: apiPath },
-        { kind: "har", source_path: harPath },
-        { kind: "sbom", source_path: sbomPath },
-        { kind: "sarif", source_path: sarifPath },
-        { kind: "fuzzing", source_path: fuzzingPath },
-        { kind: "strategy", source_path: strategyPath },
-        { kind: "knowledge", source_path: knowledgePath },
-      ]) {
+      for (const artifact of studioArtifactInputs(workspacePath)) {
         if (!artifact.source_path.trim()) {
           continue;
         }
@@ -247,6 +254,73 @@ export function StudioWorkbench() {
         setManifest(updated);
         pushLog("Authorized artifact references imported. Sensitive items remain review-gated.", "safe");
       }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRunLocalCandidateHunt() {
+    if (!localCandidateHuntInputReady) {
+      pushLog("Select policy, scope, code, API, and HAR inputs before starting the local candidate hunt.", "blocked");
+      return;
+    }
+    setBusy("candidate-hunt");
+    try {
+      let activeWorkspacePath = workspacePath;
+      let activeManifest: StudioWorkspaceManifest | null = manifest;
+      if (!activeWorkspacePath) {
+        const created = await createStudioWorkspace(
+          { name: workspaceName, root_path: workspaceRoot },
+          null,
+        );
+        if (!created) {
+          pushLog("Workspace creation failed. Check that the local API is running.", "blocked");
+          return;
+        }
+        activeWorkspacePath = created.path;
+        activeManifest = created.manifest;
+        setWorkspacePath(created.path);
+      }
+
+      for (const artifact of studioArtifactInputs(activeWorkspacePath)) {
+        if (!artifact.source_path.trim()) {
+          continue;
+        }
+        activeManifest = await importStudioWorkspaceArtifact(artifact, activeManifest);
+      }
+      if (!activeManifest) {
+        pushLog("Authorized artifact import failed.", "blocked");
+        return;
+      }
+
+      setManifest(activeManifest);
+      const readiness = toStudioResearchReadiness(activeWorkspacePath, activeManifest);
+      if (!readiness.canStart) {
+        pushLog(readiness.reason, "blocked");
+        return;
+      }
+
+      const run = await runStudioWorkspaceResearch({ workspace_path: activeWorkspacePath }, null);
+      if (!run) {
+        pushLog("Local candidate hunt did not start. Scope and code artifacts are required.", "blocked");
+        return;
+      }
+      setManifest(run.manifest);
+      setLatestRunId(run.run_id);
+      setLatestCampaignHunterId(null);
+      const listed = await listStudioWorkspaceCandidates(activeWorkspacePath, run.run_id, {
+        candidates: [],
+        run_id: run.run_id,
+      });
+      setCandidates(toStudioCandidateCards(listed.candidates));
+      await refreshMissionPanel(activeWorkspacePath, run.run_id);
+      setReportExport(null);
+      setMissionDossierExport(null);
+      setBenchmarkResult(null);
+      pushLog(
+        `Local candidate hunt ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
+        "safe",
+      );
     } finally {
       setBusy(null);
     }
@@ -288,6 +362,7 @@ export function StudioWorkbench() {
       }
       setManifest(run.manifest);
       setLatestRunId(run.run_id);
+      setLatestCampaignHunterId(null);
       const listed = await listStudioWorkspaceCandidates(workspacePath, run.run_id, {
         candidates: [],
         run_id: run.run_id,
@@ -306,24 +381,129 @@ export function StudioWorkbench() {
     }
   }
 
+  async function handleLaunchCampaignHunter() {
+    if (!researchReadiness.canStart) {
+      pushLog(researchReadiness.reason, "blocked");
+      return;
+    }
+    setBusy("campaign-hunter");
+    try {
+      const launched = await launchStudioWorkspaceCampaignHunter(
+        {
+          default_asset: "studio-authorized-workspace",
+          name: `${workspace.name} campaign hunter`,
+          workspace_path: workspacePath,
+        },
+        null,
+      );
+      if (!launched) {
+        pushLog("Campaign hunter launch failed. Check imported API/HAR/code materials.", "blocked");
+        return;
+      }
+      setManifest(launched.manifest);
+      setLatestRunId(null);
+      setLatestCampaignHunterId(launched.campaign.id);
+      setCandidates(toStudioCampaignHunterCandidateCards(launched.control_center));
+      setReportExport(null);
+      setMissionDossierExport(null);
+      setBenchmarkResult(null);
+      const suggestionCount = launched.control_center.research_queue_suggestions?.length ?? 0;
+      pushLog(
+        `Campaign hunter ${launched.campaign.id} started with ${suggestionCount} review-gated suggestions.`,
+        "safe",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRecordCandidateHunterLearning(
+    action: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["learningReviewActions"][number],
+  ) {
+    const outcome = toCandidateHunterLearningOutcome(action.suggestedOutcome);
+    setBusy(`learning:${action.actionId}`);
+    try {
+      const profile = await recordCandidateHunterLearningOutcome(
+        {
+          candidate_id: action.candidateId,
+          evidence_ready: action.evidenceReady,
+          learning_evidence_needed_reasons: action.learningEvidenceNeededReasons,
+          missing_evidence: action.missingEvidence,
+          missing_required_artifact_kinds: action.missingRequiredArtifactKinds,
+          notes: `${action.nextAction}; validation and submission remain blocked.`,
+          outcome,
+          playbook_id: action.learningSignalTemplate?.playbookId,
+          reviewer: "studio-human-review",
+          run_id: latestRunId,
+          surface_key: action.learningSignalTemplate?.surfaceKey ?? action.candidateId,
+          target_relationships: action.learningSignalTemplate?.targetRelationships,
+          trace_status: action.traceStatus,
+        },
+        studioLearningFallbackProfile(),
+      );
+      setLearningProfile(profile);
+      pushLog(`Recorded ${outcome} learning feedback for ${action.candidateId}.`, "safe");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRecordCandidateCardLearning(
+    candidate: ReturnType<typeof toStudioCandidateCards>[number],
+    outcome: CandidateHunterLearningOutcome,
+  ) {
+    setBusy(`candidate-learning:${candidate.id}:${outcome}`);
+    try {
+      const profile = await recordCandidateHunterLearningOutcome(
+        {
+          candidate_id: candidate.id,
+          evidence_ready: false,
+          learning_evidence_needed_reasons: candidate.evidenceGaps,
+          missing_evidence: candidate.evidenceNeeds,
+          missing_required_artifact_kinds:
+            candidate.evidenceTraceSummary.missingRequiredArtifactKinds,
+          notes: `${candidate.reportReadiness.nextAllowedAction}; human outcome ${outcome}; validation and submission remain blocked.`,
+          outcome,
+          playbook_id: candidate.title,
+          reviewer: "studio-human-review",
+          run_id: latestRunId,
+          surface_key: candidate.affectedEndpoint,
+          trace_status: candidate.evidenceTraceSummary.status,
+        },
+        studioLearningFallbackProfile(),
+      );
+      setLearningProfile(profile);
+      pushLog(`Recorded ${outcome} learning feedback for ${candidate.id}.`, "safe");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleExportReport() {
-    if (!workspacePath || !latestRunId) {
-      pushLog("Run research before exporting a report preview.", "blocked");
+    if (!workspacePath || (!latestRunId && !latestCampaignHunterId)) {
+      pushLog("Run research or launch campaign hunter before exporting a report preview.", "blocked");
       return;
     }
     setBusy("export");
     try {
-      const exported = await exportStudioWorkspaceReport(
-        { run_id: latestRunId, workspace_path: workspacePath },
-        null,
-      );
+      const exported = latestRunId
+        ? await exportStudioWorkspaceReport(
+            { run_id: latestRunId, workspace_path: workspacePath },
+            null,
+          )
+        : await exportStudioWorkspaceCampaignHunterReport(
+            { campaign_id: latestCampaignHunterId ?? "", workspace_path: workspacePath },
+            null,
+          );
       if (!exported) {
         pushLog("Report preview export failed.", "blocked");
         return;
       }
       setReportExport(exported);
       setManifest(exported.manifest);
-      await refreshMissionPanel(workspacePath, latestRunId);
+      if (latestRunId) {
+        await refreshMissionPanel(workspacePath, latestRunId);
+      }
       pushLog("Report preview exported with submission still blocked.", "safe");
     } finally {
       setBusy(null);
@@ -427,6 +607,21 @@ export function StudioWorkbench() {
     setMissionPanel(toStudioMissionPanel(mission));
   }
 
+  function studioArtifactInputs(path: string) {
+    return [
+      { kind: "policy", source_path: policyPath, workspace_path: path },
+      { kind: "scope", source_path: scopePath, workspace_path: path },
+      { kind: "code", source_path: codePath, workspace_path: path },
+      { kind: "api", source_path: apiPath, workspace_path: path },
+      { kind: "har", source_path: harPath, workspace_path: path },
+      { kind: "sbom", source_path: sbomPath, workspace_path: path },
+      { kind: "sarif", source_path: sarifPath, workspace_path: path },
+      { kind: "fuzzing", source_path: fuzzingPath, workspace_path: path },
+      { kind: "strategy", source_path: strategyPath, workspace_path: path },
+      { kind: "knowledge", source_path: knowledgePath, workspace_path: path },
+    ];
+  }
+
   const wizardPrimaryAction =
     currentWizardStep === "workspace"
       ? {
@@ -454,7 +649,7 @@ export function StudioWorkbench() {
             }
           : {
               busy: busy === "export",
-              disabled: !latestRunId,
+              disabled: !latestRunId && !latestCampaignHunterId,
               icon: <FileDown size={16} aria-hidden="true" />,
               label: "Export submission-blocked draft",
               onClick: handleExportReport,
@@ -492,11 +687,25 @@ export function StudioWorkbench() {
         <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] p-5 text-sm">
           <p className="font-semibold">Next safe action</p>
           <ActionButton
+            busy={busy === "candidate-hunt"}
+            disabled={!localCandidateHuntInputReady}
+            icon={<Play size={16} aria-hidden="true" />}
+            label="Run local candidate hunt"
+            onClick={handleRunLocalCandidateHunt}
+          />
+          <ActionButton
             busy={wizardPrimaryAction.busy}
             disabled={wizardPrimaryAction.disabled}
             icon={wizardPrimaryAction.icon}
             label={wizardPrimaryAction.label}
             onClick={wizardPrimaryAction.onClick}
+          />
+          <ActionButton
+            busy={busy === "campaign-hunter"}
+            disabled={!researchReadiness.canStart}
+            icon={<ShieldCheck size={16} aria-hidden="true" />}
+            label="Launch campaign hunter"
+            onClick={handleLaunchCampaignHunter}
           />
         </div>
         <div className="grid gap-3 border-t border-[var(--line)] p-5 text-sm md:grid-cols-2">
@@ -739,8 +948,15 @@ export function StudioWorkbench() {
                 onClick={handleStartResearch}
               />
               <ActionButton
+                busy={busy === "candidate-hunt"}
+                disabled={!localCandidateHuntInputReady}
+                icon={<Play size={16} aria-hidden="true" />}
+                label="Run local candidate hunt"
+                onClick={handleRunLocalCandidateHunt}
+              />
+              <ActionButton
                 busy={busy === "export"}
-                disabled={!latestRunId}
+                disabled={!latestRunId && !latestCampaignHunterId}
                 icon={<FileDown size={16} aria-hidden="true" />}
                 label="Export report preview"
                 onClick={handleExportReport}
@@ -873,6 +1089,13 @@ export function StudioWorkbench() {
                 items={missionPanel.qualitySummary.improvementActions}
               />
               <ListBlock
+                title="Attack surface model"
+                items={[
+                  attackSurfaceModelLine(missionPanel.attackSurfaceModel),
+                  ...missionPanel.attackSurfaceModel.topRoutes.map(attackSurfaceRouteLine),
+                ]}
+              />
+              <ListBlock
                 title="Candidate hunter backlog"
                 items={missionPanel.candidateHunterBacklog.map(candidateHunterBacklogLine)}
               />
@@ -899,6 +1122,81 @@ export function StudioWorkbench() {
                 )}
               />
               <ListBlock
+                title="Candidate hunter refutation queue"
+                items={missionPanel.candidateHunterExecutionLoop.refutationQueue.map(
+                  candidateHunterRefutationQueueLine,
+                )}
+              />
+              <ListBlock
+                title="Candidate hunter evidence matrix"
+                items={missionPanel.candidateHunterExecutionLoop.candidateEvidenceMatrix.map(
+                  candidateHunterEvidenceMatrixLine,
+                )}
+              />
+              <ListBlock
+                title="Candidate hunter ranked Top 1-5"
+                items={missionPanel.candidateHunterExecutionLoop.rankedTopCandidates.map(
+                  candidateHunterRankedTopCandidateLine,
+                )}
+              />
+              <ListBlock
+                title="Candidate hunter deduplication queue"
+                items={missionPanel.candidateHunterExecutionLoop.deduplicationQueue.map(
+                  candidateHunterDeduplicationQueueLine,
+                )}
+              />
+              <ListBlock
+                title="Candidate hunter safe validation queue"
+                items={missionPanel.candidateHunterExecutionLoop.safeValidationQueue.map(
+                  candidateHunterSafeValidationQueueLine,
+                )}
+              />
+              <ListBlock
+                title="Candidate hunter report draft queue"
+                items={missionPanel.candidateHunterExecutionLoop.reportDraftQueue.map(
+                  candidateHunterReportDraftQueueLine,
+                )}
+              />
+              <div className="mt-4">
+                <p className="text-xs font-semibold uppercase text-[var(--muted)]">
+                  Candidate hunter learning feedback
+                </p>
+                <p className="mt-2 text-[var(--muted)]">
+                  {candidateHunterLearningFeedbackLine(
+                    missionPanel.candidateHunterExecutionLoop.learningFeedbackTarget,
+                  )}
+                </p>
+                <div className="mt-3 grid gap-2">
+                  {missionPanel.candidateHunterExecutionLoop.learningReviewActions.length === 0 ? (
+                    <p className="text-[var(--muted)]">Review required.</p>
+                  ) : (
+                    missionPanel.candidateHunterExecutionLoop.learningReviewActions.map((action) => (
+                      <div
+                        className="grid gap-2 border border-[var(--line)] bg-white p-3"
+                        key={action.actionId}
+                      >
+                        <p className="text-[var(--muted)]">
+                          {candidateHunterLearningReviewActionLine(action)}
+                        </p>
+                        <ActionButton
+                          busy={busy === `learning:${action.actionId}`}
+                          icon={<ShieldCheck size={16} aria-hidden="true" />}
+                          label="Record suggested outcome"
+                          onClick={() => handleRecordCandidateHunterLearning(action)}
+                        />
+                      </div>
+                    ))
+                  )}
+                </div>
+                {learningProfile?.recent_learning_signals[0] ? (
+                  <p className="mt-3 text-[var(--muted)]">
+                    Recent learning signal:{" "}
+                    {learningProfile.recent_learning_signals[0].playbook_id} -{" "}
+                    {learningProfile.recent_learning_signals[0].outcome}
+                  </p>
+                ) : null}
+              </div>
+              <ListBlock
                 title="Research loop"
                 items={missionPanel.researchLoopStages.map(
                   (stage) => `${stage.label}: ${stage.status} - ${stage.summary}`,
@@ -915,6 +1213,10 @@ export function StudioWorkbench() {
               <ListBlock
                 title="Candidate review packets"
                 items={missionPanel.candidateReviewPackets.map(candidateReviewPacketLine)}
+              />
+              <ListBlock
+                title="Redacted evidence review queue"
+                items={missionPanel.candidateReviewPackets.map(redactedEvidenceReviewLine)}
               />
               <ListBlock
                 title="Submission-blocked report summary"
@@ -997,6 +1299,15 @@ export function StudioWorkbench() {
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">Broken invariant</p>
                   <p className="mt-2 text-[var(--muted)]">{candidate.brokenInvariant}</p>
                 </div>
+                <ListBlock
+                  title="Semantic evidence"
+                  items={[semanticEvidenceLine(candidate.semanticEvidence)]}
+                />
+                <ListBlock
+                  title="Candidate evidence review packet"
+                  items={candidateEvidenceReviewPacketLines(candidate)}
+                />
+                <ListBlock title="Evidence focus" items={candidate.evidenceFocus} />
                 <div className="mt-4">
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">Repair guidance</p>
                   <p className="mt-2 text-[var(--muted)]">{candidate.repairGuidance}</p>
@@ -1017,6 +1328,26 @@ export function StudioWorkbench() {
                 <ListBlock title="Candidate evidence gaps" items={candidate.evidenceGaps} />
                 <ListBlock title="Evidence needed" items={candidate.evidenceNeeds} />
                 <ListBlock title="False-positive checks" items={candidate.refutationQuestions} />
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <ActionButton
+                    busy={busy === `candidate-learning:${candidate.id}:needs_more_evidence`}
+                    icon={<ShieldCheck size={16} aria-hidden="true" />}
+                    label="Record needs-evidence learning"
+                    onClick={() => handleRecordCandidateCardLearning(candidate, "needs_more_evidence")}
+                  />
+                  <ActionButton
+                    busy={busy === `candidate-learning:${candidate.id}:refuted`}
+                    icon={<ShieldCheck size={16} aria-hidden="true" />}
+                    label="Record refuted learning"
+                    onClick={() => handleRecordCandidateCardLearning(candidate, "refuted")}
+                  />
+                  <ActionButton
+                    busy={busy === `candidate-learning:${candidate.id}:duplicate`}
+                    icon={<ShieldCheck size={16} aria-hidden="true" />}
+                    label="Record duplicate learning"
+                    onClick={() => handleRecordCandidateCardLearning(candidate, "duplicate")}
+                  />
+                </div>
               </article>
             ))
           )}
@@ -1178,6 +1509,27 @@ function TextBlock({ title, value }: { title: string; value: string }) {
   );
 }
 
+function attackSurfaceModelLine(
+  model: ReturnType<typeof toStudioMissionPanel>["attackSurfaceModel"],
+): string {
+  const sources =
+    model.sourceArtifactKinds.length > 0 ? model.sourceArtifactKinds.join(", ") : "none";
+  const methods = model.methods.length > 0 ? model.methods.join(", ") : "none";
+  const gates = [
+    model.executionAllowed ? "execution allowed" : "execution blocked",
+    model.validationAllowed ? "validation allowed" : "validation blocked",
+    model.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${model.status}; routes ${model.routeCount} (api ${model.apiRouteCount}, har ${model.harRouteCount}); advisory signals ${model.advisorySignalCount}; methods ${methods}; sources ${sources}; gate ${model.safetyGate}; next ${model.nextAction}; ${gates}`;
+}
+
+function attackSurfaceRouteLine(
+  route: ReturnType<typeof toStudioMissionPanel>["attackSurfaceModel"]["topRoutes"][number],
+): string {
+  const sources = route.artifactKinds.length > 0 ? route.artifactKinds.join(", ") : "artifact";
+  return `${route.method} ${route.path}; sources ${sources}`;
+}
+
 function missionCandidateLine(
   candidate: ReturnType<typeof toStudioMissionPanel>["topCandidates"][number],
 ): string {
@@ -1196,6 +1548,43 @@ function missionCandidateLine(
     `independent challenge ${crossChecks}`,
     `report ${candidate.reportStatus}`,
   ].join("; ");
+}
+
+function semanticEvidenceLine(
+  evidence: ReturnType<typeof toStudioCandidateCards>[number]["semanticEvidence"],
+): string {
+  const sinks = evidence.sinkSymbols.length > 0 ? evidence.sinkSymbols.join(", ") : "none";
+  const gates = [
+    evidence.executionAllowed ? "execution allowed" : "execution blocked",
+    evidence.validationAllowed ? "validation allowed" : "validation blocked",
+    evidence.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `root ${evidence.rootCause}; invariant ${evidence.securityInvariant}; authz ${evidence.authzHint}; sinks ${evidence.sinkCount} (${sinks}); review ${evidence.reviewState}; ${gates}`;
+}
+
+function candidateEvidenceReviewPacketLines(
+  candidate: ReturnType<typeof toStudioCandidateCards>[number],
+): string[] {
+  const trace = candidate.evidenceTraceSummary;
+  const missingArtifacts =
+    trace.missingRequiredArtifactKinds.length > 0
+      ? trace.missingRequiredArtifactKinds.join(", ")
+      : "none";
+  const evidenceNeeds =
+    candidate.evidenceNeeds.length > 0 ? candidate.evidenceNeeds.join(", ") : "review";
+  const evidenceGaps =
+    candidate.evidenceGaps.length > 0 ? candidate.evidenceGaps.join(", ") : "none";
+  const focus =
+    candidate.evidenceFocus.length > 0 ? candidate.evidenceFocus.join(", ") : "review";
+  const readiness = candidate.reportReadiness;
+  return [
+    `Trace ${trace.status}; endpoint traced ${trace.endpointTraced ? "true" : "false"}; code traced ${trace.codePathTraced ? "true" : "false"}; source facts ${trace.sourceFactCount}.`,
+    `Report readiness ${readiness.status}; trace ${readiness.traceStatus}; required evidence ${readiness.requiredEvidenceCount}; safe validation steps ${readiness.safeValidationStepCount}; submission blocked ${readiness.submissionBlocked ? "true" : "false"}.`,
+    `Required artifacts ${trace.requiredArtifactKinds.join(", ")}; present ${trace.presentRequiredArtifactKinds.join(", ") || "none"}; missing ${missingArtifacts}.`,
+    `Evidence needs ${evidenceNeeds}; evidence gaps ${evidenceGaps}; focus ${focus}.`,
+    "Redaction review required before sharing evidence; raw secrets, tokens, cookies, authorization headers, and user data stay excluded.",
+    "Evidence review remains read-only: execution blocked, validation blocked, report submission blocked.",
+  ];
 }
 
 function agentQueueLine(
@@ -1257,6 +1646,21 @@ function candidateReviewPacketLine(
     packet.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
   ].join(", ");
   return `${packet.candidateId}: ${packet.status}; priority ${packet.reportReviewPriority}; quality ${packet.qualityScore}/100; completed ${completed}; missing ${missing}; evidence ${packet.evidenceNeedCount}; refutation ${packet.falsePositiveCheckCount}; validation steps ${packet.safeValidationStepCount}; hallucination ${packet.hallucinationGuardStatus}; report ${packet.reportStatus}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
+}
+
+function redactedEvidenceReviewLine(
+  packet: ReturnType<typeof toStudioMissionPanel>["candidateReviewPackets"][number],
+): string {
+  const missing =
+    packet.missingItems.length > 0 ? packet.missingItems.join(", ") : "none";
+  const completed =
+    packet.completedItems.length > 0 ? packet.completedItems.join(", ") : "none";
+  const gates = [
+    packet.executionAllowed ? "execution allowed" : "execution blocked",
+    packet.validationAllowed ? "validation allowed" : "validation blocked",
+    packet.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${packet.candidateId}: redaction review ${packet.reportReviewPriority}; evidence needs ${packet.evidenceNeedCount}; missing ${missing}; completed ${completed}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
 }
 
 function submissionBlockedReportSummaryLine(
@@ -1442,6 +1846,217 @@ function candidateHunterReviewLoopStepLine(
   return `${step.stepId}: ${step.assignedAgent} handles ${step.workItemId} (${step.gap}); evidence ${evidence}; governance ${governance}; checklist ${checklist}; success ${criteria}; gate ${step.safetyGate}; next ${step.nextAction}; ${gates}`;
 }
 
+function candidateHunterRefutationQueueLine(
+  item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["refutationQueue"][number],
+): string {
+  const missingEvidence =
+    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "none";
+  const missingArtifacts =
+    item.missingRequiredArtifactKinds.length > 0
+      ? item.missingRequiredArtifactKinds.join(", ")
+      : "none";
+  const questions = item.questions.length > 0 ? item.questions.join("; ") : "review";
+  const requiredEvidence =
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${item.queueId}: ${item.candidateId}; trace ${item.traceStatus}; priority ${item.priorityScore}; missing evidence ${missingEvidence}; missing artifacts ${missingArtifacts}; required evidence ${requiredEvidence}; questions ${questions}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+}
+
+function candidateHunterEvidenceMatrixLine(
+  item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["candidateEvidenceMatrix"][number],
+): string {
+  const missingEvidence =
+    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "none";
+  const missingRequiredArtifacts =
+    item.missingRequiredArtifactKinds.length > 0
+      ? item.missingRequiredArtifactKinds.join(", ")
+      : "none";
+  const learnedEvidence =
+    item.learningEvidenceNeededReasons.length > 0
+      ? item.learningEvidenceNeededReasons.join(", ")
+      : "none";
+  const ranking =
+    item.rankingSignalBreakdown.length > 0
+      ? item.rankingSignalBreakdown.join(", ")
+      : "ranking signals unavailable";
+  const requiredEvidence =
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${item.candidateId}: quality ${item.qualityScore}; hunter ${item.hunterPriorityScore}; impact ${item.impactScore}; rejection risk ${item.rejectionRiskScore}; policy risk ${item.policyRiskScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequiredArtifacts}; required evidence ${requiredEvidence}; learned evidence ${learnedEvidence}; ranking ${ranking}; ${gates}`;
+}
+
+function candidateHunterRankedTopCandidateLine(
+  item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["rankedTopCandidates"][number],
+): string {
+  const ranking =
+    item.rankingSignalBreakdown.length > 0
+      ? item.rankingSignalBreakdown.join(", ")
+      : "ranking signals unavailable";
+  const requiredEvidence =
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+  const missingEvidence =
+    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "none";
+  const missingRequiredArtifacts =
+    item.missingRequiredArtifactKinds.length > 0
+      ? item.missingRequiredArtifactKinds.join(", ")
+      : "none";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `#${item.rank} ${item.candidateId}: ${item.reason}; phase ${item.phaseId}; priority ${item.priorityScore}; status ${item.qualityStatus}; trace ${item.traceStatus}; evidence ready ${item.evidenceReady ? "true" : "false"}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequiredArtifacts}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; required ${requiredEvidence}; next ${item.nextAction}; ranking ${ranking}; gate ${item.safetyGate}; ${gates}`;
+}
+
+function candidateHunterDeduplicationQueueLine(
+  item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["deduplicationQueue"][number],
+): string {
+  const similarityKeys =
+    item.similarityKeys.length > 0 ? item.similarityKeys.join(", ") : "review";
+  const questions = item.questions.length > 0 ? item.questions.join("; ") : "review";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${item.queueId}: ${item.candidateId}; duplicate risk ${item.duplicateRiskScore}/100; priority ${item.priorityScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; similarity ${similarityKeys}; questions ${questions}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+}
+
+function candidateHunterSafeValidationQueueLine(
+  item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["safeValidationQueue"][number],
+): string {
+  const planSteps = item.planSteps.length > 0 ? item.planSteps.join("; ") : "review plan";
+  const approvals =
+    item.requiredApprovals.length > 0 ? item.requiredApprovals.join(", ") : "human review";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.validationExecutionAllowed
+      ? "validation execution allowed"
+      : "validation execution blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${item.queueId}: ${item.candidateId}; mode ${item.validationMode}; priority ${item.priorityScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; plan ${planSteps}; approvals ${approvals}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+}
+
+function candidateHunterReportDraftQueueLine(
+  item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["reportDraftQueue"][number],
+): string {
+  const requiredSections =
+    item.requiredSections.length > 0 ? item.requiredSections.join(", ") : "report sections";
+  const redactionChecks =
+    item.redactionChecks.length > 0 ? item.redactionChecks.join(", ") : "redaction review";
+  const evidenceFocus =
+    item.evidenceFocus.length > 0 ? item.evidenceFocus.join(", ") : "evidence focus";
+  const gates = [
+    item.executionAllowed ? "execution allowed" : "execution blocked",
+    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${item.queueId}: ${item.candidateId}; report ${item.reportStatus}; priority ${item.priorityScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; sections ${requiredSections}; evidence focus ${evidenceFocus}; redaction ${redactionChecks}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+}
+
+function candidateHunterLearningFeedbackLine(
+  target: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["learningFeedbackTarget"],
+): string {
+  const candidates = target.candidateIds.length > 0 ? target.candidateIds.join(", ") : "none";
+  const outcomes =
+    target.allowedOutcomes.length > 0
+      ? target.allowedOutcomes.join(", ")
+      : "confirmed, refuted, needs_more_evidence, duplicate";
+  const gates = [
+    target.learningWriteAllowed ? "learning write allowed" : "learning write review-gated",
+    target.executionAllowed ? "execution allowed" : "execution blocked",
+    target.validationAllowed ? "validation allowed" : "validation blocked",
+    target.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  return `${target.targetId}: ${target.status}; candidates ${candidates}; outcomes ${outcomes}; gate ${target.safetyGate}; next ${target.nextAction}; ${gates}`;
+}
+
+function candidateHunterLearningReviewActionLine(
+  action: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["learningReviewActions"][number],
+): string {
+  const outcomes =
+    action.allowedOutcomes.length > 0
+      ? action.allowedOutcomes.join(", ")
+      : "confirmed, refuted, needs_more_evidence, duplicate";
+  const gates = [
+    action.learningWriteAllowed ? "learning write allowed" : "learning write review-gated",
+    action.executionAllowed ? "execution allowed" : "execution blocked",
+    action.validationAllowed ? "validation allowed" : "validation blocked",
+    action.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+  ].join(", ");
+  const missingEvidence =
+    action.missingEvidence.length > 0 ? action.missingEvidence.join(", ") : "none";
+  const missingRequiredArtifacts =
+    action.missingRequiredArtifactKinds.length > 0
+      ? action.missingRequiredArtifactKinds.join(", ")
+      : "none";
+  const template = action.learningSignalTemplate
+    ? `; Learning signal template: playbook ${action.learningSignalTemplate.playbookId}; surface ${action.learningSignalTemplate.surfaceKey}; refs ${action.learningSignalTemplate.targetRelationships.length}; learning write review-gated`
+    : "";
+  return `${action.actionId}: ${action.candidateId}; suggested ${action.suggestedOutcome}; trace ${action.traceStatus}; evidence ready ${action.evidenceReady ? "true" : "false"}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequiredArtifacts}; outcomes ${outcomes}; gate ${action.safetyGate}; next ${action.nextAction}; ${gates}${template}`;
+}
+
+function toCandidateHunterLearningOutcome(value: string): CandidateHunterLearningOutcome {
+  if (
+    value === "confirmed" ||
+    value === "duplicate" ||
+    value === "needs_more_evidence" ||
+    value === "refuted"
+  ) {
+    return value;
+  }
+  return "needs_more_evidence";
+}
+
+function studioLearningFallbackProfile(): ProgramIntelligenceProfile {
+  return {
+    program_id: "studio-local",
+    program_name: "Mythos Studio local workspace",
+    program_score: 0,
+    attack_surface_memory: {
+      objects: [],
+      roles: [],
+      sensitive_actions: [],
+      relationships: [],
+      run_count: 0,
+    },
+    high_value_surfaces: [],
+    learning_summary: {
+      accepted_count: 0,
+      duplicate_count: 0,
+      informative_count: 0,
+      na_count: 0,
+      rejected_count: 0,
+      rejection_risk_delta: 0,
+      bounty_total: 0,
+      strong_evidence_count: 0,
+      adequate_evidence_count: 0,
+      weak_evidence_count: 0,
+      severity_up_count: 0,
+      severity_down_count: 0,
+      triager_feedback_count: 0,
+      evidence_score_delta: 0,
+      boosted_playbooks: [],
+      penalized_playbooks: [],
+    },
+    recent_learning_signals: [],
+    applied_lessons: [],
+    skipped_lessons: [],
+    lesson_adjusted_surfaces: [],
+    safety_notes: ["candidate_hunter_learning_is_advisory_only"],
+  };
+}
+
 function logTone(tone: LogEntry["tone"]): string {
   if (tone === "safe") {
     return "text-[var(--success)]";
@@ -1462,11 +2077,73 @@ function checklistTone(status: "ready" | "missing" | "optional"): string {
   return "text-[var(--muted)]";
 }
 
-function latestRunFromManifest(manifest: StudioWorkspaceManifest): string | null {
+function latestSessionFromManifest(
+  manifest: StudioWorkspaceManifest,
+): { id: string | null; kind: "campaign_hunter" | "none" | "research" } {
+  let latest: { id: string | null; kind: "campaign_hunter" | "none" | "research"; recordedAt: string } = {
+    id: null,
+    kind: "none",
+    recordedAt: "",
+  };
   for (const run of [...(manifest.runs ?? [])].reverse()) {
-    if (run.run_id) {
-      return run.run_id;
+    if (run.run_id && (!latest.id || safeDateValue(run.recorded_at) >= safeDateValue(latest.recordedAt))) {
+      latest = {
+        id: run.run_id,
+        kind: "research",
+        recordedAt: run.recorded_at ?? "",
+      };
     }
   }
-  return null;
+  for (const run of [...(manifest.campaign_hunter_runs ?? [])].reverse()) {
+    if (
+      run.campaign_id &&
+      (!latest.id || safeDateValue(run.recorded_at) >= safeDateValue(latest.recordedAt))
+    ) {
+      latest = {
+        id: run.campaign_id,
+        kind: "campaign_hunter",
+        recordedAt: run.recorded_at ?? "",
+      };
+    }
+  }
+  return { id: latest.id, kind: latest.kind };
+}
+
+function reportExportFromLatestSession(
+  manifest: StudioWorkspaceManifest,
+  latest: { id: string | null; kind: "campaign_hunter" | "none" | "research" },
+): StudioReportExportResponse | null {
+  if (!latest.id || latest.kind === "none") {
+    return null;
+  }
+  const run =
+    latest.kind === "research"
+      ? (manifest.runs ?? []).find((item) => item.run_id === latest.id)
+      : (manifest.campaign_hunter_runs ?? []).find((item) => item.campaign_id === latest.id);
+  if (!run?.report_markdown_path) {
+    return null;
+  }
+  return {
+    manifest,
+    report: {
+      restored_from_manifest: true,
+      submission_blocked: true,
+    },
+    report_markdown_path: run.report_markdown_path,
+    report_submission_allowed: false,
+    run_id: latest.id,
+    submission_blocked: true,
+    title:
+      latest.kind === "campaign_hunter"
+        ? "Submission-blocked campaign hunter draft"
+        : "Submission-blocked report draft",
+  };
+}
+
+function safeDateValue(value: string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }

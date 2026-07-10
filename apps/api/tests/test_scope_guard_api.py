@@ -117,6 +117,59 @@ def test_scope_guard_api_allows_validation_with_matching_durable_approval():
         app.dependency_overrides.clear()
 
 
+def test_scope_guard_api_uses_persisted_campaign_rule_over_caller_rule():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as session:
+        seed_sample_data(session)
+        campaign = DatabaseRepository(session).create_campaign(
+            program_id="program_example",
+            name="Persisted rule wins",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="api.example.com is in scope. No automation.",
+            default_asset="api.example.com",
+            created_by="operator",
+            payload={
+                "scope_guard_rule": {
+                    "asset": "api.example.com",
+                    "scope_status": "in_scope",
+                    "automation": "none",
+                    "allowed_validation": [],
+                    "forbidden": [],
+                    "human_approval_required": True,
+                }
+            },
+        )
+
+    def _override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        response = client.post(
+            "/scope-guard/evaluate",
+            json={
+                "campaign_id": campaign.id,
+                "request": approved_validation_request(),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "allowed": False,
+            "reason": "automation_not_allowed",
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_scope_guard_api_blocks_mismatched_durable_approval_record():
     app.dependency_overrides[get_session] = override_session()
     try:
@@ -159,6 +212,7 @@ def test_scope_guard_api_rejects_cross_campaign_approval_when_bound():
             policy_text="Testing allowed",
             default_asset="api.example.com",
             created_by="operator",
+            payload={"scope_guard_rule": validation_rule()},
         )
         target_campaign = repository.create_campaign(
             program_id="program_example",
@@ -168,6 +222,7 @@ def test_scope_guard_api_rejects_cross_campaign_approval_when_bound():
             policy_text="Testing allowed",
             default_asset="api.example.com",
             created_by="operator",
+            payload={"scope_guard_rule": validation_rule()},
         )
         source_task = repository.create_campaign_task(
             campaign_id=source_campaign.id,
@@ -238,6 +293,7 @@ def test_scope_guard_api_does_not_reuse_campaign_bound_approval_without_campaign
             policy_text="Testing allowed",
             default_asset="api.example.com",
             created_by="operator",
+            payload={"scope_guard_rule": validation_rule()},
         )
         approval = repository.create_approval_record(
             campaign_id=campaign.id,
@@ -303,6 +359,7 @@ def test_scope_guard_api_blocks_approved_validation_when_campaign_is_out_of_scop
             policy_text="Testing allowed",
             default_asset="api.example.com",
             created_by="operator",
+            payload={"scope_guard_rule": validation_rule()},
         )
         approval = repository.create_approval_record(
             campaign_id=campaign.id,

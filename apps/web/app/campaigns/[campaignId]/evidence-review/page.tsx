@@ -106,6 +106,10 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
             value={String(findingCandidateGate.promotionAuditCreatedCount)}
           />
           <Field
+            label="Required evidence holds"
+            value={String(findingCandidateGate.requiredEvidenceBlockedCount)}
+          />
+          <Field
             label="Provenance refs"
             value={String(findingCandidateGate.promotionAuditProvenanceRefCount)}
           />
@@ -116,7 +120,9 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
           <Field
             label="Latest reason"
             value={
-              findingCandidateGate.status === "blocked_by_research_feedback"
+              findingCandidateGate.status === "blocked_by_required_evidence"
+                ? "Required evidence blocks promotion"
+                : findingCandidateGate.status === "blocked_by_research_feedback"
                 ? "Research feedback blocks promotion"
                 : findingCandidateGate.promotionAuditLatestReason ?? "No promotion block recorded"
             }

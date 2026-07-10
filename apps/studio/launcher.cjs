@@ -3,8 +3,15 @@ const https = require("node:https");
 const net = require("node:net");
 
 const defaultHost = "127.0.0.1";
+const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+const urlOverrideNames = [
+  "MYTHOS_STUDIO_URL",
+  "API_BASE_URL",
+  "NEXT_PUBLIC_API_BASE_URL",
+];
 
 async function createStudioLaunchConfig(env = process.env) {
+  assertLoopbackUrlOverrides(env);
   const apiPort = await findAvailablePort(portFromEnv(env.MYTHOS_API_PORT, 8000));
   const webPort = await findAvailablePort(portFromEnv(env.MYTHOS_WEB_PORT, 3000), {
     reservedPorts: new Set([apiPort]),
@@ -15,9 +22,29 @@ async function createStudioLaunchConfig(env = process.env) {
   return {
     apiBaseUrl,
     apiPort,
-    studioUrl: env.MYTHOS_STUDIO_URL || `${webBaseUrl}/studio`,
+    studioUrl: `${webBaseUrl}/studio`,
     webPort,
   };
+}
+
+function assertLoopbackUrlOverrides(env) {
+  for (const name of urlOverrideNames) {
+    const value = env[name];
+    if (!value) {
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new Error(`${name} must use a loopback HTTP URL`);
+    }
+
+    if (parsed.protocol !== "http:" || !loopbackHosts.has(parsed.hostname)) {
+      throw new Error(`${name} must use a loopback HTTP URL`);
+    }
+  }
 }
 
 async function findAvailablePort(preferredPort, options = {}) {

@@ -143,6 +143,9 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
                       Research review queued · Refutation questions: {stage.refutationQuestionCount ?? 0} · Validation steps:{" "}
                       {stage.validationStepCount ?? 0} · Blocked actions:{" "}
                       {stage.blockedActionCount ?? 0}
+                      {stage.requiredEvidence?.length
+                        ? ` · Required evidence: ${stage.requiredEvidence.join(", ")}`
+                        : ""}
                       {stage.candidateStatus ? ` · ${stage.candidateStatus}` : ""}
                     </p>
                   ) : null}
@@ -152,6 +155,9 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
                       {stage.refutationQuestionCount ?? 0} · Evidence steps:{" "}
                       {stage.evidenceStepCount ?? 0} · Blocked actions:{" "}
                       {stage.blockedActionCount ?? 0}
+                      {stage.requiredEvidence?.length
+                        ? ` · Required evidence: ${stage.requiredEvidence.join(", ")}`
+                        : ""}
                     </p>
                   ) : null}
                   {stage.isResearchPlan || stage.isResearchRefutationDecision ? (

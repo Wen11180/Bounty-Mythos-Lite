@@ -1,11 +1,33 @@
+import re
+
 from app.scope_guard import ScopeGuardRule
 
 
-DEFAULT_ALLOWED_VALIDATION = [
-    "two_account_authorization_check",
-    "local_code_review",
-    "non_destructive_business_logic_test",
+EXPLICIT_VALIDATION_PATTERNS = [
+    ("two_account_authorization_check", "two account authorization check"),
+    (
+        "non_destructive_business_logic_test",
+        "non destructive business logic test",
+    ),
 ]
+PERMISSION_MARKERS = (
+    "allowed",
+    "allows",
+    "permit",
+    "permitted",
+    "permits",
+    "authorized",
+    "authorizes",
+    "may ",
+)
+DENIAL_MARKERS = (
+    "not allowed",
+    "not permitted",
+    "not authorized",
+    "may not",
+    "prohibited",
+    "forbidden",
+)
 
 FORBIDDEN_PATTERNS = [
     ("DoS", ["dos", "denial of service"]),
@@ -22,7 +44,7 @@ def parse_policy_text(policy_text: str, asset: str) -> ScopeGuardRule:
         asset=asset,
         scope_status=_scope_status(normalized, asset),
         automation=_automation(normalized),
-        allowed_validation=DEFAULT_ALLOWED_VALIDATION,
+        allowed_validation=_allowed_validation(normalized),
         forbidden=_forbidden(normalized),
         human_approval_required=True,
     )
@@ -30,17 +52,19 @@ def parse_policy_text(policy_text: str, asset: str) -> ScopeGuardRule:
 
 def _scope_status(policy_text: str, asset: str) -> str:
     asset_lower = asset.lower()
-    out_of_scope_markers = ("out of scope", "excluded", "not in scope")
-    if asset_lower in policy_text and any(marker in policy_text for marker in out_of_scope_markers):
-        out_of_scope_index = min(
-            policy_text.find(marker)
-            for marker in out_of_scope_markers
-            if marker in policy_text
-        )
-        if policy_text.find(asset_lower, out_of_scope_index) != -1:
-            return "out_of_scope"
+    escaped_asset = re.escape(asset_lower)
+    out_of_scope = r"(?:out of scope|excluded|not in scope)"
+    in_scope = r"(?:in scope|allowed)"
+    if re.search(
+        rf"{escaped_asset}[^.\n]{{0,80}}{out_of_scope}|{out_of_scope}[^.\n]{{0,80}}{escaped_asset}",
+        policy_text,
+    ):
+        return "out_of_scope"
 
-    if asset_lower in policy_text and ("in scope" in policy_text or "allowed" in policy_text):
+    if re.search(
+        rf"{escaped_asset}[^.\n]{{0,80}}{in_scope}|{in_scope}[^.\n]{{0,80}}{escaped_asset}",
+        policy_text,
+    ):
         return "in_scope"
 
     return "needs_review"
@@ -52,6 +76,19 @@ def _automation(policy_text: str) -> str:
     if "limited" in policy_text or "rate limit" in policy_text:
         return "limited"
     return "needs_review"
+
+
+def _allowed_validation(policy_text: str) -> list[str]:
+    allowed: list[str] = []
+    for clause in policy_text.replace("-", " ").replace("_", " ").split("."):
+        if any(marker in clause for marker in DENIAL_MARKERS):
+            continue
+        if not any(marker in clause for marker in PERMISSION_MARKERS):
+            continue
+        for validation_type, pattern in EXPLICIT_VALIDATION_PATTERNS:
+            if pattern in clause:
+                allowed.append(validation_type)
+    return allowed
 
 
 def _forbidden(policy_text: str) -> list[str]:

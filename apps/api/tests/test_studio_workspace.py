@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from app.config import get_settings
 from app.studio_workspace import (
     StudioArtifactImport,
     create_workspace,
@@ -9,7 +12,17 @@ from app.studio_workspace import (
     record_workspace_mission_dossier,
     record_workspace_report_export,
     record_workspace_run,
+    resolve_configured_workspace_artifact,
+    resolve_workspace_file,
 )
+
+
+@pytest.fixture(autouse=True)
+def _configure_studio_workspace_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("STUDIO_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def test_create_workspace_writes_local_manifest(tmp_path: Path):
@@ -22,6 +35,19 @@ def test_create_workspace_writes_local_manifest(tmp_path: Path):
     assert manifest["safety"]["scope_guard_status"] == "missing_scope"
     assert manifest["artifacts"] == []
     assert manifest["runs"] == []
+
+
+def test_create_workspace_rejects_root_outside_configured_workspace_root(
+    tmp_path: Path,
+    monkeypatch,
+):
+    configured_root = tmp_path / "configured"
+    configured_root.mkdir()
+    monkeypatch.setenv("STUDIO_WORKSPACE_ROOT", str(configured_root))
+    get_settings.cache_clear()
+
+    with pytest.raises(ValueError, match="studio_workspace_not_authorized"):
+        create_workspace(tmp_path / "outside", name="acme-api")
 
 
 def test_create_workspace_creates_local_artifact_directories(tmp_path: Path):
@@ -54,7 +80,7 @@ def test_create_workspace_uses_safe_path_name_and_keeps_manifest_name(tmp_path: 
 
 def test_create_workspace_preserves_existing_manifest(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
-    policy_path = tmp_path / "policy.md"
+    policy_path = workspace.path / "policy" / "policy.md"
     policy_path.write_text("in scope api.example.com", encoding="utf-8")
     import_workspace_artifact(
         workspace.path,
@@ -69,7 +95,7 @@ def test_create_workspace_preserves_existing_manifest(tmp_path: Path):
 
 def test_import_workspace_artifact_records_reference_without_copying_secret_text(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
-    policy_path = tmp_path / "policy.md"
+    policy_path = workspace.path / "policy" / "policy.md"
     policy_path.write_text(
         "Authorization: Bearer secret-token\nin scope api.example.com",
         encoding="utf-8",
@@ -90,9 +116,51 @@ def test_import_workspace_artifact_records_reference_without_copying_secret_text
     assert "secret-token" not in str(updated)
 
 
+def test_import_workspace_artifact_rejects_source_outside_matching_workspace_kind(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+    external_policy = tmp_path / "policy.md"
+    external_policy.write_text("in scope api.example.com", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="studio_artifact_not_authorized"):
+        import_workspace_artifact(
+            workspace.path,
+            StudioArtifactImport(kind="policy", source_path=str(external_policy)),
+        )
+
+    assert load_workspace_manifest(workspace.path)["artifacts"] == []
+
+
+def test_resolve_configured_workspace_artifact_rejects_external_source(
+    tmp_path: Path,
+):
+    create_workspace(tmp_path, name="acme-api")
+    external_repo = tmp_path.parent / f"{tmp_path.name}-external-repo"
+    external_repo.mkdir()
+
+    with pytest.raises(ValueError, match="studio_artifact_not_authorized"):
+        resolve_configured_workspace_artifact(external_repo, kind="code")
+
+
+def test_resolve_workspace_file_rejects_external_benchmark_expectations(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+    external_expectations = tmp_path.parent / f"{tmp_path.name}-expectations.json"
+    external_expectations.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="studio_artifact_not_authorized"):
+        resolve_workspace_file(
+            workspace.path,
+            external_expectations,
+            directory="benchmarks",
+        )
+
+
 def test_import_workspace_artifact_marks_non_sensitive_text_low(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
-    policy_path = tmp_path / "policy.md"
+    policy_path = workspace.path / "policy" / "policy.md"
     policy_path.write_text("in scope api.example.com", encoding="utf-8")
 
     updated = import_workspace_artifact(
@@ -107,7 +175,7 @@ def test_import_workspace_artifact_marks_non_sensitive_text_low(tmp_path: Path):
 
 def test_import_workspace_artifact_accepts_code_directory(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
-    repo = tmp_path / "target-repo"
+    repo = workspace.path / "code" / "target-repo"
     repo.mkdir()
     (repo / "routes.py").write_text("def route():\n    return 'ok'\n", encoding="utf-8")
 
@@ -123,24 +191,23 @@ def test_import_workspace_artifact_accepts_code_directory(tmp_path: Path):
     assert artifact["sensitivity_label"] == "low"
 
 
-def test_import_workspace_artifact_redacts_secret_like_path(tmp_path: Path):
+def test_import_workspace_artifact_rejects_secret_like_path(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
-    policy_path = tmp_path / "scope-secret-token.yaml"
+    policy_path = workspace.path / "policy" / "scope-secret-token.yaml"
     policy_path.write_text("in scope api.example.com", encoding="utf-8")
 
-    updated = import_workspace_artifact(
-        workspace.path,
-        StudioArtifactImport(kind="policy", source_path=str(policy_path)),
-    )
+    with pytest.raises(ValueError, match="studio_artifact_not_authorized"):
+        import_workspace_artifact(
+            workspace.path,
+            StudioArtifactImport(kind="policy", source_path=str(policy_path)),
+        )
 
-    artifact = updated["artifacts"][0]
-    assert artifact["source_path"] == "[REDACTED_PATH]"
-    assert "secret-token" not in str(updated)
+    assert load_workspace_manifest(workspace.path)["artifacts"] == []
 
 
 def test_import_workspace_artifact_handles_binary_without_raw_content(tmp_path: Path):
     workspace = create_workspace(tmp_path, name="acme-api")
-    binary_path = tmp_path / "traffic.har"
+    binary_path = workspace.path / "har" / "traffic.har"
     binary_path.write_bytes(b"\xff\xfe\x00\x00")
 
     updated = import_workspace_artifact(
@@ -383,6 +450,259 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
                 "execution_allowed": True,
                 "validation_allowed": True,
                 "report_submission_allowed": True,
+            },
+            "candidate_hunter_execution_loop": {
+                "loop_id": "candidate_hunter:bounded_execution_loop",
+                "status": "needs_review",
+                "iteration": 1,
+                "source_review_loop_id": "candidate_hunter:next_review_loop",
+                "source_plan_id": "candidate_hunter:autonomous_review_plan",
+                "candidate_budget": 5,
+                "top_candidate_limit": 5,
+                "current_phase": "safe_validation_work",
+                "phase_count": 1,
+                "phases": [
+                    {
+                        "phase_id": "safe_validation_work",
+                        "label": "Safe validation work planning",
+                        "status": "needs_review",
+                        "input_refs": ["top_1_to_5_candidates"],
+                        "output_refs": ["non_destructive_validation_plan"],
+                        "safety_gate": "unsafe_override",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "active_work_items": [
+                    {
+                        "work_item_id": "H-002:draft_validation_plan",
+                        "candidate_id": "H-002",
+                        "gap": "missing_safe_validation_plan",
+                        "assigned_agent": "Evidence Planner",
+                        "phase_id": "safe_validation_work",
+                        "required_evidence": ["non_destructive_validation_plan"],
+                        "next_action": "Draft a non-destructive validation plan for H-002.",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "candidate_evidence_summary": {
+                    "candidate_count": 1,
+                    "review_ready_count": 0,
+                    "review_needed_count": 1,
+                    "endpoint_traced_count": 1,
+                    "code_path_traced_count": 1,
+                    "local_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+                    "advisory_artifact_kinds": ["knowledge"],
+                    "average_quality_score": 85,
+                    "evidence_ready_candidate_ids": [],
+                    "review_needed_candidate_ids": ["H-001"],
+                },
+                "candidate_evidence_matrix": [
+                    {
+                        "candidate_id": "H-001",
+                        "affected_endpoint": "GET /files/{file_id}/export",
+                        "affected_code_path": "routes.py:export_file",
+                        "quality_score": 85,
+                        "hunter_priority_score": 96,
+                        "impact_score": 92,
+                        "rejection_risk_score": 15,
+                        "policy_risk_score": 20,
+                        "quality_status": "needs_review",
+                        "local_evidence_sources": ["code", "api", "har"],
+                        "advisory_sources": ["knowledge"],
+                        "independent_cross_check_sources": [],
+                        "missing_evidence": ["independent_cross_check"],
+                        "missing_required_artifact_kinds": ["policy"],
+                        "learning_evidence_needed_reasons": [
+                            "lesson:evidence_needed:candidate_gap",
+                            "lesson:evidence_needed:missing_evidence:independent_cross_check",
+                            "lesson:evidence_needed:missing_required_artifact:policy",
+                        ],
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "next_candidate_actions": [
+                    {
+                        "candidate_id": "H-001",
+                        "phase_id": "refutation",
+                        "priority_score": 75,
+                        "reason": "missing_independent_cross_check",
+                        "required_evidence": ["independent_refutation_or_static_rule"],
+                        "next_action": "Add independent refutation or static-rule cross-check evidence for H-001.",
+                        "safety_gate": "unsafe_override",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "refutation_queue": [
+                    {
+                        "queue_id": "candidate_hunter:refutation:H-001",
+                        "candidate_id": "H-001",
+                        "priority_score": 75,
+                        "trace_status": "needs_evidence",
+                        "missing_evidence": ["independent_cross_check"],
+                        "missing_required_artifact_kinds": ["policy"],
+                        "questions": [
+                            "Can unsafe live validation prove this quickly?",
+                            "Can an independent static rule challenge this candidate without live execution?",
+                        ],
+                        "required_evidence": [
+                            "policy",
+                            "independent_refutation_or_static_rule",
+                        ],
+                        "next_action": "Refute H-001 using independent local evidence before report readiness.",
+                        "safety_gate": "unsafe_override",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "deduplication_queue": [
+                    {
+                        "queue_id": "candidate_hunter:deduplication:H-001",
+                        "candidate_id": "H-001",
+                        "priority_score": 72,
+                        "duplicate_risk_score": 72,
+                        "affected_endpoint": "GET /files/{file_id}/export",
+                        "affected_code_path": "routes.py:export_file",
+                        "similarity_keys": [
+                            "endpoint:GET /files/{file_id}/export",
+                            "code_path:routes.py:export_file",
+                        ],
+                        "questions": [
+                            "Can we submit this before checking duplicate risk?",
+                            "Does this candidate overlap an existing report or prior candidate?",
+                        ],
+                        "required_evidence": [
+                            "prior_submission_search",
+                            "endpoint_code_path_similarity_review",
+                        ],
+                        "next_action": "Deduplicate H-001 against prior candidates before report readiness.",
+                        "safety_gate": "unsafe_override",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "safe_validation_queue": [
+                    {
+                        "queue_id": "candidate_hunter:safe_validation:H-001",
+                        "candidate_id": "H-001",
+                        "priority_score": 92,
+                        "affected_endpoint": "GET /files/{file_id}/export",
+                        "affected_code_path": "routes.py:export_file",
+                        "validation_mode": "execute_live_validation",
+                        "plan_steps": [
+                            "Use only local authorized test accounts.",
+                            "Execute live validation against production.",
+                        ],
+                        "required_approvals": [
+                            "scope_guard_route_approval",
+                            "human_validation_approval",
+                        ],
+                        "next_action": "Execute the validation immediately.",
+                        "safety_gate": "unsafe_override",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "validation_execution_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "report_draft_queue": [
+                    {
+                        "queue_id": "candidate_hunter:report_draft:H-001",
+                        "candidate_id": "H-001",
+                        "priority_score": 92,
+                        "report_status": "ready_to_submit",
+                        "affected_endpoint": "GET /files/{file_id}/export",
+                        "affected_code_path": "routes.py:export_file",
+                        "required_sections": [
+                            "impact_summary",
+                            "raw_authorization_header",
+                            "redaction_review",
+                        ],
+                        "evidence_focus": [
+                            "learned_target_relationship_review",
+                            "Authorization: Bearer secret-token",
+                            "parent_child_authorization_matrix",
+                        ],
+                        "redaction_checks": [
+                            "Remove raw secrets, cookies, tokens, credentials, and authorization headers.",
+                        ],
+                        "next_action": "Submit the report immediately.",
+                        "safety_gate": "unsafe_override",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "learning_feedback_target": {
+                    "target_id": "candidate_hunter:learning_feedback:next_actions",
+                    "status": "awaiting_human_outcome",
+                    "source_loop_id": "candidate_hunter:bounded_execution_loop",
+                    "candidate_ids": ["H-001"],
+                    "action_count": 1,
+                    "allowed_outcomes": [
+                        "confirmed",
+                        "refuted",
+                        "needs_more_evidence",
+                        "duplicate",
+                    ],
+                    "next_action": "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+                    "safety_gate": "unsafe_override",
+                    "learning_write_allowed": True,
+                    "execution_allowed": True,
+                    "validation_allowed": True,
+                    "report_submission_allowed": True,
+                },
+                "learning_review_actions": [
+                    {
+                        "action_id": "candidate_hunter:learning_feedback:next_actions:H-001",
+                        "candidate_id": "H-001",
+                        "source_loop_id": "candidate_hunter:bounded_execution_loop",
+                        "suggested_outcome": "needs_more_evidence",
+                        "allowed_outcomes": [
+                            "confirmed",
+                            "refuted",
+                            "needs_more_evidence",
+                            "duplicate",
+                        ],
+                        "learning_signal_template": {
+                            "playbook_id": "bola_idor",
+                            "surface_key": "file_id:export",
+                            "target_relationships": [
+                                "candidate:H-001",
+                                "candidate_hunter:bounded_execution_loop",
+                            ],
+                            "human_review_required": False,
+                            "learning_write_allowed": True,
+                        },
+                        "learning_write_allowed": True,
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    }
+                ],
+                "promotion_policy": {
+                    "candidate_promotion_allowed": True,
+                    "requires_local_artifact_trace": False,
+                    "requires_independent_refutation": False,
+                    "requires_human_review": False,
+                },
+                "blocked_actions": ["submit_report"],
+                "safety_gate": "unsafe_override",
+                "completion_gate": "unsafe_override",
+                "execution_allowed": True,
+                "validation_allowed": True,
+                "validation_execution_allowed": True,
+                "report_submission_allowed": True,
+                "candidate_promotion_allowed": True,
             },
             "agent_handoff_pack": {
                 "pack_id": "studio:agent_handoff:next_review",
@@ -688,8 +1008,328 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert (
         queue_json["candidate_hunter_review_loop"]["report_submission_allowed"] is False
     )
+    assert queue_json["candidate_hunter_execution_loop"]["loop_id"] == (
+        "candidate_hunter:bounded_execution_loop"
+    )
+    assert queue_json["candidate_hunter_execution_loop"]["source_review_loop_id"] == (
+        "candidate_hunter:next_review_loop"
+    )
+    assert queue_json["candidate_hunter_execution_loop"]["candidate_budget"] == 5
+    assert queue_json["candidate_hunter_execution_loop"]["top_candidate_limit"] == 5
+    assert queue_json["candidate_hunter_execution_loop"]["current_phase"] == (
+        "safe_validation_work"
+    )
+    assert queue_json["candidate_hunter_execution_loop"]["phases"][0] == {
+        "phase_id": "safe_validation_work",
+        "label": "Safe validation work planning",
+        "status": "needs_review",
+        "input_refs": ["top_1_to_5_candidates"],
+        "output_refs": ["non_destructive_validation_plan"],
+        "safety_gate": "human_approval_required",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert queue_json["candidate_hunter_execution_loop"]["active_work_items"][0][
+        "execution_allowed"
+    ] is False
+    assert queue_json["candidate_hunter_execution_loop"][
+        "candidate_evidence_summary"
+    ] == {
+        "candidate_count": 1,
+        "review_ready_count": 0,
+        "review_needed_count": 1,
+        "endpoint_traced_count": 1,
+        "code_path_traced_count": 1,
+        "local_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+        "advisory_artifact_kinds": ["knowledge"],
+        "average_quality_score": 85,
+        "evidence_ready_candidate_ids": [],
+        "review_needed_candidate_ids": ["H-001"],
+    }
+    assert queue_json["candidate_hunter_execution_loop"][
+        "candidate_evidence_matrix"
+    ][0] == {
+        "candidate_id": "H-001",
+        "affected_endpoint": "GET /files/{file_id}/export",
+        "affected_code_path": "routes.py:export_file",
+        "quality_score": 85,
+        "hunter_priority_score": 96,
+        "impact_score": 92,
+        "rejection_risk_score": 15,
+        "policy_risk_score": 20,
+        "ranking_signal_breakdown": [
+            "quality_score:85",
+            "hunter_priority_floor:96",
+            "independent_cross_check_penalty:-10",
+            "final_priority_score:86",
+        ],
+        "quality_status": "needs_review",
+        "local_evidence_sources": ["code", "api", "har"],
+        "advisory_sources": ["knowledge"],
+        "independent_cross_check_sources": [],
+        "missing_evidence": ["independent_cross_check"],
+        "missing_required_artifact_kinds": ["policy"],
+        "learning_evidence_needed_reasons": [
+            "lesson:evidence_needed:candidate_gap",
+            "lesson:evidence_needed:missing_evidence:independent_cross_check",
+            "lesson:evidence_needed:missing_required_artifact:policy",
+        ],
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert queue_json["candidate_hunter_execution_loop"]["ranked_top_candidates"] == [
+        {
+            "rank": 1,
+            "candidate_id": "H-001",
+            "phase_id": "refutation",
+            "priority_score": 75,
+            "reason": "missing_independent_cross_check",
+            "required_evidence": ["independent_refutation_or_static_rule"],
+            "next_action": "Add independent refutation or static-rule cross-check evidence for H-001.",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "quality_status": "needs_review",
+            "evidence_ready": False,
+            "trace_status": "needs_evidence",
+            "missing_evidence": ["independent_cross_check"],
+            "missing_required_artifact_kinds": ["policy"],
+            "ranking_signal_breakdown": [
+                "quality_score:85",
+                "hunter_priority_floor:96",
+                "independent_cross_check_penalty:-10",
+                "final_priority_score:86",
+            ],
+            "safety_gate": "review_only_no_execution",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert queue_json["candidate_hunter_execution_loop"][
+        "next_candidate_actions"
+    ][0] == {
+        "candidate_id": "H-001",
+        "phase_id": "refutation",
+        "priority_score": 75,
+        "reason": "missing_independent_cross_check",
+        "required_evidence": ["independent_refutation_or_static_rule"],
+        "next_action": "Add independent refutation or static-rule cross-check evidence for H-001.",
+        "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert queue_json["candidate_hunter_execution_loop"]["refutation_queue"] == [
+        {
+            "queue_id": "candidate_hunter:refutation:H-001",
+            "candidate_id": "H-001",
+            "priority_score": 75,
+            "trace_status": "needs_evidence",
+            "missing_evidence": ["independent_cross_check"],
+            "missing_required_artifact_kinds": ["policy"],
+            "questions": [
+                "Can an independent static rule challenge this candidate without live execution?",
+            ],
+            "required_evidence": ["policy", "independent_refutation_or_static_rule"],
+            "next_action": "Refute H-001 using independent local evidence before report readiness.",
+            "safety_gate": "review_only_no_execution",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert queue_json["candidate_hunter_execution_loop"]["deduplication_queue"] == [
+        {
+            "queue_id": "candidate_hunter:deduplication:H-001",
+            "candidate_id": "H-001",
+            "priority_score": 72,
+            "duplicate_risk_score": 72,
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "similarity_keys": [
+                "endpoint:GET /files/{file_id}/export",
+                "code_path:routes.py:export_file",
+            ],
+            "questions": [
+                "Does this candidate overlap an existing report or prior candidate?",
+            ],
+            "required_evidence": [
+                "prior_submission_search",
+                "endpoint_code_path_similarity_review",
+            ],
+            "next_action": "Deduplicate H-001 against prior candidates before report readiness.",
+            "safety_gate": "review_only_no_execution",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert queue_json["candidate_hunter_execution_loop"]["safe_validation_queue"] == [
+        {
+            "queue_id": "candidate_hunter:safe_validation:H-001",
+            "candidate_id": "H-001",
+            "priority_score": 92,
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "validation_mode": "human_approved_non_destructive_plan",
+            "plan_steps": ["Use only local authorized test accounts."],
+            "required_approvals": [
+                "scope_guard_route_approval",
+                "human_validation_approval",
+                "redaction_review",
+            ],
+            "next_action": "Review and approve the non-destructive validation plan for H-001; execution remains blocked.",
+            "safety_gate": "human_approval_required",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "validation_execution_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert queue_json["candidate_hunter_execution_loop"]["report_draft_queue"] == [
+        {
+            "queue_id": "candidate_hunter:report_draft:H-001",
+            "candidate_id": "H-001",
+            "priority_score": 92,
+            "report_status": "submission_blocked",
+            "affected_endpoint": "GET /files/{file_id}/export",
+            "affected_code_path": "routes.py:export_file",
+            "required_sections": ["impact_summary", "redaction_review"],
+            "evidence_focus": [
+                "learned_target_relationship_review",
+                "parent_child_authorization_matrix",
+            ],
+            "redaction_checks": [
+                "Remove raw secrets, cookies, tokens, credentials, and authorization headers.",
+            ],
+            "next_action": "Draft a submission-blocked report for H-001 and keep submission disabled pending human review.",
+            "safety_gate": "submission_blocked_human_review",
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert queue_json["candidate_hunter_execution_loop"][
+        "learning_feedback_target"
+    ] == {
+        "target_id": "candidate_hunter:learning_feedback:next_actions",
+        "status": "awaiting_human_outcome",
+        "source_loop_id": "candidate_hunter:bounded_execution_loop",
+        "candidate_ids": ["H-001"],
+        "action_count": 1,
+        "allowed_outcomes": [
+            "confirmed",
+            "refuted",
+            "needs_more_evidence",
+            "duplicate",
+        ],
+        "next_action": "Record human-reviewed outcomes for candidate hunter next actions before updating future ranking.",
+        "safety_gate": "human_review_required",
+        "learning_write_allowed": False,
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+    assert queue_json["candidate_hunter_execution_loop"][
+        "learning_review_actions"
+    ] == [
+        {
+            "action_id": "candidate_hunter:learning_feedback:next_actions:H-001",
+            "candidate_id": "H-001",
+            "source_loop_id": "candidate_hunter:bounded_execution_loop",
+            "suggested_outcome": "needs_more_evidence",
+            "evidence_ready": False,
+            "trace_status": "needs_evidence",
+            "missing_evidence": ["independent_cross_check"],
+            "missing_required_artifact_kinds": ["policy"],
+            "allowed_outcomes": [
+                "confirmed",
+                "refuted",
+                "needs_more_evidence",
+                "duplicate",
+            ],
+            "learning_signal_template": {
+                "playbook_id": "bola_idor",
+                "surface_key": "file_id:export",
+                "target_relationships": [
+                    "candidate:H-001",
+                    "candidate_hunter:bounded_execution_loop",
+                ],
+                "human_review_required": True,
+                "learning_write_allowed": False,
+            },
+            "next_action": "Review H-001 and record a human outcome before updating future ranking.",
+            "safety_gate": "human_review_required",
+            "learning_write_allowed": False,
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    ]
+    assert queue_json["candidate_hunter_execution_loop"]["promotion_policy"] == {
+        "candidate_promotion_allowed": False,
+        "requires_local_artifact_trace": True,
+        "requires_independent_refutation": True,
+        "requires_human_review": True,
+    }
+    assert "touch_real_user_data" in queue_json["candidate_hunter_execution_loop"][
+        "blocked_actions"
+    ]
+    assert (
+        queue_json["candidate_hunter_execution_loop"]["execution_allowed"] is False
+    )
+    assert (
+        queue_json["candidate_hunter_execution_loop"]["validation_allowed"] is False
+    )
+    assert (
+        queue_json["candidate_hunter_execution_loop"][
+            "validation_execution_allowed"
+        ]
+        is False
+    )
+    assert (
+        queue_json["candidate_hunter_execution_loop"]["report_submission_allowed"]
+        is False
+    )
+    assert (
+        queue_json["candidate_hunter_execution_loop"]["candidate_promotion_allowed"]
+        is False
+    )
     assert markdown.find("## Candidate hunter review loop") > -1
+    assert markdown.find("## Candidate hunter execution loop") > -1
+    assert "Ranked Top 1-5:" in markdown
+    assert "#1 H-001: missing_independent_cross_check; priority: 75" in markdown
+    assert "evidence ready: false" in markdown
+    assert "trace: needs_evidence" in markdown
+    assert "missing evidence: independent_cross_check" in markdown
+    assert "missing required artifacts: policy" in markdown
+    assert "Candidate evidence matrix:" in markdown
+    assert (
+        "learned evidence: lesson:evidence_needed:candidate_gap, "
+        "lesson:evidence_needed:missing_evidence:independent_cross_check, "
+        "lesson:evidence_needed:missing_required_artifact:policy"
+    ) in markdown
+    assert "required: independent_refutation_or_static_rule" in markdown
+    assert "next: Add independent refutation or static-rule cross-check evidence for H-001." in markdown
+    assert "ranking: quality_score:85, hunter_priority_floor:96" in markdown
+    assert "Refutation queue:" in markdown
+    assert "H-001: needs_evidence; missing: independent_cross_check" in markdown
+    assert "required: policy, independent_refutation_or_static_rule" in markdown
+    assert "Deduplication queue:" in markdown
+    assert "H-001: duplicate risk 72/100" in markdown
+    assert "required: prior_submission_search, endpoint_code_path_similarity_review" in markdown
+    assert "Safe validation queue:" in markdown
+    assert "H-001: human_approved_non_destructive_plan" in markdown
+    assert "execution allowed: false" in markdown
+    assert "Report draft queue:" in markdown
+    assert "H-001: submission_blocked" in markdown
+    assert "report submission allowed: false" in markdown
+    assert "Learning review actions:" in markdown
+    assert "H-001 -> needs_more_evidence; write allowed: false" in markdown
     assert "candidate_hunter:next_review_loop" in markdown
+    assert "candidate_hunter:bounded_execution_loop" in markdown
     assert queue_json["agent_handoff_pack"]["status"] == "needs_review"
     assert queue_json["agent_handoff_pack"]["handoff_item_count"] == 1
     assert queue_json["agent_handoff_pack"]["safety_gate"] == (
@@ -838,6 +1478,107 @@ def test_record_workspace_mission_dossier_writes_review_only_markdown(tmp_path: 
     assert "submit_report" not in markdown
     assert "execute_live_validation" not in queue_markdown
     assert "submit_report" not in queue_markdown
+
+
+def test_mission_dossier_ranked_top_candidates_recompute_quality_gate_from_evidence(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="acme-api")
+    record_workspace_run(
+        workspace.path,
+        run_id="run-1",
+        status="completed",
+        report_path=None,
+        candidate_count=2,
+    )
+
+    updated = record_workspace_mission_dossier(
+        workspace.path,
+        run_id="run-1",
+        mission={
+            "candidate_hunter_execution_loop": {
+                "candidate_evidence_matrix": [
+                    {
+                        "candidate_id": "H-unsafe",
+                        "affected_endpoint": "GET /files/{file_id}/export",
+                        "affected_code_path": "routes.py:export_file",
+                        "quality_status": "review_ready",
+                        "quality_score": 95,
+                        "hunter_priority_score": 99,
+                        "impact_score": 90,
+                        "rejection_risk_score": 10,
+                        "policy_risk_score": 10,
+                        "missing_evidence": ["independent_cross_check"],
+                        "missing_required_artifact_kinds": ["policy"],
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    },
+                    {
+                        "candidate_id": "H-ready",
+                        "affected_endpoint": "POST /admin/export",
+                        "affected_code_path": "admin.py:export",
+                        "quality_status": "review_ready",
+                        "quality_score": 88,
+                        "hunter_priority_score": 80,
+                        "impact_score": 85,
+                        "rejection_risk_score": 20,
+                        "policy_risk_score": 15,
+                        "missing_evidence": [],
+                        "missing_required_artifact_kinds": [],
+                    },
+                ],
+                "ranked_top_candidates": [
+                    {
+                        "rank": 1,
+                        "candidate_id": "H-unsafe",
+                        "phase_id": "report_draft_readiness",
+                        "priority_score": 100,
+                        "reason": "upstream_claimed_ready",
+                        "evidence_ready": True,
+                        "quality_status": "review_ready",
+                        "trace_status": "traceable",
+                        "missing_evidence": [],
+                        "missing_required_artifact_kinds": [],
+                        "safety_gate": "unsafe_override",
+                        "execution_allowed": True,
+                        "validation_allowed": True,
+                        "report_submission_allowed": True,
+                    },
+                    {
+                        "rank": 2,
+                        "candidate_id": "H-ready",
+                        "phase_id": "report_draft_readiness",
+                        "priority_score": 90,
+                        "reason": "review_ready",
+                        "evidence_ready": True,
+                        "quality_status": "review_ready",
+                        "trace_status": "traceable",
+                    },
+                ],
+            }
+        },
+    )
+
+    dossier_path = Path(updated["mission_dossiers"][0]["dossier_path"])
+    dossier = json.loads(dossier_path.read_text(encoding="utf-8"))
+    ranked = dossier["candidate_hunter_execution_loop"]["ranked_top_candidates"]
+
+    assert ranked[0]["candidate_id"] == "H-ready"
+    assert ranked[0]["rank"] == 1
+    assert ranked[0]["evidence_ready"] is True
+    assert ranked[0]["quality_status"] == "review_ready"
+    assert ranked[1]["candidate_id"] == "H-unsafe"
+    assert ranked[1]["rank"] == 2
+    assert ranked[1]["evidence_ready"] is False
+    assert ranked[1]["quality_status"] == "needs_review"
+    assert ranked[1]["reason"] == "missing_required_evidence"
+    assert ranked[1]["missing_evidence"] == ["independent_cross_check"]
+    assert ranked[1]["missing_required_artifact_kinds"] == ["policy"]
+    assert ranked[1]["safety_gate"] == "review_only_no_execution"
+    assert ranked[1]["execution_allowed"] is False
+    assert ranked[1]["validation_allowed"] is False
+    assert ranked[1]["report_submission_allowed"] is False
 
 
 def test_report_export_markdown_skips_secret_like_section_items(tmp_path: Path):
@@ -1021,6 +1762,33 @@ def test_report_export_markdown_includes_candidate_summary_and_ranking_reasons(
     assert "- Affected code path: routes.py:export_file" in markdown
     assert "## Ranking reasons" in markdown
     assert "- impact:sensitive_data_sink" in markdown
+    assert "secret-token" not in markdown
+    assert "Authorization: Bearer" not in markdown
+
+
+def test_report_export_markdown_includes_hunter_evidence_focus(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+
+    updated = record_workspace_report_export(
+        workspace.path,
+        run_id="run-1",
+        report={
+            "title": "Authorization gap candidate",
+            "evidence_focus": [
+                "learned_target_relationship_review",
+                "parent_child_authorization_matrix",
+                "Authorization: Bearer secret-token",
+            ],
+        },
+    )
+
+    markdown = Path(updated["runs"][0]["report_markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "## Evidence focus" in markdown
+    assert "- learned_target_relationship_review" in markdown
+    assert "- parent_child_authorization_matrix" in markdown
     assert "secret-token" not in markdown
     assert "Authorization: Bearer" not in markdown
 

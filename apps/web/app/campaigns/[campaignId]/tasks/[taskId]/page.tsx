@@ -181,6 +181,12 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
                     label="Pipeline audit"
                     value={summary.autonomousCandidateContext.pipelineRunId}
                   />
+                  {summary.autonomousCandidateContext.rawPriorityScore !== null ? (
+                    <Field
+                      label="Raw score"
+                      value={String(summary.autonomousCandidateContext.rawPriorityScore)}
+                    />
+                  ) : null}
                   <Field
                     label="Refutation"
                     value={summary.autonomousCandidateContext.refutationStatus}
@@ -202,6 +208,12 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
                   label="Hypothesis"
                   value={summary.autonomousCandidateContext.hypothesis}
                 />
+                {summary.autonomousCandidateContext.qualityGateReasons.length > 0 ? (
+                  <ListBlock
+                    items={summary.autonomousCandidateContext.qualityGateReasons}
+                    title="Candidate Quality Gate Reasons"
+                  />
+                ) : null}
                 <ListBlock
                   items={summary.autonomousCandidateContext.refutationQuestions}
                   title="Candidate Refutation Questions"
@@ -213,6 +225,10 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
                 <ListBlock
                   items={summary.autonomousCandidateContext.evidenceFocus}
                   title="Candidate Evidence Focus"
+                />
+                <ListBlock
+                  items={summary.autonomousCandidateContext.requiredEvidence}
+                  title="Candidate Required Evidence"
                 />
                 <ListBlock
                   items={summary.autonomousCandidateContext.sourceFactTypes}

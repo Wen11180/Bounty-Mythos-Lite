@@ -79,3 +79,66 @@ def test_allows_approved_allowed_validation():
 
     assert decision.allowed is True
     assert decision.reason == "allowed_validation"
+
+
+def test_blocks_allowed_validation_when_automation_is_none():
+    rule = ScopeGuardRule(
+        asset="api.example.com",
+        scope_status="in_scope",
+        automation="none",
+        allowed_validation=["two_account_authorization_check"],
+        forbidden=[],
+        human_approval_required=True,
+    )
+    request = ValidationRequest(
+        asset="api.example.com",
+        validation_type="two_account_authorization_check",
+        human_approved=True,
+    )
+
+    decision = evaluate_validation_request(rule, request)
+
+    assert decision.allowed is False
+    assert decision.reason == "automation_not_allowed"
+
+
+def test_blocks_allowed_validation_when_automation_needs_review():
+    rule = ScopeGuardRule(
+        asset="api.example.com",
+        scope_status="in_scope",
+        automation="needs_review",
+        allowed_validation=["two_account_authorization_check"],
+        forbidden=[],
+        human_approval_required=True,
+    )
+    request = ValidationRequest(
+        asset="api.example.com",
+        validation_type="two_account_authorization_check",
+        human_approved=True,
+    )
+
+    decision = evaluate_validation_request(rule, request)
+
+    assert decision.allowed is False
+    assert decision.reason == "automation_not_allowed"
+
+
+def test_blocks_local_code_review_as_research_only_action():
+    rule = ScopeGuardRule(
+        asset="api.example.com",
+        scope_status="in_scope",
+        automation="limited",
+        allowed_validation=["local_code_review"],
+        forbidden=[],
+        human_approval_required=False,
+    )
+    request = ValidationRequest(
+        asset="api.example.com",
+        validation_type="local_code_review",
+        human_approved=True,
+    )
+
+    decision = evaluate_validation_request(rule, request)
+
+    assert decision.allowed is False
+    assert decision.reason == "research_only_action"

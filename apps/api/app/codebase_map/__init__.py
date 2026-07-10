@@ -1113,6 +1113,10 @@ def _authorization_gap_candidates(
                     "handler": handler,
                     "mapping_mode": "static_code_snippet_analysis",
                     "review_state": "needs_human_review",
+                    "root_cause": "missing_object_ownership_check",
+                    "security_invariant": (
+                        "Object-level actions must verify requester ownership or role before sensitive sinks run."
+                    ),
                     "sink_count": sink_count,
                     "sink_symbols": sink_symbols,
                 },

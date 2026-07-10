@@ -1,11 +1,15 @@
 from hashlib import sha256
 import json
+from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
+from app.db_models import ProgramRecord
 from app.repository import DatabaseRepository, seed_sample_data
 
 
@@ -247,6 +251,261 @@ def test_save_artifact_returns_existing_record_for_duplicate_source_hash():
         assert [artifact.id for artifact in artifacts] == [first.id]
     finally:
         session.close()
+
+
+def test_save_artifact_redacts_structured_har_and_postman_secret_pairs():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        raw_authorization = "DUMMY-RAW-AUTH-123"
+        raw_cookie = "DUMMY-RAW-COOKIE-456"
+        raw_api_key = "DUMMY-RAW-API-789"
+        raw_access_token = "DUMMY-RAW-TOKEN-012"
+
+        saved = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="har",
+            source_type="manual_upload",
+            source_hash=sha256(b"structured har postman secrets").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "traffic.har"},
+            payload_summary={
+                "headers": [
+                    {"name": "Authorization", "value": raw_authorization},
+                    {"name": "X-Trace-Id", "value": "safe-trace"},
+                ],
+                "cookies": [{"name": "session", "value": raw_cookie}],
+                "postman_headers": [{"key": "x-api-key", "value": raw_api_key}],
+            },
+            derived_facts={
+                "postman_variables": [
+                    {"key": "access_token", "contents": raw_access_token}
+                ]
+            },
+        )
+
+        fetched = repository.get_artifact(saved.id)
+        assert fetched is not None
+        assert fetched.provenance["safety"] == {
+            "sensitivity_label": "sensitive",
+            "redaction_status": "redacted",
+            "report_chain_allowed": False,
+            "safety_blockers": ["contains_secret_like_value"],
+        }
+        assert fetched.payload_summary["headers"] == [
+            {"name": "Authorization", "value": "[REDACTED]"},
+            {"name": "X-Trace-Id", "value": "safe-trace"},
+        ]
+        assert fetched.payload_summary["cookies"] == "[REDACTED]"
+        assert fetched.payload_summary["postman_headers"] == [
+            {"key": "x-api-key", "value": "[REDACTED]"}
+        ]
+        assert fetched.derived_facts["postman_variables"] == [
+            {"key": "access_token", "contents": "[REDACTED]"}
+        ]
+
+        session.expire_all()
+        record = session.execute(
+            text(
+                "select provenance, payload_summary, derived_facts from artifacts "
+                "where id = :id"
+            ),
+            {"id": saved.id},
+        ).mappings().one()
+        persisted = json.dumps(
+            {
+                "provenance": _load_json(record["provenance"]),
+                "payload_summary": _load_json(record["payload_summary"]),
+                "derived_facts": _load_json(record["derived_facts"]),
+            }
+        )
+        for raw_secret in (
+            raw_authorization,
+            raw_cookie,
+            raw_api_key,
+            raw_access_token,
+        ):
+            assert raw_secret not in persisted
+    finally:
+        session.close()
+
+
+def test_save_artifact_keeps_secret_parameter_names_without_secret_values_clean():
+    session = build_session()
+    try:
+        repository = DatabaseRepository(session)
+
+        saved = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=sha256(b"openapi parameter definition").hexdigest(),
+            ingestion_status="normalized",
+            provenance={"source_name": "openapi.json"},
+            payload_summary={
+                "parameter": {"name": "Authorization", "in": "header"}
+            },
+            derived_facts={"paths": ["/v1/files"]},
+        )
+
+        fetched = repository.get_artifact(saved.id)
+        assert fetched is not None
+        assert fetched.provenance["safety"] == {
+            "sensitivity_label": "low",
+            "redaction_status": "clean",
+            "report_chain_allowed": True,
+            "safety_blockers": [],
+        }
+        assert fetched.payload_summary["parameter"] == {
+            "name": "Authorization",
+            "in": "header",
+        }
+    finally:
+        session.close()
+
+
+def test_save_artifact_scopes_duplicate_source_hashes_to_the_same_program():
+    session = build_session()
+    try:
+        seed_sample_data(session)
+        session.add(
+            ProgramRecord(
+                id="program_other",
+                name="Other Program",
+                platform="local",
+                bounty_range="n/a",
+                scope_status="in_scope",
+                automation="none",
+                testing_accounts="not_provided",
+                api_docs="provided",
+                public_code="provided",
+                duplicate_risk="unknown",
+                priority="medium",
+            )
+        )
+        session.commit()
+        repository = DatabaseRepository(session)
+        source_hash = sha256(b"program scoped source").hexdigest()
+
+        first = repository.save_artifact(
+            program_id="program_example",
+            asset="api.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=source_hash,
+            ingestion_status="normalized",
+            provenance={"source_name": "program-example.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/v1/files"]},
+        )
+        duplicate = repository.save_artifact(
+            program_id="program_example",
+            asset="api.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=source_hash,
+            ingestion_status="normalized",
+            provenance={"source_name": "program-example-copy.json"},
+            payload_summary={"endpoint_count": 99},
+            derived_facts={"paths": ["/v2/changed"]},
+        )
+        other_program = repository.save_artifact(
+            program_id="program_other",
+            asset="api.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=source_hash,
+            ingestion_status="normalized",
+            provenance={"source_name": "program-other.json"},
+            payload_summary={"endpoint_count": 2},
+            derived_facts={"paths": ["/v1/files"]},
+        )
+        unscoped = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=source_hash,
+            ingestion_status="normalized",
+            provenance={"source_name": "unscoped.json"},
+            payload_summary={"endpoint_count": 3},
+            derived_facts={"paths": ["/v1/files"]},
+        )
+
+        assert duplicate.id == first.id
+        assert other_program.id != first.id
+        assert other_program.program_id == "program_other"
+        assert unscoped.id not in {first.id, other_program.id}
+        assert unscoped.program_id is None
+        assert {artifact.id for artifact in repository.list_artifacts()} == {
+            first.id,
+            other_program.id,
+            unscoped.id,
+        }
+    finally:
+        session.close()
+
+
+def test_artifact_program_scope_migration_upgrades_legacy_unnamed_unique_constraint(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "legacy-artifacts.db"
+    database_url = f"sqlite:///{database_path}"
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                create table programs (
+                    id varchar(100) not null primary key
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                create table artifacts (
+                    id varchar(100) not null primary key,
+                    program_id varchar(100),
+                    asset varchar(255) not null,
+                    kind varchar(50) not null,
+                    source_type varchar(50) not null,
+                    source_hash varchar(100) not null,
+                    ingestion_status varchar(50) not null,
+                    provenance json not null,
+                    payload_summary json not null,
+                    derived_facts json not null,
+                    created_at datetime not null,
+                    unique (source_hash),
+                    foreign key(program_id) references programs(id)
+                )
+                """
+            )
+        )
+    engine.dispose()
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(str(api_root / "alembic.ini"))
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.stamp(config, "0010_learning_signal_identity_hash")
+    command.upgrade(config, "head")
+
+    inspector = inspect(create_engine(database_url))
+    unique_constraints = inspector.get_unique_constraints("artifacts")
+    assert any(
+        constraint["name"] == "uq_artifacts_program_source_hash"
+        and constraint["column_names"] == ["program_id", "source_hash"]
+        for constraint in unique_constraints
+    )
+    assert not any(
+        constraint["column_names"] == ["source_hash"]
+        for constraint in unique_constraints
+    )
 
 
 def test_append_artifact_usage_records_deduplicates_by_closed_loop_identity():
