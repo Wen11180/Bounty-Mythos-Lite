@@ -7,6 +7,7 @@ import {
   createFindingCandidate,
   getPipelineRun,
   getReportPreview,
+  isFindingCandidatePromotionGateDetail,
   recordClaimReviewDecision,
   recordMythosBrainOutcome,
   type ClaimReviewDecisionValue,
@@ -14,7 +15,6 @@ import {
   type LearningOutcome,
   type LearningSeverityDelta,
 } from "@/lib/api";
-import { fallbackMythosBrainProfile } from "@/lib/fallback-data";
 import {
   fallbackReportPreview,
   fallbackRunDetail,
@@ -111,11 +111,11 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
     "use server";
 
     try {
-      await createFindingCandidate(currentRunId, null);
+      await createFindingCandidate(currentRunId);
     } catch (error) {
       if (
         error instanceof ApiRequestError &&
-        error.detail.reason === "blocked_by_research_feedback_gate"
+        isFindingCandidatePromotionGateDetail(error.detail)
       ) {
         redirect(
           `/reports/${encodeURIComponent(currentRunId)}?promotion_status=blocked` +
@@ -156,14 +156,6 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
         rationale,
         reviewer,
       },
-      {
-        claim_id: claimId,
-        decision,
-        evidence_refs: evidenceRefs,
-        rationale,
-        reviewed_at: new Date().toISOString(),
-        reviewer,
-      },
     );
     revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);
     revalidatePath(`/runs/${encodeURIComponent(currentRunId)}`);
@@ -191,7 +183,6 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
           "severity_delta",
         ) as LearningSeverityDelta | null,
       },
-      fallbackMythosBrainProfile,
     );
     revalidatePath("/");
     revalidatePath(`/reports/${encodeURIComponent(currentRunId)}`);

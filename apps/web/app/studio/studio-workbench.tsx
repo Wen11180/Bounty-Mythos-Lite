@@ -4,6 +4,7 @@ import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "luc
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  ApiRequestError,
   createStudioWorkspace,
   createStudioWorkspaceBenchmarkTemplate,
   exportStudioWorkspaceCampaignHunterReport,
@@ -212,7 +213,6 @@ export function StudioWorkbench() {
     try {
       const created = await createStudioWorkspace(
         { name: workspaceName, root_path: workspaceRoot },
-        null,
       );
       if (!created) {
         pushLog("Workspace creation failed. Check that the local API is running.", "blocked");
@@ -228,6 +228,8 @@ export function StudioWorkbench() {
       setMissionDossierExport(null);
       setBenchmarkResult(null);
       pushLog("Workspace created locally. Scope Guard is waiting for authorized inputs.", "safe");
+    } catch (error) {
+      pushMutationFailure("Workspace creation", error);
     } finally {
       setBusy(null);
     }
@@ -247,13 +249,14 @@ export function StudioWorkbench() {
         }
         updated = await importStudioWorkspaceArtifact(
           { ...artifact, workspace_path: workspacePath },
-          updated,
         );
       }
       if (updated) {
         setManifest(updated);
         pushLog("Authorized artifact references imported. Sensitive items remain review-gated.", "safe");
       }
+    } catch (error) {
+      pushMutationFailure("Artifact import", error);
     } finally {
       setBusy(null);
     }
@@ -271,7 +274,6 @@ export function StudioWorkbench() {
       if (!activeWorkspacePath) {
         const created = await createStudioWorkspace(
           { name: workspaceName, root_path: workspaceRoot },
-          null,
         );
         if (!created) {
           pushLog("Workspace creation failed. Check that the local API is running.", "blocked");
@@ -286,7 +288,7 @@ export function StudioWorkbench() {
         if (!artifact.source_path.trim()) {
           continue;
         }
-        activeManifest = await importStudioWorkspaceArtifact(artifact, activeManifest);
+        activeManifest = await importStudioWorkspaceArtifact(artifact);
       }
       if (!activeManifest) {
         pushLog("Authorized artifact import failed.", "blocked");
@@ -300,7 +302,7 @@ export function StudioWorkbench() {
         return;
       }
 
-      const run = await runStudioWorkspaceResearch({ workspace_path: activeWorkspacePath }, null);
+      const run = await runStudioWorkspaceResearch({ workspace_path: activeWorkspacePath });
       if (!run) {
         pushLog("Local candidate hunt did not start. Scope and code artifacts are required.", "blocked");
         return;
@@ -321,6 +323,8 @@ export function StudioWorkbench() {
         `Local candidate hunt ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
         "safe",
       );
+    } catch (error) {
+      pushMutationFailure("Local candidate hunt", error);
     } finally {
       setBusy(null);
     }
@@ -355,7 +359,7 @@ export function StudioWorkbench() {
     }
     setBusy("research");
     try {
-      const run = await runStudioWorkspaceResearch({ workspace_path: workspacePath }, null);
+      const run = await runStudioWorkspaceResearch({ workspace_path: workspacePath });
       if (!run) {
         pushLog("Research run did not start. Scope and code artifacts are required.", "blocked");
         return;
@@ -376,6 +380,8 @@ export function StudioWorkbench() {
         `Research run ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
         "safe",
       );
+    } catch (error) {
+      pushMutationFailure("Research run", error);
     } finally {
       setBusy(null);
     }
@@ -394,7 +400,6 @@ export function StudioWorkbench() {
           name: `${workspace.name} campaign hunter`,
           workspace_path: workspacePath,
         },
-        null,
       );
       if (!launched) {
         pushLog("Campaign hunter launch failed. Check imported API/HAR/code materials.", "blocked");
@@ -412,6 +417,8 @@ export function StudioWorkbench() {
         `Campaign hunter ${launched.campaign.id} started with ${suggestionCount} review-gated suggestions.`,
         "safe",
       );
+    } catch (error) {
+      pushMutationFailure("Campaign hunter launch", error);
     } finally {
       setBusy(null);
     }
@@ -439,10 +446,11 @@ export function StudioWorkbench() {
           target_relationships: action.learningSignalTemplate?.targetRelationships,
           trace_status: action.traceStatus,
         },
-        studioLearningFallbackProfile(),
       );
       setLearningProfile(profile);
       pushLog(`Recorded ${outcome} learning feedback for ${action.candidateId}.`, "safe");
+    } catch (error) {
+      pushMutationFailure("Learning feedback", error);
     } finally {
       setBusy(null);
     }
@@ -470,10 +478,11 @@ export function StudioWorkbench() {
           surface_key: candidate.affectedEndpoint,
           trace_status: candidate.evidenceTraceSummary.status,
         },
-        studioLearningFallbackProfile(),
       );
       setLearningProfile(profile);
       pushLog(`Recorded ${outcome} learning feedback for ${candidate.id}.`, "safe");
+    } catch (error) {
+      pushMutationFailure("Learning feedback", error);
     } finally {
       setBusy(null);
     }
@@ -489,11 +498,9 @@ export function StudioWorkbench() {
       const exported = latestRunId
         ? await exportStudioWorkspaceReport(
             { run_id: latestRunId, workspace_path: workspacePath },
-            null,
           )
         : await exportStudioWorkspaceCampaignHunterReport(
             { campaign_id: latestCampaignHunterId ?? "", workspace_path: workspacePath },
-            null,
           );
       if (!exported) {
         pushLog("Report preview export failed.", "blocked");
@@ -505,6 +512,8 @@ export function StudioWorkbench() {
         await refreshMissionPanel(workspacePath, latestRunId);
       }
       pushLog("Report preview exported with submission still blocked.", "safe");
+    } catch (error) {
+      pushMutationFailure("Report preview export", error);
     } finally {
       setBusy(null);
     }
@@ -519,7 +528,6 @@ export function StudioWorkbench() {
     try {
       const exported = await exportStudioWorkspaceMissionDossier(
         { run_id: latestRunId, workspace_path: workspacePath },
-        null,
       );
       if (!exported) {
         pushLog("Mission dossier export failed.", "blocked");
@@ -529,6 +537,8 @@ export function StudioWorkbench() {
       setManifest(exported.manifest);
       await refreshMissionPanel(workspacePath, latestRunId);
       pushLog("Mission dossier exported locally with validation and submission still blocked.", "safe");
+    } catch (error) {
+      pushMutationFailure("Mission dossier export", error);
     } finally {
       setBusy(null);
     }
@@ -551,7 +561,6 @@ export function StudioWorkbench() {
           run_id: latestRunId,
           workspace_path: workspacePath,
         },
-        null,
       );
       if (!benchmark) {
         pushLog("Candidate benchmark failed to run.", "blocked");
@@ -564,6 +573,8 @@ export function StudioWorkbench() {
         `Candidate benchmark ${benchmark.benchmark.status ?? "finished"}: ${benchmark.benchmark.matched ?? 0}/${benchmark.benchmark.expected_count ?? 0} expected candidates matched.`,
         benchmark.benchmark.status === "passed" ? "safe" : "blocked",
       );
+    } catch (error) {
+      pushMutationFailure("Candidate benchmark", error);
     } finally {
       setBusy(null);
     }
@@ -581,7 +592,6 @@ export function StudioWorkbench() {
           run_id: latestRunId,
           workspace_path: workspacePath,
         },
-        null,
       );
       if (!template) {
         pushLog("Benchmark template was not created.", "blocked");
@@ -593,6 +603,8 @@ export function StudioWorkbench() {
       }
       await refreshMissionPanel(workspacePath, latestRunId);
       pushLog("Benchmark expectation template created for human review.", "safe");
+    } catch (error) {
+      pushMutationFailure("Benchmark template", error);
     } finally {
       setBusy(null);
     }
@@ -600,6 +612,11 @@ export function StudioWorkbench() {
 
   function pushLog(message: string, tone: LogEntry["tone"]) {
     setLog((entries) => [{ message, tone }, ...entries].slice(0, 6));
+  }
+
+  function pushMutationFailure(action: string, error: unknown) {
+    const status = error instanceof ApiRequestError && error.status > 0 ? ` (API ${error.status})` : "";
+    pushLog(`${action} failed${status}. No success state was recorded.`, "blocked");
   }
 
   async function refreshMissionPanel(path: string, runId: string | null) {
@@ -2016,45 +2033,6 @@ function toCandidateHunterLearningOutcome(value: string): CandidateHunterLearnin
     return value;
   }
   return "needs_more_evidence";
-}
-
-function studioLearningFallbackProfile(): ProgramIntelligenceProfile {
-  return {
-    program_id: "studio-local",
-    program_name: "Mythos Studio local workspace",
-    program_score: 0,
-    attack_surface_memory: {
-      objects: [],
-      roles: [],
-      sensitive_actions: [],
-      relationships: [],
-      run_count: 0,
-    },
-    high_value_surfaces: [],
-    learning_summary: {
-      accepted_count: 0,
-      duplicate_count: 0,
-      informative_count: 0,
-      na_count: 0,
-      rejected_count: 0,
-      rejection_risk_delta: 0,
-      bounty_total: 0,
-      strong_evidence_count: 0,
-      adequate_evidence_count: 0,
-      weak_evidence_count: 0,
-      severity_up_count: 0,
-      severity_down_count: 0,
-      triager_feedback_count: 0,
-      evidence_score_delta: 0,
-      boosted_playbooks: [],
-      penalized_playbooks: [],
-    },
-    recent_learning_signals: [],
-    applied_lessons: [],
-    skipped_lessons: [],
-    lesson_adjusted_surfaces: [],
-    safety_notes: ["candidate_hunter_learning_is_advisory_only"],
-  };
 }
 
 function logTone(tone: LogEntry["tone"]): string {

@@ -40,7 +40,6 @@ export default async function SourceAuditPage({ searchParams }: PageProps) {
           repo_path: repoPath,
           scope_path: scopePath,
         },
-        null,
       );
     } catch (error) {
       if (error instanceof SourceAuditScanError) {

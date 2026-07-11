@@ -124,7 +124,6 @@ test("runSourceAuditScan posts only the local source audit request", async () =>
         repo_path: "C:/workspace/target",
         scope_path: "C:/workspace/scope.yaml",
       },
-      null,
     );
 
     assert.match(requestedUrl, /\/mythos\/source-audit\/scans$/);
@@ -156,12 +155,40 @@ test("runSourceAuditScan exposes Scope Guard block reasons", async () => {
             repo_path: "C:/workspace/target",
             scope_path: "C:/workspace/scope.yaml",
           },
-          null,
         ),
       (error) => {
         assert.equal(error instanceof SourceAuditScanError, true);
         assert.equal((error as SourceAuditScanError).status, 403);
         assert.equal((error as SourceAuditScanError).detail, "repo_not_allowlisted");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runSourceAuditScan rejects non-Scope-Guard API failures", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "source_audit_failed" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 500,
+    });
+
+  try {
+    await assert.rejects(
+      () =>
+        runSourceAuditScan(
+          {
+            repo_path: "C:/workspace/target",
+            scope_path: "C:/workspace/scope.yaml",
+          },
+        ),
+      (error) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 500);
+        assert.equal((error as ApiRequestError).detail, "source_audit_failed");
         return true;
       },
     );
@@ -210,7 +237,6 @@ test("recordCandidateHunterLearningOutcome posts only a Brain learning signal", 
         run_id: "run_1",
         surface_key: "account_settings",
       },
-      fallbackProgramProfile,
     );
 
     assert.match(requestedUrl, /\/mythos\/brain\/outcomes$/);
@@ -260,7 +286,6 @@ test("recordCandidateHunterLearningOutcome preserves a reviewed hunter playbook 
         surface_key: "account_settings",
         target_relationships: ["org_id>team_id>file_id"],
       },
-      fallbackProgramProfile,
     );
 
     assert.equal((requestedBody as { playbook_id?: string } | null)?.playbook_id, "bola_idor");
@@ -301,7 +326,6 @@ test("recordCandidateHunterLearningOutcome carries candidate evidence context sa
         target_relationships: ["candidate:H-001"],
         trace_status: "needs_evidence",
       },
-      fallbackProgramProfile,
     );
 
     assert.deepEqual(
@@ -360,7 +384,6 @@ test("recordCandidateHunterLearningOutcome carries learned evidence reasons safe
         run_id: "run_1",
         surface_key: "account_settings",
       },
-      fallbackProgramProfile,
     );
 
     assert.deepEqual(
@@ -451,7 +474,6 @@ test("studio workspace API helpers pass only local paths and manifest metadata",
   try {
     const workspace = await createStudioWorkspace(
       { name: "acme-api", root_path: "C:/workspaces" },
-      null,
     );
     assert.equal(workspace?.path, "C:/workspaces/acme-api");
 
@@ -464,7 +486,6 @@ test("studio workspace API helpers pass only local paths and manifest metadata",
         source_path: "C:/authorized/scope.yaml",
         workspace_path: "C:/workspaces/acme-api",
       },
-      null,
     );
     assert.equal(imported?.artifacts?.[0]?.kind, "scope");
 
@@ -482,6 +503,36 @@ test("studio workspace API helpers pass only local paths and manifest metadata",
     assert.doesNotMatch(
       JSON.stringify(calls),
       /Authorization\s*[:=]|Bearer|secret-token|cookie|raw_policy/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio mutation helpers reject API blocks instead of returning fallback state", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "artifact_outside_authorized_roots" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 403,
+    });
+
+  try {
+    await assert.rejects(
+      () =>
+        importStudioWorkspaceArtifact(
+          {
+            kind: "code",
+            source_path: "C:/outside/repo",
+            workspace_path: "C:/workspaces/acme-api",
+          },
+        ),
+      (error) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 403);
+        assert.equal((error as ApiRequestError).detail, "artifact_outside_authorized_roots");
+        return true;
+      },
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -694,7 +745,6 @@ test("studio research API helpers keep reports submission-blocked", async () => 
   try {
     const run = await runStudioWorkspaceResearch(
       { workspace_path: "C:/workspaces/acme-api" },
-      null,
     );
     assert.equal(run?.submission_blocked, true);
 
@@ -707,7 +757,6 @@ test("studio research API helpers keep reports submission-blocked", async () => 
 
     const exported = await exportStudioWorkspaceReport(
       { run_id: "pipeline_run_1", workspace_path: "C:/workspaces/acme-api" },
-      null,
     );
     assert.equal(exported?.report_submission_allowed, false);
     assert.equal(
@@ -718,7 +767,6 @@ test("studio research API helpers keep reports submission-blocked", async () => 
 
     const hunterExport = await exportStudioWorkspaceCampaignHunterReport(
       { campaign_id: "campaign_1", workspace_path: "C:/workspaces/acme-api" },
-      null,
     );
     assert.equal(hunterExport?.report_submission_allowed, false);
     assert.equal(hunterExport?.submission_blocked, true);
@@ -729,7 +777,6 @@ test("studio research API helpers keep reports submission-blocked", async () => 
 
     const dossier = await exportStudioWorkspaceMissionDossier(
       { run_id: "pipeline_run_1", workspace_path: "C:/workspaces/acme-api" },
-      null,
     );
     assert.equal(dossier?.report_submission_allowed, false);
     assert.equal(dossier?.validation_execution_allowed, false);
@@ -747,7 +794,6 @@ test("studio research API helpers keep reports submission-blocked", async () => 
         run_id: "pipeline_run_1",
         workspace_path: "C:/workspaces/acme-api",
       },
-      null,
     );
     assert.equal(
       template?.template_path,
@@ -760,7 +806,6 @@ test("studio research API helpers keep reports submission-blocked", async () => 
         run_id: "pipeline_run_1",
         workspace_path: "C:/workspaces/acme-api",
       },
-      null,
     );
     assert.equal(benchmark?.benchmark.status, "passed");
     assert.equal(
@@ -1144,13 +1189,19 @@ test("source audit gated workflow smoke posts only manual review-gated calls", a
         repo_path: "C:/workspace/target",
         scope_path: "C:/workspace/scope.yaml",
       },
-      null,
     );
     assert.equal(scan?.run_id, "pipeline_run_source_1");
     assert.equal(scan?.submission_blocked, true);
 
-    const blockedCandidate = await createFindingCandidate("pipeline_run_source_1", null);
-    assert.equal(blockedCandidate, null);
+    await assert.rejects(
+      () => createFindingCandidate("pipeline_run_source_1"),
+      (error) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 422);
+        assert.equal((error as ApiRequestError).detail, "No claim is ready for candidate promotion");
+        return true;
+      },
+    );
 
     const observation = await recordManualObservation(
       "pipeline_run_source_1",
@@ -1166,19 +1217,6 @@ test("source audit gated workflow smoke posts only manual review-gated calls", a
           "human_review_required",
         ],
       },
-      {
-        claim_id: "claim_observed_1",
-        created_at: "fallback",
-        evidence_refs: [],
-        execution_allowed: false,
-        observation: "fallback",
-        observation_id: "fallback_observation",
-        observation_type: "request_response_diff",
-        observer: "lead_reviewer",
-        redaction_status: "redacted",
-        report_chain_blocked: true,
-        safety_notes: [],
-      },
     );
     assert.equal(observation.observation_type, "request_response_diff");
     assert.equal(observation.execution_allowed, false);
@@ -1193,19 +1231,11 @@ test("source audit gated workflow smoke posts only manual review-gated calls", a
         rationale: "Confirmed from sanitized local fixture only.",
         reviewer: "lead_reviewer",
       },
-      {
-        claim_id: "claim_observed_1",
-        decision: "needs_evidence",
-        evidence_refs: [],
-        rationale: "fallback",
-        reviewed_at: "fallback",
-        reviewer: "lead_reviewer",
-      },
     );
     assert.equal(review.decision, "confirmed_observed_fact");
     assert.deepEqual(review.evidence_refs, ["request_response_diff"]);
 
-    const candidate = await createFindingCandidate("pipeline_run_source_1", null);
+    const candidate = await createFindingCandidate("pipeline_run_source_1");
     assert.equal(candidate?.id, "finding_candidate_source_1");
     assert.equal(candidate?.validation_status, "validation_plan_ready");
     assert.equal(candidate?.submission_recommendation, "promote_to_finding_candidate");
@@ -1248,7 +1278,7 @@ test("createFindingCandidate exposes research feedback gate failures", async () 
 
   try {
     await assert.rejects(
-      () => createFindingCandidate("run_1", null),
+      () => createFindingCandidate("run_1"),
       (error) => {
         assert.equal(error instanceof ApiRequestError, true);
         assert.equal((error as ApiRequestError).status, 409);
@@ -1267,14 +1297,22 @@ test("createFindingCandidate exposes research feedback gate failures", async () 
   }
 });
 
-test("createFindingCandidate keeps network failures on the safe fallback path", async () => {
+test("createFindingCandidate rejects network failures instead of returning fallback state", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new Error("offline");
   };
 
   try {
-    assert.equal(await createFindingCandidate("run_1", fallbackFinding), fallbackFinding);
+    await assert.rejects(
+      () => createFindingCandidate("run_1"),
+      (error) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 0);
+        assert.equal((error as ApiRequestError).detail, "network_error");
+        return true;
+      },
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1329,7 +1367,6 @@ test("reviewValidationFeedbackForFindingPromotion posts only the manual promotio
         rationale: "Safe evidence reviewed. Authorization: Bearer secret-token",
         reviewer: "lead_reviewer",
       },
-      fallbackStage,
     );
 
     assert.match(
@@ -1402,7 +1439,6 @@ test("completeCampaignCycleReview posts only the manual cycle review gate", asyn
         actor: "lead_reviewer",
         reason: "Cycle reviewed. Authorization: Bearer secret-token",
       },
-      fallbackStage,
     );
 
     assert.match(
@@ -1466,7 +1502,6 @@ test("materializeResearchQueueTask posts only a review queue materialization req
         reason: "Queue review item from control center.",
         requester: "operator",
       },
-      fallbackTask,
     );
 
     assert.match(
@@ -1533,7 +1568,6 @@ test("createResearchReviewPlan posts only advisory refutation and evidence plann
         refutation_questions: ["Can existing evidence refute the candidate?"],
         reviewer: "operator",
       },
-      fallbackPlan,
     );
 
     assert.match(
@@ -1608,7 +1642,6 @@ test("createResearchRefutationDecision records needs-evidence without validation
         refutation_answers: ["Current redacted evidence is insufficient."],
         reviewer: "operator",
       },
-      fallbackDecision,
     );
 
     assert.match(

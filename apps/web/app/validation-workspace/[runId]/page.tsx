@@ -63,19 +63,6 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
         observer,
         safety_notes: safetyNotes,
       },
-      {
-        claim_id: claimId,
-        created_at: new Date().toISOString(),
-        evidence_refs: evidenceRefs,
-        execution_allowed: false,
-        observation,
-        observation_id: `${observationType}_${claimId}`,
-        observation_type: observationType,
-        observer,
-        redaction_status: "redacted",
-        report_chain_blocked: true,
-        safety_notes: safetyNotes,
-      },
     );
     revalidatePath(`/validation-workspace/${encodeURIComponent(currentRunId)}`);
   }

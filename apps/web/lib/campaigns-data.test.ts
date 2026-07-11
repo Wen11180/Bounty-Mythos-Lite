@@ -3864,8 +3864,8 @@ test("campaign validation run manual result page records only reviewed observati
   assert.match(page, /evidence_refs: formLines\(formData, "evidence_refs"\)/);
   assert.match(page, /action=\{recordManualResultAction\}/);
   assert.match(page, /revalidatePath\(`\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-runs`\)/);
-  assert.match(page, /fallbackManualResultRun/);
-  assert.match(page, /allowed_to_execute: false/);
+  assert.doesNotMatch(page, /fallbackManualResultRun/);
+  assert.doesNotMatch(page, /allowed_to_execute/);
   assert.match(page, /label="Execution gate" value="Gated"/);
   assert.match(page, /label="Report submission gate" value="Gated"/);
   assert.doesNotMatch(page, /validation-workspace/);
@@ -4128,9 +4128,9 @@ test("campaign validation feedback review page records only the finding promotio
   assert.doesNotMatch(page, /label="execution_allowed"/);
   assert.doesNotMatch(page, /label="validation_allowed"/);
   assert.doesNotMatch(page, /label="report_submission_allowed"/);
-  assert.match(page, /execution_allowed/);
-  assert.match(page, /validation_allowed/);
-  assert.match(page, /report_submission_allowed/);
+  assert.doesNotMatch(page, /execution_allowed/);
+  assert.doesNotMatch(page, /validation_allowed/);
+  assert.doesNotMatch(page, /report_submission_allowed/);
   assert.match(page, /revalidatePath/);
   assert.doesNotMatch(page, /createFindingCandidate|executeValidation|submitReport/);
   assert.doesNotMatch(page, /Authorization|Bearer|secret-token|cookie=/);
@@ -4154,8 +4154,8 @@ test("campaign cycle review completion page records only the cycle review gate",
   assert.match(page, /label="Submission gate"/);
   assert.doesNotMatch(page, /label="execution_allowed"/);
   assert.doesNotMatch(page, /label="submission_allowed"/);
-  assert.match(page, /execution_allowed/);
-  assert.match(page, /submission_allowed/);
+  assert.doesNotMatch(page, /execution_allowed/);
+  assert.doesNotMatch(page, /submission_allowed/);
   assert.match(page, /revalidatePath/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /Authorization|Bearer|secret-token|cookie=/);

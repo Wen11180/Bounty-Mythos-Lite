@@ -50,17 +50,6 @@ export default async function CampaignDetailPage({ params }: PageProps) {
         requester: "operator",
         reason: "Queue review item from control center.",
       },
-      {
-        agent_type: "human_research_reviewer",
-        campaign_id: campaignId,
-        created_at: "",
-        id: "fallback_research_queue_review",
-        input_refs: [],
-        output_refs: [],
-        status: "fallback",
-        task_type: "research_queue_review",
-        title: "Research review item",
-      },
     );
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/tasks`);

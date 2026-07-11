@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import {
-  evaluateScopeGuard,
   getFindings,
   getMythosBrainProgram,
   getPipelineRuns,
@@ -31,8 +30,6 @@ import {
   fallbackPrograms,
   fallbackReports,
   fallbackScopeGuardDecision,
-  fallbackScopeGuardRequest,
-  fallbackScopeGuardRule,
 } from "@/lib/fallback-data";
 import { mythosPipelineStages } from "@/lib/mythos-pipeline-data";
 import {
@@ -191,11 +188,7 @@ export default async function Dashboard() {
     program_name: programs[0]?.name ?? fallbackMythosBrainProfile.program_name,
   };
   const brainProfile = await getMythosBrainProgram(activeProgramId, fallbackBrainProfile);
-  const scopeGuardDecision = await evaluateScopeGuard(
-    fallbackScopeGuardRule,
-    fallbackScopeGuardRequest,
-    fallbackScopeGuardDecision,
-  );
+  const scopeGuardDecision = fallbackScopeGuardDecision;
 
   const todayMetrics = [
     { label: "已解析项目", value: String(programs.length) },

@@ -2,7 +2,6 @@ import { ArrowLeft, ShieldCheck } from "lucide-react";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { completeCampaignCycleReview } from "@/lib/api";
-import type { CampaignPipelineStage } from "@/lib/campaigns-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string; stageId: string }>;
@@ -21,7 +20,6 @@ export default async function CampaignCycleReviewCompletionPage({ params }: Page
       campaignId,
       stageId,
       { actor, reason },
-      fallbackCycleReviewStage(campaignId, stageId, actor),
     );
 
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);
@@ -127,32 +125,4 @@ function Field({ label, value }: { label: string; value: string }) {
 
 function formText(formData: FormData, key: string): string {
   return formData.get(key)?.toString().trim() ?? "";
-}
-
-function fallbackCycleReviewStage(
-  campaignId: string,
-  stageId: string,
-  actor: string,
-): CampaignPipelineStage {
-  return {
-    campaign_id: campaignId,
-    created_at: new Date().toISOString(),
-    id: stageId,
-    input_refs: [stageId],
-    output_refs: [],
-    payload: {
-      actor,
-      execution_allowed: false,
-      raw_payload_processed: false,
-      review_gate: "human_review_completed",
-      submission_allowed: false,
-    },
-    pipeline_run_id: null,
-    safety_gate_state: "manual_review_required",
-    stage_key: "campaign_cycle_review",
-    stage_order: 0,
-    status: "completed",
-    stop_reason: null,
-    task_id: null,
-  };
 }

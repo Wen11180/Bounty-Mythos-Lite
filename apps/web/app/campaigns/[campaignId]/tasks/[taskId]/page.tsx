@@ -68,22 +68,6 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
         refutation_questions: reviewRefutationQuestions,
         reviewer: "operator",
       },
-      {
-        campaign_id: campaignId,
-        dispatch_allowed: false,
-        evidence_plan: [],
-        execution_allowed: false,
-        hypothesis: reviewHypothesis,
-        next_allowed_action: "Review hypothesis board and request review before validation.",
-        plan_id: "fallback_research_plan",
-        refutation_questions: [],
-        report_submission_allowed: false,
-        required_human_gates: [],
-        safety_gate: "advisory_plan_only",
-        status: "fallback",
-        task_id: taskId,
-        validation_allowed: false,
-      },
     );
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/tasks`);
@@ -111,21 +95,6 @@ export default async function CampaignResearchTaskReviewPage({ params }: PagePro
           "Current redacted evidence is insufficient for validation review.",
         ],
         reviewer: "operator",
-      },
-      {
-        campaign_id: campaignId,
-        decision: "needs_evidence",
-        decision_id: "fallback_refutation_decision",
-        dispatch_allowed: false,
-        execution_allowed: false,
-        next_allowed_action: "Collect redacted evidence or refine the hypothesis before validation.",
-        plan_id: summary.latestReviewPlan.planId,
-        rationale: "Needs more redacted evidence before validation.",
-        refutation_answers: [],
-        report_submission_allowed: false,
-        task_id: taskId,
-        validation_allowed: false,
-        validation_run_id: null,
       },
     );
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);

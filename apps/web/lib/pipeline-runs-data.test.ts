@@ -619,7 +619,8 @@ test("dashboard labels fallback shell data as demo data", async () => {
   assert.match(page, /findings === fallbackFindings/);
   assert.match(page, /reports === fallbackReports/);
   assert.match(page, /brainProfile === fallbackBrainProfile/);
-  assert.match(page, /scopeGuardDecision === fallbackScopeGuardDecision/);
+  assert.match(page, /const scopeGuardDecision = fallbackScopeGuardDecision/);
+  assert.doesNotMatch(page, /evaluateScopeGuard/);
   assert.match(page, /Demo data/);
   assert.match(page, /sample Mythos workspace summaries/);
   assert.doesNotMatch(page, /fallback records/);

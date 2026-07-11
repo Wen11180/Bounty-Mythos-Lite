@@ -2,7 +2,6 @@ import { ArrowLeft, ShieldCheck } from "lucide-react";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { reviewValidationFeedbackForFindingPromotion } from "@/lib/api";
-import type { CampaignPipelineStage } from "@/lib/campaigns-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string; stageId: string }>;
@@ -27,7 +26,6 @@ export default async function CampaignValidationFeedbackReviewPage({ params }: P
         rationale,
         reviewer,
       },
-      fallbackReviewStage(campaignId, stageId, reviewer),
     );
 
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}`);
@@ -138,33 +136,4 @@ function Field({ label, value }: { label: string; value: string }) {
 
 function formText(formData: FormData, key: string): string {
   return formData.get(key)?.toString().trim() ?? "";
-}
-
-function fallbackReviewStage(
-  campaignId: string,
-  stageId: string,
-  reviewer: string,
-): CampaignPipelineStage {
-  return {
-    campaign_id: campaignId,
-    created_at: new Date().toISOString(),
-    id: `${stageId}_finding_promotion_review`,
-    input_refs: [stageId],
-    output_refs: [],
-    payload: {
-      decision: "allow_finding_promotion",
-      execution_allowed: false,
-      finding_confirmation_allowed: true,
-      report_submission_allowed: false,
-      reviewer,
-      validation_allowed: false,
-    },
-    pipeline_run_id: null,
-    safety_gate_state: "Manual finding promotion review only",
-    stage_key: "research_task_validation_feedback_review",
-    stage_order: 0,
-    status: "completed",
-    stop_reason: null,
-    task_id: null,
-  };
 }

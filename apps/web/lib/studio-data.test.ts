@@ -2364,6 +2364,26 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /Create template/);
 });
 
+test("studio workbench records rejected mutations as blocked run-log entries", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /function pushMutationFailure/);
+  assert.match(workbench, /pushMutationFailure\("Workspace creation", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Artifact import", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Local candidate hunt", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Research run", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Campaign hunter launch", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Learning feedback", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Report preview export", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Mission dossier export", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Candidate benchmark", error\)/);
+  assert.match(workbench, /pushMutationFailure\("Benchmark template", error\)/);
+  assert.match(workbench, /pushLog\([^;]+, "blocked"\)/s);
+});
+
 test("studio workbench can open an existing local workspace", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),
@@ -2657,7 +2677,7 @@ test("studio workbench records candidate hunter learning only after human review
   assert.match(workbench, /recordCandidateHunterLearningOutcome/);
   assert.match(workbench, /handleRecordCandidateHunterLearning/);
   assert.match(workbench, /toCandidateHunterLearningOutcome/);
-  assert.match(workbench, /studioLearningFallbackProfile/);
+  assert.doesNotMatch(workbench, /studioLearningFallbackProfile/);
   assert.match(workbench, /reviewer: "studio-human-review"/);
   assert.match(workbench, /validation and submission remain blocked/);
   assert.match(workbench, /learningProfile/);

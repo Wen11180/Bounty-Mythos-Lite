@@ -1010,22 +1010,27 @@ async function apiGet<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-async function apiPost<T>(path: string, body: unknown, fallback: T): Promise<T> {
+async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  let response: Response;
   try {
-    const response = await fetch(new URL(path, API_BASE_URL), {
+    response = await fetch(new URL(path, API_BASE_URL), {
       body: JSON.stringify(body),
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+  } catch {
+    throw apiNetworkError(`POST ${path} failed`);
+  }
 
-    if (!response.ok) {
-      return fallback;
-    }
+  if (!response.ok) {
+    throw await apiResponseError(response, `POST ${path} failed`);
+  }
 
+  try {
     return (await response.json()) as T;
   } catch {
-    return fallback;
+    throw new ApiRequestError(`POST ${path} returned an invalid response`, response.status, "invalid_response");
   }
 }
 
@@ -1037,19 +1042,48 @@ export type FindingCandidatePromotionGateDetail = {
   report_submission_allowed: false;
 };
 
+export function isFindingCandidatePromotionGateDetail(
+  value: unknown,
+): value is FindingCandidatePromotionGateDetail {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    value.reason === "blocked_by_research_feedback_gate" &&
+    value.finding_promotion_allowed === false &&
+    value.report_submission_allowed === false &&
+    typeof value.blocked_stage_count === "number" &&
+    typeof value.provenance_ref_count === "number"
+  );
+}
+
 export class ApiRequestError extends Error {
   readonly status: number;
-  readonly detail: FindingCandidatePromotionGateDetail;
+  readonly detail: unknown;
 
-  constructor(
-    message: string,
-    status: number,
-    detail: FindingCandidatePromotionGateDetail,
-  ) {
+  constructor(message: string, status: number, detail: unknown) {
     super(message);
     this.name = "ApiRequestError";
     this.status = status;
     this.detail = detail;
+  }
+}
+
+function apiNetworkError(message: string): ApiRequestError {
+  return new ApiRequestError(message, 0, "network_error");
+}
+
+async function apiResponseError(response: Response, message: string): Promise<ApiRequestError> {
+  return new ApiRequestError(message, response.status, await safeApiErrorDetail(response));
+}
+
+async function safeApiErrorDetail(response: Response): Promise<unknown> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    return payload.detail ?? "request_failed";
+  } catch {
+    return "request_failed";
   }
 }
 
@@ -1076,7 +1110,7 @@ export function getCampaigns(fallback: CampaignListItem[]): Promise<CampaignList
 export async function launchAuthorizedCampaign(
   input: AuthorizedCampaignLaunchInput,
 ): Promise<CampaignListItem | null> {
-  const created = await apiPost<CampaignListItem | null>("/mythos/campaigns", input, null);
+  const created = await apiPost<CampaignListItem | null>("/mythos/campaigns", input);
 
   if (!created) {
     return null;
@@ -1085,7 +1119,6 @@ export async function launchAuthorizedCampaign(
   return apiPost<CampaignListItem | null>(
     `/mythos/campaigns/${encodeURIComponent(created.id)}/start`,
     {},
-    created,
   );
 }
 
@@ -1127,12 +1160,10 @@ export function getCampaignResearchTaskReview(
 export function materializeResearchQueueTask(
   campaignId: string,
   request: ResearchQueueTaskMaterializationRequest,
-  fallback: CampaignTask,
 ): Promise<CampaignTask> {
   return apiPost(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/research-queue/tasks`,
     request,
-    fallback,
   );
 }
 
@@ -1140,12 +1171,10 @@ export function createResearchReviewPlan(
   campaignId: string,
   taskId: string,
   request: ResearchReviewPlanRequest,
-  fallback: CampaignResearchTaskReview["latest_review_plan"],
 ): Promise<CampaignResearchTaskReview["latest_review_plan"]> {
   return apiPost(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/research-queue/tasks/${encodeURIComponent(taskId)}/review-plans`,
     request,
-    fallback,
   );
 }
 
@@ -1153,12 +1182,10 @@ export function createResearchRefutationDecision(
   campaignId: string,
   taskId: string,
   request: ResearchRefutationDecisionRequest,
-  fallback: CampaignResearchRefutationDecision,
 ): Promise<CampaignResearchRefutationDecision> {
   return apiPost(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/research-queue/tasks/${encodeURIComponent(taskId)}/review-decisions`,
     request,
-    fallback,
   );
 }
 
@@ -1179,12 +1206,10 @@ export function getCampaignValidationRuns(
 export function recordCampaignValidationRunManualResult(
   validationRunId: string,
   request: ValidationRunManualResultRequest,
-  fallback: CampaignValidationRun,
 ): Promise<CampaignValidationRun> {
   return apiPost(
     `/mythos/validation-runs/${encodeURIComponent(validationRunId)}/manual-results`,
     request,
-    fallback,
   );
 }
 
@@ -1219,16 +1244,14 @@ export function getPipelineRuns(fallback: PipelineRun[]): Promise<PipelineRun[]>
 
 export function runSourceAuditScan(
   request: SourceAuditScanRequest,
-  fallback: SourceAuditScanResponse | null,
 ): Promise<SourceAuditScanResponse | null> {
-  return runSourceAuditScanRequest(request, fallback);
+  return runSourceAuditScanRequest(request);
 }
 
 export function createStudioWorkspace(
   request: StudioWorkspaceCreateRequest,
-  fallback: StudioWorkspaceCreateResponse | null,
 ): Promise<StudioWorkspaceCreateResponse | null> {
-  return apiPost("/mythos/studio/workspaces", request, fallback);
+  return apiPost("/mythos/studio/workspaces", request);
 }
 
 export function getStudioWorkspaceManifest(
@@ -1241,23 +1264,20 @@ export function getStudioWorkspaceManifest(
 
 export function importStudioWorkspaceArtifact(
   request: StudioArtifactImportRequest,
-  fallback: StudioWorkspaceManifest | null,
 ): Promise<StudioWorkspaceManifest | null> {
-  return apiPost("/mythos/studio/workspaces/imports", request, fallback);
+  return apiPost("/mythos/studio/workspaces/imports", request);
 }
 
 export function runStudioWorkspaceResearch(
   request: StudioWorkspaceRunRequest,
-  fallback: StudioWorkspaceRunResponse | null,
 ): Promise<StudioWorkspaceRunResponse | null> {
-  return apiPost("/mythos/studio/workspaces/runs", request, fallback);
+  return apiPost("/mythos/studio/workspaces/runs", request);
 }
 
 export function launchStudioWorkspaceCampaignHunter(
   request: StudioWorkspaceCampaignLaunchRequest,
-  fallback: StudioWorkspaceCampaignLaunchResponse | null,
 ): Promise<StudioWorkspaceCampaignLaunchResponse | null> {
-  return apiPost("/mythos/studio/workspaces/campaigns/launch", request, fallback);
+  return apiPost("/mythos/studio/workspaces/campaigns/launch", request);
 }
 
 export function listStudioWorkspaceCandidates(
@@ -1298,70 +1318,69 @@ export function getStudioWorkspaceMissionHandoff(
 
 export function exportStudioWorkspaceReport(
   request: StudioReportExportRequest,
-  fallback: StudioReportExportResponse | null,
 ): Promise<StudioReportExportResponse | null> {
-  return apiPost("/mythos/studio/workspaces/reports/export", request, fallback);
+  return apiPost("/mythos/studio/workspaces/reports/export", request);
 }
 
 export function exportStudioWorkspaceCampaignHunterReport(
   request: StudioCampaignHunterReportExportRequest,
-  fallback: StudioReportExportResponse | null,
 ): Promise<StudioReportExportResponse | null> {
-  return apiPost("/mythos/studio/workspaces/campaigns/reports/export", request, fallback);
+  return apiPost("/mythos/studio/workspaces/campaigns/reports/export", request);
 }
 
 export function exportStudioWorkspaceMissionDossier(
   request: StudioMissionDossierExportRequest,
-  fallback: StudioMissionDossierExportResponse | null,
 ): Promise<StudioMissionDossierExportResponse | null> {
-  return apiPost("/mythos/studio/workspaces/mission/export", request, fallback);
+  return apiPost("/mythos/studio/workspaces/mission/export", request);
 }
 
 export function runStudioWorkspaceBenchmark(
   request: StudioBenchmarkRunRequest,
-  fallback: StudioBenchmarkRunResponse | null,
 ): Promise<StudioBenchmarkRunResponse | null> {
-  return apiPost("/mythos/studio/workspaces/benchmarks/run", request, fallback);
+  return apiPost("/mythos/studio/workspaces/benchmarks/run", request);
 }
 
 export function createStudioWorkspaceBenchmarkTemplate(
   request: StudioBenchmarkTemplateRequest,
-  fallback: StudioBenchmarkTemplateResponse | null,
 ): Promise<StudioBenchmarkTemplateResponse | null> {
-  return apiPost("/mythos/studio/workspaces/benchmarks/template", request, fallback);
+  return apiPost("/mythos/studio/workspaces/benchmarks/template", request);
 }
 
 async function runSourceAuditScanRequest(
   request: SourceAuditScanRequest,
-  fallback: SourceAuditScanResponse | null,
 ): Promise<SourceAuditScanResponse | null> {
+  let response: Response;
   try {
-    const response = await fetch(new URL("/mythos/source-audit/scans", API_BASE_URL), {
+    response = await fetch(new URL("/mythos/source-audit/scans", API_BASE_URL), {
       body: JSON.stringify(sourceAuditScanRequestBody(request)),
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+  } catch {
+    throw apiNetworkError("Source audit scan request failed");
+  }
 
-    if (response.status === 403) {
-      throw new SourceAuditScanError(
-        "Source audit scan blocked by Scope Guard",
-        response.status,
-        await safeSourceAuditBlockDetail(response),
-      );
-    }
+  if (response.status === 403) {
+    throw new SourceAuditScanError(
+      "Source audit scan blocked by Scope Guard",
+      response.status,
+      await safeSourceAuditBlockDetail(response),
+    );
+  }
 
-    if (!response.ok) {
-      return fallback;
-    }
+  if (!response.ok) {
+    throw await apiResponseError(response, "Source audit scan request failed");
+  }
 
+  try {
     return (await response.json()) as SourceAuditScanResponse;
-  } catch (error) {
-    if (error instanceof SourceAuditScanError) {
-      throw error;
-    }
-
-    return fallback;
+  } catch {
+    throw new ApiRequestError(
+      "Source audit scan returned an invalid response",
+      response.status,
+      "invalid_response",
+    );
   }
 }
 
@@ -1460,19 +1479,14 @@ export function getReportPreview(
   return apiGet(`/mythos/pipeline/runs/${encodeURIComponent(runId)}/report-preview`, fallback);
 }
 
-export function createFindingCandidate(
-  runId: string,
-  fallback: Finding | null,
-): Promise<Finding | null> {
-  return createFindingCandidateRequest(runId, fallback);
+export function createFindingCandidate(runId: string): Promise<Finding | null> {
+  return createFindingCandidateRequest(runId);
 }
 
-async function createFindingCandidateRequest(
-  runId: string,
-  fallback: Finding | null,
-): Promise<Finding | null> {
+async function createFindingCandidateRequest(runId: string): Promise<Finding | null> {
+  let response: Response;
   try {
-    const response = await fetch(
+    response = await fetch(
       new URL(`/mythos/pipeline/runs/${encodeURIComponent(runId)}/finding-candidates`, API_BASE_URL),
       {
         body: JSON.stringify({}),
@@ -1481,25 +1495,29 @@ async function createFindingCandidateRequest(
         method: "POST",
       },
     );
+  } catch {
+    throw apiNetworkError("Finding candidate promotion request failed");
+  }
 
-    if (response.status === 409) {
-      const detail = await safePromotionGateDetail(response);
-      if (detail) {
-        throw new ApiRequestError("Finding candidate promotion blocked", response.status, detail);
-      }
+  if (response.status === 409) {
+    const detail = await safePromotionGateDetail(response.clone());
+    if (detail) {
+      throw new ApiRequestError("Finding candidate promotion blocked", response.status, detail);
     }
+  }
 
-    if (!response.ok) {
-      return fallback;
-    }
+  if (!response.ok) {
+    throw await apiResponseError(response, "Finding candidate promotion request failed");
+  }
 
+  try {
     return (await response.json()) as Finding;
-  } catch (error) {
-    if (error instanceof ApiRequestError) {
-      throw error;
-    }
-
-    return fallback;
+  } catch {
+    throw new ApiRequestError(
+      "Finding candidate promotion returned an invalid response",
+      response.status,
+      "invalid_response",
+    );
   }
 }
 
@@ -1513,13 +1531,7 @@ async function safePromotionGateDetail(
       return null;
     }
 
-    if (
-      detail.reason !== "blocked_by_research_feedback_gate" ||
-      detail.finding_promotion_allowed !== false ||
-      detail.report_submission_allowed !== false ||
-      typeof detail.blocked_stage_count !== "number" ||
-      typeof detail.provenance_ref_count !== "number"
-    ) {
+    if (!isFindingCandidatePromotionGateDetail(detail)) {
       return null;
     }
 
@@ -1542,12 +1554,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function recordClaimReviewDecision(
   runId: string,
   request: ClaimReviewDecisionRequest,
-  fallback: ClaimReviewDecisionResponse,
 ): Promise<ClaimReviewDecisionResponse> {
   return apiPost(
     `/mythos/pipeline/runs/${encodeURIComponent(runId)}/claim-review-decisions`,
     request,
-    fallback,
   );
 }
 
@@ -1555,12 +1565,10 @@ export function reviewValidationFeedbackForFindingPromotion(
   campaignId: string,
   stageId: string,
   request: ValidationFeedbackReviewRequest,
-  fallback: CampaignPipelineStage,
 ): Promise<CampaignPipelineStage> {
   return apiPost(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/pipeline-stages/${encodeURIComponent(stageId)}/validation-feedback-review`,
     request,
-    fallback,
   );
 }
 
@@ -1568,24 +1576,20 @@ export function completeCampaignCycleReview(
   campaignId: string,
   stageId: string,
   request: CampaignCycleReviewCompletionRequest,
-  fallback: CampaignPipelineStage,
 ): Promise<CampaignPipelineStage> {
   return apiPost(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/cycle-reviews/${encodeURIComponent(stageId)}/complete`,
     request,
-    fallback,
   );
 }
 
 export function recordManualObservation(
   runId: string,
   request: ManualObservationRequest,
-  fallback: ManualObservationResponse,
 ): Promise<ManualObservationResponse> {
   return apiPost(
     `/mythos/pipeline/runs/${encodeURIComponent(runId)}/manual-observations`,
     request,
-    fallback,
   );
 }
 
@@ -1598,9 +1602,8 @@ export function getMythosBrainProgram(
 
 export function recordMythosBrainOutcome(
   request: LearningOutcomeRequest,
-  fallback: ProgramIntelligenceProfile,
 ): Promise<ProgramIntelligenceProfile> {
-  return apiPost("/mythos/brain/outcomes", request, fallback);
+  return apiPost("/mythos/brain/outcomes", request);
 }
 
 const candidateHunterLearningOutcomeMap: Record<CandidateHunterLearningOutcome, LearningOutcome> = {
@@ -1692,7 +1695,6 @@ function candidateHunterLearningEvidenceNote(
 
 export function recordCandidateHunterLearningOutcome(
   request: CandidateHunterLearningOutcomeRequest,
-  fallback: ProgramIntelligenceProfile,
 ): Promise<ProgramIntelligenceProfile> {
   const evidenceNote = candidateHunterLearningEvidenceNote(request);
   const notes = `Candidate hunter outcome (${request.outcome}) by ${request.reviewer}: ${request.notes}${evidenceNote ? `;${evidenceNote}` : ""}`;
@@ -1711,14 +1713,12 @@ export function recordCandidateHunterLearningOutcome(
         targetRelationships.length > 0 ? targetRelationships : undefined,
       triager_feedback: request.notes,
     },
-    fallback,
   );
 }
 
 export function evaluateScopeGuard(
   rule: ScopeGuardRule,
   request: ScopeGuardRequest,
-  fallback: ScopeGuardDecision,
 ): Promise<ScopeGuardDecision> {
-  return apiPost("/scope-guard/evaluate", { rule, request }, fallback);
+  return apiPost("/scope-guard/evaluate", { rule, request });
 }

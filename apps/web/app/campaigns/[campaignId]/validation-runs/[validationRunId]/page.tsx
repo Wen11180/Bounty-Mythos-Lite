@@ -6,7 +6,6 @@ import {
   recordCampaignValidationRunManualResult,
   type ValidationRunManualResultOutcome,
 } from "@/lib/api";
-import type { CampaignValidationRun } from "@/lib/campaigns-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string; validationRunId: string }>;
@@ -31,7 +30,6 @@ export default async function CampaignValidationRunManualResultPage({ params }: 
         reviewer,
         summary,
       },
-      fallbackManualResultRun(campaignId, validationRunId, summary),
     );
 
     revalidatePath(`/campaigns/${encodeURIComponent(campaignId)}/validation-runs`);
@@ -174,30 +172,4 @@ function formLines(formData: FormData, key: string): string[] {
 function formOutcome(formData: FormData): ValidationRunManualResultOutcome {
   const outcome = formText(formData, "outcome");
   return outcome === "refuted" || outcome === "needs_more_evidence" ? outcome : "observed";
-}
-
-function fallbackManualResultRun(
-  campaignId: string,
-  validationRunId: string,
-  summary: string,
-): CampaignValidationRun {
-  return {
-    allowed_to_execute: false,
-    approval_id: null,
-    approval_required: true,
-    campaign_id: campaignId,
-    created_at: new Date().toISOString(),
-    evidence_ref_count: 0,
-    execution_started: false,
-    finished_at: null,
-    id: validationRunId,
-    plan_digest: null,
-    preflight_passed: false,
-    safety_gate_state: "Manual validation observation review",
-    status: "reviewed",
-    summary,
-    target_ref: "redacted-target",
-    task_id: null,
-    validation_mode: "manual_observation_review",
-  };
 }
