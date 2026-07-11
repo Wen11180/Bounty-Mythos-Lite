@@ -812,19 +812,26 @@ def load_scope_policy(scope_path: str | Path) -> dict:
 
 
 def collect_authorized_code_files(repo_path: Path) -> list[dict[str, str]]:
+    resolved_repo = repo_path.resolve()
     files: list[dict[str, str]] = []
     for path in sorted(repo_path.rglob("*")):
         if len(files) >= MAX_AUTHORIZED_CODE_FILES:
             break
-        if not path.is_file() or _path_has_skipped_part(path):
+        try:
+            resolved_path = path.resolve(strict=True)
+        except OSError:
+            continue
+        if not _is_path_within(resolved_path, resolved_repo):
+            raise SourceAuditBlocked("repo_symlink_escape")
+        if not resolved_path.is_file() or _path_has_skipped_part(path):
             continue
         if path.suffix.lower() not in CODE_EXTENSIONS:
             continue
         try:
-            if path.stat().st_size > MAX_FILE_BYTES:
+            if resolved_path.stat().st_size > MAX_FILE_BYTES:
                 continue
-            content = path.read_text(encoding="utf-8-sig")
-        except UnicodeDecodeError:
+            content = resolved_path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
             continue
         files.append(
             {

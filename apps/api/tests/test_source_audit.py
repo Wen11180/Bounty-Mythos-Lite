@@ -21,6 +21,7 @@ from app.source_audit import (
     StaticFinding,
     build_finding_json,
     build_source_hypotheses,
+    collect_authorized_code_files,
     load_scope_policy,
     normalize_semgrep_json,
     run_semgrep,
@@ -76,6 +77,21 @@ def controlled_source_audit_paths(tmp_path: Path) -> tuple[Path, Path]:
     repo.mkdir(parents=True)
     scope.parent.mkdir(parents=True)
     return repo, scope
+
+
+def test_collect_authorized_code_files_rejects_symlink_escape(tmp_path: Path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("OUTSIDE_SECRET = 'synthetic'", encoding="utf-8")
+    link = repo / "linked.py"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    with pytest.raises(SourceAuditBlocked, match="repo_symlink_escape"):
+        collect_authorized_code_files(repo)
 
 
 def test_run_source_audit_reads_allowed_local_repo_and_builds_markdown_report(tmp_path):

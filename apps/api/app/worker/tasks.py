@@ -6,6 +6,7 @@ from app.codebase_map import (
     CodebaseMapResult,
     map_authorized_code_files,
 )
+from app.campaign_orchestrator import campaign_elapsed_minutes, campaign_token_used_from_runs
 from app.config import get_settings
 from app.db import get_session_factory, initialize_database
 from app.db_models import (
@@ -177,6 +178,17 @@ def _agent_task_stop_reason(
         budget.validation_budget,
     ]
     if any(value is not None and value <= 0 for value in budgets):
+        return "budget_exhausted"
+    if (
+        budget.time_budget_minutes is not None
+        and campaign_elapsed_minutes(campaign) >= budget.time_budget_minutes
+    ):
+        return "budget_exhausted"
+    if (
+        budget.token_budget is not None
+        and campaign_token_used_from_runs(repository.list_campaign_agent_runs(campaign.id))
+        >= budget.token_budget
+    ):
         return "budget_exhausted"
     if _tool_call_budget_exhausted_for_task(campaign, repository, task_id=task_id):
         return "budget_exhausted"

@@ -34,6 +34,7 @@ from app.sample_data import FINDINGS, PROGRAMS, REPORTS
 
 
 REDACTED = "[REDACTED]"
+TOKEN_USAGE_KEYS = {"input_tokens", "output_tokens", "token_usage", "total_tokens"}
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 JWT_PATTERN = re.compile(
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
@@ -92,7 +93,6 @@ class DatabaseRepository:
             return None
         return _program_from_record(record)
 
-    def list_findings(self) -> list[Finding]:
     def create_program(self, program: Program) -> Program:
         record = _program_to_record(program)
         self.session.add(record)
@@ -100,6 +100,7 @@ class DatabaseRepository:
         self.session.refresh(record)
         return _program_from_record(record)
 
+    def list_findings(self) -> list[Finding]:
         records = self.session.scalars(select(FindingRecord).order_by(FindingRecord.id)).all()
         return [_finding_from_record(record) for record in records]
 
@@ -552,7 +553,27 @@ class DatabaseRepository:
         record = self.get_campaign(campaign_id)
         if record is None:
             return None
-        record.status = _safe_display_value(status)
+        safe_status = _safe_display_value(status)
+        payload = dict(record.payload) if isinstance(record.payload, dict) else {}
+        now = datetime.now(UTC)
+        if safe_status == "running":
+            payload.setdefault("budget_started_at", now.isoformat())
+            paused_at = _payload_datetime(payload.get("budget_paused_at"))
+            if paused_at is not None:
+                paused_seconds = payload.get("budget_paused_seconds", 0)
+                if not isinstance(paused_seconds, (int, float)) or isinstance(
+                    paused_seconds, bool
+                ):
+                    paused_seconds = 0
+                payload["budget_paused_seconds"] = max(
+                    0,
+                    paused_seconds + (now - paused_at).total_seconds(),
+                )
+                payload.pop("budget_paused_at", None)
+        elif safe_status == "paused" and record.status == "running":
+            payload.setdefault("budget_paused_at", now.isoformat())
+        record.status = safe_status
+        record.payload = payload
         self.session.add(record)
         self.session.commit()
         self.session.refresh(record)
@@ -1034,6 +1055,28 @@ class DatabaseRepository:
 
     def get_pipeline_stage(self, stage_id: str) -> PipelineStageRecord | None:
         return self.session.get(PipelineStageRecord, stage_id)
+
+    def update_pipeline_stage_status(
+        self,
+        stage_id: str,
+        *,
+        status: str,
+        safety_gate_state: str,
+        stop_reason: str | None,
+        payload: dict | None = None,
+    ) -> PipelineStageRecord | None:
+        record = self.get_pipeline_stage(stage_id)
+        if record is None:
+            return None
+        record.status = _safe_display_value(status)
+        record.safety_gate_state = _safe_display_value(safety_gate_state)
+        record.stop_reason = _safe_display_value(stop_reason)
+        if payload is not None:
+            record.payload = _safe_display_value(payload)
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
 
     def list_campaign_pipeline_stages(self, campaign_id: str) -> list[PipelineStageRecord]:
         return self.session.scalars(
@@ -1948,6 +1991,16 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _payload_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return _as_utc(parsed)
+
+
 def approval_record_is_active(approval: ApprovalRecord) -> bool:
     if approval.expires_at is None:
         return True
@@ -2036,6 +2089,8 @@ def _learning_signal_identity_hash(
 
 def _is_secret_key(value: str) -> bool:
     normalized = value.lower().replace("-", "_")
+    if normalized in TOKEN_USAGE_KEYS:
+        return False
     return any(
         marker in normalized
         for marker in (
@@ -2088,6 +2143,15 @@ def _is_secret_like(value: str) -> bool:
     )
     return (
         any(marker in normalized for marker in secret_markers)
+        or re.search(
+            (
+                r"\b(?:[a-z0-9]+[_-])*"
+                r"(?:password|passwd|pwd|credential|token|secret|session|cookie|api[_-]?key)"
+                r"\s*[:=]"
+            ),
+            normalized,
+        )
+        is not None
         or EMAIL_PATTERN.search(value) is not None
         or JWT_PATTERN.search(value) is not None
     )

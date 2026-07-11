@@ -724,6 +724,40 @@ def test_repository_persists_campaign_core_records_with_safety_redaction():
         session.close()
 
 
+def test_campaign_status_tracks_budget_runtime_across_pause_and_resume():
+    session, _ = build_session()
+    try:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Budget runtime tracking",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+
+        running = repository.update_campaign_status(campaign.id, "running")
+        assert running is not None
+        started_at = running.payload["budget_started_at"]
+        assert datetime.fromisoformat(started_at).tzinfo is not None
+
+        paused = repository.update_campaign_status(campaign.id, "paused")
+        assert paused is not None
+        assert paused.payload["budget_started_at"] == started_at
+        assert "budget_paused_at" in paused.payload
+
+        resumed = repository.update_campaign_status(campaign.id, "running")
+        assert resumed is not None
+        assert resumed.payload["budget_started_at"] == started_at
+        assert "budget_paused_at" not in resumed.payload
+        assert resumed.payload["budget_paused_seconds"] >= 0
+    finally:
+        session.close()
+
+
 def test_repository_stores_campaign_default_asset_without_query_secret():
     session, _ = build_session()
     try:

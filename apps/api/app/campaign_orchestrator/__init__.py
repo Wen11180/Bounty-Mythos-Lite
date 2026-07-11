@@ -1,7 +1,8 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
-from app.db_models import ApprovalRecord, CampaignRecord
+from app.db_models import AgentRunRecord, ApprovalRecord, CampaignRecord
 from app.repository import DatabaseRepository, approval_record_is_active
 
 
@@ -108,7 +109,7 @@ def tick_campaign(
             input_refs=[f"campaign:{campaign.id}"],
             payload=_read_only_task_payload(campaign, task_spec["task_type"]),
         )
-        repository.save_agent_run(
+        agent_run = repository.save_agent_run(
             campaign_id=campaign.id,
             task_id=task.id,
             agent_type=task_spec["agent_type"],
@@ -120,7 +121,7 @@ def tick_campaign(
             stop_reason=None,
             payload={"dispatch_contract": "id_only"},
         )
-        repository.save_pipeline_stage(
+        pipeline_stage = repository.save_pipeline_stage(
             pipeline_run_id=None,
             campaign_id=campaign.id,
             task_id=task.id,
@@ -134,7 +135,30 @@ def tick_campaign(
             payload={"dispatch_contract": "id_only"},
         )
         repository.update_campaign_task_status(task.id, "dispatched")
-        dispatcher(campaign_task_id=task.id)
+        try:
+            dispatcher(campaign_task_id=task.id)
+        except Exception:
+            repository.finish_agent_run(
+                agent_run.id,
+                status="failed",
+                output_refs=[],
+                safety_gate_state="blocked",
+                stop_reason="dispatch_failed",
+                payload={"dispatch_contract": "id_only", "dispatch_failed": True},
+            )
+            repository.update_pipeline_stage_status(
+                pipeline_stage.id,
+                status="failed",
+                safety_gate_state="blocked",
+                stop_reason="dispatch_failed",
+                payload={"dispatch_contract": "id_only", "dispatch_failed": True},
+            )
+            repository.update_campaign_task_status(
+                task.id,
+                "failed",
+                output_refs=[f"agent_run:{agent_run.id}"],
+            )
+            raise
         dispatched_task_ids.append(task.id)
 
     partial_dispatch = len(task_specs) < len(READ_ONLY_RESEARCH_TASKS)
@@ -203,10 +227,75 @@ def _campaign_stop_reason(
     ]
     if any(value is not None and value <= 0 for value in budgets):
         return "budget_exhausted"
+    if (
+        budget.time_budget_minutes is not None
+        and campaign_elapsed_minutes(campaign) >= budget.time_budget_minutes
+    ):
+        return "budget_exhausted"
+    if (
+        budget.token_budget is not None
+        and campaign_token_used_from_runs(repository.list_campaign_agent_runs(campaign.id))
+        >= budget.token_budget
+    ):
+        return "budget_exhausted"
     remaining_tool_calls = _remaining_tool_call_budget(campaign, repository)
     if remaining_tool_calls is not None and remaining_tool_calls <= 0:
         return "budget_exhausted"
     return None
+
+
+def campaign_elapsed_minutes(
+    campaign: CampaignRecord,
+    *,
+    now: datetime | None = None,
+) -> float:
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    started_at = _payload_datetime(payload.get("budget_started_at"))
+    if started_at is None:
+        return 0
+    current = now or datetime.now(UTC)
+    paused_seconds = payload.get("budget_paused_seconds", 0)
+    if not isinstance(paused_seconds, (int, float)) or isinstance(paused_seconds, bool):
+        paused_seconds = 0
+    if campaign.status == "paused":
+        paused_at = _payload_datetime(payload.get("budget_paused_at"))
+        if paused_at is not None:
+            paused_seconds += max(0, (current - paused_at).total_seconds())
+    elapsed_seconds = max(0, (current - started_at).total_seconds() - paused_seconds)
+    return elapsed_seconds / 60
+
+
+def campaign_token_used_from_runs(agent_runs: list[AgentRunRecord]) -> int:
+    return sum(_agent_run_token_usage(run) for run in agent_runs)
+
+
+def _agent_run_token_usage(run: AgentRunRecord) -> int:
+    payload = run.payload if isinstance(run.payload, dict) else {}
+    usage = payload.get("token_usage")
+    if isinstance(usage, int) and not isinstance(usage, bool):
+        return max(0, usage)
+    if not isinstance(usage, dict):
+        return 0
+    total = usage.get("total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool):
+        return max(0, total)
+    return sum(
+        max(0, value)
+        for key in ("input_tokens", "output_tokens")
+        if isinstance((value := usage.get(key)), int) and not isinstance(value, bool)
+    )
+
+
+def _payload_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _remaining_tool_call_budget(

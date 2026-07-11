@@ -42,6 +42,24 @@ def test_parse_policy_text_marks_asset_preceding_out_of_scope_marker_out_of_scop
     assert rule.scope_status == "out_of_scope"
 
 
+def test_parse_policy_text_treats_not_allowed_as_out_of_scope():
+    rule = parse_policy_text(
+        "api.example.com is not allowed. No automation.",
+        "api.example.com",
+    )
+
+    assert rule.scope_status == "out_of_scope"
+
+
+def test_parse_policy_text_recognizes_scope_yaml_marker():
+    rule = parse_policy_text(
+        "in_scope:\n  - api.example.com",
+        "api.example.com",
+    )
+
+    assert rule.scope_status == "in_scope"
+
+
 def test_parse_policy_text_marks_unknown_asset_for_review():
     rule = parse_policy_text("In scope: api.example.com.", "unknown.example.com")
 

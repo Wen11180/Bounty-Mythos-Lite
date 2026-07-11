@@ -90,6 +90,103 @@ def test_campaign_api_derives_scope_from_policy_and_persists_parsed_rule():
         app.dependency_overrides.clear()
 
 
+def test_campaign_api_redacts_raw_har_body_and_source_credentials_before_persistence():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        response = client.post(
+            "/mythos/campaigns",
+            json={
+                "program_id": "program_example",
+                "name": "Credential redaction boundary",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text": "api.example.com is in scope. No automation.",
+                "default_asset": "api.example.com",
+                "authorized_code_files": [
+                    {
+                        "path": "settings.py",
+                        "content": "PASSWORD = 'synthetic-code-secret'",
+                    },
+                    {
+                        "path": "tokens.py",
+                        "content": "API_TOKEN = 'synthetic-token-secret'",
+                    }
+                ],
+                "authorized_api_artifacts": [
+                    {
+                        "kind": "har",
+                        "source_name": "traffic.har",
+                        "payload": {
+                            "postData": {"text": "password=synthetic-har-secret"}
+                        },
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        with testing_session() as session:
+            campaign = DatabaseRepository(session).get_campaign(response.json()["id"])
+            assert campaign is not None
+            serialized = str(campaign.payload)
+            assert "synthetic-code-secret" not in serialized
+            assert "synthetic-token-secret" not in serialized
+            assert "synthetic-har-secret" not in serialized
+            assert campaign.payload["authorized_code_files"][0]["content"] == "[REDACTED]"
+            assert campaign.payload["authorized_code_files"][1]["content"] == "[REDACTED]"
+            assert (
+                campaign.payload["authorized_api_artifacts"][0]["payload"]["postData"]["text"]
+                == "[REDACTED]"
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_api_start_blocks_campaign_without_stored_scope_guard_rule(monkeypatch):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    monkeypatch.setattr(
+        main_module,
+        "dispatch_agent_task",
+        lambda *, campaign_task_id: {"campaign_task_id": campaign_task_id},
+    )
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            campaign = DatabaseRepository(session).create_campaign(
+                program_id="program_example",
+                name="Legacy campaign without parsed scope",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="api.example.com is in scope.",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            campaign_id = campaign.id
+
+        response = client.post(f"/mythos/campaigns/{campaign_id}/start")
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "scope_guard_rule_missing"}
+        with testing_session() as session:
+            campaign = DatabaseRepository(session).get_campaign(campaign_id)
+            assert campaign is not None
+            assert campaign.status == "draft"
+            assert DatabaseRepository(session).list_campaign_tasks(campaign_id) == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_campaign_api_creates_lists_and_controls_campaign_lifecycle(monkeypatch):
     testing_session = build_testing_session()
 
@@ -628,6 +725,7 @@ def test_campaign_api_resume_blocks_budget_exhausted_without_running_window():
                 policy_text="Testing allowed",
                 default_asset="api.example.com",
                 created_by="operator",
+                payload=validation_scope_guard_payload(),
             )
             repository.update_campaign_status(campaign.id, "paused")
             repository.upsert_campaign_budget(
@@ -647,6 +745,112 @@ def test_campaign_api_resume_blocks_budget_exhausted_without_running_window():
         assert campaign_response.status_code == 200
         assert campaign_response.json()["status"] == "paused"
         assert client.get(f"/mythos/campaigns/{campaign_id}/tasks").json() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_api_resume_blocks_elapsed_time_budget():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Elapsed resume",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="api.example.com is in scope.",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload=validation_scope_guard_payload(),
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+            campaign.payload = {
+                **campaign.payload,
+                "budget_started_at": (datetime.now(UTC) - timedelta(minutes=2)).isoformat(),
+            }
+            session.add(campaign)
+            session.commit()
+            repository.update_campaign_status(campaign.id, "paused")
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=1,
+                token_budget=1000,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            campaign_id = campaign.id
+
+        response = client.post(f"/mythos/campaigns/{campaign_id}/resume")
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "budget_exhausted"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_control_center_reports_elapsed_time_and_token_usage():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Budget usage visibility",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="api.example.com is in scope.",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload=validation_scope_guard_payload(),
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+            campaign.payload = {
+                **campaign.payload,
+                "budget_started_at": (datetime.now(UTC) - timedelta(minutes=2)).isoformat(),
+            }
+            session.add(campaign)
+            session.commit()
+            repository.upsert_campaign_budget(
+                campaign_id=campaign.id,
+                time_budget_minutes=10,
+                token_budget=100,
+                tool_call_budget=10,
+                validation_budget=1,
+            )
+            repository.save_agent_run(
+                campaign_id=campaign.id,
+                task_id=None,
+                agent_type="semantic_audit_agent",
+                status="completed",
+                safety_gate_state="allowed",
+                stop_reason=None,
+                payload={"token_usage": {"total_tokens": 40}},
+            )
+            campaign_id = campaign.id
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/control-center")
+
+        assert response.status_code == 200
+        budget = response.json()["budget"]
+        assert budget["time_budget_used_minutes"] >= 2
+        assert budget["time_budget_remaining_minutes"] <= 8
+        assert budget["token_budget_used"] == 40
+        assert budget["token_budget_remaining"] == 60
     finally:
         app.dependency_overrides.clear()
 

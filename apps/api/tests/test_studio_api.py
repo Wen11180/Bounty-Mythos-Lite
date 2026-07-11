@@ -25,6 +25,7 @@ from app.main import (
     _studio_mission_agent_queue,
     _studio_mission_candidate_summary,
     _studio_report_candidate_guidance,
+    _studio_authorized_code_files,
 )
 from app.repository import DatabaseRepository
 from app.repository import seed_sample_data
@@ -67,6 +68,24 @@ def test_studio_workspace_creation_uses_configured_root_not_request_root(tmp_pat
 
     assert response.status_code == 200
     assert response.json()["path"] == str(tmp_path / "acme-api")
+
+
+def test_studio_authorized_code_files_rejects_symlink_escape(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("OUTSIDE_SECRET = 'synthetic'", encoding="utf-8")
+    link = repo / "linked.py"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        _studio_authorized_code_files(str(repo))
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "studio_artifact_not_authorized"
 
 
 def test_studio_api_allows_only_configured_loopback_web_origin():
@@ -2460,6 +2479,77 @@ def test_studio_import_rejects_existing_source_outside_workspace(tmp_path: Path)
     assert response.json() == {"detail": "studio_artifact_not_authorized"}
 
 
+def test_studio_campaign_launch_rejects_out_of_scope_policy_before_persistence(
+    tmp_path: Path,
+    monkeypatch,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "def export_file(file_id: str):\n    return send_file(file_id)\n",
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
+    policy_path = tmp_path / "policy.md"
+    policy_path.write_text("api.example.com is out of scope.", encoding="utf-8")
+    api_path = write_api_artifact(tmp_path)
+    har_path = write_har_artifact(tmp_path)
+
+    override_get_session, testing_session = studio_test_session_override()
+    with testing_session() as session:
+        seed_sample_data(session)
+
+    monkeypatch.setattr(
+        main_module,
+        "dispatch_agent_task",
+        lambda *, campaign_task_id: {"campaign_task_id": campaign_task_id},
+    )
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        workspace_response = client.post(
+            "/mythos/studio/workspaces",
+            json={"root_path": str(tmp_path), "name": "out-of-scope"},
+        )
+        assert workspace_response.status_code == 200
+        workspace_path = workspace_response.json()["path"]
+
+        for kind, source_path in stage_workspace_artifacts(
+            workspace_path,
+            (
+                ("scope", scope_path),
+                ("policy", policy_path),
+                ("code", repo),
+                ("api", api_path),
+                ("har", har_path),
+            ),
+        ):
+            import_response = client.post(
+                "/mythos/studio/workspaces/imports",
+                json={
+                    "workspace_path": workspace_path,
+                    "kind": kind,
+                    "source_path": str(source_path),
+                },
+            )
+            assert import_response.status_code == 200
+
+        launch_response = client.post(
+            "/mythos/studio/workspaces/campaigns/launch",
+            json={
+                "workspace_path": workspace_path,
+                "default_asset": "api.example.com",
+            },
+        )
+
+        assert launch_response.status_code == 409
+        assert launch_response.json() == {"detail": "scope_not_in_scope"}
+        with testing_session() as session:
+            assert DatabaseRepository(session).list_campaigns() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_studio_workspace_can_launch_campaign_hunter_from_authorized_artifacts(
     tmp_path: Path,
     monkeypatch,
@@ -2540,6 +2630,10 @@ def test_studio_workspace_can_launch_campaign_hunter_from_authorized_artifacts(
         assert body["validation_allowed"] is False
         assert body["report_submission_allowed"] is False
         assert len(body["dispatched_task_ids"]) == 4
+        with testing_session() as session:
+            stored_campaign = DatabaseRepository(session).get_campaign(campaign["id"])
+            assert stored_campaign is not None
+            assert stored_campaign.payload["scope_guard_rule"]["scope_status"] == "in_scope"
         manifest = body["manifest"]
         hunter_run = manifest["campaign_hunter_runs"][-1]
         assert hunter_run["campaign_id"] == campaign["id"]

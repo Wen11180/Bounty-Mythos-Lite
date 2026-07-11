@@ -53,16 +53,24 @@ def parse_policy_text(policy_text: str, asset: str) -> ScopeGuardRule:
 def _scope_status(policy_text: str, asset: str) -> str:
     asset_lower = asset.lower()
     escaped_asset = re.escape(asset_lower)
-    out_of_scope = r"(?:out of scope|excluded|not in scope)"
-    in_scope = r"(?:in scope|allowed)"
+    out_of_scope = r"(?:out[ _-]of[ _-]scope|excluded|not[ _-]in[ _-]scope|not allowed)"
+    in_scope = r"(?:in[ _-]scope|allowed)"
     if re.search(
-        rf"{escaped_asset}[^.\n]{{0,80}}{out_of_scope}|{out_of_scope}[^.\n]{{0,80}}{escaped_asset}",
+        (
+            rf"{escaped_asset}[^.\n]{{0,80}}{out_of_scope}"
+            rf"|{out_of_scope}[^.\n]{{0,80}}{escaped_asset}"
+            rf"|{out_of_scope}\s*:\s*(?:-\s*)?{escaped_asset}"
+        ),
         policy_text,
     ):
         return "out_of_scope"
 
     if re.search(
-        rf"{escaped_asset}[^.\n]{{0,80}}{in_scope}|{in_scope}[^.\n]{{0,80}}{escaped_asset}",
+        (
+            rf"{escaped_asset}[^.\n]{{0,80}}{in_scope}"
+            rf"|{in_scope}[^.\n]{{0,80}}{escaped_asset}"
+            rf"|{in_scope}\s*:\s*(?:-\s*)?{escaped_asset}"
+        ),
         policy_text,
     ):
         return "in_scope"

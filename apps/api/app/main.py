@@ -30,7 +30,11 @@ from app.db_models import (
     ScannerRunRecord,
     ValidationRunRecord,
 )
-from app.campaign_orchestrator import tick_campaign
+from app.campaign_orchestrator import (
+    campaign_elapsed_minutes,
+    campaign_token_used_from_runs,
+    tick_campaign,
+)
 from app.hunter_intelligence import (
     HunterIntelligence,
 )
@@ -313,7 +317,11 @@ class CampaignBudgetResponse(BaseModel):
     id: str
     campaign_id: str
     time_budget_minutes: int | None = None
+    time_budget_used_minutes: float = 0
+    time_budget_remaining_minutes: float | None = None
     token_budget: int | None = None
+    token_budget_used: int = 0
+    token_budget_remaining: int | None = None
     tool_call_budget: int | None = None
     tool_call_used: int = 0
     tool_call_remaining: int | None = None
@@ -932,6 +940,11 @@ def start_mythos_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    scope_guard_rule = _campaign_scope_guard_rule(campaign)
+    if scope_guard_rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+    if scope_guard_rule.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
     campaign = repository.update_campaign_status(campaign_id, "running") or campaign
     tick_result = tick_campaign(
         campaign_id,
@@ -962,8 +975,17 @@ def resume_mythos_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    scope_guard_rule = _campaign_scope_guard_rule(campaign)
+    if scope_guard_rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+    if scope_guard_rule.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
     budget = repository.get_campaign_budget(campaign_id)
-    if _campaign_budget_exhausted(budget):
+    if _campaign_budget_exhausted(
+        budget,
+        campaign=campaign,
+        agent_runs=repository.list_campaign_agent_runs(campaign.id),
+    ):
         raise HTTPException(status_code=409, detail="budget_exhausted")
     return _update_campaign_status(campaign_id, "running", session)
 
@@ -997,7 +1019,11 @@ def materialize_mythos_research_queue_task(
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
-    if _campaign_budget_exhausted(repository.get_campaign_budget(campaign.id)):
+    if _campaign_budget_exhausted(
+        repository.get_campaign_budget(campaign.id),
+        campaign=campaign,
+        agent_runs=repository.list_campaign_agent_runs(campaign.id),
+    ):
         raise HTTPException(status_code=409, detail="budget_exhausted")
 
     suggestion = _campaign_research_queue_suggestion_by_key(
@@ -1108,7 +1134,11 @@ def create_mythos_research_review_plan(
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
-    if _campaign_budget_exhausted(repository.get_campaign_budget(campaign.id)):
+    if _campaign_budget_exhausted(
+        repository.get_campaign_budget(campaign.id),
+        campaign=campaign,
+        agent_runs=repository.list_campaign_agent_runs(campaign.id),
+    ):
         raise HTTPException(status_code=409, detail="budget_exhausted")
 
     task = repository.session.get(CampaignTaskRecord, task_id)
@@ -1581,7 +1611,11 @@ def preflight_mythos_validation_run(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     campaign_budget = repository.get_campaign_budget(campaign.id)
-    if _campaign_budget_exhausted(campaign_budget) or _campaign_validation_budget_exhausted(
+    if _campaign_budget_exhausted(
+        campaign_budget,
+        campaign=campaign,
+        agent_runs=repository.list_campaign_agent_runs(campaign.id),
+    ) or _campaign_validation_budget_exhausted(
         repository,
         budget=campaign_budget,
         validation_run=validation_run,
@@ -2529,15 +2563,26 @@ def launch_mythos_studio_workspace_campaign(
     if repository.get_program(program_id) is None:
         raise HTTPException(status_code=404, detail="Program not found")
 
+    default_asset = request.default_asset or _studio_campaign_default_asset(
+        manifest,
+        request.workspace_path,
+    )
+    scope_guard_rule = parse_policy_text(
+        _studio_scope_policy_text_from_manifest(manifest),
+        default_asset,
+    )
+    if scope_guard_rule.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+
     payload = _studio_campaign_payload_from_manifest(manifest)
+    payload["scope_guard_rule"] = scope_guard_rule.model_dump(mode="json")
     campaign = repository.create_campaign(
         program_id=program_id,
         name=request.name or f"Mythos Studio hunter: {manifest.get('name', 'workspace')}",
         autonomy_level="level_0_read_only",
-        scope_status="in_scope",
+        scope_status=scope_guard_rule.scope_status,
         policy_text=_studio_policy_text_from_manifest(manifest),
-        default_asset=request.default_asset
-        or _studio_campaign_default_asset(manifest, request.workspace_path),
+        default_asset=default_asset,
         target_classes=["idor", "authorization"],
         allowed_tools=["static_analyzer", "api_artifact_mapper"],
         created_by="mythos_studio",
@@ -2928,6 +2973,15 @@ def _studio_policy_text_from_manifest(manifest: dict) -> str:
     return _studio_read_text_file(policy_path)
 
 
+def _studio_scope_policy_text_from_manifest(manifest: dict) -> str:
+    texts = []
+    for kind in ("policy", "scope"):
+        path = _studio_artifact_path(manifest, kind)
+        if path:
+            texts.append(_studio_read_text_file(path))
+    return "\n".join(texts)
+
+
 def _studio_campaign_default_asset(manifest: dict, workspace_path: str) -> str:
     scope_path = _studio_artifact_path(manifest, "scope")
     if scope_path:
@@ -2948,11 +3002,18 @@ def _studio_authorized_code_files(path_value: str | None) -> list[dict[str, str]
     if not path.is_dir():
         return []
 
+    resolved_root = path.resolve(strict=True)
     files: list[dict[str, str]] = []
     for candidate in sorted(path.rglob("*")):
         if len(files) >= 20:
             break
-        if not candidate.is_file() or candidate.suffix.lower() not in {
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved_candidate.is_relative_to(resolved_root):
+            raise HTTPException(status_code=403, detail="studio_artifact_not_authorized")
+        if not resolved_candidate.is_file() or candidate.suffix.lower() not in {
             ".py",
             ".js",
             ".jsx",
@@ -2966,7 +3027,7 @@ def _studio_authorized_code_files(path_value: str | None) -> list[dict[str, str]
         }:
             continue
         try:
-            content = candidate.read_text(encoding="utf-8-sig")
+            content = resolved_candidate.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             continue
         if content.strip():
@@ -8539,6 +8600,26 @@ def _campaign_budget_response(
 ) -> CampaignBudgetResponse | None:
     if record is None:
         return None
+    campaign = repository.get_campaign(record.campaign_id) if repository is not None else None
+    agent_runs = (
+        repository.list_campaign_agent_runs(record.campaign_id)
+        if repository is not None
+        else []
+    )
+    time_budget_used = (
+        round(campaign_elapsed_minutes(campaign), 2) if campaign is not None else 0
+    )
+    time_budget_remaining = (
+        None
+        if record.time_budget_minutes is None
+        else max(record.time_budget_minutes - time_budget_used, 0)
+    )
+    token_budget_used = campaign_token_used_from_runs(agent_runs)
+    token_budget_remaining = (
+        None
+        if record.token_budget is None
+        else max(record.token_budget - token_budget_used, 0)
+    )
     tool_call_used = (
         _campaign_tool_call_used(record.campaign_id, repository)
         if repository is not None
@@ -8565,7 +8646,11 @@ def _campaign_budget_response(
         id=record.id,
         campaign_id=record.campaign_id,
         time_budget_minutes=record.time_budget_minutes,
+        time_budget_used_minutes=time_budget_used,
+        time_budget_remaining_minutes=time_budget_remaining,
         token_budget=record.token_budget,
+        token_budget_used=token_budget_used,
+        token_budget_remaining=token_budget_remaining,
         tool_call_budget=record.tool_call_budget,
         tool_call_used=tool_call_used,
         tool_call_remaining=tool_call_remaining,
@@ -9895,10 +9980,15 @@ def _payload_int(payload: dict, key: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _campaign_budget_exhausted(budget: CampaignBudgetRecord | None) -> bool:
+def _campaign_budget_exhausted(
+    budget: CampaignBudgetRecord | None,
+    *,
+    campaign: CampaignRecord | None = None,
+    agent_runs: list[AgentRunRecord] | None = None,
+) -> bool:
     if budget is None:
         return False
-    return any(
+    if any(
         value is not None and value <= 0
         for value in (
             budget.time_budget_minutes,
@@ -9906,6 +9996,18 @@ def _campaign_budget_exhausted(budget: CampaignBudgetRecord | None) -> bool:
             budget.tool_call_budget,
             budget.validation_budget,
         )
+    ):
+        return True
+    if (
+        campaign is not None
+        and budget.time_budget_minutes is not None
+        and campaign_elapsed_minutes(campaign) >= budget.time_budget_minutes
+    ):
+        return True
+    return (
+        agent_runs is not None
+        and budget.token_budget is not None
+        and campaign_token_used_from_runs(agent_runs) >= budget.token_budget
     )
 
 
@@ -9959,7 +10061,11 @@ def _campaign_control_center_blocked_reasons(
         reasons.append("scope_not_in_scope")
     if campaign.status in {"blocked", "canceled", "failed"}:
         reasons.append(f"campaign_{campaign.status}")
-    if _campaign_budget_exhausted(budget):
+    if _campaign_budget_exhausted(
+        budget,
+        campaign=campaign,
+        agent_runs=agent_runs,
+    ):
         reasons.append("budget_exhausted")
     if (
         budget is not None

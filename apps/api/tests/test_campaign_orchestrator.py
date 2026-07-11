@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -103,6 +104,137 @@ def test_tick_does_not_dispatch_when_budget_exhausted():
             token_budget=0,
             tool_call_budget=0,
             validation_budget=0,
+        )
+
+        result = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert result["status"] == "blocked"
+        assert result["stop_reasons"] == ["budget_exhausted"]
+        assert dispatched == []
+    finally:
+        session.close()
+
+
+def test_tick_marks_failed_dispatch_terminal_and_allows_retry():
+    repository, session = build_repository()
+    retried: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Recoverable dispatch failure",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+
+        with pytest.raises(RuntimeError, match="queue unavailable"):
+            tick_campaign(
+                campaign.id,
+                repository=repository,
+                dispatcher=lambda **_: (_ for _ in ()).throw(
+                    RuntimeError("queue unavailable")
+                ),
+            )
+
+        failed_tasks = repository.list_campaign_tasks(campaign.id)
+        failed_runs = repository.list_campaign_agent_runs(campaign.id)
+        failed_stages = repository.list_campaign_pipeline_stages(campaign.id)
+        assert [task.status for task in failed_tasks] == ["failed"]
+        assert [run.status for run in failed_runs] == ["failed"]
+        assert [stage.status for stage in failed_stages] == ["failed"]
+        assert failed_runs[0].stop_reason == "dispatch_failed"
+        assert failed_stages[0].stop_reason == "dispatch_failed"
+
+        retry = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: retried.append(kwargs),
+        )
+
+        assert retry["status"] == "dispatched"
+        assert len(retried) == 4
+    finally:
+        session.close()
+
+
+def test_tick_does_not_dispatch_after_elapsed_time_budget():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Elapsed campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        campaign = repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        campaign.payload = {
+            **campaign.payload,
+            "budget_started_at": (datetime.now(UTC) - timedelta(minutes=2)).isoformat(),
+        }
+        session.add(campaign)
+        session.commit()
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=1,
+            token_budget=1000,
+            tool_call_budget=10,
+            validation_budget=1,
+        )
+
+        result = tick_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **kwargs: dispatched.append(kwargs),
+        )
+
+        assert result["status"] == "blocked"
+        assert result["stop_reasons"] == ["budget_exhausted"]
+        assert dispatched == []
+    finally:
+        session.close()
+
+
+def test_tick_does_not_dispatch_after_recorded_token_budget():
+    repository, session = build_repository()
+    dispatched: list[dict] = []
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Token exhausted campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=100,
+            tool_call_budget=10,
+            validation_budget=1,
+        )
+        repository.save_agent_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            agent_type="semantic_audit_agent",
+            status="completed",
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload={"token_usage": {"total_tokens": 100}},
         )
 
         result = tick_campaign(

@@ -2660,6 +2660,51 @@ def test_run_agent_task_blocks_budget_exhausted_without_materializing_artifacts(
         session.close()
 
 
+def test_run_agent_task_blocks_recorded_token_budget_without_materializing_artifacts():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Token exhausted worker campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing budget",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        repository.update_campaign_status(campaign.id, "running")
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=None,
+            token_budget=100,
+            tool_call_budget=None,
+            validation_budget=None,
+        )
+        repository.save_agent_run(
+            campaign_id=campaign.id,
+            task_id=None,
+            agent_type="semantic_audit_agent",
+            status="completed",
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload={"token_usage": {"total_tokens": 100}},
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="attack_surface_mapping",
+            agent_type="target_model_agent",
+            title="Map surface",
+        )
+
+        result = run_agent_task(task.id, repository=repository)
+
+        assert result["status"] == "blocked"
+        assert result["stop_reason"] == "budget_exhausted"
+        assert repository.list_campaign_codebase_maps(campaign.id) == []
+    finally:
+        session.close()
+
+
 def test_run_agent_task_blocks_consumed_tool_call_budget_without_materializing_artifacts():
     repository, session = build_repository()
     try:
