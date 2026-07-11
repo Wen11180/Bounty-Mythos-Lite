@@ -1,0 +1,10 @@
+{
+    "fixture_id":  "fixture-k8q6",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/archives/k8q6/{record_id}"
+                       ],
+    "local_only":  true
+}

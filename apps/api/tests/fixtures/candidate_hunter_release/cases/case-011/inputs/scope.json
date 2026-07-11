@@ -1,0 +1,11 @@
+{
+    "fixture_id":  "fixture-v1n9",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/archives/v1n9/{record_id}",
+                           "/local/archives/v1n9/{record_id}/summary"
+                       ],
+    "local_only":  true
+}

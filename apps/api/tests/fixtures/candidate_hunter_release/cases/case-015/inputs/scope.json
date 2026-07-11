@@ -1,0 +1,11 @@
+{
+    "fixture_id":  "fixture-c6w5",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/transfers/c6w5/{record_id}",
+                           "/local/transfers/c6w5/{record_id}/summary"
+                       ],
+    "local_only":  true
+}

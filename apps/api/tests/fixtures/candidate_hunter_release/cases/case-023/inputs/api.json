@@ -1,0 +1,15 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/tools/u1h5/{record_id}":  {
+                                                        "get":  {
+                                                                    "operationId":  "run_tool_u1h5"
+                                                                }
+                                                    },
+                  "/local/tools/u1h5/{record_id}/summary":  {
+                                                                "get":  {
+                                                                            "operationId":  "run_tool_u1h5_summary"
+                                                                        }
+                                                            }
+              }
+}

@@ -12,6 +12,7 @@ from app.db import ensure_database_schema
 from app.deep_research import build_knowledge_artifact
 from app.intelligence_benchmark import (
     build_studio_expectations_template,
+    evaluate_candidate_hunter_release_v1,
     evaluate_studio_candidates,
 )
 from app.mythos_agent import (
@@ -86,6 +87,12 @@ def main(argv: list[str] | None = None) -> int:
     studio_eval_template = subparsers.add_parser("studio-eval-template")
     studio_eval_template.add_argument("--candidates", required=True)
     studio_eval_template.add_argument("--output")
+    candidate_hunter_release_eval = subparsers.add_parser(
+        "candidate-hunter-release-eval"
+    )
+    candidate_hunter_release_eval.add_argument("--hunter-output", required=True)
+    candidate_hunter_release_eval.add_argument("--gold", required=True)
+    candidate_hunter_release_eval.add_argument("--output")
 
     args = parser.parse_args(argv)
     if args.command == "chat":
@@ -94,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_studio_eval_command(args)
     if args.command == "studio-eval-template":
         return run_studio_eval_template_command(args)
+    if args.command == "candidate-hunter-release-eval":
+        return run_candidate_hunter_release_eval_command(args)
     if args.command == "agent":
         return run_agent_command(args)
     if args.command == "agent-status":
@@ -253,6 +262,23 @@ def run_studio_eval_template_command(args) -> int:
     else:
         print(template_json)
     return 0
+
+
+def run_candidate_hunter_release_eval_command(args) -> int:
+    result = evaluate_candidate_hunter_release_v1(
+        _read_json_file(args.hunter_output),
+        _read_json_file(args.gold),
+    )
+    result_json = json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(result_json, encoding="utf-8")
+    else:
+        print(result_json)
+    if result["status"] == "passed":
+        print("Candidate Hunter release benchmark passed")
+        return 0
+    print("Candidate Hunter release benchmark failed", file=sys.stderr)
+    return 1
 
 
 def run_agent_status_command(args) -> int:

@@ -1,0 +1,10 @@
+{
+    "fixture_id":  "fixture-j9p2",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/exports/j9p2/{record_id}"
+                       ],
+    "local_only":  true
+}

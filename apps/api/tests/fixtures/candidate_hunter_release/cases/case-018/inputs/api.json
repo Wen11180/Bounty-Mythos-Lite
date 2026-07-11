@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/roles/g5k4/{record_id}":  {
+                                                        "get":  {
+                                                                    "operationId":  "change_role_g5k4"
+                                                                }
+                                                    }
+              }
+}

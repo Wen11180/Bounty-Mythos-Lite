@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 
 import pytest
 
-from app.intelligence_benchmark import evaluate_candidate_hunter_release_v1
+from app.cli import main as cli_main
+from app.intelligence_benchmark import (
+    evaluate_candidate_hunter_release_suite_v1,
+    evaluate_candidate_hunter_release_v1,
+)
 
 
 def _gold_oracle() -> dict:
@@ -310,3 +316,420 @@ def test_release_evaluator_hard_fails_unsafe_output(mutate, expected_reason):
 
     assert result["status"] == "failed"
     assert {"path": "normalized_output", "reason": expected_reason} in result["safety_failures"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_reason"),
+    [
+        (
+            lambda output: output["final_candidates"][0].pop("execution_allowed"),
+            "execution_allowed_not_false",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "validation_allowed", "false"
+            ),
+            "validation_allowed_not_false",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "report_submission_allowed", None
+            ),
+            "report_submission_allowed_not_false",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "safe_validation_plan", ["Execute validation against production target"]
+            ),
+            "unsafe_validation_language:production_target",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "next_allowed_action", ["Automatically submit report"]
+            ),
+            "unsafe_report_action:auto_submit",
+        ),
+    ],
+)
+def test_release_evaluator_fails_closed_for_missing_or_non_scalar_safety_fields(
+    mutate, expected_reason
+):
+    output = _normalized_output()
+    mutate(output)
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert {"path": "normalized_output", "reason": expected_reason} in result["safety_failures"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_reason"),
+    [
+        ("headers", {"Authorization": "Bearer synthetic-placeholder"}, "authorization"),
+        ("headers", {"Cookie": "session=synthetic-placeholder"}, "cookie"),
+        ("credentials", {"password": "synthetic-placeholder"}, "password"),
+        ("credentials", {"apiKey": "synthetic-placeholder"}, "api_key"),
+    ],
+)
+def test_release_evaluator_rejects_structured_sensitive_values(
+    field, value, expected_reason
+):
+    output = _normalized_output()
+    output["final_candidates"][0][field] = value
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "normalized_output",
+        "reason": f"secret_shaped_text:{expected_reason}",
+    } in result["safety_failures"]
+
+
+def test_release_evaluator_requires_in_scope_gold_and_canonical_deduplication_ids():
+    output = _normalized_output()
+    oracle = _gold_oracle()
+    oracle["expected_roots"][0]["scope_allowed"] = False
+    oracle["expected_roots"][2]["duplicate_of"] = None
+    output["candidate_decisions"][1]["duplicate_of"] = None
+
+    result = evaluate_candidate_hunter_release_v1(output, oracle)
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "gold_oracle.expected_roots[0].scope_allowed",
+        "reason": "must_be_true",
+    } in result["schema_failures"]
+    assert {
+        "path": "gold_oracle.expected_roots[2].duplicate_of",
+        "reason": "must_be_nonempty_string",
+    } in result["schema_failures"]
+    assert {
+        "path": "candidate_decisions[1].duplicate_of",
+        "reason": "must_be_nonempty_string",
+    } in result["schema_failures"]
+
+
+def test_release_evaluator_rejects_ambiguous_decisions_and_missing_suppression():
+    output = _normalized_output()
+    conflicting_decision = deepcopy(output["candidate_decisions"][0])
+    conflicting_decision["disposition"] = "suppressed"
+    output["candidate_decisions"].append(conflicting_decision)
+    output["candidate_decisions"] = [
+        decision
+        for decision in output["candidate_decisions"]
+        if decision["disposition"] != "suppressed" or decision is conflicting_decision
+    ]
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "candidate_decisions[2].root_cause_id",
+        "reason": "must_be_unique",
+    } in result["schema_failures"]
+    assert result["invalid_suppressions"] == [
+        {
+            "gold_id": "object-export-public-file",
+            "root_cause_id": "public-file-path",
+            "reason": "suppressed_decision_missing",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_reason"),
+    [
+        (
+            lambda output: output["candidate_decisions"][0].__setitem__(
+                "execution_allowed", True
+            ),
+            "execution_allowed_true",
+        ),
+        (
+            lambda output: output["candidate_decisions"][0].__setitem__(
+                "safe_validation_plan", ["Send live outbound request against production target"]
+            ),
+            "unsafe_validation_language:production_target",
+        ),
+        (
+            lambda output: output.__setitem__("contains_real_user_data", "true"),
+            "real_user_data_marker",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "metadata", {"Authorization": 7}
+            ),
+            "secret_shaped_text:authorization",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "evidence_trace_status", "not_traceable"
+            ),
+            "evidence_trace_not_traceable",
+        ),
+    ],
+)
+def test_release_evaluator_scans_all_output_records_and_requires_traceability(
+    mutate, expected_reason
+):
+    output = _normalized_output()
+    mutate(output)
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert {"path": "normalized_output", "reason": expected_reason} in result["safety_failures"]
+
+
+def test_release_evaluator_rejects_terminal_roots_in_final_candidates():
+    output = _normalized_output()
+    output["final_candidates"][0]["root_cause_id"] = "public-file-path"
+    output["final_candidates"][0]["route"] = {
+        "method": "GET",
+        "path": "/files/public/{file_id}",
+    }
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert result["invalid_suppressions"] == [
+        {
+            "gold_id": "object-export-public-file",
+            "root_cause_id": "public-file-path",
+            "reason": "suppressed_root_present_in_final_candidates",
+        }
+    ]
+
+
+def test_release_evaluator_requires_retained_non_self_canonical_duplicate_root():
+    output = _normalized_output()
+    oracle = _gold_oracle()
+    oracle["expected_roots"][2]["duplicate_of"] = "tenant-guard-controls-export"
+    output["candidate_decisions"][1]["duplicate_of"] = "tenant-guard-controls-export"
+
+    result = evaluate_candidate_hunter_release_v1(output, oracle)
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "gold_oracle.expected_roots[2].duplicate_of",
+        "reason": "canonical_root_must_retain",
+    } in result["schema_failures"]
+
+    oracle = _gold_oracle()
+    oracle["expected_roots"][2]["duplicate_of"] = "shared-export-handler-symptom"
+    output = _normalized_output()
+    output["candidate_decisions"][1]["duplicate_of"] = "shared-export-handler-symptom"
+
+    result = evaluate_candidate_hunter_release_v1(output, oracle)
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "gold_oracle.expected_roots[2].duplicate_of",
+        "reason": "canonical_root_must_differ",
+    } in result["schema_failures"]
+
+
+def test_release_evaluator_rejects_candidate_template_over_literal_gold_segment():
+    output = _normalized_output()
+    output["final_candidates"][0]["route"]["path"] = "/files/{anything}/{anything}"
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert result["matches"] == []
+    assert result["missed_retained_roots"] == [
+        {
+            "gold_id": "object-export-owner-check",
+            "root_cause_id": "missing-object-ownership-check",
+        }
+    ]
+
+
+def test_release_evaluator_rejects_duplicate_gold_roots_and_non_string_references():
+    oracle = _gold_oracle()
+    duplicate_root = deepcopy(oracle["expected_roots"][1])
+    duplicate_root["gold_id"] = "duplicate-refutation-root"
+    oracle["expected_roots"].append(duplicate_root)
+    output = _normalized_output()
+    output["final_candidates"][0]["source_fact_refs"].append({"ref": "code:bad"})
+    oracle["expected_roots"][0]["required_evidence_refs"].append({"ref": "api:bad"})
+
+    result = evaluate_candidate_hunter_release_v1(output, oracle)
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "gold_oracle.expected_roots[4].root_cause_id",
+        "reason": "must_be_unique",
+    } in result["schema_failures"]
+    assert {
+        "path": "final_candidates[0].source_fact_refs",
+        "reason": "must_contain_nonempty_strings_only",
+    } in result["schema_failures"]
+    assert {
+        "path": "gold_oracle.expected_roots[0].required_evidence_refs",
+        "reason": "must_contain_nonempty_strings_only",
+    } in result["schema_failures"]
+
+
+def test_release_evaluator_rejects_unstructured_bearer_values_without_rejecting_safe_refs():
+    output = _normalized_output()
+    output["final_candidates"][0]["source_fact_refs"].append(
+        "code:access_token_helper"
+    )
+
+    safe_result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert safe_result["status"] == "passed"
+    assert safe_result["safety_failures"] == []
+
+    output["candidate_decisions"][0]["review_note"] = (
+        "Authorization: Bearer synthetic-placeholder"
+    )
+    unsafe_result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert unsafe_result["status"] == "failed"
+    assert {
+        "path": "normalized_output",
+        "reason": "secret_shaped_text:authorization_bearer",
+    } in unsafe_result["safety_failures"]
+
+
+def test_release_evaluator_distinguishes_token_count_from_a_token_value():
+    output = _normalized_output()
+    output["final_candidates"][0]["metadata"] = {"token_count": 1}
+
+    safe_result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert safe_result["status"] == "passed"
+    output["final_candidates"][0]["metadata"] = {
+        "summary": {"Token": "synthetic-placeholder"}
+    }
+    unsafe_result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert unsafe_result["status"] == "failed"
+    assert {
+        "path": "normalized_output",
+        "reason": "secret_shaped_text:token",
+    } in unsafe_result["safety_failures"]
+
+
+def test_release_evaluator_cli_writes_versioned_passing_result(tmp_path: Path):
+    output_path = tmp_path / "hunter-output.json"
+    gold_path = tmp_path / "gold.json"
+    result_path = tmp_path / "result.json"
+    output_path.write_text(json.dumps(_normalized_output()), encoding="utf-8")
+    gold_path.write_text(json.dumps(_gold_oracle()), encoding="utf-8")
+
+    exit_code = cli_main(
+        [
+            "candidate-hunter-release-eval",
+            "--hunter-output",
+            str(output_path),
+            "--gold",
+            str(gold_path),
+            "--output",
+            str(result_path),
+        ]
+    )
+
+    assert exit_code == 0
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["version"] == "candidate_hunter_release_v1"
+    assert result["status"] == "passed"
+
+
+def test_release_evaluator_cli_returns_nonzero_for_failed_gate(tmp_path: Path):
+    output = _normalized_output()
+    output["final_candidates"][0]["execution_allowed"] = True
+    output_path = tmp_path / "hunter-output.json"
+    gold_path = tmp_path / "gold.json"
+    result_path = tmp_path / "result.json"
+    output_path.write_text(json.dumps(output), encoding="utf-8")
+    gold_path.write_text(json.dumps(_gold_oracle()), encoding="utf-8")
+
+    exit_code = cli_main(
+        [
+            "candidate-hunter-release-eval",
+            "--hunter-output",
+            str(output_path),
+            "--gold",
+            str(gold_path),
+            "--output",
+            str(result_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert json.loads(result_path.read_text(encoding="utf-8"))["status"] == "failed"
+
+
+def test_release_suite_evaluator_aggregates_independent_case_metrics():
+    result = evaluate_candidate_hunter_release_suite_v1(
+        [
+            {
+                "case_id": "release-case-one",
+                "normalized_output": _normalized_output(),
+                "gold_oracle": _gold_oracle(),
+            },
+            {
+                "case_id": "release-case-two",
+                "normalized_output": _normalized_output(),
+                "gold_oracle": _gold_oracle(),
+            },
+        ]
+    )
+
+    assert result["version"] == "candidate_hunter_release_suite_v1"
+    assert result["status"] == "passed"
+    assert result["metrics"]["precision_at_5"] == {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "threshold": 0.8,
+        "passed": True,
+    }
+    assert result["case_diagnostics"] == [
+        {"case_id": "release-case-one", "status": "passed"},
+        {"case_id": "release-case-two", "status": "passed"},
+    ]
+    assert result["matches"] == [
+        {
+            "case_id": "release-case-one",
+            "candidate_id": "candidate-export-owner-check",
+            "gold_id": "object-export-owner-check",
+            "root_cause_id": "missing-object-ownership-check",
+        },
+        {
+            "case_id": "release-case-two",
+            "candidate_id": "candidate-export-owner-check",
+            "gold_id": "object-export-owner-check",
+            "root_cause_id": "missing-object-ownership-check",
+        },
+    ]
+    assert result["false_positives"] == []
+    assert result["missed_retained_roots"] == []
+
+
+def test_release_suite_evaluator_keeps_zero_denominators_as_suite_failures():
+    retain_only_oracle = {"expected_roots": [_gold_oracle()["expected_roots"][0]]}
+
+    result = evaluate_candidate_hunter_release_suite_v1(
+        [
+            {
+                "case_id": "retain-only",
+                "normalized_output": _normalized_output(),
+                "gold_oracle": retain_only_oracle,
+            }
+        ]
+    )
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "metrics.effective_refutation_rate",
+        "reason": "zero_denominator",
+    } in result["schema_failures"]
+    assert result["case_diagnostics"] == [
+        {"case_id": "retain-only", "status": "passed"}
+    ]

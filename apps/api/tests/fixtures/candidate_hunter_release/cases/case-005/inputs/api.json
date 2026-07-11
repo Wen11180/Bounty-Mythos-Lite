@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/exports/w3c8/{record_id}":  {
+                                                          "get":  {
+                                                                      "operationId":  "export_payload_w3c8"
+                                                                  }
+                                                      }
+              }
+}

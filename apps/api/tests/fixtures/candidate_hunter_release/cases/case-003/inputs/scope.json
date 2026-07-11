@@ -1,0 +1,11 @@
+{
+    "fixture_id":  "fixture-n8v3",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/records/n8v3/{record_id}",
+                           "/local/records/n8v3/{record_id}/summary"
+                       ],
+    "local_only":  true
+}

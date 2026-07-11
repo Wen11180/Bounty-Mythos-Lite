@@ -50,6 +50,51 @@ def export_file(file_id: str):
     assert "Bearer" not in str(gap.payload)
 
 
+def test_map_authorized_code_files_preserves_shared_service_edges_for_each_route():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/records.py",
+                    "content": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str):
+    return load_record(record_id)
+
+@router.get("/records/{record_id}/summary")
+def read_record_summary(record_id: str):
+    return load_record(record_id)
+
+def load_record(record_id: str):
+    return send_file(record_id)
+''',
+                }
+            ]
+        }
+    )
+
+    shared_edges = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "service_call" and fact.symbol_name == "load_record"
+    ]
+    gap_handlers = {
+        fact.payload["handler"]
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    }
+
+    assert {fact.payload["caller"] for fact in shared_edges} == {
+        "read_record",
+        "read_record_summary",
+    }
+    assert gap_handlers == {"read_record", "read_record_summary"}
+
+
 def test_map_authorized_code_files_marks_flask_sensitive_route_without_authz_as_gap_candidate():
     result = map_authorized_code_files(
         {

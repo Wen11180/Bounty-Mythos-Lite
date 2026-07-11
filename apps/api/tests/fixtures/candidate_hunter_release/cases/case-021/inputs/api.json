@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/tools/s4j8/{record_id}":  {
+                                                        "get":  {
+                                                                    "operationId":  "run_tool_s4j8"
+                                                                }
+                                                    }
+              }
+}

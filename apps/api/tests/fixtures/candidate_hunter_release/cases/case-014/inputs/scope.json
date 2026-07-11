@@ -1,0 +1,10 @@
+{
+    "fixture_id":  "fixture-h9d2",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/transfers/h9d2/{record_id}"
+                       ],
+    "local_only":  true
+}

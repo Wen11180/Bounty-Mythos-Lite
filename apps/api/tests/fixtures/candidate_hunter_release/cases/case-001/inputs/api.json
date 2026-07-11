@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/records/q7m4/{record_id}":  {
+                                                          "get":  {
+                                                                      "operationId":  "read_record_q7m4"
+                                                                  }
+                                                      }
+              }
+}

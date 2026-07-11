@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/roles/l7v6/{record_id}":  {
+                                                        "get":  {
+                                                                    "operationId":  "change_role_l7v6"
+                                                                }
+                                                    }
+              }
+}

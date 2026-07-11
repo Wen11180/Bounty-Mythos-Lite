@@ -1,0 +1,15 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/roles/z2r9/{record_id}":  {
+                                                        "get":  {
+                                                                    "operationId":  "change_role_z2r9"
+                                                                }
+                                                    },
+                  "/local/roles/z2r9/{record_id}/summary":  {
+                                                                "get":  {
+                                                                            "operationId":  "change_role_z2r9_summary"
+                                                                        }
+                                                            }
+              }
+}

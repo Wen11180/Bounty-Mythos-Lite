@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/transfers/y3m7/{record_id}":  {
+                                                            "get":  {
+                                                                        "operationId":  "transfer_funds_y3m7"
+                                                                    }
+                                                        }
+              }
+}

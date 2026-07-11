@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/tools/a6p2/{record_id}":  {
+                                                        "get":  {
+                                                                    "operationId":  "run_tool_a6p2"
+                                                                }
+                                                    }
+              }
+}

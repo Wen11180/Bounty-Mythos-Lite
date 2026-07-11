@@ -1,0 +1,173 @@
+{
+    "version":  "candidate_hunter_release_fixture_v1",
+    "cases":  [
+                  {
+                      "case_id":  "dev-001",
+                      "suite":  "development",
+                      "risk_family":  "authorization",
+                      "expected_disposition":  "retain",
+                      "path":  "cases/case-001"
+                  },
+                  {
+                      "case_id":  "dev-002",
+                      "suite":  "development",
+                      "risk_family":  "authorization",
+                      "expected_disposition":  "refute",
+                      "path":  "cases/case-002"
+                  },
+                  {
+                      "case_id":  "dev-003",
+                      "suite":  "development",
+                      "risk_family":  "authorization",
+                      "expected_disposition":  "deduplicate",
+                      "path":  "cases/case-003"
+                  },
+                  {
+                      "case_id":  "dev-004",
+                      "suite":  "development",
+                      "risk_family":  "authorization",
+                      "expected_disposition":  "suppress",
+                      "path":  "cases/case-004"
+                  },
+                  {
+                      "case_id":  "dev-005",
+                      "suite":  "development",
+                      "risk_family":  "injection",
+                      "expected_disposition":  "retain",
+                      "path":  "cases/case-005"
+                  },
+                  {
+                      "case_id":  "dev-006",
+                      "suite":  "development",
+                      "risk_family":  "injection",
+                      "expected_disposition":  "refute",
+                      "path":  "cases/case-006"
+                  },
+                  {
+                      "case_id":  "dev-007",
+                      "suite":  "development",
+                      "risk_family":  "injection",
+                      "expected_disposition":  "deduplicate",
+                      "path":  "cases/case-007"
+                  },
+                  {
+                      "case_id":  "dev-008",
+                      "suite":  "development",
+                      "risk_family":  "injection",
+                      "expected_disposition":  "suppress",
+                      "path":  "cases/case-008"
+                  },
+                  {
+                      "case_id":  "dev-009",
+                      "suite":  "development",
+                      "risk_family":  "data_exposure",
+                      "expected_disposition":  "retain",
+                      "path":  "cases/case-009"
+                  },
+                  {
+                      "case_id":  "dev-010",
+                      "suite":  "development",
+                      "risk_family":  "data_exposure",
+                      "expected_disposition":  "refute",
+                      "path":  "cases/case-010"
+                  },
+                  {
+                      "case_id":  "dev-011",
+                      "suite":  "development",
+                      "risk_family":  "data_exposure",
+                      "expected_disposition":  "deduplicate",
+                      "path":  "cases/case-011"
+                  },
+                  {
+                      "case_id":  "dev-012",
+                      "suite":  "development",
+                      "risk_family":  "data_exposure",
+                      "expected_disposition":  "suppress",
+                      "path":  "cases/case-012"
+                  },
+                  {
+                      "case_id":  "rel-001",
+                      "suite":  "release",
+                      "risk_family":  "authentication",
+                      "expected_disposition":  "retain",
+                      "path":  "cases/case-013"
+                  },
+                  {
+                      "case_id":  "rel-002",
+                      "suite":  "release",
+                      "risk_family":  "authentication",
+                      "expected_disposition":  "refute",
+                      "path":  "cases/case-014"
+                  },
+                  {
+                      "case_id":  "rel-003",
+                      "suite":  "release",
+                      "risk_family":  "authentication",
+                      "expected_disposition":  "deduplicate",
+                      "path":  "cases/case-015"
+                  },
+                  {
+                      "case_id":  "rel-004",
+                      "suite":  "release",
+                      "risk_family":  "authentication",
+                      "expected_disposition":  "suppress",
+                      "path":  "cases/case-016"
+                  },
+                  {
+                      "case_id":  "rel-005",
+                      "suite":  "release",
+                      "risk_family":  "workflow",
+                      "expected_disposition":  "retain",
+                      "path":  "cases/case-017"
+                  },
+                  {
+                      "case_id":  "rel-006",
+                      "suite":  "release",
+                      "risk_family":  "workflow",
+                      "expected_disposition":  "refute",
+                      "path":  "cases/case-018"
+                  },
+                  {
+                      "case_id":  "rel-007",
+                      "suite":  "release",
+                      "risk_family":  "workflow",
+                      "expected_disposition":  "deduplicate",
+                      "path":  "cases/case-019"
+                  },
+                  {
+                      "case_id":  "rel-008",
+                      "suite":  "release",
+                      "risk_family":  "workflow",
+                      "expected_disposition":  "suppress",
+                      "path":  "cases/case-020"
+                  },
+                  {
+                      "case_id":  "rel-009",
+                      "suite":  "release",
+                      "risk_family":  "configuration",
+                      "expected_disposition":  "retain",
+                      "path":  "cases/case-021"
+                  },
+                  {
+                      "case_id":  "rel-010",
+                      "suite":  "release",
+                      "risk_family":  "configuration",
+                      "expected_disposition":  "refute",
+                      "path":  "cases/case-022"
+                  },
+                  {
+                      "case_id":  "rel-011",
+                      "suite":  "release",
+                      "risk_family":  "configuration",
+                      "expected_disposition":  "deduplicate",
+                      "path":  "cases/case-023"
+                  },
+                  {
+                      "case_id":  "rel-012",
+                      "suite":  "release",
+                      "risk_family":  "configuration",
+                      "expected_disposition":  "suppress",
+                      "path":  "cases/case-024"
+                  }
+              ]
+}

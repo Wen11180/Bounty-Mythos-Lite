@@ -1,0 +1,15 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/archives/v1n9/{record_id}":  {
+                                                           "get":  {
+                                                                       "operationId":  "export_archive_v1n9"
+                                                                   }
+                                                       },
+                  "/local/archives/v1n9/{record_id}/summary":  {
+                                                                   "get":  {
+                                                                               "operationId":  "export_archive_v1n9_summary"
+                                                                           }
+                                                               }
+              }
+}

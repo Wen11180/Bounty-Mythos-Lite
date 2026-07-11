@@ -20,10 +20,12 @@ from app.main import (
     _studio_candidate_hunter_plan,
     _studio_candidate_hunter_review_loop,
     _studio_candidates_for_run,
+    _studio_empty_surface_context_fact,
     _studio_fuzzing_surface_facts,
     _studio_knowledge_surface_facts,
     _studio_mission_agent_queue,
     _studio_mission_candidate_summary,
+    _studio_openapi_surface_facts,
     _studio_report_candidate_guidance,
     _studio_authorized_code_files,
 )
@@ -106,6 +108,62 @@ def test_studio_api_allows_only_configured_loopback_web_origin():
 
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
     assert "access-control-allow-origin" not in external_response.headers
+
+
+def test_studio_openapi_surface_facts_project_only_safe_access_mode():
+    facts = _studio_openapi_surface_facts(
+        {
+            "openapi": "3.0.0",
+            "paths": {
+                "/protected/{record_id}": {
+                    "get": {
+                        "operationId": "readProtected",
+                        "security": [{"privateScheme": []}],
+                    }
+                },
+                "/public/{record_id}": {
+                    "get": {
+                        "operationId": "readPublic",
+                        "security": [],
+                    }
+                },
+                "/unspecified/{record_id}": {
+                    "get": {"operationId": "readUnspecified"}
+                },
+            },
+        }
+    )
+
+    assert [fact.get("access_mode") for fact in facts] == [
+        "protected",
+        "public",
+        None,
+    ]
+    assert "privateScheme" not in str(facts)
+
+
+def test_studio_empty_surface_context_requires_structurally_valid_json(
+    tmp_path: Path,
+):
+    valid_har = tmp_path / "empty.har.json"
+    valid_har.write_text(
+        json.dumps({"log": {"version": "1.2", "entries": []}}),
+        encoding="utf-8",
+    )
+    invalid_har = tmp_path / "invalid.har.json"
+    invalid_har.write_text("not json", encoding="utf-8")
+
+    assert _studio_empty_surface_context_fact(
+        {"artifacts": [{"kind": "har", "source_path": str(valid_har)}]},
+        "har",
+    ) == {"fact_type": "har_context", "artifact_kind": "har"}
+    assert (
+        _studio_empty_surface_context_fact(
+            {"artifacts": [{"kind": "har", "source_path": str(invalid_har)}]},
+            "har",
+        )
+        is None
+    )
 
 
 def test_studio_report_candidate_guidance_skips_redacted_values():
@@ -2787,7 +2845,8 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
     har_path = write_har_artifact(tmp_path)
     sarif_path = write_sarif_artifact(tmp_path)
 
-    app.dependency_overrides[get_session] = override_session()
+    session_override, testing_session = studio_test_session_override()
+    app.dependency_overrides[get_session] = session_override
     try:
         workspace_response = client.post(
             "/mythos/studio/workspaces",
@@ -2823,6 +2882,71 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
         assert run_body["run_id"].startswith("pipeline_run_")
         assert run_body["submission_blocked"] is True
         assert run_body["candidate_count"] >= 1
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            loop_campaigns = [
+                campaign
+                for campaign in repository.list_campaigns()
+                if campaign.payload.get("pipeline_run_id") == run_body["run_id"]
+            ]
+            assert len(loop_campaigns) == 1
+            loop_tasks = repository.list_campaign_tasks(loop_campaigns[0].id)
+            assert [task.task_type for task in loop_tasks] == [
+                "candidate_hunter_loop"
+            ]
+            loop_stages = [
+                stage
+                for stage in repository.list_pipeline_stages_for_run(run_body["run_id"])
+                if stage.task_id == loop_tasks[0].id
+            ]
+            assert [stage.stage_key for stage in loop_stages] == [
+                "candidate_hunter_snapshot",
+                "candidate_hunter_evidence_request",
+                "candidate_hunter_decision",
+                "candidate_hunter_rerank",
+                "candidate_hunter_snapshot",
+                "candidate_hunter_evidence_request",
+                "candidate_hunter_decision",
+                "candidate_hunter_rerank",
+            ]
+            assert [stage.payload["round"] for stage in loop_stages] == [
+                1,
+                1,
+                1,
+                1,
+                2,
+                2,
+                2,
+                2,
+            ]
+            assert loop_stages[1].payload["evidence_requests"]
+            assert loop_stages[2].payload["candidate_decisions"] == []
+            assert loop_stages[6].payload["candidate_decisions"], (
+                loop_stages[5].payload["evidence_requests"]
+            )
+            assert loop_stages[6].payload["candidate_decisions"][0][
+                "disposition"
+            ] == "retained"
+            serialized_stages = json.dumps(
+                [stage.payload for stage in loop_stages]
+            )
+            assert "send_file(file_id)" not in serialized_stages
+            assert "Authorization" not in serialized_stages
+            assert "Bearer" not in serialized_stages
+            assert str(tmp_path) not in serialized_stages
+            assert all(
+                stage.payload[field] is False
+                for stage in loop_stages
+                for field in (
+                    "execution_allowed",
+                    "dispatch_allowed",
+                    "validation_allowed",
+                    "candidate_promotion_allowed",
+                    "report_submission_allowed",
+                    "raw_payload_processed",
+                )
+            )
 
         candidates_response = client.get(
             "/mythos/studio/workspaces/candidates",

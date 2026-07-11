@@ -1,0 +1,15 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/records/n8v3/{record_id}":  {
+                                                          "get":  {
+                                                                      "operationId":  "read_record_n8v3"
+                                                                  }
+                                                      },
+                  "/local/records/n8v3/{record_id}/summary":  {
+                                                                  "get":  {
+                                                                              "operationId":  "read_record_n8v3_summary"
+                                                                          }
+                                                              }
+              }
+}

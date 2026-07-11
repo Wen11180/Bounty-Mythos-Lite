@@ -1,0 +1,24 @@
+{
+    "expected_roots":  [
+                           {
+                               "gold_id":  "observed-primary-root",
+                               "root_cause_id":  "missing_object_ownership_check:export_payload",
+                               "route":  {
+                                             "method":  "GET",
+                                             "path":  "/local/exports/w3c8/{record_id}"
+                                         },
+                               "vuln_type":  "authorization",
+                               "disposition":  "retain",
+                               "worth_validation":  true,
+                               "required_evidence_refs":  [
+                                                              "code:code.py:export_payload",
+                                                              "api:GET:/local/exports/w3c8/{record_id}"
+                                                          ],
+                               "decisive_refutation_refs":  [
+
+                                                            ],
+                               "duplicate_of":  null,
+                               "scope_allowed":  true
+                           }
+                       ]
+}

@@ -1,0 +1,11 @@
+{
+    "fixture_id":  "fixture-d4y7",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/exports/d4y7/{record_id}",
+                           "/local/exports/d4y7/{record_id}/summary"
+                       ],
+    "local_only":  true
+}

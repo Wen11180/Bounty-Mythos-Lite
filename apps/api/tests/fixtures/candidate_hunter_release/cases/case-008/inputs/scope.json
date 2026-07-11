@@ -1,0 +1,10 @@
+{
+    "fixture_id":  "fixture-m6h1",
+    "allowed_repos":  [
+                          "${STAGED_CODE_ROOT}"
+                      ],
+    "allowed_routes":  [
+                           "/local/exports/m6h1/{record_id}"
+                       ],
+    "local_only":  true
+}

@@ -2109,6 +2109,11 @@ def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandid
     seen: set[tuple[object, ...]] = set()
     deduped: list[CodebaseFactCandidate] = []
     for fact in facts:
+        caller = (
+            fact.payload.get("caller")
+            if fact.fact_type == "service_call" and isinstance(fact.payload, dict)
+            else None
+        )
         key = (
             fact.fact_type,
             fact.source_path,
@@ -2116,6 +2121,7 @@ def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandid
             fact.route_method,
             fact.route_path,
             fact.authz_hint,
+            caller,
         )
         if key in seen:
             continue

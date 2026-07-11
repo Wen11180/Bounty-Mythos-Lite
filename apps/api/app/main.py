@@ -35,6 +35,10 @@ from app.campaign_orchestrator import (
     campaign_token_used_from_runs,
     tick_campaign,
 )
+from app.candidate_hunter_loop import (
+    build_candidate_hunter_observations,
+    run_candidate_hunter_loop,
+)
 from app.hunter_intelligence import (
     HunterIntelligence,
 )
@@ -2515,10 +2519,33 @@ def run_mythos_studio_workspace_research(
     except SourceAuditBlocked as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    policy_text = _read_source_audit_policy_text(policy_path or scope_path)
     record = save_source_audit_pipeline_run(
         repository=repository,
         result=result,
-        policy_text=_read_source_audit_policy_text(policy_path or scope_path),
+        policy_text=policy_text,
+    )
+    candidates = _studio_candidates_for_run(record, manifest)
+    surface_facts = _studio_imported_surface_facts(manifest)
+    for kind in ("api", "har"):
+        if not any(
+            fact.get("artifact_kind") == kind for fact in surface_facts
+        ):
+            if context_fact := _studio_empty_surface_context_fact(manifest, kind):
+                surface_facts.append(context_fact)
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id=record.id,
+        candidates=candidates,
+        code_files=_studio_authorized_code_files(repo_path),
+        surface_facts=surface_facts,
+        context_facts=_studio_authorization_context_facts(manifest),
+    )
+    run_candidate_hunter_loop(
+        repository=repository,
+        record=record,
+        policy_text=policy_text,
+        candidates=candidates,
+        observations=observations,
     )
     preview = build_report_preview_response(record)
     updated_manifest = record_workspace_run(
@@ -7528,6 +7555,38 @@ def _studio_imported_surface_facts(manifest: dict) -> list[dict[str, str]]:
     return facts
 
 
+def _studio_empty_surface_context_fact(
+    manifest: dict,
+    kind: str,
+) -> dict[str, str] | None:
+    if kind not in {"api", "har"}:
+        return None
+    source_path = next(
+        (
+            artifact.get("source_path")
+            for artifact in manifest.get("artifacts", [])
+            if isinstance(artifact, dict)
+            and artifact.get("kind") == kind
+            and isinstance(artifact.get("source_path"), str)
+        ),
+        None,
+    )
+    if not source_path:
+        return None
+    try:
+        payload = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if kind == "api":
+        valid = isinstance(payload, dict) and isinstance(payload.get("paths"), dict)
+    else:
+        log = payload.get("log") if isinstance(payload, dict) else None
+        valid = isinstance(log, dict) and isinstance(log.get("entries"), list)
+    if not valid:
+        return None
+    return {"fact_type": f"{kind}_context", "artifact_kind": kind}
+
+
 def _studio_attack_surface_model(manifest: dict) -> dict[str, object]:
     facts = _studio_imported_surface_facts(manifest)
     route_facts = [
@@ -7678,6 +7737,7 @@ def _studio_openapi_surface_facts(payload: object) -> list[dict[str, str]]:
     if not isinstance(paths, dict):
         return []
     facts: list[dict[str, str]] = []
+    document_security = payload.get("security")
     for route_path, operations in paths.items():
         if not isinstance(route_path, str) or not isinstance(operations, dict):
             continue
@@ -7693,6 +7753,15 @@ def _studio_openapi_surface_facts(payload: object) -> list[dict[str, str]]:
             operation_id = operation.get("operationId")
             if isinstance(operation_id, str) and operation_id:
                 fact["operation_id"] = safe_preview_text(operation_id)
+            security = (
+                operation.get("security")
+                if "security" in operation
+                else operations.get("security")
+                if "security" in operations
+                else document_security
+            )
+            if isinstance(security, list):
+                fact["access_mode"] = "protected" if security else "public"
             facts.append(fact)
     return facts
 

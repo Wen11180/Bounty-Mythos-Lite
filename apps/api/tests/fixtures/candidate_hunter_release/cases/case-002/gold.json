@@ -1,0 +1,23 @@
+{
+    "expected_roots":  [
+                           {
+                               "gold_id":  "observed-primary-root",
+                               "root_cause_id":  "missing_object_ownership_check:read_record",
+                               "route":  {
+                                             "method":  "GET",
+                                             "path":  "/local/records/x2k9/{record_id}"
+                                         },
+                               "vuln_type":  "authorization",
+                               "disposition":  "refute",
+                               "worth_validation":  false,
+                               "required_evidence_refs":  [
+
+                                                          ],
+                               "decisive_refutation_refs":  [
+                                                                "code:code.py:verify_record_access:ownership_guard"
+                                                            ],
+                               "duplicate_of":  null,
+                               "scope_allowed":  true
+                           }
+                       ]
+}

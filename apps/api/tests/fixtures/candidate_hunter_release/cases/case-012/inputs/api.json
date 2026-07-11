@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/archives/r7f3/{record_id}":  {
+                                                           "get":  {
+                                                                       "operationId":  "export_archive_r7f3"
+                                                                   }
+                                                       }
+              }
+}

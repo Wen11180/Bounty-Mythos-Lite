@@ -1,0 +1,10 @@
+{
+    "openapi":  "3.0.0",
+    "paths":  {
+                  "/local/exports/m6h1/{record_id}":  {
+                                                          "get":  {
+                                                                      "operationId":  "export_payload_m6h1"
+                                                                  }
+                                                      }
+              }
+}

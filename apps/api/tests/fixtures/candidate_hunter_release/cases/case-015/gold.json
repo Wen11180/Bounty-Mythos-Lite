@@ -1,0 +1,44 @@
+{
+    "expected_roots":  [
+                           {
+                               "gold_id":  "observed-primary-root",
+                               "root_cause_id":  "missing_object_ownership_check:transfer_funds",
+                               "route":  {
+                                             "method":  "GET",
+                                             "path":  "/local/transfers/c6w5/{record_id}"
+                                         },
+                               "vuln_type":  "authorization",
+                               "disposition":  "retain",
+                               "worth_validation":  true,
+                               "required_evidence_refs":  [
+                                                              "code:code.py:transfer_funds",
+                                                              "code:code.py:load_transfer",
+                                                              "api:GET:/local/transfers/c6w5/{record_id}"
+                                                          ],
+                               "decisive_refutation_refs":  [
+
+                                                            ],
+                               "duplicate_of":  null,
+                               "scope_allowed":  true
+                           },
+                           {
+                               "gold_id":  "observed-summary-root",
+                               "root_cause_id":  "missing_object_ownership_check:transfer_funds_summary",
+                               "route":  {
+                                             "method":  "GET",
+                                             "path":  "/local/transfers/c6w5/{record_id}/summary"
+                                         },
+                               "vuln_type":  "authorization",
+                               "disposition":  "deduplicate",
+                               "worth_validation":  false,
+                               "required_evidence_refs":  [
+
+                                                          ],
+                               "decisive_refutation_refs":  [
+
+                                                            ],
+                               "duplicate_of":  "missing_object_ownership_check:transfer_funds",
+                               "scope_allowed":  true
+                           }
+                       ]
+}
