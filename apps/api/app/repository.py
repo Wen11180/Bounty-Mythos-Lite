@@ -93,6 +93,13 @@ class DatabaseRepository:
         return _program_from_record(record)
 
     def list_findings(self) -> list[Finding]:
+    def create_program(self, program: Program) -> Program:
+        record = _program_to_record(program)
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return _program_from_record(record)
+
         records = self.session.scalars(select(FindingRecord).order_by(FindingRecord.id)).all()
         return [_finding_from_record(record) for record in records]
 

@@ -1846,6 +1846,14 @@ def list_programs(session: Session = Depends(get_session)) -> list[Program]:
     return DatabaseRepository(session).list_programs()
 
 
+@app.post("/programs", response_model=Program, status_code=201)
+def create_program(program: Program, session: Session = Depends(get_session)) -> Program:
+    repository = DatabaseRepository(session)
+    if repository.get_program(program.id) is not None:
+        raise HTTPException(status_code=409, detail="Program already exists")
+    return repository.create_program(program)
+
+
 @app.get("/programs/{program_id}", response_model=Program)
 def get_program(program_id: str, session: Session = Depends(get_session)) -> Program:
     program = DatabaseRepository(session).get_program(program_id)
