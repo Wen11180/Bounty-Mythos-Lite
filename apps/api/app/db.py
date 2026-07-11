@@ -1,7 +1,10 @@
 from collections.abc import Iterator
 from functools import lru_cache
+from pathlib import Path
 
-from sqlalchemy import Engine, create_engine
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import Engine, create_engine, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -41,13 +44,23 @@ def create_tables(engine: Engine) -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def ensure_database_schema(engine: Engine) -> None:
+    if engine.dialect.name == "sqlite" and engine.url.database in {None, "", ":memory:"}:
+        create_tables(engine)
+        return
+
+    config = _alembic_config(engine)
+    _adopt_supported_unversioned_schema(engine, config)
+    command.upgrade(config, "head")
+
+
 def initialize_database(engine: Engine | None = None) -> None:
     engine = engine or get_engine()
     engine_id = id(engine)
     if engine_id in _initialized_engine_ids:
         return
 
-    create_tables(engine)
+    ensure_database_schema(engine)
     if engine.dialect.name == "sqlite":
         SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         with SessionLocal() as session:
@@ -55,6 +68,49 @@ def initialize_database(engine: Engine | None = None) -> None:
 
             seed_sample_data(session)
     _initialized_engine_ids.add(engine_id)
+
+
+def _alembic_config(engine: Engine) -> Config:
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(str(api_root / "alembic.ini"))
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    config.attributes["database_url_override"] = engine.url.render_as_string(
+        hide_password=False
+    )
+    return config
+
+
+def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if not tables or "alembic_version" in tables:
+        return
+
+    required_tables = {
+        "approval_records",
+        "artifacts",
+        "learning_signals",
+        "programs",
+        "validation_runs",
+    }
+    learning_columns = {column["name"] for column in inspector.get_columns("learning_signals")}
+    approval_columns = {column["name"] for column in inspector.get_columns("approval_records")}
+    if (
+        not required_tables.issubset(tables)
+        or "identity_hash" not in learning_columns
+        or "expires_at" not in approval_columns
+    ):
+        raise RuntimeError("database_schema_unversioned")
+
+    unique_constraints = inspector.get_unique_constraints("artifacts")
+    unique_columns = {tuple(constraint["column_names"]) for constraint in unique_constraints}
+    if ("program_id", "source_hash") in unique_columns:
+        revision = "0011_artifact_program_scope"
+    elif ("source_hash",) in unique_columns:
+        revision = "0010_learning_signal_identity_hash"
+    else:
+        raise RuntimeError("database_schema_unversioned")
+    command.stamp(config, revision)
 
 
 def get_session() -> Iterator[Session]:

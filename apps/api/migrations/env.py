@@ -18,7 +18,11 @@ target_metadata = Base.metadata
 
 
 def database_url() -> str:
-    return getenv("DATABASE_URL") or get_settings().database_url
+    return (
+        config.attributes.get("database_url_override")
+        or getenv("DATABASE_URL")
+        or get_settings().database_url
+    )
 
 
 def run_migrations_offline() -> None:

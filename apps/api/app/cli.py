@@ -8,7 +8,7 @@ import sys
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db import create_tables
+from app.db import ensure_database_schema
 from app.deep_research import build_knowledge_artifact
 from app.intelligence_benchmark import (
     build_studio_expectations_template,
@@ -179,7 +179,7 @@ def run_agent_gates_command(args) -> int:
     resume = _read_agent_resume(args.resume_from)
     campaign_id = args.campaign_id or resume.get("campaign_id")
     engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
-    create_tables(engine)
+    ensure_database_schema(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with SessionLocal() as session:
         gates = get_agent_gates(
@@ -194,7 +194,7 @@ def run_agent_next_command(args) -> int:
     resume = _read_agent_resume(args.resume_from)
     campaign_id = args.campaign_id or resume.get("campaign_id")
     engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
-    create_tables(engine)
+    ensure_database_schema(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with SessionLocal() as session:
         next_step = get_agent_next(
@@ -212,7 +212,7 @@ def run_agent_review_note_command(args) -> int:
     resume = _read_agent_resume(args.resume_from)
     campaign_id = args.campaign_id or resume.get("campaign_id")
     engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
-    create_tables(engine)
+    ensure_database_schema(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with SessionLocal() as session:
         review_note = record_agent_review_note(
@@ -259,7 +259,7 @@ def run_agent_status_command(args) -> int:
     resume = _read_agent_resume(args.resume_from)
     campaign_id = args.campaign_id or resume.get("campaign_id")
     engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
-    create_tables(engine)
+    ensure_database_schema(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with SessionLocal() as session:
         status = get_agent_status(
@@ -283,7 +283,7 @@ def run_agent_command(args) -> int:
         raise SystemExit("--repo, --scope, and --goal are required unless --resume-from supplies them")
 
     engine = create_engine(args.database_url, **_engine_kwargs(args.database_url))
-    create_tables(engine)
+    ensure_database_schema(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with SessionLocal() as session:
         result = run_agent_goal(
@@ -314,7 +314,7 @@ def _read_agent_resume(path: str | None) -> dict:
 
 def persist_source_audit_pipeline_run(*, database_url: str, scope_path: str, result):
     engine = create_engine(database_url, **_engine_kwargs(database_url))
-    create_tables(engine)
+    ensure_database_schema(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with SessionLocal() as session:
         repository = DatabaseRepository(session)
