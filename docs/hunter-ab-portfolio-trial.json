@@ -1,0 +1,682 @@
+{
+  "generated_at": "2026-07-12T08:55:56Z",
+  "mode": "authorized-lab-package",
+  "case_ids": [
+    "my-h1-gitlab-own-instance",
+    "my-h1-wordpress-core-rest",
+    "my-h1-nodejs-core-permission",
+    "my-local-dvwa-authz-lab",
+    "my-local-juice-shop-basket-lab",
+    "my-local-new-api-access-key-lab"
+  ],
+  "summaries": [
+    {
+      "case_id": "my-h1-gitlab-own-instance",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-h1-gitlab",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:get_local_project",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_object_ownership_check:download_local_project_export",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-003",
+          "root_cause_id": "missing_object_ownership_check:download_local_repository_archive",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-004",
+          "root_cause_id": "missing_object_ownership_check:start_local_project_export",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-005",
+          "root_cause_id": "missing_object_ownership_check:start_local_project_export_relations",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "my-h1-wordpress-core-rest",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-h1-wordpress",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:delete_local_wp_post",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_object_ownership_check:get_local_wp_post",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-003",
+          "root_cause_id": "missing_object_ownership_check:export_local_wp_post",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-004",
+          "root_cause_id": "missing_object_ownership_check:update_local_wp_post",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "my-h1-nodejs-core-permission",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-h1-nodejs",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:delete_local_node_resource",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_object_ownership_check:export_local_node_resource",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-003",
+          "root_cause_id": "missing_object_ownership_check:read_local_node_resource",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-004",
+          "root_cause_id": "missing_object_ownership_check:symlink_local_node_resource",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-005",
+          "root_cause_id": "missing_object_ownership_check:write_local_node_resource",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "my-local-dvwa-authz-lab",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "retain",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-local-dvwa",
+      "gold_present": true,
+      "loop_audit_status": "ready",
+      "evaluation_status": "failed",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_loaded"
+      ],
+      "final_candidates": [
+        {
+          "candidate_id": "H-001",
+          "rank": 1,
+          "vuln_type": "authorization",
+          "root_cause_id": "missing_object_ownership_check:export_local_dvwa_user",
+          "route": {
+            "method": "GET",
+            "path": "/local/dvwa/users/:user_id/export"
+          },
+          "source_fact_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/dvwa/users/{user_id}/export",
+            "har:har_context",
+            "code:code.ts:export_local_dvwa_user",
+            "code:code.ts:find_user",
+            "code:code.ts:export_file",
+            "evidence:798ec8609968f84c05e675f57f3c4c071ec578f0dbe4c93968f6c2718e892200",
+            "evidence:b3f13d828734a30bb4920581809751e7781332802a1cff9bf1df5edb21f1f237",
+            "evidence:291d5f2a14050d343f74bc110b7beef1b52bf6dc67e2e5db9fa1ad14111300b7"
+          ],
+          "affected_code_path": "code:code.ts:export_local_dvwa_user",
+          "evidence_trace_status": "traceable",
+          "human_validation_readiness": "ready",
+          "execution_allowed": false,
+          "dispatch_allowed": false,
+          "validation_allowed": false,
+          "candidate_promotion_allowed": false,
+          "report_submission_allowed": false,
+          "refutation_questions": [
+            "Does an observed local authorization guard execute before the sensitive sink?",
+            "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+          ],
+          "safe_validation_plan": [
+            "Local review only for GET /local/dvwa/users/:user_id/export: confirm whether an ownership or authorization guard runs before the sensitive sink reached via export_local_dvwa_user.",
+            "Do not execute live validation, access production accounts, or submit a report."
+          ],
+          "next_allowed_action": "Human review of the cited local evidence.",
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report"
+          ]
+        }
+      ],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:export_local_dvwa_user",
+          "disposition": "retained",
+          "evidence_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/dvwa/users/{user_id}/export",
+            "har:har_context",
+            "code:code.ts:export_local_dvwa_user",
+            "code:code.ts:find_user",
+            "code:code.ts:export_file",
+            "evidence:798ec8609968f84c05e675f57f3c4c071ec578f0dbe4c93968f6c2718e892200",
+            "evidence:b3f13d828734a30bb4920581809751e7781332802a1cff9bf1df5edb21f1f237",
+            "evidence:291d5f2a14050d343f74bc110b7beef1b52bf6dc67e2e5db9fa1ad14111300b7"
+          ],
+          "candidate_projection": {
+            "candidate_id": "H-001",
+            "rank": 1,
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:export_local_dvwa_user",
+            "route": {
+              "method": "GET",
+              "path": "/local/dvwa/users/:user_id/export"
+            },
+            "source_fact_refs": [
+              "scope:scope_context",
+              "policy:policy_context",
+              "api:api_surface",
+              "api:GET:/local/dvwa/users/{user_id}/export",
+              "har:har_context",
+              "code:code.ts:export_local_dvwa_user",
+              "code:code.ts:find_user",
+              "code:code.ts:export_file",
+              "evidence:798ec8609968f84c05e675f57f3c4c071ec578f0dbe4c93968f6c2718e892200",
+              "evidence:b3f13d828734a30bb4920581809751e7781332802a1cff9bf1df5edb21f1f237",
+              "evidence:291d5f2a14050d343f74bc110b7beef1b52bf6dc67e2e5db9fa1ad14111300b7"
+            ],
+            "affected_code_path": "code:code.ts:export_local_dvwa_user",
+            "evidence_trace_status": "traceable",
+            "human_validation_readiness": "ready",
+            "execution_allowed": false,
+            "dispatch_allowed": false,
+            "validation_allowed": false,
+            "candidate_promotion_allowed": false,
+            "report_submission_allowed": false,
+            "refutation_questions": [
+              "Does an observed local authorization guard execute before the sensitive sink?",
+              "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+            ],
+            "safe_validation_plan": [
+              "Local review only for GET /local/dvwa/users/:user_id/export: confirm whether an ownership or authorization guard runs before the sensitive sink reached via export_local_dvwa_user.",
+              "Do not execute live validation, access production accounts, or submit a report."
+            ],
+            "next_allowed_action": "Human review of the cited local evidence.",
+            "safety_blockers": [
+              "execute_live_validation",
+              "touch_real_user_data",
+              "submit_report"
+            ]
+          },
+          "priority_score": 100,
+          "evidence_completeness_score": 5
+        }
+      ],
+      "gold_roots": [
+        {
+          "gold_id": "observed-primary-root",
+          "root_cause_id": "missing_object_ownership_check:export_local_dvwa_user",
+          "route": {
+            "method": "GET",
+            "path": "/local/dvwa/users/{user_id}/export"
+          },
+          "vuln_type": "authorization",
+          "disposition": "retain",
+          "worth_validation": true,
+          "required_evidence_refs": [
+            "code:code.ts:export_local_dvwa_user",
+            "api:GET:/local/dvwa/users/{user_id}/export"
+          ],
+          "decisive_refutation_refs": [],
+          "duplicate_of": null,
+          "scope_allowed": true
+        }
+      ],
+      "metrics": {
+        "precision_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "valuable_recall_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "evidence_traceability_rate": {
+          "value": 1.0,
+          "numerator": 2,
+          "denominator": 2,
+          "threshold": 1.0,
+          "passed": true
+        },
+        "effective_refutation_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "duplicate_suppression_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "human_worth_validation_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        }
+      },
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [
+        {
+          "path": "metrics.effective_refutation_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.duplicate_suppression_rate",
+          "reason": "zero_denominator"
+        }
+      ],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "my-local-juice-shop-basket-lab",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "retain",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-local-juice-shop",
+      "gold_present": true,
+      "loop_audit_status": "ready",
+      "evaluation_status": "failed",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_loaded"
+      ],
+      "final_candidates": [
+        {
+          "candidate_id": "H-001",
+          "rank": 1,
+          "vuln_type": "authorization",
+          "root_cause_id": "missing_object_ownership_check:export_local_juice_basket",
+          "route": {
+            "method": "GET",
+            "path": "/local/juice/rest/basket/:basket_id"
+          },
+          "source_fact_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/juice/rest/basket/{basket_id}",
+            "har:har_context",
+            "code:code.ts:export_local_juice_basket",
+            "code:code.ts:find_basket",
+            "code:code.ts:export_file",
+            "evidence:5600d3e754e4615872885c0ab49a5048197c459fa7a76f46a69ba1063a23d5fe",
+            "evidence:ac03c5e8f1ad53b75e413f9e122db47ee7e2ad6fcdeb6fd8ad6bcaf309dbd7f4",
+            "evidence:42867290bf9bbab5328ab0dee16a48d39906d81ca782cea4f3de5b74c0ab960e"
+          ],
+          "affected_code_path": "code:code.ts:export_local_juice_basket",
+          "evidence_trace_status": "traceable",
+          "human_validation_readiness": "ready",
+          "execution_allowed": false,
+          "dispatch_allowed": false,
+          "validation_allowed": false,
+          "candidate_promotion_allowed": false,
+          "report_submission_allowed": false,
+          "refutation_questions": [
+            "Does an observed local authorization guard execute before the sensitive sink?",
+            "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+          ],
+          "safe_validation_plan": [
+            "Local review only for GET /local/juice/rest/basket/:basket_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via export_local_juice_basket.",
+            "Do not execute live validation, access production accounts, or submit a report."
+          ],
+          "next_allowed_action": "Human review of the cited local evidence.",
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report"
+          ]
+        }
+      ],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:export_local_juice_basket",
+          "disposition": "retained",
+          "evidence_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/juice/rest/basket/{basket_id}",
+            "har:har_context",
+            "code:code.ts:export_local_juice_basket",
+            "code:code.ts:find_basket",
+            "code:code.ts:export_file",
+            "evidence:5600d3e754e4615872885c0ab49a5048197c459fa7a76f46a69ba1063a23d5fe",
+            "evidence:ac03c5e8f1ad53b75e413f9e122db47ee7e2ad6fcdeb6fd8ad6bcaf309dbd7f4",
+            "evidence:42867290bf9bbab5328ab0dee16a48d39906d81ca782cea4f3de5b74c0ab960e"
+          ],
+          "candidate_projection": {
+            "candidate_id": "H-001",
+            "rank": 1,
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:export_local_juice_basket",
+            "route": {
+              "method": "GET",
+              "path": "/local/juice/rest/basket/:basket_id"
+            },
+            "source_fact_refs": [
+              "scope:scope_context",
+              "policy:policy_context",
+              "api:api_surface",
+              "api:GET:/local/juice/rest/basket/{basket_id}",
+              "har:har_context",
+              "code:code.ts:export_local_juice_basket",
+              "code:code.ts:find_basket",
+              "code:code.ts:export_file",
+              "evidence:5600d3e754e4615872885c0ab49a5048197c459fa7a76f46a69ba1063a23d5fe",
+              "evidence:ac03c5e8f1ad53b75e413f9e122db47ee7e2ad6fcdeb6fd8ad6bcaf309dbd7f4",
+              "evidence:42867290bf9bbab5328ab0dee16a48d39906d81ca782cea4f3de5b74c0ab960e"
+            ],
+            "affected_code_path": "code:code.ts:export_local_juice_basket",
+            "evidence_trace_status": "traceable",
+            "human_validation_readiness": "ready",
+            "execution_allowed": false,
+            "dispatch_allowed": false,
+            "validation_allowed": false,
+            "candidate_promotion_allowed": false,
+            "report_submission_allowed": false,
+            "refutation_questions": [
+              "Does an observed local authorization guard execute before the sensitive sink?",
+              "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+            ],
+            "safe_validation_plan": [
+              "Local review only for GET /local/juice/rest/basket/:basket_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via export_local_juice_basket.",
+              "Do not execute live validation, access production accounts, or submit a report."
+            ],
+            "next_allowed_action": "Human review of the cited local evidence.",
+            "safety_blockers": [
+              "execute_live_validation",
+              "touch_real_user_data",
+              "submit_report"
+            ]
+          },
+          "priority_score": 100,
+          "evidence_completeness_score": 5
+        }
+      ],
+      "gold_roots": [
+        {
+          "gold_id": "observed-primary-root",
+          "root_cause_id": "missing_object_ownership_check:export_local_juice_basket",
+          "route": {
+            "method": "GET",
+            "path": "/local/juice/rest/basket/{basket_id}"
+          },
+          "vuln_type": "authorization",
+          "disposition": "retain",
+          "worth_validation": true,
+          "required_evidence_refs": [
+            "code:code.ts:export_local_juice_basket",
+            "api:GET:/local/juice/rest/basket/{basket_id}"
+          ],
+          "decisive_refutation_refs": [],
+          "duplicate_of": null,
+          "scope_allowed": true
+        }
+      ],
+      "metrics": {
+        "precision_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "valuable_recall_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "evidence_traceability_rate": {
+          "value": 1.0,
+          "numerator": 2,
+          "denominator": 2,
+          "threshold": 1.0,
+          "passed": true
+        },
+        "effective_refutation_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "duplicate_suppression_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "human_worth_validation_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        }
+      },
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [
+        {
+          "path": "metrics.effective_refutation_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.duplicate_suppression_rate",
+          "reason": "zero_denominator"
+        }
+      ],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "my-local-new-api-access-key-lab",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-local-new-api",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:delete_local_newapi_access_key",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_object_ownership_check:get_local_newapi_access_key",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-003",
+          "root_cause_id": "missing_object_ownership_check:update_local_newapi_access_key",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    }
+  ]
+}

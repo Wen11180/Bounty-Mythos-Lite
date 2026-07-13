@@ -1,0 +1,53 @@
+{
+  "generated_at": "2026-07-12T15:02:11Z",
+  "mode": "authorized-lab-package",
+  "case_ids": [
+    "my-gh-cal-webhook-ssrf-lab"
+  ],
+  "summaries": [
+    {
+      "case_id": "my-gh-cal-webhook-ssrf-lab",
+      "suite": "lab",
+      "risk_family": "ssrf",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-gh-cal-ssrf",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_ssrf_validation:deliver_local_cal_webhook",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:validateUrlForSSRF"
+          ]
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_ssrf_validation:test_local_cal_webhook",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:validateUrlForSSRF"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    }
+  ]
+}

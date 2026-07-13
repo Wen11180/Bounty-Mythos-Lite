@@ -1,0 +1,738 @@
+{
+  "generated_at": "2026-07-12T15:40:35Z",
+  "submission_blocked": true,
+  "execution_allowed": false,
+  "report_submission_allowed": false,
+  "package_count": 2,
+  "total_drafts": 1,
+  "packages": [
+    {
+      "package_id": "my-local-ssrf-webhook-retain-lab",
+      "retained_count": 1,
+      "draft_count": 1,
+      "submission_blocked": true,
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "confirmed_vulnerability": false,
+      "advisory_bundle_present": true,
+      "advisory_sources": [
+        {
+          "path": "inputs/advisory/semgrep.json",
+          "engine": "semgrep_advisory",
+          "finding_count": 1
+        }
+      ],
+      "multi_engine_verdicts": [
+        {
+          "status": "local_static_consistent",
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_ssrf_validation:deliver_local_lab_webhook",
+          "engines": [
+            {
+              "engine": "hunter_loop",
+              "status": "ready",
+              "supports_candidate": true,
+              "notes": [
+                "hunter_disposition=retained"
+              ],
+              "evidence_refs": [
+                "scope:scope_context",
+                "policy:policy_context",
+                "api:api_surface",
+                "api:POST:/local/lab/webhooks/deliver",
+                "har:har_context",
+                "code:code.ts:deliver_local_lab_webhook",
+                "code:code.ts:String",
+                "code:code.ts:current_user",
+                "code:code.ts:send_payload",
+                "evidence:875db6c55675cae4b047965ab23611067800894df8115bc472a09ff8bc4e1aa3",
+                "evidence:d29082a475f16e2297a5c9ce3c7517cdb6127d32ad51dd69ac65456e0fe08c57",
+                "evidence:064a66f2cf3a11fb3a43431f14c54361b166534383df85a918ec8adb77a2eb62"
+              ]
+            },
+            {
+              "engine": "codebase_map",
+              "status": "ready",
+              "supports_candidate": true,
+              "notes": [
+                "codebase_map_gap_matches_candidate_root"
+              ],
+              "evidence_refs": [
+                "missing_ssrf_validation:deliver_local_lab_webhook"
+              ]
+            },
+            {
+              "engine": "report_bridge",
+              "status": "ready",
+              "supports_candidate": true,
+              "notes": [
+                "submission_blocked",
+                "not_a_confirmed_vulnerability"
+              ],
+              "evidence_refs": []
+            },
+            {
+              "engine": "semgrep_advisory",
+              "status": "ready",
+              "supports_candidate": true,
+              "notes": [
+                "semgrep_advisory_offline_only",
+                "findings_total=1",
+                "semgrep_advisory_rule_matches_candidate"
+              ],
+              "evidence_refs": [
+                "advisory:javascript.lang.security.audit.ssrf.fetch",
+                "file:inputs/code.ts",
+                "missing_ssrf_validation:deliver_local_lab_webhook"
+              ]
+            }
+          ],
+          "agreement_score": 1.0,
+          "blocked_reasons": [],
+          "review_questions": [
+            "Does an observed local authorization guard execute before the sensitive sink?",
+            "Does observed local data flow prove the route is public or otherwise non-sensitive?",
+            "Has any live validation been avoided (required default)?"
+          ],
+          "next_allowed_action": "Local engines agree this remains an unverified candidate worth human review. Do not execute live validation or submit a report.",
+          "execution_allowed": false,
+          "validation_allowed": false,
+          "report_submission_allowed": false,
+          "finding_promotion_allowed": false,
+          "confirmed_vulnerability": false,
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "auto_promote_finding"
+          ],
+          "advisory_attached": true
+        },
+        {
+          "status": "needs_human_review",
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_ssrf_validation:test_local_lab_webhook",
+          "engines": [
+            {
+              "engine": "hunter_loop",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "hunter_disposition=deduplicated"
+              ],
+              "evidence_refs": [
+                "code:code.ts:send_payload"
+              ]
+            },
+            {
+              "engine": "codebase_map",
+              "status": "ready",
+              "supports_candidate": null,
+              "notes": [
+                "codebase_map_no_gap_signal"
+              ],
+              "evidence_refs": [
+                "code:code.ts:send_payload"
+              ]
+            },
+            {
+              "engine": "report_bridge",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "submission_blocked",
+                "hunter_not_retained"
+              ],
+              "evidence_refs": []
+            },
+            {
+              "engine": "semgrep_advisory",
+              "status": "ready",
+              "supports_candidate": true,
+              "notes": [
+                "semgrep_advisory_offline_only",
+                "findings_total=1",
+                "semgrep_advisory_rule_matches_candidate"
+              ],
+              "evidence_refs": [
+                "advisory:javascript.lang.security.audit.ssrf.fetch",
+                "file:inputs/code.ts",
+                "missing_ssrf_validation:deliver_local_lab_webhook"
+              ]
+            }
+          ],
+          "agreement_score": 0.6667,
+          "blocked_reasons": [],
+          "review_questions": [
+            "Does local static evidence still show a missing control before the sensitive sink?",
+            "Is there an alternate authorized control path not modeled in the package?",
+            "Has any live validation been avoided (required default)?"
+          ],
+          "next_allowed_action": "Engines disagree; human must reconcile before any validation planning.",
+          "execution_allowed": false,
+          "validation_allowed": false,
+          "report_submission_allowed": false,
+          "finding_promotion_allowed": false,
+          "confirmed_vulnerability": false,
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "auto_promote_finding"
+          ],
+          "advisory_attached": true
+        }
+      ],
+      "drafts": [
+        {
+          "package_id": "my-local-ssrf-webhook-retain-lab",
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_ssrf_validation:deliver_local_lab_webhook",
+          "route": "POST /local/lab/webhooks/deliver",
+          "affected_code_path": "code:code.ts:deliver_local_lab_webhook",
+          "vuln_type": "ssrf",
+          "status": "unverified_hypothesis",
+          "human_review_required": true,
+          "submission_blocked": true,
+          "execution_allowed": false,
+          "validation_allowed": false,
+          "report_submission_allowed": false,
+          "confirmed_vulnerability": false,
+          "next_allowed_action": "Human review of the cited local evidence.",
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report"
+          ],
+          "refutation_questions": [
+            "Does an observed local authorization guard execute before the sensitive sink?",
+            "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+          ],
+          "validation_plan": {
+            "status": "validation_plan_ready",
+            "methods": [
+              "local_code_review",
+              "request_response_diff"
+            ],
+            "steps": [
+              "Local review only for POST /local/lab/webhooks/deliver: confirm whether an ownership or authorization guard runs before the sensitive sink reached via deliver_local_lab_webhook.",
+              "Do not execute live validation, access production accounts, or submit a report."
+            ],
+            "human_approval_required": true
+          },
+          "validation_workspace": {
+            "status": "awaiting_approval",
+            "scope_decision": {
+              "allowed": true,
+              "reason": "authorized_local_package_review"
+            },
+            "validation_plan_status": "validation_plan_ready",
+            "refutation_status": "passed",
+            "blocked_reasons": [],
+            "human_approval_required": true,
+            "allowed_to_execute": false,
+            "test_accounts_only": true,
+            "no_real_user_data": true,
+            "non_destructive_only": true,
+            "approval_gate": {
+              "human_approval_required": true,
+              "human_approved": false,
+              "status": "awaiting_approval",
+              "reason": "human_approval_required"
+            },
+            "steps": [
+              {
+                "instruction": "Local review only for POST /local/lab/webhooks/deliver: confirm whether an ownership or authorization guard runs before the sensitive sink reached via deliver_local_lab_webhook.",
+                "method": "local_code_review",
+                "status": "awaiting_approval",
+                "evidence_hints": [
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "scope:scope_context",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "policy:policy_context",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "api:api_surface",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "api:POST:/local/lab/webhooks/deliver",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "har:har_context",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:deliver_local_lab_webhook",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:String",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:current_user",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:send_payload",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "evidence:875db6c55675cae4b047965ab23611067800894df8115bc472a09ff8bc4e1aa3",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "evidence:d29082a475f16e2297a5c9ce3c7517cdb6127d32ad51dd69ac65456e0fe08c57",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "evidence:064a66f2cf3a11fb3a43431f14c54361b166534383df85a918ec8adb77a2eb62",
+                    "purpose": "local_authorized_evidence"
+                  }
+                ]
+              },
+              {
+                "instruction": "Do not execute live validation, access production accounts, or submit a report.",
+                "method": "request_response_diff",
+                "status": "awaiting_approval",
+                "evidence_hints": [
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "scope:scope_context",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "policy:policy_context",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "api:api_surface",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "api:POST:/local/lab/webhooks/deliver",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "har:har_context",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:deliver_local_lab_webhook",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:String",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:current_user",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "code:code.ts:send_payload",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "evidence:875db6c55675cae4b047965ab23611067800894df8115bc472a09ff8bc4e1aa3",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "evidence:d29082a475f16e2297a5c9ce3c7517cdb6127d32ad51dd69ac65456e0fe08c57",
+                    "purpose": "local_authorized_evidence"
+                  },
+                  {
+                    "type": "source_fact_ref",
+                    "ref": "evidence:064a66f2cf3a11fb3a43431f14c54361b166534383df85a918ec8adb77a2eb62",
+                    "purpose": "local_authorized_evidence"
+                  }
+                ]
+              }
+            ],
+            "evidence_hints": [
+              {
+                "type": "source_fact_ref",
+                "ref": "scope:scope_context",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "policy:policy_context",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "api:api_surface",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "api:POST:/local/lab/webhooks/deliver",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "har:har_context",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "code:code.ts:deliver_local_lab_webhook",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "code:code.ts:String",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "code:code.ts:current_user",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "code:code.ts:send_payload",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "evidence:875db6c55675cae4b047965ab23611067800894df8115bc472a09ff8bc4e1aa3",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "evidence:d29082a475f16e2297a5c9ce3c7517cdb6127d32ad51dd69ac65456e0fe08c57",
+                "purpose": "local_authorized_evidence"
+              },
+              {
+                "type": "source_fact_ref",
+                "ref": "evidence:064a66f2cf3a11fb3a43431f14c54361b166534383df85a918ec8adb77a2eb62",
+                "purpose": "local_authorized_evidence"
+              }
+            ]
+          },
+          "multi_engine_verdict": {
+            "status": "local_static_consistent",
+            "candidate_id": "H-001",
+            "root_cause_id": "missing_ssrf_validation:deliver_local_lab_webhook",
+            "engines": [
+              {
+                "engine": "hunter_loop",
+                "status": "ready",
+                "supports_candidate": true,
+                "notes": [
+                  "hunter_disposition=retained"
+                ],
+                "evidence_refs": [
+                  "scope:scope_context",
+                  "policy:policy_context",
+                  "api:api_surface",
+                  "api:POST:/local/lab/webhooks/deliver",
+                  "har:har_context",
+                  "code:code.ts:deliver_local_lab_webhook",
+                  "code:code.ts:String",
+                  "code:code.ts:current_user",
+                  "code:code.ts:send_payload",
+                  "evidence:875db6c55675cae4b047965ab23611067800894df8115bc472a09ff8bc4e1aa3",
+                  "evidence:d29082a475f16e2297a5c9ce3c7517cdb6127d32ad51dd69ac65456e0fe08c57",
+                  "evidence:064a66f2cf3a11fb3a43431f14c54361b166534383df85a918ec8adb77a2eb62"
+                ]
+              },
+              {
+                "engine": "codebase_map",
+                "status": "ready",
+                "supports_candidate": true,
+                "notes": [
+                  "codebase_map_gap_matches_candidate_root"
+                ],
+                "evidence_refs": [
+                  "missing_ssrf_validation:deliver_local_lab_webhook"
+                ]
+              },
+              {
+                "engine": "report_bridge",
+                "status": "ready",
+                "supports_candidate": true,
+                "notes": [
+                  "submission_blocked",
+                  "not_a_confirmed_vulnerability"
+                ],
+                "evidence_refs": []
+              },
+              {
+                "engine": "semgrep_advisory",
+                "status": "ready",
+                "supports_candidate": true,
+                "notes": [
+                  "semgrep_advisory_offline_only",
+                  "findings_total=1",
+                  "semgrep_advisory_rule_matches_candidate"
+                ],
+                "evidence_refs": [
+                  "advisory:javascript.lang.security.audit.ssrf.fetch",
+                  "file:inputs/code.ts",
+                  "missing_ssrf_validation:deliver_local_lab_webhook"
+                ]
+              }
+            ],
+            "agreement_score": 1.0,
+            "blocked_reasons": [],
+            "review_questions": [
+              "Does an observed local authorization guard execute before the sensitive sink?",
+              "Does observed local data flow prove the route is public or otherwise non-sensitive?",
+              "Has any live validation been avoided (required default)?"
+            ],
+            "next_allowed_action": "Local engines agree this remains an unverified candidate worth human review. Do not execute live validation or submit a report.",
+            "execution_allowed": false,
+            "validation_allowed": false,
+            "report_submission_allowed": false,
+            "finding_promotion_allowed": false,
+            "confirmed_vulnerability": false,
+            "safety_blockers": [
+              "execute_live_validation",
+              "touch_real_user_data",
+              "submit_report",
+              "auto_promote_finding"
+            ],
+            "advisory_attached": true
+          },
+          "report_draft": {
+            "title": "Possible ssrf issue on POST /local/lab/webhooks/deliver (root=missing_ssrf_validation:deliver_local_lab_webhook). Unverified hunter candidate; local review only.",
+            "severity": "medium",
+            "scope_status": "allowed_validation",
+            "safety_notes": [
+              "human_review_required",
+              "test_accounts_only",
+              "non_destructive_validation_only",
+              "submission_blocked",
+              "not_a_confirmed_vulnerability",
+              "hunter_candidate_only",
+              "local_authorized_materials_only",
+              "no_live_validation_executed"
+            ],
+            "steps": [
+              "Local review only for POST /local/lab/webhooks/deliver: confirm whether an ownership or authorization guard runs before the sensitive sink reached via deliver_local_lab_webhook.",
+              "Do not execute live validation, access production accounts, or submit a report."
+            ],
+            "expected_result": "Object access must enforce ownership/authorization before sensitive sinks.",
+            "actual_result": "Not filled. No live validation was executed. Do not submit until human review and authorized evidence complete.",
+            "human_review_required": true
+          },
+          "source_fact_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:POST:/local/lab/webhooks/deliver",
+            "har:har_context",
+            "code:code.ts:deliver_local_lab_webhook",
+            "code:code.ts:String",
+            "code:code.ts:current_user",
+            "code:code.ts:send_payload",
+            "evidence:875db6c55675cae4b047965ab23611067800894df8115bc472a09ff8bc4e1aa3",
+            "evidence:d29082a475f16e2297a5c9ce3c7517cdb6127d32ad51dd69ac65456e0fe08c57",
+            "evidence:064a66f2cf3a11fb3a43431f14c54361b166534383df85a918ec8adb77a2eb62",
+            "evidence:3595b304975e26341bc49d07677ab0fc414c75fd90079d10f47b9522db20303d"
+          ],
+          "evidence_trace_status": "traceable",
+          "human_validation_readiness": "ready"
+        }
+      ]
+    },
+    {
+      "package_id": "my-gh-cal-webhook-ssrf-lab",
+      "retained_count": 0,
+      "draft_count": 0,
+      "submission_blocked": true,
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "confirmed_vulnerability": false,
+      "advisory_bundle_present": true,
+      "advisory_sources": [
+        {
+          "path": "inputs/advisory/codeql.json",
+          "engine": "codeql_advisory",
+          "finding_count": 1
+        }
+      ],
+      "multi_engine_verdicts": [
+        {
+          "status": "false_positive_likely",
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_ssrf_validation:deliver_local_cal_webhook",
+          "engines": [
+            {
+              "engine": "hunter_loop",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "hunter_disposition=refuted"
+              ],
+              "evidence_refs": [
+                "code:code.ts:validateUrlForSSRF"
+              ]
+            },
+            {
+              "engine": "codebase_map",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "codebase_map_control_present"
+              ],
+              "evidence_refs": [
+                "code:code.ts:validateUrlForSSRF"
+              ]
+            },
+            {
+              "engine": "report_bridge",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "submission_blocked",
+                "hunter_not_retained"
+              ],
+              "evidence_refs": []
+            },
+            {
+              "engine": "codeql_advisory",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "codeql_advisory_offline_only",
+                "findings_total=1",
+                "codeql_advisory_control_or_negative_match"
+              ],
+              "evidence_refs": [
+                "advisory:js/ssrf-control-present",
+                "file:inputs/code.ts",
+                "missing_ssrf_validation:deliver"
+              ]
+            }
+          ],
+          "agreement_score": 1.0,
+          "blocked_reasons": [],
+          "review_questions": [
+            "Does local static evidence still show a missing control before the sensitive sink?",
+            "Is there an alternate authorized control path not modeled in the package?",
+            "Has any live validation been avoided (required default)?"
+          ],
+          "next_allowed_action": "Treat as likely false positive; keep submission blocked.",
+          "execution_allowed": false,
+          "validation_allowed": false,
+          "report_submission_allowed": false,
+          "finding_promotion_allowed": false,
+          "confirmed_vulnerability": false,
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "auto_promote_finding"
+          ],
+          "advisory_attached": true
+        },
+        {
+          "status": "false_positive_likely",
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_ssrf_validation:test_local_cal_webhook",
+          "engines": [
+            {
+              "engine": "hunter_loop",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "hunter_disposition=refuted"
+              ],
+              "evidence_refs": [
+                "code:code.ts:validateUrlForSSRF"
+              ]
+            },
+            {
+              "engine": "codebase_map",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "codebase_map_control_present"
+              ],
+              "evidence_refs": [
+                "code:code.ts:validateUrlForSSRF"
+              ]
+            },
+            {
+              "engine": "report_bridge",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "submission_blocked",
+                "hunter_not_retained"
+              ],
+              "evidence_refs": []
+            },
+            {
+              "engine": "codeql_advisory",
+              "status": "ready",
+              "supports_candidate": false,
+              "notes": [
+                "codeql_advisory_offline_only",
+                "findings_total=1",
+                "codeql_advisory_control_or_negative_match"
+              ],
+              "evidence_refs": [
+                "advisory:js/ssrf-control-present",
+                "file:inputs/code.ts",
+                "missing_ssrf_validation:deliver"
+              ]
+            }
+          ],
+          "agreement_score": 1.0,
+          "blocked_reasons": [],
+          "review_questions": [
+            "Does local static evidence still show a missing control before the sensitive sink?",
+            "Is there an alternate authorized control path not modeled in the package?",
+            "Has any live validation been avoided (required default)?"
+          ],
+          "next_allowed_action": "Treat as likely false positive; keep submission blocked.",
+          "execution_allowed": false,
+          "validation_allowed": false,
+          "report_submission_allowed": false,
+          "finding_promotion_allowed": false,
+          "confirmed_vulnerability": false,
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+            "auto_promote_finding"
+          ],
+          "advisory_attached": true
+        }
+      ],
+      "drafts": []
+    }
+  ]
+}

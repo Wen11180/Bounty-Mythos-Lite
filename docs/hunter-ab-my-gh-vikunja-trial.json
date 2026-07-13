@@ -1,0 +1,36 @@
+{
+  "generated_at": "2026-07-12T13:02:02Z",
+  "mode": "authorized-lab-package",
+  "case_ids": [
+    "my-gh-vikunja-task-authz-lab"
+  ],
+  "summaries": [
+    {
+      "case_id": "my-gh-vikunja-task-authz-lab",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-gh-vikunja",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    }
+  ]
+}

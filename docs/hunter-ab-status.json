@@ -1,0 +1,1817 @@
+{
+  "updated": "2026-07-13T01:38:22Z",
+  "north_star": "A+B candidate hunter",
+  "gitea": {
+    "package": "my-gh-gitea",
+    "trial": "1/0 refuted",
+    "local": "127.0.0.1:3002",
+    "version": "1.26.4",
+    "residuals": {
+      "GT-R1": "held",
+      "GT-R2": "held",
+      "GT-R3": "mostly_held_soft_residual_confirmed_dual_unit",
+      "GT-R4": "held_fail_closed",
+      "GT-R5": "held"
+    },
+    "live_unauth_matrix": "2026-07-12 depth_fail_closed_401_404",
+    "live_residual_depth": {
+      "updated": "2026-07-12T18:30:00Z",
+      "version": "1.26.4",
+      "unauth_identity_admin": "401",
+      "missing_repo_issue_family": "404",
+      "private_guess_unauth": "404",
+      "public_issue_family": "200_expected",
+      "protected_management_unauth": "401",
+      "gt_r3_dual_unit_matrix": "run_private_org_issues_vs_pulls",
+      "gt_r3_hard_gates": "held_cross_unit_primary_json_404",
+      "gt_r3_soft_residual": "confirmed_timeline_assets_subs_200_vs_hard_404",
+      "secrets_in_docs": false
+    },
+    "dual_unit_matrix": {
+      "updated": "2026-07-12T18:30:00Z",
+      "repo_class": "private_org",
+      "principals": [
+        "issues_only_team",
+        "pulls_only_team"
+      ],
+      "hard_gates": "held",
+      "soft_residual": "confirmed",
+      "finding_claim": false,
+      "submission_blocked": true,
+      "doc": "docs/hunter-ab-gitea-dual-unit-matrix.md"
+    }
+  },
+  "h1_api": "blocked_401",
+  "report_bridge": "green_submission_blocked_with_finding_dedup_risk_and_v4_residual_stack",
+  "distance_percent_range": [
+    97,
+    98
+  ],
+  "next_priority": [
+    "end_to_end_human_gates_when_h1_unblocked",
+    "no_h1_thrash_while_401",
+    "optional_live_wall_clock_execution_remains_human_gated_only_by_design",
+    "optional_authorized_github_static_package_intake_expand",
+    "optional_residual_module_polish_only_no_execution"
+  ],
+  "updated_at": "2026-07-12T21:18:38Z",
+  "distance_pct_range": [
+    97,
+    98
+  ],
+  "latest_package": "my-gh-plane-mass",
+  "packages": {
+    "my-gh-bookstack": {
+      "trial": "3/0 refuted",
+      "residual": "static v26.05.2 BS-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v26.05.2",
+      "source": "BookStackApp/BookStack"
+    },
+    "my-gh-listmonk": {
+      "trial": "3/0 refuted",
+      "residual": "static v6.2.0 LM-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v6.2.0",
+      "source": "knadh/listmonk"
+    },
+    "my-gh-vikunja": {
+      "trial": "3/0 refuted",
+      "residual": "static v2.3.0 VK-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v2.3.0",
+      "source": "go-vikunja/vikunja"
+    },
+    "my-gh-mealie": {
+      "trial": "3/0 refuted",
+      "residual": "static v3.20.1 ML-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v3.20.1",
+      "source": "mealie-recipes/mealie"
+    },
+    "my-gh-gitea": {
+      "trial": "1/0 refuted",
+      "residual": "local 1.26.4 GT-R1..R5 + dual-unit soft residual confirmed",
+      "expected_disposition": "refute",
+      "version_pin": "v1.26.4",
+      "source": "go-gitea/gitea",
+      "dual_unit": "run"
+    },
+    "my-gh-paperless": {
+      "trial": "3/0 refuted",
+      "residual": "static v2.9.0 PL-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v2.9.0",
+      "source": "paperless-ngx/paperless-ngx"
+    },
+    "my-gh-immich": {
+      "trial": "3/0 refuted",
+      "residual": "static v2.7.5 IM-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v2.7.5",
+      "source": "immich-app/immich"
+    },
+    "my-gh-nocodb": {
+      "trial": "3/0 refuted",
+      "residual": "static v2026.06.1 NC-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v2026.06.1",
+      "source": "nocodb/nocodb"
+    },
+    "my-gh-hedgedoc": {
+      "trial": "3/0 refuted",
+      "residual": "static v1.11.0 HD-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v1.11.0",
+      "source": "hedgedoc/hedgedoc"
+    },
+    "my-gh-documenso": {
+      "trial": "3/0 refuted",
+      "residual": "static v2.14.0 DG-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v2.14.0",
+      "source": "documenso/documenso"
+    },
+    "my-gh-plane": {
+      "trial": "3/0 refuted",
+      "residual": "static v1.3.1 PLANE-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v1.3.1",
+      "source": "makeplane/plane"
+    },
+    "my-gh-cal": {
+      "trial": "3/0 refuted",
+      "residual": "static v6.2.0 CAL-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v6.2.0",
+      "source": "calcom/cal.com"
+    },
+    "my-gh-joplin": {
+      "trial": "3/0 refuted",
+      "residual": "static v3.7.1 JP-R1..R4 held",
+      "expected_disposition": "refute",
+      "version_pin": "v3.7.1",
+      "source": "laurent22/joplin"
+    },
+    "my-gh-cal-ssrf": {
+      "trial": "2/0 refuted",
+      "residual": "static v6.2.0 CAL-SSRF-R1..R5 held",
+      "expected_disposition": "refute",
+      "version_pin": "v6.2.0",
+      "source": "calcom/cal.com",
+      "risk_family": "ssrf"
+    },
+    "my-gh-listmonk-path": {
+      "trial": "2/0 refuted",
+      "residual": "static v6.2.0 LM-PATH-R1..R5 held",
+      "expected_disposition": "refute",
+      "version_pin": "v6.2.0",
+      "source": "knadh/listmonk",
+      "risk_family": "path_traversal"
+    },
+    "my-gh-mealie-mass": {
+      "trial": "2/0 refuted",
+      "residual": "static v3.20.1 ML-MASS-R1..R6 held",
+      "expected_disposition": "refute",
+      "version_pin": "v3.20.1",
+      "source": "mealie-recipes/mealie",
+      "risk_family": "mass_assignment"
+    },
+    "my-gh-listmonk-inject": {
+      "trial": "2/0 refuted",
+      "residual": "static v6.2.0 LM-INJ-R1..R6 held",
+      "expected_disposition": "refute",
+      "version_pin": "v6.2.0",
+      "source": "knadh/listmonk",
+      "risk_family": "injection"
+    },
+    "my-local-ssrf-retain": {
+      "trial": "1 retained / 1 deduped",
+      "expected_disposition": "retain",
+      "risk_family": "ssrf",
+      "residual": "teaching LAB-SSRF-R1..R3 intentional"
+    },
+    "my-local-path-retain": {
+      "trial": "1 retained / 1 deduped",
+      "expected_disposition": "retain",
+      "risk_family": "path_traversal",
+      "residual": "teaching LAB-PATH-R1..R3 intentional"
+    },
+    "my-local-mass-retain": {
+      "trial": "1 retained / 1 deduped",
+      "expected_disposition": "retain",
+      "risk_family": "mass_assignment",
+      "residual": "teaching LAB-MASS-R1..R3 intentional"
+    },
+    "my-local-inject-retain": {
+      "trial": "1 retained / 1 deduped",
+      "expected_disposition": "retain",
+      "risk_family": "injection",
+      "residual": "teaching LAB-INJ-R1..R3 intentional"
+    },
+    "my-gh-miniflux-ssrf": {
+      "package": "my-gh-miniflux-ssrf",
+      "package_id": "my-gh-miniflux-feed-ssrf-lab",
+      "risk_family": "ssrf",
+      "expected_disposition": "refute",
+      "trial": "2/0 refuted",
+      "version": "2.3.2",
+      "upstream": "miniflux/v2",
+      "decision_quality": "pass"
+    },
+    "my-gh-paperless-path": {
+      "package": "my-gh-paperless-path",
+      "package_id": "my-gh-paperless-doc-path-lab",
+      "risk_family": "path_traversal",
+      "expected_disposition": "refute",
+      "trial": "2/0 refuted",
+      "version": "2.9.0",
+      "version_pin": "v2.9.0",
+      "upstream": "paperless-ngx/paperless-ngx",
+      "source": "paperless-ngx/paperless-ngx",
+      "decision_quality": "pass",
+      "residual": "static v2.9.0 PL-PATH-R1..R5 held"
+    },
+    "my-gh-immich-mass": {
+      "package": "my-gh-immich-mass",
+      "package_id": "my-gh-immich-user-mass-lab",
+      "risk_family": "mass_assignment",
+      "expected_disposition": "refute",
+      "trial": "1/0 refuted",
+      "version": "2.7.5",
+      "version_pin": "v2.7.5",
+      "upstream": "immich-app/immich",
+      "source": "immich-app/immich",
+      "decision_quality": "pass",
+      "residual": "static v2.7.5 IM-MASS-R1..R5 held"
+    },
+    "my-gh-mealie-inject": {
+      "trial": "2/0 refuted",
+      "residual": "static v3.20.1 ME-INJ-R1..R6 held",
+      "expected_disposition": "refute",
+      "version_pin": "v3.20.1",
+      "source": "mealie-recipes/mealie",
+      "risk_family": "injection"
+    },
+    "my-gh-freshrss-ssrf": {
+      "package": "my-gh-freshrss-ssrf",
+      "package_id": "my-gh-freshrss-feed-ssrf-lab",
+      "risk_family": "ssrf",
+      "expected_disposition": "refute",
+      "trial": "2/0 refuted",
+      "version": "1.29.1",
+      "upstream": "FreshRSS/FreshRSS",
+      "decision_quality": "pass",
+      "doc": "docs/hunter-ab-freshrss-ssrf-github.md",
+      "trial_doc": "docs/hunter-ab-freshrss-ssrf-trial.md"
+    },
+    "my-gh-plane-mass": {
+      "package": "my-gh-plane-mass",
+      "package_id": "my-gh-plane-user-mass-lab",
+      "risk_family": "mass_assignment",
+      "expected_disposition": "refute",
+      "trial": "1/0 refuted",
+      "version": "v1.3.1",
+      "upstream": "makeplane/plane",
+      "decision_quality": "pass",
+      "doc": "docs/hunter-ab-plane-mass-github.md",
+      "trial_doc": "docs/hunter-ab-plane-mass-trial.md"
+    }
+  },
+  "tracks": {
+    "github_bookstack": "green",
+    "live_h1_api": "blocked_401",
+    "github_listmonk": "green",
+    "github_vikunja": "green",
+    "github_mealie": "green",
+    "github_paperless": "green",
+    "github_immich": "green",
+    "github_nocodb": "green",
+    "github_hedgedoc": "green",
+    "github_documenso": "green",
+    "github_plane": "green",
+    "github_portfolio": {
+      "status": "green",
+      "count": 17,
+      "notes": "authz + cal-ssrf + listmonk-path + mealie-mass + listmonk-inject green"
+    },
+    "github_cal_ssrf": "green",
+    "non_authz_ssrf": "green_seed",
+    "github_listmonk_path": "green",
+    "non_authz_path": "green_seed",
+    "github_mealie_mass": "green",
+    "non_authz_mass": "green_seed",
+    "gitea_live_residual_depth": "green_unauth_depth",
+    "gitea_dual_unit_matrix": "green_soft_residual_confirmed",
+    "github_listmonk_inject": "green",
+    "non_authz_injection": "green_seed",
+    "non_authz_reverse_calibration": "green",
+    "teaching_ssrf_retain": "green",
+    "teaching_path_retain": "green",
+    "teaching_mass_retain": "green",
+    "teaching_inject_retain": "green",
+    "multi_engine_verifier": "scaffold_green",
+    "codeql_runner": {
+      "status": "package_ingest_green",
+      "module": "apps/api/app/codeql_runner",
+      "tests": "apps/api/tests/test_codeql_runner.py",
+      "docs": "docs/hunter-ab-codeql-runner.md",
+      "scheduler_task": "T-002c",
+      "scheduler_batch": "B-002c",
+      "bridge_flag": "--allow-local-codeql",
+      "default_status": "skipped_no_human_local_flag",
+      "remote_packs": false,
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "requires_prebuilt_db": true,
+      "requires_local_suite": true,
+      "notes": "Human-flagged local CodeQL CLI only; SARIF advisory merge; no remote packs/auto-DB."
+    },
+    "crs_fuzzing": {
+      "status": "package_ingest_green",
+      "module": "apps/api/app/crs_fuzzing",
+      "tests": "apps/api/tests/test_crs_fuzzing.py",
+      "docs": "docs/hunter-ab-crs-fuzzing.md",
+      "scheduler_task": "T-003",
+      "execution_allowed": false,
+      "promotion_allowed": false,
+      "notes": "Plan-only multi-lang parser/harness/fuzzer planning; package root ingest; no process spawn."
+    },
+    "crash_triage": {
+      "status": "package_ingest_green",
+      "module": "apps/api/app/crash_triage",
+      "tests": "apps/api/tests/test_crash_triage.py",
+      "docs": "docs/hunter-ab-crash-triage.md",
+      "scheduler_task": "T-003e",
+      "execution_allowed": false,
+      "crash_promotion_allowed": false,
+      "confirmed_vulnerability": false,
+      "notes": "Human-gated crash classify/dedupe/minimize/repro; advisory root-cause only; never promote/spawn/submit."
+    },
+    "crash_regression": {
+      "status": "package_ingest_green",
+      "module": "apps/api/app/crash_regression",
+      "tests": "apps/api/tests/test_crash_regression.py",
+      "docs": "docs/hunter-ab-crash-regression.md",
+      "scheduler_task": "T-003f",
+      "execution_allowed": false,
+      "test_auto_execute_allowed": false,
+      "crash_promotion_allowed": false,
+      "confirmed_vulnerability": false,
+      "notes": "Plan-only regression suggestions from crash triage clusters; never auto-run/promote/submit."
+    },
+    "wall_clock_multi_hour_runner": "package_ingest_green"
+  },
+  "mealie": {
+    "package": "my-gh-mealie",
+    "trial": "3/0 refuted",
+    "version": "v3.20.1",
+    "residuals": {
+      "ML-R1": "held",
+      "ML-R2": "held",
+      "ML-R3": "held",
+      "ML-R4": "held",
+      "ML-R5": "not_checked"
+    }
+  },
+  "paperless": {
+    "package": "my-gh-paperless",
+    "trial": "3/0 refuted",
+    "version": "v2.9.0",
+    "residuals": {
+      "PL-R1": "held",
+      "PL-R2": "held",
+      "PL-R3": "held",
+      "PL-R4": "held",
+      "PL-R5": "not_checked"
+    }
+  },
+  "immich": {
+    "package": "my-gh-immich",
+    "trial": "3/0 refuted",
+    "version": "v2.7.5",
+    "residuals": {
+      "IM-R1": "held",
+      "IM-R2": "held",
+      "IM-R3": "held",
+      "IM-R4": "held",
+      "IM-R5": "not_checked"
+    }
+  },
+  "nocodb": {
+    "package": "my-gh-nocodb",
+    "trial": "3/0 refuted",
+    "version": "v2026.06.1",
+    "residuals": {
+      "NC-R1": "held",
+      "NC-R2": "held",
+      "NC-R3": "held",
+      "NC-R4": "held",
+      "NC-R5": "not_checked"
+    }
+  },
+  "hedgedoc": {
+    "package": "my-gh-hedgedoc",
+    "trial": "3/0 refuted",
+    "version": "v1.11.0",
+    "residuals": {
+      "HD-R1": "held",
+      "HD-R2": "held",
+      "HD-R3": "held",
+      "HD-R4": "held",
+      "HD-R5": "not_checked"
+    }
+  },
+  "documenso": {
+    "package": "my-gh-documenso",
+    "trial": "3/0 refuted",
+    "version": "v2.14.0",
+    "residuals": {
+      "DG-R1": "held",
+      "DG-R2": "held",
+      "DG-R3": "held",
+      "DG-R4": "held",
+      "DG-R5": "not_checked"
+    }
+  },
+  "plane": {
+    "package": "my-gh-plane",
+    "trial": "3/0 refuted",
+    "version": "v1.3.1",
+    "residuals": {
+      "PLANE-R1": "held",
+      "PLANE-R2": "held",
+      "PLANE-R3": "held",
+      "PLANE-R4": "held",
+      "PLANE-R5": "not_checked"
+    }
+  },
+  "cal": {
+    "package": "my-gh-cal",
+    "trial": "3/0 refuted",
+    "version": "6.2.0",
+    "residuals": {
+      "CAL-R1": "held",
+      "CAL-R2": "held",
+      "CAL-R3": "held",
+      "CAL-R4": "held",
+      "CAL-R5": "held_documented",
+      "CAL-R6": "held_stub_not_product"
+    }
+  },
+  "joplin": {
+    "package": "my-gh-joplin",
+    "trial": "3/0 refuted",
+    "version": "3.7.1",
+    "residuals": {
+      "JP-R1": "held",
+      "JP-R2": "held",
+      "JP-R3": "held",
+      "JP-R4": "held",
+      "JP-R5": "documented_not_checked"
+    }
+  },
+  "cal_ssrf": {
+    "package": "my-gh-cal-ssrf",
+    "trial": "2/0 refuted",
+    "version": "6.2.0",
+    "residuals": {
+      "CAL-SSRF-R1": "held",
+      "CAL-SSRF-R2": "held",
+      "CAL-SSRF-R3": "held",
+      "CAL-SSRF-R4": "held_documented",
+      "CAL-SSRF-R5": "held_documented"
+    }
+  },
+  "listmonk_path": {
+    "package": "my-gh-listmonk-path",
+    "trial": "2/0 refuted",
+    "version": "6.2.0",
+    "residuals": {
+      "LM-PATH-R1": "held",
+      "LM-PATH-R2": "held",
+      "LM-PATH-R3": "held",
+      "LM-PATH-R4": "held",
+      "LM-PATH-R5": "held_documented"
+    }
+  },
+  "mealie_mass": {
+    "package": "my-gh-mealie-mass",
+    "trial": "2/0 refuted",
+    "version": "3.20.1",
+    "residuals": {
+      "ML-MASS-R1": "held",
+      "ML-MASS-R2": "held",
+      "ML-MASS-R3": "held",
+      "ML-MASS-R4": "held",
+      "ML-MASS-R5": "held",
+      "ML-MASS-R6": "held_documented"
+    }
+  },
+  "listmonk_inject": {
+    "package": "my-gh-listmonk-inject",
+    "trial": "2/0 refuted",
+    "version": "6.2.0",
+    "residuals": {
+      "LM-INJ-R1": "held",
+      "LM-INJ-R2": "held",
+      "LM-INJ-R3": "held",
+      "LM-INJ-R4": "held",
+      "LM-INJ-R5": "held_documented",
+      "LM-INJ-R6": "held_documented"
+    }
+  },
+  "reverse_calibration": {
+    "updated": "2026-07-13T01:38:22Z",
+    "status": "green",
+    "doc": "docs/hunter-ab-reverse-calibration.md",
+    "pairs": {
+      "ssrf": {
+        "retain": "my-local-ssrf-retain",
+        "refute": "my-gh-cal-ssrf",
+        "retain_trial": "1_retained_1_deduped",
+        "refute_trial": "2_0_refuted"
+      },
+      "path_traversal": {
+        "retain": "my-local-path-retain",
+        "refute": "my-gh-listmonk-path",
+        "retain_trial": "1_retained_1_deduped",
+        "refute_trial": "2_0_refuted",
+        "refute_diversity": "my-gh-paperless-path"
+      },
+      "mass_assignment": {
+        "retain": "my-local-mass-retain",
+        "refute": "my-gh-mealie-mass",
+        "retain_trial": "1_retained_1_deduped",
+        "refute_trial": "2_0_refuted",
+        "refute_diversity": "my-gh-immich-mass"
+      },
+      "injection": {
+        "retain": "my-local-inject-retain",
+        "refute": "my-gh-listmonk-inject",
+        "retain_trial": "1_retained_1_deduped",
+        "refute_trial": "2_0_refuted"
+      }
+    },
+    "inject": {
+      "retain": "my-local-inject-retain",
+      "refute_oss": [
+        "my-gh-listmonk-inject",
+        "my-gh-mealie-inject"
+      ],
+      "note": "injection diversity: listmonk campaign search + mealie SearchFilter/QueryFilterBuilder"
+    },
+    "families": {},
+    "ssrf_diversity": [
+      "my-gh-cal-ssrf",
+      "my-gh-miniflux-ssrf",
+      "my-gh-freshrss-ssrf"
+    ],
+    "mass_diversity": [
+      "my-gh-mealie-mass",
+      "my-gh-immich-mass",
+      "my-gh-plane-mass"
+    ]
+  },
+  "multi_engine_verifier": {
+    "status": "deeper_green_with_crash_regression",
+    "engines": [
+      "hunter_loop",
+      "codebase_map",
+      "report_bridge",
+      "human_evidence",
+      "semgrep_advisory",
+      "codeql_advisory",
+      "crs_fuzzing",
+      "residual_runner",
+      "authorized_web_api",
+      "human_residual_gate",
+      "semgrep_runner",
+      "codeql_runner",
+      "local_fuzz_runner",
+      "crash_triage",
+      "crash_regression"
+    ],
+    "deepen_attach": true,
+    "scheduler": [
+      "T-006b",
+      "B-003b"
+    ],
+    "execution_allowed": false,
+    "confirmed_vulnerability": false,
+    "engine_count_dual_lab": 23
+  },
+  "factory_stage": "v3_finding_dedup_risk_plus_v4_deep_code_reasoning_plus_vuln_chain_builder_plus_variant_analysis_plus_residual_stack",
+  "advisory_static_engines": {
+    "status": "package_ingest_green",
+    "module": "apps/api/app/advisory_static_engines",
+    "engines": [
+      "semgrep_advisory",
+      "codeql_advisory"
+    ],
+    "offline_only": true,
+    "auto_invoke_scanners": false,
+    "package_paths": [
+      "inputs/advisory/*.json",
+      "inputs/advisory.json"
+    ],
+    "sample_packages": [
+      "my-local-ssrf-retain",
+      "my-gh-cal-ssrf"
+    ],
+    "doc": "docs/hunter-ab-advisory-static-engines.md"
+  },
+  "factory_distance_percent_range": [
+    95,
+    98
+  ],
+  "human_residual_gate": {
+    "status": "package_ingest_green",
+    "module": "apps/api/app/human_residual_gate",
+    "statuses": [
+      "hold_for_human",
+      "ready_for_human_review",
+      "blocked",
+      "human_rejected_or_fp"
+    ],
+    "package_paths": [
+      "_extract/RESIDUAL_CHECKLIST.md",
+      "RESIDUAL_CHECKLIST.md",
+      "inputs/residual.json",
+      "inputs/residual_checklist.json",
+      "inputs/residual_checklist.md",
+      "inputs/residual/*.json"
+    ],
+    "execution_allowed": false,
+    "report_submission_allowed": false,
+    "auto_submit": false,
+    "doc": "docs/hunter-ab-human-residual-gate.md"
+  },
+  "residual_checklist_file_auto_ingest": {
+    "status": "green",
+    "updated": "2026-07-12T15:47:59Z",
+    "module": "apps/api/app/human_residual_gate.load_package_residual_checklist",
+    "wired_into": [
+      "run_candidate_hunter_authorized_lab_package",
+      "attach_human_residual_gates_to_bridge_result",
+      "run_ab_report_bridge"
+    ],
+    "sample_packages": [
+      "my-local-ssrf-retain",
+      "my-gh-cal-ssrf"
+    ],
+    "execution_allowed": false
+  },
+  "patch_suggestion": {
+    "status": "scaffold_green",
+    "updated": "2026-07-12T16:10:47Z",
+    "module": "apps/api/app/patch_suggestion",
+    "doc": "docs/hunter-ab-patch-suggestion.md",
+    "auto_pr_allowed": false,
+    "pr_opened": false,
+    "exploit_poc_included": false,
+    "patch_ready": false,
+    "execution_allowed": false,
+    "report_submission_allowed": false,
+    "families": [
+      "ssrf",
+      "authorization",
+      "path_traversal",
+      "mass_assignment",
+      "injection",
+      "generic"
+    ],
+    "wired_into": [
+      "build_submission_blocked_report_bundle",
+      "attach_patch_suggestions_to_bridge_result",
+      "run_ab_report_bridge",
+      "industrial_scheduler T-008 patch_agent"
+    ],
+    "sample_packages": [
+      "my-local-ssrf-retain",
+      "my-gh-cal-ssrf"
+    ]
+  },
+  "human_review_approvals": {
+    "status": "package_ingest_green",
+    "mode": "durable_offline_residual_patch_context_only",
+    "updated": "2026-07-12T20:18:49Z",
+    "verified_at": "2026-07-12T20:18:49Z",
+    "module": "apps/api/app/human_review_approvals",
+    "doc": "docs/hunter-ab-human-review-approvals.md",
+    "kinds": [
+      "residual_review",
+      "patch_review"
+    ],
+    "sources": [
+      "memory",
+      "package_file",
+      "database"
+    ],
+    "package_paths": [
+      "inputs/human_review_approvals.json",
+      "inputs/approvals.json",
+      "inputs/approvals/*.json",
+      "_extract/HUMAN_REVIEW_APPROVALS.json",
+      "HUMAN_REVIEW_APPROVALS.json"
+    ],
+    "console_fields": [
+      "hreview",
+      "hreviewn",
+      "hreviewd",
+      "hreviewr",
+      "hreviewp"
+    ],
+    "mev_engine": "human_review_approvals",
+    "mev_engine_count_smoke": 24,
+    "scheduler": {
+      "task": "T-018",
+      "batch": "B-015"
+    },
+    "execution_allowed": false,
+    "validation_allowed": false,
+    "report_submission_allowed": false,
+    "confirmed_vulnerability": false,
+    "auto_pr_allowed": false,
+    "patch_ready": false,
+    "finding_promotion_allowed": false,
+    "dual_lab_smoke": {
+      "my-local-ssrf-retain": {
+        "hreview": "human_review_approvals_ready",
+        "hreviewn": 2,
+        "hreviewd": 2,
+        "hreviewr": 1,
+        "hreviewp": 1,
+        "mevenc": 24,
+        "submission_blocked": true,
+        "patch_ready": false
+      },
+      "my-gh-cal-ssrf": {
+        "hreview": "human_review_approvals_empty",
+        "hreviewn": 0,
+        "hreviewd": 0,
+        "mevenc": 24,
+        "submission_blocked": true,
+        "patch_ready": false
+      }
+    },
+    "combined_suite_passed": 52,
+    "wired_into": [
+      "attach_human_residual_gates_to_bridge_result",
+      "attach_patch_suggestions_to_bridge_result",
+      "attach_human_review_approvals_to_bridge_result",
+      "run_ab_report_bridge",
+      "multi_engine_verifier ENGINE_HUMAN_REVIEW_APPROVALS",
+      "industrial_scheduler T-018 / B-015",
+      "persist_human_review_approval -> ApprovalRecord"
+    ]
+  },
+  "intake_agent": {
+    "status": "package_ingest_green",
+    "updated": "2026-07-12T16:34:56Z",
+    "module": "apps/api/app/intake_agent",
+    "doc": "docs/hunter-ab-intake-agent.md",
+    "detects": [
+      "language",
+      "framework",
+      "package_managers",
+      "entrypoints",
+      "auth_components",
+      "dependency_manifests",
+      "build_systems"
+    ],
+    "package_scan_roots": [
+      "inputs",
+      "_upstream",
+      "_extract",
+      "package_root_manifests"
+    ],
+    "network_access": false,
+    "execution_allowed": false,
+    "validation_allowed": false,
+    "report_submission_allowed": false,
+    "confirmed_vulnerability": false,
+    "wired_into": [
+      "attach_intake_profile_to_bridge_result",
+      "run_ab_report_bridge",
+      "industrial_scheduler T-001b intake_agent"
+    ],
+    "sample_packages": [
+      "my-local-ssrf-retain",
+      "my-gh-cal-ssrf",
+      "my-gh-gitea",
+      "my-h1-gitlab"
+    ]
+  },
+  "dependency_agent": {
+    "status": "package_ingest_green",
+    "module": "apps/api/app/dependency_agent",
+    "scheduler_task": "T-001c",
+    "live_advisory_lookup": false,
+    "network_access": false,
+    "doc": "docs/hunter-ab-dependency-agent.md",
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "deps": 1,
+        "ecosystems": [
+          "npm"
+        ]
+      },
+      "my-gh-cal-ssrf": {
+        "deps": 8,
+        "ecosystems": [
+          "npm"
+        ]
+      }
+    }
+  },
+  "residual_runner": {
+    "status": "package_ingest_green",
+    "module": "apps/api/app/residual_runner",
+    "scheduler_task": "T-007b",
+    "network_access": false,
+    "live_validation": false,
+    "requires_residual_approval": true,
+    "doc": "docs/hunter-ab-residual-runner.md"
+  },
+  "semgrep_runner": {
+    "status": "package_ingest_green",
+    "module": "apps/api/app/semgrep_runner",
+    "doc": "docs/hunter-ab-semgrep-runner.md",
+    "scheduler_task": "T-002b",
+    "default": "plan_only_without_human_flag",
+    "human_flag": "human_allow_local_semgrep / --allow-local-semgrep",
+    "network_access": false,
+    "remote_rules": false,
+    "live_validation": false,
+    "execution_allowed": false,
+    "validation_allowed": false,
+    "report_submission_allowed": false,
+    "confirmed_vulnerability": false,
+    "smoke": {
+      "default_flag_off": "skipped_no_human_local_flag",
+      "packages": [
+        "my-local-ssrf-retain",
+        "my-gh-cal-ssrf"
+      ]
+    },
+    "wired_into": [
+      "attach_semgrep_runner_to_bridge_result",
+      "run_ab_report_bridge",
+      "industrial_scheduler T-002b semgrep_runner"
+    ]
+  },
+  "patch_industrial_loop": {
+    "status": "package_ingest_green",
+    "updated": "2026-07-12T17:08:46Z",
+    "module": "apps/api/app/patch_agent",
+    "doc": "docs/hunter-ab-patch-agent.md",
+    "scheduler_task": "T-008b",
+    "phases": [
+      "suggest",
+      "local_code_context",
+      "regression_plan",
+      "patch_review_context",
+      "stop_no_auto_pr"
+    ],
+    "auto_pr_allowed": false,
+    "patch_ready": false,
+    "pr_opened": false,
+    "exploit_poc_included": false,
+    "execution_allowed": false,
+    "validation_allowed": false,
+    "report_submission_allowed": false,
+    "confirmed_vulnerability": false,
+    "live_validation_executed": false,
+    "network_access": false,
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "ploop": "patch_loop_completed_advisory",
+        "pitems": 2,
+        "auto_pr": false,
+        "patch_ready": false
+      },
+      "my-gh-cal-ssrf": {
+        "ploop": "patch_loop_skipped_all_not_applicable",
+        "pitems": 2,
+        "auto_pr": false,
+        "patch_ready": false
+      }
+    },
+    "wired_into": [
+      "attach_patch_industrial_loop_to_bridge_result",
+      "run_ab_report_bridge",
+      "industrial_scheduler T-008b patch_industrial_loop"
+    ],
+    "sample_packages": [
+      "my-local-ssrf-retain",
+      "my-gh-cal-ssrf"
+    ]
+  },
+  "residual_patch_decision_api": {
+    "status": "scaffold_green",
+    "updated": "2026-07-12T17:12:59Z",
+    "module": "apps/api/app/residual_patch_decision_api",
+    "doc": "docs/hunter-ab-residual-patch-decision-api.md",
+    "endpoints": [
+      "POST /mythos/factory/residual-patch-decisions",
+      "GET /mythos/factory/residual-patch-decisions",
+      "GET /mythos/factory/residual-patch-decisions/{approval_id}",
+      "POST /mythos/factory/residual-patch-decisions/{approval_id}/decisions"
+    ],
+    "kinds": [
+      "residual_review",
+      "patch_review"
+    ],
+    "execution_allowed": false,
+    "validation_allowed": false,
+    "report_submission_allowed": false,
+    "confirmed_vulnerability": false,
+    "auto_pr_allowed": false,
+    "patch_ready": false,
+    "wired_into": [
+      "apps/api/app/main.py",
+      "app.human_review_approvals.persist_human_review_approval"
+    ],
+    "tests": "apps/api/tests/test_residual_patch_decision_api.py",
+    "tests_passed": 6,
+    "note": "HTTP thin wrap remains scaffold; deepen deferred after human_review_approvals package/MEV/scheduler green"
+  },
+  "codeql_runner": {
+    "status": "package_ingest_green",
+    "module": "apps/api/app/codeql_runner",
+    "bridge_console": "cq= / cfind=",
+    "default_smoke": "cq=skipped_no_human_local_flag cfind=0",
+    "scheduler": {
+      "task_id": "T-002c",
+      "batch_id": "B-002c",
+      "agent": "codeql_runner"
+    },
+    "safety": {
+      "execution_allowed": false,
+      "validation_allowed": false,
+      "report_submission_allowed": false,
+      "confirmed_vulnerability": false,
+      "remote_packs": false,
+      "network_access": false,
+      "auto_db_create": false
+    },
+    "verified_at": "2026-07-12T17:20:34Z"
+  },
+  "crs_fuzzing": {
+    "status": "package_ingest_green",
+    "bridge_console": "crs= / ccand=",
+    "scheduler": {
+      "task_id": "T-003",
+      "agent": "crs_fuzzing_agent"
+    },
+    "safety": {
+      "execution_allowed": false,
+      "validation_allowed": false,
+      "report_submission_allowed": false,
+      "promotion_allowed": false,
+      "network_access": false,
+      "process_spawn": false
+    },
+    "verified_at": "2026-07-12T17:28:08Z"
+  },
+  "readiness": {
+    "ab_candidate_hunter": "96-98%",
+    "full_research_factory": "92-97%"
+  },
+  "h1": {
+    "status": "blocked_401",
+    "action": "do_not_reprobe_while_401"
+  },
+  "authorized_web_api": {
+    "status": "package_ingest_green",
+    "updated": "2026-07-12T17:42:33Z",
+    "module": "apps/api/app/authorized_web_api",
+    "doc": "docs/hunter-ab-authorized-web-api.md",
+    "bridge_console": "web= / wops= / wdiff=",
+    "scheduler": {
+      "task_id": "T-004",
+      "agent": "bug_bounty_agent",
+      "context_key": "authorized_bug_bounty"
+    },
+    "safety": {
+      "execution_allowed": false,
+      "validation_allowed": false,
+      "report_submission_allowed": false,
+      "confirmed_vulnerability": false,
+      "network_access": false,
+      "live_validation": false
+    },
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "web": "authorized_web_api_plan_ready",
+        "wops": 4,
+        "wdiff": 4
+      },
+      "my-gh-cal-ssrf": {
+        "web": "authorized_web_api_plan_ready",
+        "wops": 4,
+        "wdiff": 4
+      }
+    },
+    "wired_into": [
+      "attach_authorized_web_api_to_bridge_result",
+      "run_ab_report_bridge",
+      "industrial_scheduler T-004 bug_bounty_agent"
+    ],
+    "tests": "apps/api/tests/test_authorized_web_api.py",
+    "verified_at": "2026-07-12T17:42:33Z"
+  },
+  "patch_pr_workflow": {
+    "status": "green_plan_export_only",
+    "scheduler_task": "T-008c",
+    "auto_pr_allowed": false,
+    "pr_opened": false,
+    "patch_ready": false,
+    "smoke": {
+      "my-local-ssrf-retain": "patch_pr_export_blocked_until_patch_review",
+      "my-gh-cal-ssrf": "patch_pr_export_empty"
+    },
+    "doc": "docs/hunter-ab-patch-pr-workflow.md"
+  },
+  "crs_harness_export": {
+    "status": "green_write_only_human_flag",
+    "cli_flag": "--allow-crs-harness-write",
+    "export_root": "_export/crs_harness",
+    "execution_allowed": false,
+    "scheduler": [
+      "T-003",
+      "T-003b",
+      "B-002d"
+    ]
+  },
+  "local_fuzz_sandbox": {
+    "status": "package_ingest_green_plan_export_only",
+    "execution_allowed": false,
+    "process_spawn_allowed": false,
+    "updated_at": "2026-07-12T18:15:20Z",
+    "doc": "docs/hunter-ab-local-fuzz-sandbox.md"
+  },
+  "full_factory_distance_percent_range": [
+    95,
+    97
+  ],
+  "local_fuzz_runner": {
+    "status": "package_ingest_green",
+    "mode": "in_process_python_human_flag_only",
+    "external_fuzzer_spawn": false,
+    "crash_promotion_allowed": false,
+    "scheduler_task": "T-003d",
+    "bridge_flag": "--allow-local-fuzz-run",
+    "doc": "docs/hunter-ab-local-fuzz-runner.md"
+  },
+  "crash_triage": {
+    "status": "package_ingest_green",
+    "mode": "human_flag_classify_dedupe_minimize_repro_advisory_root_cause",
+    "crash_promotion_allowed": false,
+    "external_fuzzer_spawn": false,
+    "confirmed_vulnerability": false,
+    "scheduler_task": "T-003e",
+    "parallel_batch": "B-002g",
+    "bridge_flag": "--allow-crash-triage",
+    "console_fields": [
+      "ctr",
+      "ctre",
+      "ctrc",
+      "ctrep"
+    ],
+    "mev_engine": "crash_triage",
+    "doc": "docs/hunter-ab-crash-triage.md",
+    "module": "apps/api/app/crash_triage",
+    "tests": "apps/api/tests/test_crash_triage.py",
+    "updated_at": "2026-07-12T18:36:00Z"
+  },
+  "crash_regression": {
+    "status": "package_ingest_green_codepath_aware",
+    "mode": "plan_only_regression_from_crash_triage_clusters_optional_codepath_enrichment",
+    "test_auto_execute_allowed": false,
+    "crash_promotion_allowed": false,
+    "confirmed_vulnerability": false,
+    "scheduler_task": "T-003f",
+    "parallel_batch": "B-002h",
+    "bridge_flag": "--allow-crash-regression-export",
+    "console_fields": [
+      "creg",
+      "cregn",
+      "cregx",
+      "cregc"
+    ],
+    "mev_engine": "crash_regression",
+    "doc": "docs/hunter-ab-crash-regression.md",
+    "module": "apps/api/app/crash_regression",
+    "tests": "apps/api/tests/test_crash_regression.py",
+    "updated_at": "2026-07-12T19:02:07Z",
+    "codepath_enrichment": true,
+    "bridge_order": "crash_codepath_then_crash_regression",
+    "verified_at": "2026-07-12T19:02:07Z"
+  },
+  "crash_codepath": {
+    "status": "package_ingest_green",
+    "mode": "static_source_read_only_from_crash_triage_clusters",
+    "package_code_execution_allowed": false,
+    "crash_promotion_allowed": false,
+    "confirmed_vulnerability": false,
+    "scheduler_task": "T-003g",
+    "parallel_batch": "B-002i",
+    "bridge_flag": "--allow-crash-codepath-export",
+    "console_fields": [
+      "cpath",
+      "cpathn",
+      "cpathr",
+      "cpathx"
+    ],
+    "mev_engine": "crash_codepath",
+    "mev_engine_count_smoke": 15,
+    "doc": "docs/hunter-ab-crash-codepath.md",
+    "module": "apps/api/app/crash_codepath",
+    "tests": "apps/api/tests/test_crash_codepath.py",
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "cpath": "crash_codepath_no_clusters",
+        "cpathn": 0,
+        "cpathr": 0,
+        "cpathx": false,
+        "mevenc": 15
+      },
+      "my-gh-cal-ssrf": {
+        "cpath": "crash_codepath_no_clusters",
+        "cpathn": 0,
+        "cpathr": 0,
+        "cpathx": false,
+        "mevenc": 15
+      }
+    },
+    "bridge_attach_fixed": true,
+    "combined_suite_passed": 74,
+    "updated_at": "2026-07-12T19:02:07Z",
+    "verified_at": "2026-07-12T18:58:47Z"
+  },
+  "human_gate_dry_run": {
+    "status": "package_ingest_green",
+    "mode": "offline_e2e_human_gate_checkpoints_never_h1_probe",
+    "report_submission_allowed": false,
+    "execution_allowed": false,
+    "confirmed_vulnerability": false,
+    "scheduler_task": "T-009",
+    "parallel_batch": "B-006",
+    "bridge_flag": "--allow-human-gate-dry-run-export",
+    "console_fields": [
+      "hg",
+      "hgpass",
+      "hgfail",
+      "hgok",
+      "hgsafe",
+      "hgx"
+    ],
+    "mev_engine": "human_gate_dry_run",
+    "mev_engine_count_smoke": 16,
+    "doc": "docs/hunter-ab-human-gate-dry-run.md",
+    "module": "apps/api/app/human_gate_dry_run",
+    "tests": "apps/api/tests/test_human_gate_dry_run.py",
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "hg": "human_gate_dry_run_ready",
+        "hgpass": 9,
+        "hgfail": 0,
+        "hgok": true,
+        "hgsafe": true,
+        "hgx": false,
+        "mevenc": 15
+      },
+      "my-gh-cal-ssrf": {
+        "hg": "human_gate_dry_run_ready",
+        "hgpass": 9,
+        "hgfail": 0,
+        "hgok": true,
+        "hgsafe": true,
+        "hgx": false,
+        "mevenc": 15
+      }
+    },
+    "combined_suite_passed": 80,
+    "updated_at": "2026-07-12T19:11:21Z",
+    "verified_at": "2026-07-12T19:11:21Z"
+  },
+  "agent_memory": {
+    "status": "package_ingest_green",
+    "mode": "offline_fp_retain_knowledge_ranking_only",
+    "report_submission_allowed": false,
+    "execution_allowed": false,
+    "ranking_permission_granted": false,
+    "confirmed_vulnerability": false,
+    "scheduler_task": "T-010",
+    "parallel_batch": "B-007",
+    "bridge_flag": "--allow-agent-memory-export",
+    "console_fields": [
+      "amem",
+      "amenn",
+      "amemfp",
+      "amemh",
+      "amemx"
+    ],
+    "mev_engine": "agent_memory",
+    "mev_engine_count_smoke": 16,
+    "doc": "docs/hunter-ab-agent-memory.md",
+    "module": "apps/api/app/agent_memory",
+    "tests": "apps/api/tests/test_agent_memory.py",
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "amem": "agent_memory_ready",
+        "amenn": 3,
+        "amemfp": 0,
+        "amemh": 1,
+        "amemx": false,
+        "mevenc": 16,
+        "hg": "human_gate_dry_run_ready",
+        "hgpass": 9,
+        "hgfail": 0,
+        "hgok": true,
+        "hgsafe": true,
+        "submission_blocked": true
+      },
+      "my-gh-cal-ssrf": {
+        "amem": "agent_memory_ready",
+        "amenn": 3,
+        "amemfp": 2,
+        "amemh": 0,
+        "amemx": false,
+        "mevenc": 16,
+        "hg": "human_gate_dry_run_ready",
+        "hgpass": 9,
+        "hgfail": 0,
+        "hgok": true,
+        "hgsafe": true,
+        "submission_blocked": true
+      }
+    },
+    "combined_suite_passed": 53,
+    "updated_at": "2026-07-12T19:17:32Z",
+    "verified_at": "2026-07-12T19:17:32Z",
+    "mev_engine_count_smoke_after_v3_residual": 18,
+    "mev_engine_count_smoke_after_v4_deep_research": 19
+  },
+  "continuous_scan": {
+    "status": "package_ingest_green",
+    "mode": "plan_only_cadence_watch_jobs_never_auto_scan",
+    "auto_scan_allowed": false,
+    "network_access": false,
+    "execution_allowed": false,
+    "confirmed_vulnerability": false,
+    "scheduler_task": "T-011",
+    "parallel_batch": "B-008",
+    "bridge_flag": "--allow-continuous-scan-export",
+    "console_fields": [
+      "cscan",
+      "cscann",
+      "cscanw",
+      "cscanx"
+    ],
+    "mev_engine": "continuous_scan",
+    "mev_engine_count_smoke": 18,
+    "doc": "docs/hunter-ab-continuous-scan.md",
+    "module": "apps/api/app/continuous_scan",
+    "tests": "apps/api/tests/test_continuous_scan.py",
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "cscan": "continuous_scan_plan_ready",
+        "cscann": 6,
+        "cscanw": 7,
+        "cscanx": false,
+        "mevenc": 18,
+        "submission_blocked": true
+      },
+      "my-gh-cal-ssrf": {
+        "cscan": "continuous_scan_plan_ready",
+        "cscann": 6,
+        "cscanw": 7,
+        "cscanx": false,
+        "mevenc": 18,
+        "submission_blocked": true
+      }
+    },
+    "combined_suite_passed": 47,
+    "updated_at": "2026-07-12T19:31:03Z",
+    "verified_at": "2026-07-12T19:31:03Z",
+    "mev_engine_count_smoke_after_v4_deep_research": 19
+  },
+  "patch_validation": {
+    "status": "package_ingest_green",
+    "mode": "non_destructive_recheck_plan_never_live_validate",
+    "patch_ready": false,
+    "live_validation_allowed": false,
+    "auto_pr_allowed": false,
+    "execution_allowed": false,
+    "confirmed_vulnerability": false,
+    "scheduler_task": "T-012",
+    "parallel_batch": "B-009",
+    "bridge_flag": "--allow-patch-validation-export",
+    "console_fields": [
+      "pval",
+      "pvaln",
+      "pvalr",
+      "pvals",
+      "pvalx"
+    ],
+    "mev_engine": "patch_validation",
+    "mev_engine_count_smoke": 18,
+    "doc": "docs/hunter-ab-patch-validation.md",
+    "module": "apps/api/app/patch_validation",
+    "tests": "apps/api/tests/test_patch_validation.py",
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "pval": "patch_validation_plan_ready",
+        "pvaln": 2,
+        "pvalr": 2,
+        "pvals": 10,
+        "pvalx": false,
+        "mevenc": 18,
+        "submission_blocked": true
+      },
+      "my-gh-cal-ssrf": {
+        "pval": "patch_validation_waiting_for_fix_artifacts",
+        "pvaln": 2,
+        "pvalr": 0,
+        "pvals": 10,
+        "pvalx": false,
+        "mevenc": 18,
+        "submission_blocked": true
+      }
+    },
+    "combined_suite_passed": 47,
+    "updated_at": "2026-07-12T19:31:03Z",
+    "verified_at": "2026-07-12T19:31:03Z",
+    "mev_engine_count_smoke_after_v4_deep_research": 19
+  },
+  "deep_research": {
+    "status": "package_ingest_green",
+    "mode": "v4_multi_stage_variant_long_horizon_plan_only_never_execute",
+    "execution_allowed": false,
+    "validation_allowed": false,
+    "report_submission_allowed": false,
+    "confirmed_vulnerability": false,
+    "finding_promotion_allowed": false,
+    "ranking_permission_granted": false,
+    "network_access": false,
+    "live_validation": false,
+    "scheduler_task": "T-013",
+    "parallel_batch": "B-010",
+    "bridge_flag": "--allow-deep-research-export",
+    "console_fields": [
+      "dres",
+      "dresc",
+      "dresv",
+      "dresu",
+      "dresx"
+    ],
+    "mev_engine": "deep_research",
+    "mev_engine_count_smoke": 19,
+    "doc": "docs/hunter-ab-deep-research.md",
+    "module": "apps/api/app/deep_research",
+    "tests": "apps/api/tests/test_deep_research.py",
+    "smoke": {
+      "my-local-ssrf-retain": {
+        "dres": "deep_research_plan_ready",
+        "dresc": 1,
+        "dresv": 1,
+        "dresu": 1,
+        "dresx": false,
+        "mevenc": 19,
+        "submission_blocked": true
+      },
+      "my-gh-cal-ssrf": {
+        "dres": "deep_research_plan_ready",
+        "dresc": 0,
+        "dresv": 0,
+        "dresu": 0,
+        "dresx": false,
+        "mevenc": 19,
+        "submission_blocked": true
+      }
+    },
+    "combined_suite_passed": 57,
+    "updated_at": "2026-07-12T19:37:34Z",
+    "verified_at": "2026-07-12T19:37:34Z"
+  },
+  "long_horizon": {
+    "status": "package_ingest_green",
+    "mode": "path_switch_plan_only",
+    "auto_path_switch_allowed": false,
+    "execution_allowed": false,
+    "scheduler": "T-014/B-011",
+    "mev_engine": "long_horizon",
+    "mevenc_expected": 20,
+    "dual_lab_smoke": "long_horizon_plan_ready paths=9 switches=10 iterations=6 mevenc=20",
+    "doc": "docs/hunter-ab-long-horizon.md",
+    "mevenc_note": "pre_knowledge_base_was_20; post_knowledge_base expected 21"
+  },
+  "knowledge_base": {
+    "status": "package_ingest_green",
+    "dual_lab_smoke": {
+      "my-local-ssrf-retain": {
+        "kbase": "knowledge_base_ready",
+        "kbasep": 15,
+        "kbasex": false,
+        "mevenc": 21
+      },
+      "my-gh-cal-ssrf": {
+        "kbase": "knowledge_base_ready",
+        "kbasep": 15,
+        "kbasex": false,
+        "mevenc": 21
+      }
+    },
+    "scheduler": "T-015 / B-012",
+    "mev_engine": "knowledge_base",
+    "ranking_permission_granted": false,
+    "execution_allowed": false
+  },
+  "multi_hour_agent_loop": {
+    "status": "package_ingest_green",
+    "dual_lab_smoke": {
+      "my-local-ssrf-retain": {
+        "mhal": "multi_hour_agent_loop_plan_ready",
+        "mhalp": 6,
+        "mhals": 6,
+        "mhalg": 5,
+        "mhalx": false,
+        "mevenc": 22,
+        "kbase": "knowledge_base_ready"
+      },
+      "my-gh-cal-ssrf": {
+        "mhal": "multi_hour_agent_loop_plan_ready",
+        "mhalp": 6,
+        "mhals": 6,
+        "mhalg": 5,
+        "mhalx": false,
+        "mevenc": 22,
+        "kbase": "knowledge_base_ready"
+      }
+    },
+    "scheduler": "T-016 / B-013",
+    "mev_engine": "multi_hour_agent_loop",
+    "auto_tick_allowed": false,
+    "execution_allowed": false
+  },
+  "wall_clock_multi_hour_runner": {
+    "status": "package_ingest_green",
+    "mode": "advisory_wall_clock_tick_ledger_only",
+    "auto_tick_allowed": false,
+    "execution_allowed": false,
+    "mev_engine": "wall_clock_multi_hour_runner",
+    "mevenc_after_attach": 23,
+    "scheduler": {
+      "task": "T-017",
+      "batch": "B-014"
+    },
+    "dual_lab": {
+      "my-local-ssrf-retain": {
+        "wclk": "wall_clock_multi_hour_runner_plan_ready",
+        "wclks": 6,
+        "wclkt": 16,
+        "wclkg": 6,
+        "wclkx": false,
+        "mevenc": 23
+      },
+      "my-gh-cal-ssrf": {
+        "wclk": "wall_clock_multi_hour_runner_plan_ready",
+        "wclks": 6,
+        "wclkt": 16,
+        "wclkg": 6,
+        "wclkx": false,
+        "mevenc": 23
+      }
+    },
+    "mevenc_note_after_human_review_approvals": 24
+  },
+  "dual_lab_smoke": {
+    "updated": "2026-07-13T01:38:22Z",
+    "retain": "my-local-ssrf-retain",
+    "gh": "my-gh-plane-mass",
+    "submission_blocked": true,
+    "retain_mevenc": 31,
+    "gh_mevenc": 30,
+    "retain_fdrn": 2,
+    "gh_fdrn": 1,
+    "retain_dcrn": 14,
+    "gh_dcrn": 8,
+    "unlock_flags": false
+  },
+  "miniflux_ssrf": {
+    "package": "my-gh-miniflux-ssrf",
+    "trial": "2/0 refuted",
+    "version": "2.3.2",
+    "residuals": {
+      "MF-SSRF-R1": "held",
+      "MF-SSRF-R2": "held",
+      "MF-SSRF-R3": "held",
+      "MF-SSRF-R4": "held_documented",
+      "MF-SSRF-R5": "held_documented"
+    }
+  },
+  "github_portfolio_count": 23,
+  "paperless_path": {
+    "package": "my-gh-paperless-path",
+    "trial": "2/0 refuted",
+    "version": "2.9.0",
+    "residuals": {
+      "PL-PATH-R1": "held",
+      "PL-PATH-R2": "held",
+      "PL-PATH-R3": "held",
+      "PL-PATH-R4": "held",
+      "PL-PATH-R5": "held_documented"
+    }
+  },
+  "immich_mass": {
+    "package": "my-gh-immich-mass",
+    "trial": "1/0 refuted",
+    "version": "2.7.5",
+    "residuals": {
+      "IM-MASS-R1": "held",
+      "IM-MASS-R2": "held",
+      "IM-MASS-R3": "held",
+      "IM-MASS-R4": "held",
+      "IM-MASS-R5": "held_documented"
+    }
+  },
+  "mealie_inject": {
+    "package": "my-gh-mealie-inject",
+    "trial": "2/0 refuted",
+    "version": "3.20.1",
+    "residuals": {
+      "ME-INJ-R1": "held",
+      "ME-INJ-R2": "held",
+      "ME-INJ-R3": "held",
+      "ME-INJ-R4": "held",
+      "ME-INJ-R5": "held_documented",
+      "ME-INJ-R6": "held_documented"
+    }
+  },
+  "protocol_aware_fuzzing": {
+    "status": "package_ingest_green",
+    "module": "apps/api/app/protocol_aware_fuzzing",
+    "mev_engine": "protocol_aware_fuzzing",
+    "scheduler": "T-003h / B-002j",
+    "dual_lab": {
+      "my-local-ssrf-retain": {
+        "paf": "protocol_aware_fuzzing_plan_ready",
+        "mevenc": 26
+      },
+      "my-gh-mealie-inject": {
+        "paf": "protocol_aware_fuzzing_plan_ready",
+        "mevenc": 25
+      }
+    },
+    "safety": {
+      "execution_allowed": false,
+      "process_spawn_allowed": false,
+      "network_access": false,
+      "live_validation": false,
+      "report_submission_allowed": false,
+      "confirmed_vulnerability": false
+    },
+    "note": "standalone V4 plan-only; supersedes thin deep_research nested stub for factory attach path"
+  },
+  "latest_factory_slice": "finding_dedup_risk",
+  "factory_slices": {
+    "patch_diff_learner": {
+      "status": "package_ingest_green",
+      "scheduler": [
+        "T-008d",
+        "B-005d"
+      ],
+      "mev_engine": "patch_diff_learner",
+      "dual_lab_mevenc": {
+        "my-local-ssrf-retain": 27,
+        "my-gh-mealie-inject": 26
+      },
+      "doc": "docs/hunter-ab-patch-diff-learner.md"
+    },
+    "protocol_aware_fuzzing": {
+      "status": "package_ingest_green",
+      "scheduler": [
+        "T-003h",
+        "B-002j"
+      ],
+      "mev_engine": "protocol_aware_fuzzing"
+    },
+    "variant_analysis": {
+      "status": "package_ingest_green",
+      "scheduler": [
+        "T-013b",
+        "B-010b"
+      ],
+      "mev_engine": "variant_analysis",
+      "dual_lab_mevenc": {
+        "my-local-ssrf-retain": 28,
+        "my-gh-mealie-inject": 27
+      },
+      "dual_lab_va": {
+        "my-local-ssrf-retain": {
+          "status": "variant_analysis_plan_ready",
+          "variants": 5,
+          "seeds": 5
+        },
+        "my-gh-mealie-inject": {
+          "status": "variant_analysis_plan_ready",
+          "variants": 6,
+          "seeds": 6
+        }
+      },
+      "doc": "docs/hunter-ab-variant-analysis.md",
+      "safety_floor_forced_false": [
+        "execution_allowed",
+        "validation_allowed",
+        "report_submission_allowed",
+        "confirmed_vulnerability",
+        "finding_promotion_allowed",
+        "network_access",
+        "live_validation",
+        "process_spawn_allowed"
+      ]
+    },
+    "vuln_chain_builder": {
+      "status": "package_ingest_green",
+      "scheduler": [
+        "T-013c",
+        "B-010c"
+      ],
+      "mev_engine": "vuln_chain_builder",
+      "dual_lab_mevenc": {
+        "my-local-ssrf-retain": 29,
+        "my-gh-mealie-inject": 28
+      },
+      "doc": "docs/hunter-ab-vuln-chain-builder.md",
+      "safety_floor_forced_false": [
+        "execution_allowed",
+        "validation_allowed",
+        "report_submission_allowed",
+        "confirmed_vulnerability",
+        "finding_promotion_allowed",
+        "network_access",
+        "live_validation",
+        "process_spawn_allowed"
+      ]
+    },
+    "deep_code_reasoning": {
+      "status": "package_ingest_green",
+      "scheduler": [
+        "T-013d",
+        "B-010d"
+      ],
+      "mev_engine": "deep_code_reasoning",
+      "export_flag": "--allow-deep-code-reasoning-export",
+      "dual_lab_mevenc": {
+        "my-local-ssrf-retain": 30,
+        "my-gh-mealie-inject": 29
+      },
+      "dual_lab_dcr": {
+        "my-local-ssrf-retain": {
+          "status": "deep_code_reasoning_plan_ready",
+          "paths": 14,
+          "permission_models": 1
+        },
+        "my-gh-mealie-inject": {
+          "status": "deep_code_reasoning_plan_ready",
+          "paths": 16,
+          "permission_models": 1
+        }
+      },
+      "doc": "docs/hunter-ab-deep-code-reasoning.md",
+      "safety_floor_forced_false": [
+        "execution_allowed",
+        "validation_allowed",
+        "report_submission_allowed",
+        "confirmed_vulnerability",
+        "finding_promotion_allowed",
+        "network_access",
+        "live_validation",
+        "process_spawn_allowed"
+      ]
+    },
+    "finding_dedup_risk": {
+      "status": "package_ingest_green",
+      "scheduler": [
+        "T-005",
+        "T-006"
+      ],
+      "mev_engine": "finding_dedup_risk",
+      "export_flag": "--allow-finding-dedup-risk-export",
+      "dual_lab_mevenc": {
+        "my-local-ssrf-retain": 31,
+        "my-gh-mealie-inject": 30
+      },
+      "dual_lab_fdr": {
+        "my-local-ssrf-retain": {
+          "status": "finding_dedup_risk_plan_ready",
+          "clusters": 2,
+          "queue": 2,
+          "seeds": 2
+        },
+        "my-gh-mealie-inject": {
+          "status": "finding_dedup_risk_plan_ready",
+          "clusters": 2,
+          "queue": 2,
+          "seeds": 2
+        }
+      },
+      "doc": "docs/hunter-ab-finding-dedup-risk.md",
+      "safety_floor_forced_false": [
+        "execution_allowed",
+        "validation_allowed",
+        "report_submission_allowed",
+        "confirmed_vulnerability",
+        "finding_promotion_allowed",
+        "ranking_permission_granted",
+        "network_access",
+        "live_validation",
+        "process_spawn_allowed"
+      ]
+    }
+  },
+  "dual_lab_mevenc": {
+    "my-local-ssrf-retain": 31,
+    "my-gh-plane-mass": 30
+  },
+  "vuln_chain_builder": {
+    "status": "green",
+    "module": "apps/api/app/vuln_chain_builder",
+    "scheduler": [
+      "T-013c",
+      "B-010c"
+    ],
+    "mev_engine": "vuln_chain_builder",
+    "export_flag": "--allow-vuln-chain-builder-export",
+    "execution_allowed": false
+  },
+  "deep_code_reasoning": {
+    "status": "green",
+    "module": "apps/api/app/deep_code_reasoning",
+    "scheduler": [
+      "T-013d",
+      "B-010d"
+    ],
+    "mev_engine": "deep_code_reasoning",
+    "export_flag": "--allow-deep-code-reasoning-export",
+    "execution_allowed": false,
+    "console": [
+      "dcr",
+      "dcrn",
+      "dcrpm",
+      "dcrs",
+      "dcrx"
+    ],
+    "doc": "docs/hunter-ab-deep-code-reasoning.md"
+  },
+  "finding_dedup_risk": {
+    "status": "green",
+    "module": "apps/api/app/finding_dedup_risk",
+    "scheduler": [
+      "T-005",
+      "T-006"
+    ],
+    "mev_engine": "finding_dedup_risk",
+    "export_flag": "--allow-finding-dedup-risk-export",
+    "execution_allowed": false,
+    "console": [
+      "fdr",
+      "fdrn",
+      "fdrq",
+      "fdrs",
+      "fdrx"
+    ],
+    "doc": "docs/hunter-ab-finding-dedup-risk.md"
+  },
+  "freshrss_ssrf": {
+    "package": "my-gh-freshrss-ssrf",
+    "trial": "2/0 refuted",
+    "version": "1.29.1",
+    "risk_family": "ssrf",
+    "decision_quality": "pass",
+    "residuals": {
+      "FR-SSRF-R1": "held",
+      "FR-SSRF-R2": "held",
+      "FR-SSRF-R3": "held",
+      "FR-SSRF-R4": "held_documented",
+      "FR-SSRF-R5": "held_documented"
+    }
+  },
+  "plane_mass": {
+    "package": "my-gh-plane-mass",
+    "trial": "1/0 refuted",
+    "version": "v1.3.1",
+    "risk_family": "mass_assignment",
+    "decision_quality": "pass",
+    "residuals": {
+      "PLANE-MASS-R1": "held",
+      "PLANE-MASS-R2": "held",
+      "PLANE-MASS-R3": "held",
+      "PLANE-MASS-R4": "held_documented",
+      "PLANE-MASS-R5": "held_documented"
+    }
+  }
+}

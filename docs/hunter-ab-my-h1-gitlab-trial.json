@@ -1,0 +1,77 @@
+{
+  "generated_at": "2026-07-12T08:09:51Z",
+  "mode": "authorized-lab-package",
+  "case_ids": [
+    "my-h1-gitlab-own-instance"
+  ],
+  "summaries": [
+    {
+      "case_id": "my-h1-gitlab-own-instance",
+      "suite": "lab",
+      "risk_family": "authorization",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-h1-gitlab",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:get_local_project",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_object_ownership_check:download_local_project_export",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-003",
+          "root_cause_id": "missing_object_ownership_check:download_local_repository_archive",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-004",
+          "root_cause_id": "missing_object_ownership_check:start_local_project_export",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        },
+        {
+          "candidate_id": "H-005",
+          "root_cause_id": "missing_object_ownership_check:start_local_project_export_relations",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    }
+  ]
+}

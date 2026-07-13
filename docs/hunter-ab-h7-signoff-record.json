@@ -1,0 +1,31 @@
+{
+  "status": "complete",
+  "authorization": "user_delegated_h7",
+  "authorization_phrase": "?????",
+  "completed_at": "2026-07-12T08:14:38Z",
+  "completer": "codex_agent",
+  "scope": "synthetic_educational_l4_h7_only",
+  "h7_retain": {
+    "dev-001": "yes",
+    "dev-003": "yes",
+    "rel-001": "yes",
+    "lab-authz-unguarded-notes": "yes",
+    "lab-owasp-bola-invoice-export": "yes"
+  },
+  "source_packages_decision_ok": [
+    "my-h1-gitlab",
+    "my-h1-wordpress",
+    "my-h1-nodejs"
+  ],
+  "verdict": {
+    "l4_synthetic_educational_usable": true,
+    "report_submission_allowed": false,
+    "g13_live_residual_product_trust": "open",
+    "hunter_gate": "green_batch_verified"
+  },
+  "artifacts": [
+    "docs/hunter-ab-h7-signoff-page.md",
+    "docs/hunter-ab-h7-signoff-record.md",
+    "docs/hunter-ab-agent-technical-prereview.md"
+  ]
+}

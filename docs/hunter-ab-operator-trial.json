@@ -1,0 +1,948 @@
+{
+  "generated_at": "2026-07-12T06:43:48Z",
+  "case_ids": [
+    "dev-001",
+    "dev-002",
+    "dev-003",
+    "rel-001",
+    "rel-002"
+  ],
+  "summaries": [
+    {
+      "case_id": "dev-001",
+      "suite": "development",
+      "risk_family": "authorization",
+      "expected_disposition": "retain",
+      "loop_audit_status": "ready",
+      "evaluation_status": "failed",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_loaded"
+      ],
+      "final_candidates": [
+        {
+          "candidate_id": "H-001",
+          "rank": 1,
+          "vuln_type": "authorization",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "route": {
+            "method": "GET",
+            "path": "/local/records/q7m4/:record_id"
+          },
+          "source_fact_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/records/q7m4/{record_id}",
+            "har:har_context",
+            "code:code.ts:read_record",
+            "code:code.ts:send_file",
+            "evidence:7831d3a4755eb4e859542be36a27540e1270b554b38ea2b4d8012cfff2ca7304",
+            "evidence:10c9d555ded1e88fb10aba1c70d5bb1ef25571c55618899c7841711190f4d113"
+          ],
+          "affected_code_path": "code:code.ts:read_record",
+          "evidence_trace_status": "traceable",
+          "human_validation_readiness": "ready",
+          "execution_allowed": false,
+          "dispatch_allowed": false,
+          "validation_allowed": false,
+          "candidate_promotion_allowed": false,
+          "report_submission_allowed": false,
+          "refutation_questions": [
+            "Does an observed local authorization guard execute before the sensitive sink?",
+            "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+          ],
+          "safe_validation_plan": [
+            "Local review only for GET /local/records/q7m4/:record_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via read_record.",
+            "Do not execute live validation, access production accounts, or submit a report."
+          ],
+          "next_allowed_action": "Human review of the cited local evidence.",
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report"
+          ]
+        }
+      ],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "disposition": "retained",
+          "evidence_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/records/q7m4/{record_id}",
+            "har:har_context",
+            "code:code.ts:read_record",
+            "code:code.ts:send_file",
+            "evidence:7831d3a4755eb4e859542be36a27540e1270b554b38ea2b4d8012cfff2ca7304",
+            "evidence:10c9d555ded1e88fb10aba1c70d5bb1ef25571c55618899c7841711190f4d113"
+          ],
+          "candidate_projection": {
+            "candidate_id": "H-001",
+            "rank": 1,
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:read_record",
+            "route": {
+              "method": "GET",
+              "path": "/local/records/q7m4/:record_id"
+            },
+            "source_fact_refs": [
+              "scope:scope_context",
+              "policy:policy_context",
+              "api:api_surface",
+              "api:GET:/local/records/q7m4/{record_id}",
+              "har:har_context",
+              "code:code.ts:read_record",
+              "code:code.ts:send_file",
+              "evidence:7831d3a4755eb4e859542be36a27540e1270b554b38ea2b4d8012cfff2ca7304",
+              "evidence:10c9d555ded1e88fb10aba1c70d5bb1ef25571c55618899c7841711190f4d113"
+            ],
+            "affected_code_path": "code:code.ts:read_record",
+            "evidence_trace_status": "traceable",
+            "human_validation_readiness": "ready",
+            "execution_allowed": false,
+            "dispatch_allowed": false,
+            "validation_allowed": false,
+            "candidate_promotion_allowed": false,
+            "report_submission_allowed": false,
+            "refutation_questions": [
+              "Does an observed local authorization guard execute before the sensitive sink?",
+              "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+            ],
+            "safe_validation_plan": [
+              "Local review only for GET /local/records/q7m4/:record_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via read_record.",
+              "Do not execute live validation, access production accounts, or submit a report."
+            ],
+            "next_allowed_action": "Human review of the cited local evidence.",
+            "safety_blockers": [
+              "execute_live_validation",
+              "touch_real_user_data",
+              "submit_report"
+            ]
+          },
+          "priority_score": 100,
+          "evidence_completeness_score": 5
+        }
+      ],
+      "gold_roots": [
+        {
+          "gold_id": "observed-primary-root",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "route": {
+            "method": "GET",
+            "path": "/local/records/q7m4/{record_id}"
+          },
+          "vuln_type": "authorization",
+          "disposition": "retain",
+          "worth_validation": true,
+          "required_evidence_refs": [
+            "code:code.ts:read_record",
+            "api:GET:/local/records/q7m4/{record_id}"
+          ],
+          "decisive_refutation_refs": [],
+          "duplicate_of": null,
+          "scope_allowed": true
+        }
+      ],
+      "metrics": {
+        "precision_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "valuable_recall_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "evidence_traceability_rate": {
+          "value": 1.0,
+          "numerator": 2,
+          "denominator": 2,
+          "threshold": 1.0,
+          "passed": true
+        },
+        "effective_refutation_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "duplicate_suppression_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "human_worth_validation_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        }
+      },
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [
+        {
+          "path": "metrics.effective_refutation_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.duplicate_suppression_rate",
+          "reason": "zero_denominator"
+        }
+      ],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "dev-002",
+      "suite": "development",
+      "risk_family": "authorization",
+      "expected_disposition": "refute",
+      "loop_audit_status": "ready",
+      "evaluation_status": "failed",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_loaded"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        }
+      ],
+      "gold_roots": [
+        {
+          "gold_id": "observed-primary-root",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "route": {
+            "method": "GET",
+            "path": "/local/records/x2k9/{record_id}"
+          },
+          "vuln_type": "authorization",
+          "disposition": "refute",
+          "worth_validation": false,
+          "required_evidence_refs": [],
+          "decisive_refutation_refs": [
+            "code:code.ts:owner_id_filter"
+          ],
+          "duplicate_of": null,
+          "scope_allowed": true
+        }
+      ],
+      "metrics": {
+        "precision_at_5": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "valuable_recall_at_5": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "evidence_traceability_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "effective_refutation_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "duplicate_suppression_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "human_worth_validation_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        }
+      },
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [
+        {
+          "path": "metrics.precision_at_5",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.valuable_recall_at_5",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.evidence_traceability_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.duplicate_suppression_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.human_worth_validation_rate",
+          "reason": "zero_denominator"
+        }
+      ],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "dev-003",
+      "suite": "development",
+      "risk_family": "authorization",
+      "expected_disposition": "deduplicate",
+      "loop_audit_status": "ready",
+      "evaluation_status": "failed",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_loaded"
+      ],
+      "final_candidates": [
+        {
+          "candidate_id": "H-001",
+          "rank": 1,
+          "vuln_type": "authorization",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "route": {
+            "method": "GET",
+            "path": "/local/records/n8v3/:record_id"
+          },
+          "source_fact_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/records/n8v3/{record_id}",
+            "har:har_context",
+            "code:code.ts:read_record",
+            "code:code.ts:load_record",
+            "code:code.ts:send_file",
+            "evidence:0cdc5c9f125508ff107338df3f8df78259ac615c9f4473220219c720c6a93d6d",
+            "evidence:efeea531ea697ba53a006b20ec27f7b6f346726fc6873b63114d839398c27d6a",
+            "evidence:7e5607a608712852df7559855eb4d2c04c813a14880c9780021cab496b91a2ba"
+          ],
+          "affected_code_path": "code:code.ts:read_record",
+          "evidence_trace_status": "traceable",
+          "human_validation_readiness": "ready",
+          "execution_allowed": false,
+          "dispatch_allowed": false,
+          "validation_allowed": false,
+          "candidate_promotion_allowed": false,
+          "report_submission_allowed": false,
+          "refutation_questions": [
+            "Does an observed local authorization guard execute before the sensitive sink?",
+            "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+          ],
+          "safe_validation_plan": [
+            "Local review only for GET /local/records/n8v3/:record_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via read_record.",
+            "Do not execute live validation, access production accounts, or submit a report."
+          ],
+          "next_allowed_action": "Human review of the cited local evidence.",
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report"
+          ]
+        }
+      ],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "disposition": "retained",
+          "evidence_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/records/n8v3/{record_id}",
+            "har:har_context",
+            "code:code.ts:read_record",
+            "code:code.ts:load_record",
+            "code:code.ts:send_file",
+            "evidence:0cdc5c9f125508ff107338df3f8df78259ac615c9f4473220219c720c6a93d6d",
+            "evidence:efeea531ea697ba53a006b20ec27f7b6f346726fc6873b63114d839398c27d6a",
+            "evidence:7e5607a608712852df7559855eb4d2c04c813a14880c9780021cab496b91a2ba"
+          ],
+          "candidate_projection": {
+            "candidate_id": "H-001",
+            "rank": 1,
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:read_record",
+            "route": {
+              "method": "GET",
+              "path": "/local/records/n8v3/:record_id"
+            },
+            "source_fact_refs": [
+              "scope:scope_context",
+              "policy:policy_context",
+              "api:api_surface",
+              "api:GET:/local/records/n8v3/{record_id}",
+              "har:har_context",
+              "code:code.ts:read_record",
+              "code:code.ts:load_record",
+              "code:code.ts:send_file",
+              "evidence:0cdc5c9f125508ff107338df3f8df78259ac615c9f4473220219c720c6a93d6d",
+              "evidence:efeea531ea697ba53a006b20ec27f7b6f346726fc6873b63114d839398c27d6a",
+              "evidence:7e5607a608712852df7559855eb4d2c04c813a14880c9780021cab496b91a2ba"
+            ],
+            "affected_code_path": "code:code.ts:read_record",
+            "evidence_trace_status": "traceable",
+            "human_validation_readiness": "ready",
+            "execution_allowed": false,
+            "dispatch_allowed": false,
+            "validation_allowed": false,
+            "candidate_promotion_allowed": false,
+            "report_submission_allowed": false,
+            "refutation_questions": [
+              "Does an observed local authorization guard execute before the sensitive sink?",
+              "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+            ],
+            "safe_validation_plan": [
+              "Local review only for GET /local/records/n8v3/:record_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via read_record.",
+              "Do not execute live validation, access production accounts, or submit a report."
+            ],
+            "next_allowed_action": "Human review of the cited local evidence.",
+            "safety_blockers": [
+              "execute_live_validation",
+              "touch_real_user_data",
+              "submit_report"
+            ]
+          },
+          "priority_score": 100,
+          "evidence_completeness_score": 5
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_object_ownership_check:read_record_summary",
+          "disposition": "deduplicated",
+          "evidence_refs": [
+            "code:code.ts:load_record"
+          ],
+          "duplicate_of": "missing_object_ownership_check:read_record"
+        }
+      ],
+      "gold_roots": [
+        {
+          "gold_id": "observed-primary-root",
+          "root_cause_id": "missing_object_ownership_check:read_record",
+          "route": {
+            "method": "GET",
+            "path": "/local/records/n8v3/{record_id}"
+          },
+          "vuln_type": "authorization",
+          "disposition": "retain",
+          "worth_validation": true,
+          "required_evidence_refs": [
+            "code:code.ts:read_record",
+            "code:code.ts:load_record",
+            "api:GET:/local/records/n8v3/{record_id}"
+          ],
+          "decisive_refutation_refs": [],
+          "duplicate_of": null,
+          "scope_allowed": true
+        },
+        {
+          "gold_id": "observed-summary-root",
+          "root_cause_id": "missing_object_ownership_check:read_record_summary",
+          "route": {
+            "method": "GET",
+            "path": "/local/records/n8v3/{record_id}/summary"
+          },
+          "vuln_type": "authorization",
+          "disposition": "deduplicate",
+          "worth_validation": false,
+          "required_evidence_refs": [],
+          "decisive_refutation_refs": [],
+          "duplicate_of": "missing_object_ownership_check:read_record",
+          "scope_allowed": true
+        }
+      ],
+      "metrics": {
+        "precision_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "valuable_recall_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "evidence_traceability_rate": {
+          "value": 1.0,
+          "numerator": 3,
+          "denominator": 3,
+          "threshold": 1.0,
+          "passed": true
+        },
+        "effective_refutation_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "duplicate_suppression_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 1.0,
+          "passed": true
+        },
+        "human_worth_validation_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        }
+      },
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [
+        {
+          "path": "metrics.effective_refutation_rate",
+          "reason": "zero_denominator"
+        }
+      ],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "rel-001",
+      "suite": "release",
+      "risk_family": "authentication",
+      "expected_disposition": "retain",
+      "loop_audit_status": "ready",
+      "evaluation_status": "failed",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_loaded"
+      ],
+      "final_candidates": [
+        {
+          "candidate_id": "H-001",
+          "rank": 1,
+          "vuln_type": "authorization",
+          "root_cause_id": "missing_object_ownership_check:transfer_funds",
+          "route": {
+            "method": "GET",
+            "path": "/local/transfers/p4x8/:record_id"
+          },
+          "source_fact_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/transfers/p4x8/{record_id}",
+            "har:har_context",
+            "code:code.ts:transfer_funds",
+            "code:code.ts:transfer",
+            "evidence:1985e08e304774b07dfec15c6b4a76e2312c5bf8bf91ba8da15d01f580e0fadd",
+            "evidence:29c45108ba5e5b060b4c127a22f933f83b03695e00af141a0caa0b15ce9d3cf0"
+          ],
+          "affected_code_path": "code:code.ts:transfer_funds",
+          "evidence_trace_status": "traceable",
+          "human_validation_readiness": "ready",
+          "execution_allowed": false,
+          "dispatch_allowed": false,
+          "validation_allowed": false,
+          "candidate_promotion_allowed": false,
+          "report_submission_allowed": false,
+          "refutation_questions": [
+            "Does an observed local authorization guard execute before the sensitive sink?",
+            "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+          ],
+          "safe_validation_plan": [
+            "Local review only for GET /local/transfers/p4x8/:record_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via transfer_funds.",
+            "Do not execute live validation, access production accounts, or submit a report."
+          ],
+          "next_allowed_action": "Human review of the cited local evidence.",
+          "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report"
+          ]
+        }
+      ],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:transfer_funds",
+          "disposition": "retained",
+          "evidence_refs": [
+            "scope:scope_context",
+            "policy:policy_context",
+            "api:api_surface",
+            "api:GET:/local/transfers/p4x8/{record_id}",
+            "har:har_context",
+            "code:code.ts:transfer_funds",
+            "code:code.ts:transfer",
+            "evidence:1985e08e304774b07dfec15c6b4a76e2312c5bf8bf91ba8da15d01f580e0fadd",
+            "evidence:29c45108ba5e5b060b4c127a22f933f83b03695e00af141a0caa0b15ce9d3cf0"
+          ],
+          "candidate_projection": {
+            "candidate_id": "H-001",
+            "rank": 1,
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:transfer_funds",
+            "route": {
+              "method": "GET",
+              "path": "/local/transfers/p4x8/:record_id"
+            },
+            "source_fact_refs": [
+              "scope:scope_context",
+              "policy:policy_context",
+              "api:api_surface",
+              "api:GET:/local/transfers/p4x8/{record_id}",
+              "har:har_context",
+              "code:code.ts:transfer_funds",
+              "code:code.ts:transfer",
+              "evidence:1985e08e304774b07dfec15c6b4a76e2312c5bf8bf91ba8da15d01f580e0fadd",
+              "evidence:29c45108ba5e5b060b4c127a22f933f83b03695e00af141a0caa0b15ce9d3cf0"
+            ],
+            "affected_code_path": "code:code.ts:transfer_funds",
+            "evidence_trace_status": "traceable",
+            "human_validation_readiness": "ready",
+            "execution_allowed": false,
+            "dispatch_allowed": false,
+            "validation_allowed": false,
+            "candidate_promotion_allowed": false,
+            "report_submission_allowed": false,
+            "refutation_questions": [
+              "Does an observed local authorization guard execute before the sensitive sink?",
+              "Does observed local data flow prove the route is public or otherwise non-sensitive?"
+            ],
+            "safe_validation_plan": [
+              "Local review only for GET /local/transfers/p4x8/:record_id: confirm whether an ownership or authorization guard runs before the sensitive sink reached via transfer_funds.",
+              "Do not execute live validation, access production accounts, or submit a report."
+            ],
+            "next_allowed_action": "Human review of the cited local evidence.",
+            "safety_blockers": [
+              "execute_live_validation",
+              "touch_real_user_data",
+              "submit_report"
+            ]
+          },
+          "priority_score": 100,
+          "evidence_completeness_score": 5
+        }
+      ],
+      "gold_roots": [
+        {
+          "gold_id": "observed-primary-root",
+          "root_cause_id": "missing_object_ownership_check:transfer_funds",
+          "route": {
+            "method": "GET",
+            "path": "/local/transfers/p4x8/{record_id}"
+          },
+          "vuln_type": "authorization",
+          "disposition": "retain",
+          "worth_validation": true,
+          "required_evidence_refs": [
+            "code:code.ts:transfer_funds",
+            "api:GET:/local/transfers/p4x8/{record_id}"
+          ],
+          "decisive_refutation_refs": [],
+          "duplicate_of": null,
+          "scope_allowed": true
+        }
+      ],
+      "metrics": {
+        "precision_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "valuable_recall_at_5": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "evidence_traceability_rate": {
+          "value": 1.0,
+          "numerator": 2,
+          "denominator": 2,
+          "threshold": 1.0,
+          "passed": true
+        },
+        "effective_refutation_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "duplicate_suppression_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "human_worth_validation_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        }
+      },
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [
+        {
+          "path": "metrics.effective_refutation_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.duplicate_suppression_rate",
+          "reason": "zero_denominator"
+        }
+      ],
+      "stage_audit_failures": []
+    },
+    {
+      "case_id": "rel-002",
+      "suite": "release",
+      "risk_family": "authentication",
+      "expected_disposition": "refute",
+      "loop_audit_status": "ready",
+      "evaluation_status": "failed",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "gold_loaded"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_object_ownership_check:transfer_funds",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:owner_id_filter"
+          ]
+        }
+      ],
+      "gold_roots": [
+        {
+          "gold_id": "observed-primary-root",
+          "root_cause_id": "missing_object_ownership_check:transfer_funds",
+          "route": {
+            "method": "GET",
+            "path": "/local/transfers/h9d2/{record_id}"
+          },
+          "vuln_type": "authorization",
+          "disposition": "refute",
+          "worth_validation": false,
+          "required_evidence_refs": [],
+          "decisive_refutation_refs": [
+            "code:code.ts:owner_id_filter"
+          ],
+          "duplicate_of": null,
+          "scope_allowed": true
+        }
+      ],
+      "metrics": {
+        "precision_at_5": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "valuable_recall_at_5": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        },
+        "evidence_traceability_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "effective_refutation_rate": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "duplicate_suppression_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "human_worth_validation_rate": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0,
+          "threshold": 0.8,
+          "passed": false
+        }
+      },
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [
+        {
+          "path": "metrics.precision_at_5",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.valuable_recall_at_5",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.evidence_traceability_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.duplicate_suppression_rate",
+          "reason": "zero_denominator"
+        },
+        {
+          "path": "metrics.human_worth_validation_rate",
+          "reason": "zero_denominator"
+        }
+      ],
+      "stage_audit_failures": []
+    }
+  ],
+  "l4_signoff": {
+    "date": "2026-07-12",
+    "fixture_trial_ready": true,
+    "real_package_ready": false,
+    "h7_retained_pass_count": 3,
+    "h7_retained_total": 3,
+    "decision_quality_all_pass": true,
+    "verdict": "A+B fixture-trial ready; real authorized package still open"
+  },
+  "human_scorecard": [
+    {
+      "case_id": "dev-001",
+      "candidate_id": "H-001",
+      "H1": "yes",
+      "H2": "yes",
+      "H3": "yes",
+      "H4": "yes",
+      "H5": "yes",
+      "H6": "yes",
+      "H7": "yes",
+      "notes": "Unguarded send_file(record_id); worth local review"
+    },
+    {
+      "case_id": "dev-002",
+      "candidate_id": null,
+      "H1": "n/a",
+      "H2": "n/a",
+      "H3": "n/a",
+      "H4": "n/a",
+      "H5": "n/a",
+      "H6": "n/a",
+      "H7": "n/a",
+      "notes": "Correct empty retain set"
+    },
+    {
+      "case_id": "dev-003",
+      "candidate_id": "H-001",
+      "H1": "yes",
+      "H2": "yes",
+      "H3": "yes",
+      "H4": "yes",
+      "H5": "yes",
+      "H6": "yes",
+      "H7": "yes",
+      "notes": "Canonical multi-root retain; worth local review"
+    },
+    {
+      "case_id": "rel-001",
+      "candidate_id": "H-001",
+      "H1": "yes",
+      "H2": "yes",
+      "H3": "yes",
+      "H4": "yes",
+      "H5": "yes",
+      "H6": "yes",
+      "H7": "yes",
+      "notes": "Unguarded transfer; high-impact hypothesis"
+    },
+    {
+      "case_id": "rel-002",
+      "candidate_id": null,
+      "H1": "n/a",
+      "H2": "n/a",
+      "H3": "n/a",
+      "H4": "n/a",
+      "H5": "n/a",
+      "H6": "n/a",
+      "H7": "n/a",
+      "notes": "Correct empty retain set"
+    }
+  ]
+}

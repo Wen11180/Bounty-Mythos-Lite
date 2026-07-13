@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-07-12T20:38:57Z",
+  "mode": "authorized-lab-package",
+  "case_ids": [
+    "my-gh-paperless-doc-path-lab"
+  ],
+  "summaries": [
+    {
+      "case_id": "my-gh-paperless-doc-path-lab",
+      "suite": "lab",
+      "risk_family": "path_traversal",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-gh-paperless-path",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "residual_checklist_loaded",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_path_validation:read_local_paperless_source",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:sanitize_filename"
+          ]
+        },
+        {
+          "candidate_id": "H-002",
+          "root_cause_id": "missing_path_validation:prepare_local_paperless_filename",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:sanitize_filename"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    }
+  ]
+}

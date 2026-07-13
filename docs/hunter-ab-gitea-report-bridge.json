@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-07-12T10:53:57Z",
+  "submission_blocked": true,
+  "execution_allowed": false,
+  "report_submission_allowed": false,
+  "package_count": 1,
+  "total_drafts": 0,
+  "packages": [
+    {
+      "package_id": "my-gh-gitea-issue-authz-lab",
+      "retained_count": 0,
+      "draft_count": 0,
+      "submission_blocked": true,
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "drafts": []
+    }
+  ]
+}

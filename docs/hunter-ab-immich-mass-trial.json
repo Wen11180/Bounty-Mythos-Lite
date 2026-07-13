@@ -1,0 +1,46 @@
+{
+  "generated_at": "2026-07-12T20:41:54Z",
+  "mode": "authorized-lab-package",
+  "case_ids": [
+    "my-gh-immich-user-mass-lab"
+  ],
+  "summaries": [
+    {
+      "case_id": "my-gh-immich-user-mass-lab",
+      "suite": "lab",
+      "risk_family": "mass_assignment",
+      "expected_disposition": "refute",
+      "package_root": "C:\\Users\\Administrator\\Desktop\\Bounty Mythos-Lite\\authorized_packages\\my-gh-immich-mass",
+      "gold_present": false,
+      "loop_audit_status": "ready",
+      "evaluation_status": "skipped_no_gold",
+      "events": [
+        "inputs_staged",
+        "candidates_captured",
+        "loop_projected",
+        "residual_checklist_loaded",
+        "gold_optional_skipped"
+      ],
+      "final_candidates": [],
+      "candidate_decisions": [
+        {
+          "candidate_id": "H-001",
+          "root_cause_id": "missing_mass_assignment_guard:update_local_immich_me",
+          "disposition": "refuted",
+          "evidence_refs": [
+            "code:code.ts:forbid_privilege_fields"
+          ]
+        }
+      ],
+      "gold_roots": [],
+      "metrics": {},
+      "false_positives": [],
+      "missed_retained_roots": [],
+      "invalid_refutations": [],
+      "invalid_deduplications": [],
+      "safety_failures": [],
+      "schema_failures": [],
+      "stage_audit_failures": []
+    }
+  ]
+}
