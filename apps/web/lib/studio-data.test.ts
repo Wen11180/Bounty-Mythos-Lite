@@ -2645,6 +2645,38 @@ test("studio workbench can run the local candidate hunter from authorized inputs
   assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
 });
 
+test("studio workbench model assistance is explicit default-off and single-run", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    workbench,
+    /const \[candidateModelEnabled, setCandidateModelEnabled\] = useState\(false\)/,
+  );
+  assert.match(workbench, /candidateModelProvider/);
+  assert.match(workbench, /candidateModelName/);
+  assert.match(workbench, /Model assistance for next run only/);
+  assert.match(workbench, /candidateModelEnabled \? \(/);
+  assert.match(workbench, /value="openai"/);
+  assert.match(workbench, /value="claude"/);
+  assert.match(workbench, /value="deepseek"/);
+  assert.match(workbench, /Model name/);
+  assert.match(workbench, /function studioResearchRunRequest/);
+  assert.match(workbench, /if \(!candidateModelEnabled\)/);
+  assert.match(workbench, /if \(!candidateModelName\.trim\(\)\)/);
+  assert.match(workbench, /candidate_model:/);
+  assert.match(workbench, /runStudioResearchOnce\(activeWorkspacePath\)/);
+  assert.match(workbench, /runStudioResearchOnce\(workspacePath\)/);
+  assert.match(workbench, /setCandidateModelEnabled\(false\)/);
+  assert.doesNotMatch(workbench, /API key|apiKey|api_key/i);
+  assert.doesNotMatch(
+    workbench,
+    /createStudioWorkspace\([\s\S]{0,200}candidate_model|importStudioWorkspaceArtifact\([\s\S]{0,200}candidate_model/,
+  );
+});
+
 test("studio workbench exposes a redacted evidence review queue", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),

@@ -24,6 +24,7 @@ import {
   type StudioBenchmarkRunResponse,
   type StudioMissionDossierExportResponse,
   type StudioReportExportResponse,
+  type StudioWorkspaceRunRequest,
 } from "@/lib/api";
 import {
   toStudioArtifactChecklist,
@@ -76,6 +77,11 @@ export function StudioWorkbench() {
   const [strategyPath, setStrategyPath] = useState("");
   const [knowledgePath, setKnowledgePath] = useState("");
   const [expectationsPath, setExpectationsPath] = useState("");
+  const [candidateModelEnabled, setCandidateModelEnabled] = useState(false);
+  const [candidateModelProvider, setCandidateModelProvider] = useState<
+    "openai" | "claude" | "deepseek"
+  >("openai");
+  const [candidateModelName, setCandidateModelName] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [manifest, setManifest] = useState<StudioWorkspaceManifest>(emptyManifest);
   const [candidates, setCandidates] = useState<ReturnType<typeof toStudioCandidateCards>>([]);
@@ -167,6 +173,36 @@ export function StudioWorkbench() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  function studioResearchRunRequest(path: string): StudioWorkspaceRunRequest | null {
+    if (!candidateModelEnabled) {
+      return { workspace_path: path };
+    }
+    if (!candidateModelName.trim()) {
+      pushLog("Enter a model name before enabling model-assisted candidate generation.", "blocked");
+      return null;
+    }
+    return {
+      candidate_model: {
+        enabled: true,
+        model: candidateModelName.trim(),
+        provider: candidateModelProvider,
+      },
+      workspace_path: path,
+    };
+  }
+
+  async function runStudioResearchOnce(path: string) {
+    const request = studioResearchRunRequest(path);
+    if (!request) {
+      return undefined;
+    }
+    try {
+      return await runStudioWorkspaceResearch(request);
+    } finally {
+      setCandidateModelEnabled(false);
+    }
+  }
 
   async function handleOpenWorkspace() {
     if (!workspacePath.trim()) {
@@ -302,7 +338,10 @@ export function StudioWorkbench() {
         return;
       }
 
-      const run = await runStudioWorkspaceResearch({ workspace_path: activeWorkspacePath });
+      const run = await runStudioResearchOnce(activeWorkspacePath);
+      if (run === undefined) {
+        return;
+      }
       if (!run) {
         pushLog("Local candidate hunt did not start. Scope and code artifacts are required.", "blocked");
         return;
@@ -359,7 +398,10 @@ export function StudioWorkbench() {
     }
     setBusy("research");
     try {
-      const run = await runStudioWorkspaceResearch({ workspace_path: workspacePath });
+      const run = await runStudioResearchOnce(workspacePath);
+      if (run === undefined) {
+        return;
+      }
       if (!run) {
         pushLog("Research run did not start. Scope and code artifacts are required.", "blocked");
         return;
@@ -724,6 +766,47 @@ export function StudioWorkbench() {
             label="Launch campaign hunter"
             onClick={handleLaunchCampaignHunter}
           />
+        </div>
+        <div className="border-t border-[var(--line)] p-5 text-sm">
+          <label className="flex items-start gap-3">
+            <input
+              checked={candidateModelEnabled}
+              className="mt-1"
+              onChange={(event) => setCandidateModelEnabled(event.target.checked)}
+              type="checkbox"
+            />
+            <span>
+              <span className="block font-semibold">Model assistance for next run only</span>
+              <span className="mt-1 block text-[var(--muted)]">
+                Optional proposals remain unverified and all credentials stay in the backend environment.
+              </span>
+            </span>
+          </label>
+          {candidateModelEnabled ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <label className="grid gap-2 text-sm font-medium">
+                Provider
+                <select
+                  className="border border-[var(--line)] bg-white px-3 py-2.5 outline-none focus:border-[var(--accent)]"
+                  onChange={(event) =>
+                    setCandidateModelProvider(
+                      event.target.value as "openai" | "claude" | "deepseek",
+                    )
+                  }
+                  value={candidateModelProvider}
+                >
+                  <option value="openai">OpenAI</option>
+                  <option value="claude">Claude</option>
+                  <option value="deepseek">DeepSeek</option>
+                </select>
+              </label>
+              <TextField
+                label="Model name"
+                onChange={setCandidateModelName}
+                value={candidateModelName}
+              />
+            </div>
+          ) : null}
         </div>
         <div className="grid gap-3 border-t border-[var(--line)] p-5 text-sm md:grid-cols-2">
           <div>

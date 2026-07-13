@@ -822,6 +822,9 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       "/mythos/studio/workspaces/benchmarks/template",
       "/mythos/studio/workspaces/benchmarks/run",
     ]);
+    assert.deepEqual(calls[0]?.body, {
+      workspace_path: "C:/workspaces/acme-api",
+    });
     assert.deepEqual(calls[3]?.body, {
       campaign_id: "campaign_1",
       workspace_path: "C:/workspaces/acme-api",
@@ -842,6 +845,71 @@ test("studio research API helpers keep reports submission-blocked", async () => 
     assert.doesNotMatch(
       JSON.stringify(calls),
       /Authorization\s*[:=]|Bearer|secret-token|cookie|send_file\(file_id\)|submitReport/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio research API helper sends only the explicit candidate model opt-in", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody: unknown = null;
+  globalThis.fetch = async (_input, init) => {
+    requestBody = init?.body ? JSON.parse(String(init.body)) : null;
+    return new Response(
+      JSON.stringify({
+        candidate_count: 1,
+        candidate_generation: {
+          accepted_count: 1,
+          baseline_count: 1,
+          candidate_promotion_allowed: false,
+          dispatch_allowed: false,
+          execution_allowed: false,
+          model: "gpt-4.1-mini",
+          model_failure_reason: null,
+          model_latency_ms: 3,
+          model_requested: true,
+          model_status: "completed",
+          prompt_hash: "prompt-hash",
+          proposed_count: 1,
+          provider: "openai",
+          rejected_count: 0,
+          report_submission_allowed: false,
+          validation_allowed: false,
+          working_candidate_count: 1,
+        },
+        manifest: { runs: [{ run_id: "pipeline_run_1", report_path: null }] },
+        report_title: "Source audit: target",
+        run_id: "pipeline_run_1",
+        safety_notes: [],
+        submission_blocked: true,
+      }),
+      { headers: { "Content-Type": "application/json" }, status: 200 },
+    );
+  };
+
+  try {
+    const run = await runStudioWorkspaceResearch({
+      candidate_model: {
+        enabled: true,
+        model: "gpt-4.1-mini",
+        provider: "openai",
+      },
+      workspace_path: "C:/workspaces/acme-api",
+    });
+
+    assert.equal(run?.candidate_generation.model_status, "completed");
+    assert.deepEqual(requestBody, {
+      candidate_model: {
+        enabled: true,
+        model: "gpt-4.1-mini",
+        provider: "openai",
+      },
+      workspace_path: "C:/workspaces/acme-api",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(requestBody),
+      /api.?key|secret|token|cookie|authorization/i,
     );
   } finally {
     globalThis.fetch = originalFetch;

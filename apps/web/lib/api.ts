@@ -543,13 +543,41 @@ export type StudioArtifactImportRequest = {
   source_path: string;
 };
 
+export type StudioCandidateModelRequest = {
+  enabled: true;
+  provider: "openai" | "claude" | "deepseek";
+  model: string;
+};
+
 export type StudioWorkspaceRunRequest = {
+  candidate_model?: StudioCandidateModelRequest;
   workspace_path: string;
+};
+
+export type StudioCandidateGenerationSummary = {
+  model_requested: boolean;
+  provider?: "openai" | "claude" | "deepseek";
+  model?: string;
+  model_status: "completed" | "model_not_requested" | "needs_model_review";
+  model_failure_reason: string | null;
+  prompt_hash: string;
+  model_latency_ms: number | null;
+  baseline_count: number;
+  proposed_count: number;
+  accepted_count: number;
+  rejected_count: number;
+  working_candidate_count: number;
+  execution_allowed: false;
+  dispatch_allowed: false;
+  validation_allowed: false;
+  candidate_promotion_allowed: false;
+  report_submission_allowed: false;
 };
 
 export type StudioWorkspaceRunResponse = {
   run_id: string;
   candidate_count: number;
+  candidate_generation: StudioCandidateGenerationSummary;
   submission_blocked: boolean;
   report_title: string;
   safety_notes: string[];
