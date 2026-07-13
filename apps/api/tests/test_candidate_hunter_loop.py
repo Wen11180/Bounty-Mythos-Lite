@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from copy import deepcopy
 import json
@@ -142,6 +142,18 @@ def test_observations_use_run_and_hypothesis_for_stable_candidate_identity():
     assert observations["candidate_states"][0]["candidate_key"] == "run-001:H-001"
 
 
+def test_observations_preserve_model_priority_for_advisory_tiebreak():
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[{"hypothesis_id": "H-001", "model_priority_score": 100}],
+        code_files=[],
+        surface_facts=[],
+        context_facts=[],
+    )
+
+    assert observations["candidate_states"][0]["model_priority_score"] == 100
+
+
 def test_complete_unguarded_sensitive_flow_is_retained():
     result = advance_candidate_hunter_round(
         pipeline_run_id="run-001",
@@ -157,6 +169,39 @@ def test_complete_unguarded_sensitive_flow_is_retained():
     assert result["final_candidates"][0]["execution_allowed"] is False
     assert result["final_candidates"][0]["validation_allowed"] is False
     assert result["final_candidates"][0]["report_submission_allowed"] is False
+
+
+def test_retained_projection_includes_research_card_fields():
+    """L3 usability: retained cards expose refute Qs, code path, concrete plan."""
+    state = _complete_candidate_state()
+    state["refutation_questions"] = [
+        "Does a local ownership check run before send_file?",
+    ]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=_safe_observations(),
+        prior_decisions=[],
+    )
+
+    retained = result["final_candidates"][0]
+    assert retained["refutation_questions"] == [
+        "Does a local ownership check run before send_file?",
+    ]
+    assert retained["affected_code_path"].startswith("code:")
+    assert any(
+        "Local review only" in item and "GET" in item
+        for item in retained["safe_validation_plan"]
+    )
+    assert any(
+        "Do not execute live validation" in item
+        and "submit a report" in item
+        for item in retained["safe_validation_plan"]
+    )
+    projection = result["candidate_decisions"][0]["candidate_projection"]
+    assert projection["refutation_questions"] == retained["refutation_questions"]
+    assert projection["affected_code_path"] == retained["affected_code_path"]
 
 
 def test_positive_observed_control_refutes_candidate():
@@ -246,6 +291,42 @@ def test_candidates_sharing_observed_service_root_are_deduplicated():
         "evidence_refs": ["code:code.py:load_record"],
         "duplicate_of": "missing_object_ownership_check:read_record",
     }
+
+
+def test_equal_priority_duplicates_use_model_priority_as_advisory_tiebreak():
+    lower_model_priority = _complete_candidate_state("H-001")
+    lower_model_priority["priority_score"] = 100
+    lower_model_priority["model_priority_score"] = 80
+    lower_model_priority["shared_root"] = "load_record"
+    lower_model_priority["shared_root_evidence_ref"] = "code:code.py:load_record"
+    lower_model_priority["source_fact_refs"].append("code:code.py:load_record")
+
+    higher_model_priority = _complete_candidate_state("H-002")
+    higher_model_priority["root_cause_id"] = (
+        "missing_object_ownership_check:read_record_detail"
+    )
+    higher_model_priority["route"] = {
+        "method": "GET",
+        "path": "/records/{record_id}/detail",
+    }
+    higher_model_priority["priority_score"] = 100
+    higher_model_priority["model_priority_score"] = 100
+    higher_model_priority["shared_root"] = "load_record"
+    higher_model_priority["shared_root_evidence_ref"] = "code:code.py:load_record"
+    higher_model_priority["source_fact_refs"].append("code:code.py:load_record")
+
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[lower_model_priority, higher_model_priority],
+        observations=_safe_observations(),
+        prior_decisions=[],
+    )
+
+    assert [item["candidate_id"] for item in result["final_candidates"]] == ["H-002"]
+    decisions = {item["candidate_id"]: item for item in result["candidate_decisions"]}
+    assert decisions["H-001"]["disposition"] == "deduplicated"
+    assert decisions["H-001"]["duplicate_of"] == higher_model_priority["root_cause_id"]
 
 
 def test_same_service_name_in_different_sources_is_not_deduplicated():
@@ -1551,6 +1632,154 @@ def verify_record_access(record_id: str, current_user):
         session.close()
 
 
+def test_typescript_express_one_hop_ownership_guard_refutes_candidate():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/records/:recordId", readRecord);
+
+async function readRecord(req: Request, res: Response) {
+  await verifyRecordAccess(req.params.recordId, req.user);
+  return sendFile(req.params.recordId);
+}
+
+async function verifyRecordAccess(recordId: string, user: User) {
+  const record = await loadRecord(recordId);
+  if (record.ownerId !== user.id) {
+    return res.sendStatus(403);
+  }
+  return record;
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"].startswith("code:routes.ts:")
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_express_public_filter_suppresses_candidate():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/records/:recordId", readRecord);
+
+async function readRecord(req: Request, res: Response) {
+  const record = await loadPublicRecord(req.params.recordId);
+  return sendFile(record.path);
+}
+
+async function loadPublicRecord(recordId: string) {
+  return recordStore.get(recordId, { visibility: "public" });
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["public_evidence_ref"].startswith("code:routes.ts:")
+    assert result["candidate_decisions"][0]["disposition"] == "suppressed"
+
+
 @pytest.mark.parametrize(
     ("state_factory", "expected_status", "expected_stop"),
     [
@@ -1605,3 +1834,21 @@ def test_loop_stop_reasons_map_to_task_summary_status(
         assert task.status == expected_status
     finally:
         session.close()
+
+
+def test_incomplete_candidate_never_emits_retained_decision():
+    state = _complete_candidate_state()
+    state["source_fact_refs"] = []
+    state["evidence_trace_status"] = "needs_evidence"
+
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=_safe_observations(),
+        prior_decisions=[],
+    )
+
+    assert result["final_candidates"] == []
+    assert result["evidence_requests"]
+    assert all(item.get("disposition") != "retained" for item in result["candidate_decisions"])

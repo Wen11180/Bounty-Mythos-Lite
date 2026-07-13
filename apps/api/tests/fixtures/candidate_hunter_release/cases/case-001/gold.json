@@ -11,7 +11,7 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:read_record",
+                                                              "code:code.ts:read_record",
                                                               "api:GET:/local/records/q7m4/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

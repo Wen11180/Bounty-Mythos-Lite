@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/exports/f8m1/{exportId}/download": {
+      "post": {
+        "operationId": "downloadExport_f8m1"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-g5p2",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/reviews/g5p2/{reviewId}/publish"
+  ],
+  "local_only": true
+}

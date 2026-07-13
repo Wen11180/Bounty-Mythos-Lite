@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-v4k6",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/notices/v4k6/{noticeId}"
+  ],
+  "local_only": true
+}

@@ -73,7 +73,30 @@ def test_build_industrial_scheduler_plan_creates_dag_dedup_risk_and_lifecycle():
         "dedup_agent",
         "risk_prioritizer",
         "report_agent",
+        "patch_agent",
+        "intake_agent",
+        "dependency_agent",
+        "residual_runner",
+        "semgrep_runner",
     }
+    assert task_by_id["T-001b"].agent == "intake_agent"
+    assert task_by_id["T-001b"].execution_allowed is False
+    assert task_by_id["T-001c"].agent == "dependency_agent"
+    assert task_by_id["T-001c"].depends_on == ["T-001b"]
+    assert task_by_id["T-001c"].execution_allowed is False
+    assert task_by_id["T-002"].depends_on == ["T-001c"]
+    assert task_by_id["T-002b"].agent == "semgrep_runner"
+    assert task_by_id["T-002b"].execution_allowed is False
+    assert task_by_id["T-002b"].requires_human_review is True
+    assert task_by_id["T-002b"].depends_on == ["T-001c"]
+    assert "T-002b" in task_by_id["T-005"].depends_on
+    assert "T-002b" in task_by_id["T-006"].depends_on
+    assert task_by_id["T-007b"].agent == "residual_runner"
+    assert task_by_id["T-007b"].depends_on == ["T-007"]
+    assert task_by_id["T-007b"].execution_allowed is False
+    assert task_by_id["T-007b"].requires_human_review is True
+    assert task_by_id["T-008"].execution_allowed is False
+    assert task_by_id["T-008"].depends_on == ["T-007b"]
     assert any(len(batch.task_ids) > 1 for batch in plan.parallel_batches)
     assert plan.finding_clusters[0].finding_ids == ["H-001", "H-002"]
     assert plan.risk_queue[0].finding_id == "H-001"

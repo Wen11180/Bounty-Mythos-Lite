@@ -62,6 +62,20 @@ def run_agent_task(
             "stop_reason": "campaign_task_not_found",
         }
 
+    if task.task_type == "candidate_hunter_evidence_inspection":
+        from app.candidate_hunter_evidence import (
+            resume_candidate_hunter_after_evidence,
+            run_evidence_inspection_task,
+        )
+
+        result = run_evidence_inspection_task(repository=repository, task_id=task.id)
+        if result.get("status") != "completed":
+            return result
+        return resume_candidate_hunter_after_evidence(
+            repository=repository,
+            evidence_task_id=task.id,
+        )
+
     campaign = repository.get_campaign(task.campaign_id)
     stop_reason = _agent_task_stop_reason(
         campaign=campaign,
@@ -175,7 +189,6 @@ def _agent_task_stop_reason(
         budget.time_budget_minutes,
         budget.token_budget,
         budget.tool_call_budget,
-        budget.validation_budget,
     ]
     if any(value is not None and value <= 0 for value in budgets):
         return "budget_exhausted"

@@ -83,22 +83,23 @@ def _is_secret_key(value: str) -> bool:
 
 
 def _is_secret_like(value: str) -> bool:
+    import re
+
     normalized = value.lower()
-    return any(
-        marker in normalized
-        for marker in (
-            "authorization:",
-            "api-key:",
-            "api_key=",
-            "bearer ",
-            "cookie:",
-            "secret=",
-            "set-cookie:",
-            "session=",
-            "sk-",
-            "token=",
-            "x-api-key:",
-        )
+    markers = (
+        "authorization:",
+        "api-key:",
+        "api_key=",
+        "bearer ",
+        "cookie:",
+        "secret=",
+        "set-cookie:",
+        "session=",
+        "token=",
+        "x-api-key:",
+    )
+    return any(marker in normalized for marker in markers) or (
+        re.search(r"\bsk-[a-z0-9]", normalized) is not None
     )
 
 

@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/guides/z3p7/{guideId}": {
+      "get": {
+        "operationId": "readGuide_z3p7"
+      }
+    }
+  }
+}

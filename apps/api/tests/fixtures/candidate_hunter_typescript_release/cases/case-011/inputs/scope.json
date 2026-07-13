@@ -1,0 +1,11 @@
+{
+  "fixture_id": "fixture-n7s9",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/jobs/n7s9/{jobId}/run",
+    "/local/jobs/n7s9/{jobId}/retry"
+  ],
+  "local_only": true
+}

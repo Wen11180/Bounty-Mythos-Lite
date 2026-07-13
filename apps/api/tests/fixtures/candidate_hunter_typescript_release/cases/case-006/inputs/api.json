@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/batches/h2w8/{batchId}": {
+      "get": {
+        "operationId": "readBatch_h2w8"
+      }
+    }
+  }
+}

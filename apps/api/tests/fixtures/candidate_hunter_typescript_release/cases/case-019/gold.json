@@ -1,0 +1,39 @@
+{
+  "authorization_pattern": "tenant_boundary",
+  "expected_roots": [
+    {
+      "gold_id": "s2v6-primary-root",
+      "root_cause_id": "missing_object_ownership_check:readmetricdetail",
+      "route": {
+        "method": "GET",
+        "path": "/internal/metrics/s2v6/{metricId}/detail"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:readMetricDetail",
+        "code:code.ts:renderMetric",
+        "api:GET:/internal/metrics/s2v6/{metricId}/detail"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    },
+    {
+      "gold_id": "s2v6-secondary-root",
+      "root_cause_id": "missing_object_ownership_check:readmetricchart",
+      "route": {
+        "method": "GET",
+        "path": "/internal/metrics/s2v6/{metricId}/chart"
+      },
+      "vuln_type": "authorization",
+      "disposition": "deduplicate",
+      "worth_validation": false,
+      "required_evidence_refs": [],
+      "decisive_refutation_refs": [],
+      "duplicate_of": "missing_object_ownership_check:readmetricdetail",
+      "scope_allowed": true
+    }
+  ]
+}

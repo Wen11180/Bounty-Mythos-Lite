@@ -11,7 +11,7 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:export_archive",
+                                                              "code:code.ts:export_archive",
                                                               "api:GET:/local/archives/t2b5/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

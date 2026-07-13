@@ -1,19 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, Literal
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.candidate_hunter_loop import load_candidate_hunter_projection
 from app.config import get_settings
+from app.cross_source_candidate_generator import CandidateReasoner
+from app.intelligence_benchmark.authorized_lab_package import (
+    AuthorizedLabPackageError,
+    load_authorized_lab_package,
+    load_authorized_lab_package_gold,
+)
+from app.advisory_static_engines import load_package_advisory_bundle
+from app.human_residual_gate import load_package_residual_checklist
 from app.intelligence_benchmark.release_fixtures import (
     ReleaseFixtureCase,
     load_release_fixture_gold,
+    load_release_fixture_gold_suite,
     stage_release_fixture_inputs,
 )
 from app.intelligence_benchmark.release_v1 import (
@@ -21,10 +32,12 @@ from app.intelligence_benchmark.release_v1 import (
     evaluate_candidate_hunter_release_v1,
 )
 from app.main import (
+    StudioCandidateModelRequest,
     StudioWorkspaceRunRequest,
+    _run_mythos_studio_workspace_research_service,
     list_mythos_studio_workspace_candidates,
-    run_mythos_studio_workspace_research,
 )
+from app.llm.base import ProviderName
 from app.repository import DatabaseRepository
 from app.studio_workspace import (
     StudioArtifactImport,
@@ -43,16 +56,26 @@ class ReleaseRunnerError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class ReleaseCaseModelRuntime:
+    provider: ProviderName
+    model: str
+    reasoner: CandidateReasoner | None
+    audit_mode: Literal["live", "replay"]
+
+
 def run_candidate_hunter_release_fixture(
     case: ReleaseFixtureCase,
     *,
     workspace_root: Path,
     session: Session,
+    model_runtime: ReleaseCaseModelRuntime | None = None,
 ) -> dict[str, Any]:
     capture = _capture_candidate_hunter_release_fixture(
         case,
         workspace_root=workspace_root,
         session=session,
+        model_runtime=model_runtime,
     )
     gold_oracle = load_release_fixture_gold(case)
     evaluation = _apply_loop_audit_gate(
@@ -69,11 +92,89 @@ def run_candidate_hunter_release_fixture(
     }
 
 
+def run_candidate_hunter_authorized_lab_package(
+    package_root: Path,
+    *,
+    workspace_root: Path,
+    session: Session,
+    evaluate_gold: bool = True,
+) -> dict[str, Any]:
+    """Run candidate hunter on a user-authorized local package (G13 trust gate).
+
+    Does not touch the locked 24-case release suite. Gold evaluation is optional:
+    packages without gold.json still return loop projection + safety fields for H1-H7.
+    """
+    try:
+        package = load_authorized_lab_package(package_root)
+    except AuthorizedLabPackageError as exc:
+        raise ReleaseRunnerError(f"authorized_lab_package:{exc}") from exc
+
+    advisory_bundle = load_package_advisory_bundle(package.root)
+    residual_checklist_bundle = load_package_residual_checklist(package.root)
+
+    # Lab packages are normalized into ReleaseFixtureCase so the capture pipeline
+    # and fail-closed staging rules can be reused without suite registration.
+    capture = _capture_candidate_hunter_release_fixture(
+        package,
+        workspace_root=workspace_root,
+        session=session,
+    )
+
+    gold = load_authorized_lab_package_gold(package)
+    events = list(capture.get("events", []))
+    if advisory_bundle.get("present"):
+        events = [*events, "advisory_bundle_loaded"]
+    if residual_checklist_bundle.get("present"):
+        events = [*events, "residual_checklist_loaded"]
+    if gold is None or not evaluate_gold:
+        return {
+            **capture,
+            "package_id": package.case_id,
+            "package_root": str(package.root),
+            "gold_present": gold is not None,
+            "advisory_bundle": advisory_bundle,
+            "residual_checklist_bundle": residual_checklist_bundle,
+            "evaluation": {
+                "status": "skipped_no_gold" if gold is None else "skipped_by_request",
+                "metrics": {},
+                "false_positives": [],
+                "missed_retained_roots": [],
+                "invalid_refutations": [],
+                "invalid_deduplications": [],
+                "safety_failures": [],
+                "schema_failures": [],
+                "stage_audit_failures": [],
+            },
+            "events": [*events, "gold_optional_skipped"],
+        }
+
+    evaluation = _apply_loop_audit_gate(
+        evaluate_candidate_hunter_release_v1(
+            capture["normalized_output"],
+            gold,
+        ),
+        capture["loop_audit"],
+    )
+    return {
+        **capture,
+        "package_id": package.case_id,
+        "package_root": str(package.root),
+        "gold_present": True,
+        "advisory_bundle": advisory_bundle,
+        "residual_checklist_bundle": residual_checklist_bundle,
+        "evaluation": evaluation,
+        "events": [*events, "gold_loaded"],
+    }
+
+
 def run_candidate_hunter_release_suite(
     cases: list[ReleaseFixtureCase],
     *,
     workspace_root: Path,
     session: Session,
+    model_runtime_factory: (
+        Callable[[ReleaseFixtureCase], ReleaseCaseModelRuntime] | None
+    ) = None,
 ) -> dict[str, Any]:
     if not cases or any(not isinstance(case, ReleaseFixtureCase) for case in cases):
         raise ReleaseRunnerError("release_suite_cases_invalid")
@@ -88,17 +189,28 @@ def run_candidate_hunter_release_suite(
             case,
             workspace_root=workspace_root,
             session=session,
+            model_runtime=(
+                model_runtime_factory(case)
+                if model_runtime_factory is not None
+                else None
+            ),
         )
         for case in cases
     ]
+    gold_oracles = load_release_fixture_gold_suite(tuple(cases))
     evaluation = evaluate_candidate_hunter_release_suite_v1(
         [
             {
                 "case_id": case.case_id,
                 "normalized_output": case_run["normalized_output"],
-                "gold_oracle": load_release_fixture_gold(case),
+                "gold_oracle": gold_oracle,
             }
-            for case, case_run in zip(cases, case_runs, strict=True)
+            for case, case_run, gold_oracle in zip(
+                cases,
+                case_runs,
+                gold_oracles,
+                strict=True,
+            )
         ]
     )
     stage_audit_failures = [
@@ -127,6 +239,7 @@ def _capture_candidate_hunter_release_fixture(
     *,
     workspace_root: Path,
     session: Session,
+    model_runtime: ReleaseCaseModelRuntime | None = None,
 ) -> dict[str, Any]:
     with _temporary_workspace_root(workspace_root) as configured_root:
         workspace = create_workspace(
@@ -141,9 +254,29 @@ def _capture_candidate_hunter_release_fixture(
             )
 
         events = ["inputs_staged"]
-        run = run_mythos_studio_workspace_research(
-            StudioWorkspaceRunRequest(workspace_path=str(workspace.path)),
+        request = StudioWorkspaceRunRequest(workspace_path=str(workspace.path))
+        reasoner_override = None
+        audit_mode: Literal["live", "replay"] = "live"
+        if model_runtime is not None:
+            request = StudioWorkspaceRunRequest(
+                workspace_path=str(workspace.path),
+                candidate_model=StudioCandidateModelRequest(
+                    enabled=True,
+                    provider=model_runtime.provider,
+                    model=model_runtime.model,
+                ),
+            )
+            reasoner_override = model_runtime.reasoner
+            audit_mode = model_runtime.audit_mode
+        run = _run_studio_workspace_research_sync(
+            request,
             session,
+            reasoner_override=reasoner_override,
+            audit_mode=audit_mode,
+        )
+        _complete_candidate_hunter_evidence_tasks(
+            repository=DatabaseRepository(session),
+            pipeline_run_id=run["run_id"],
         )
         captured = list_mythos_studio_workspace_candidates(
             str(workspace.path),
@@ -182,6 +315,50 @@ def _capture_candidate_hunter_release_fixture(
         "normalized_output": normalized_output,
         "events": events,
     }
+
+
+def _run_studio_workspace_research_sync(
+    request: StudioWorkspaceRunRequest,
+    session: Session,
+    *,
+    reasoner_override: CandidateReasoner | None = None,
+    audit_mode: Literal["live", "replay"] = "live",
+) -> dict[str, Any]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            _run_mythos_studio_workspace_research_service(
+                request,
+                session,
+                reasoner_override=reasoner_override,
+                audit_mode=audit_mode,
+            )
+        )
+    raise ReleaseRunnerError("release_runner_event_loop_active")
+
+
+def _complete_candidate_hunter_evidence_tasks(
+    *,
+    repository: DatabaseRepository,
+    pipeline_run_id: str,
+) -> None:
+    from app.worker.tasks import run_agent_task
+
+    for _ in range(3):
+        evidence_tasks = [
+            task
+            for campaign in repository.list_campaigns()
+            if isinstance(campaign.payload, dict)
+            and campaign.payload.get("pipeline_run_id") == pipeline_run_id
+            for task in repository.list_campaign_tasks(campaign.id)
+            if task.task_type == "candidate_hunter_evidence_inspection"
+            and task.status in {"queued", "retryable"}
+        ]
+        if not evidence_tasks:
+            return
+        for task in evidence_tasks:
+            run_agent_task(task.id, repository=repository)
 
 
 def normalize_studio_candidates_for_release_v1(candidates: Any) -> dict[str, Any]:
@@ -284,6 +461,10 @@ def _normalize_studio_candidate(candidate: dict[str, Any], rank: int) -> dict[st
         (
             "validation_allowed",
             (("evidence_trace_summary", "validation_allowed"),),
+        ),
+        (
+            "candidate_promotion_allowed",
+            (("candidate_promotion_allowed",),),
         ),
         (
             "report_submission_allowed",
@@ -416,8 +597,10 @@ def _text(value: Any) -> str:
 
 
 __all__ = [
+    "ReleaseCaseModelRuntime",
     "ReleaseRunnerError",
     "normalize_studio_candidates_for_release_v1",
+    "run_candidate_hunter_authorized_lab_package",
     "run_candidate_hunter_release_fixture",
     "run_candidate_hunter_release_suite",
 ]

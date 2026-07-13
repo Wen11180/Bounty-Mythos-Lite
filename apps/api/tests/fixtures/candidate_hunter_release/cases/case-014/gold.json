@@ -14,7 +14,7 @@
 
                                                           ],
                                "decisive_refutation_refs":  [
-                                                                "code:code.py:verify_transfer_access:ownership_guard"
+                                                                "code:code.ts:owner_id_filter"
                                                             ],
                                "duplicate_of":  null,
                                "scope_allowed":  true

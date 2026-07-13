@@ -1,0 +1,150 @@
+{
+  "profile": "candidate_hunter_typescript_express",
+  "version": "candidate_hunter_typescript_express_fixture_v1",
+  "cases": [
+    {
+      "case_id": "tse-001",
+      "suite": "development",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-001"
+    },
+    {
+      "case_id": "tse-002",
+      "suite": "development",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-002"
+    },
+    {
+      "case_id": "tse-003",
+      "suite": "development",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-003"
+    },
+    {
+      "case_id": "tse-004",
+      "suite": "development",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-004"
+    },
+    {
+      "case_id": "tse-005",
+      "suite": "development",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-005"
+    },
+    {
+      "case_id": "tse-006",
+      "suite": "development",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-006"
+    },
+    {
+      "case_id": "tse-007",
+      "suite": "development",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-007"
+    },
+    {
+      "case_id": "tse-008",
+      "suite": "development",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-008"
+    },
+    {
+      "case_id": "tse-009",
+      "suite": "development",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-009"
+    },
+    {
+      "case_id": "tse-010",
+      "suite": "development",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-010"
+    },
+    {
+      "case_id": "tse-011",
+      "suite": "development",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-011"
+    },
+    {
+      "case_id": "tse-012",
+      "suite": "development",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-012"
+    },
+    {
+      "case_id": "tse-013",
+      "suite": "release",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-013"
+    },
+    {
+      "case_id": "tse-014",
+      "suite": "release",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-014"
+    },
+    {
+      "case_id": "tse-015",
+      "suite": "release",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-015"
+    },
+    {
+      "case_id": "tse-016",
+      "suite": "release",
+      "authorization_pattern": "object_ownership",
+      "path": "cases/case-016"
+    },
+    {
+      "case_id": "tse-017",
+      "suite": "release",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-017"
+    },
+    {
+      "case_id": "tse-018",
+      "suite": "release",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-018"
+    },
+    {
+      "case_id": "tse-019",
+      "suite": "release",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-019"
+    },
+    {
+      "case_id": "tse-020",
+      "suite": "release",
+      "authorization_pattern": "tenant_boundary",
+      "path": "cases/case-020"
+    },
+    {
+      "case_id": "tse-021",
+      "suite": "release",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-021"
+    },
+    {
+      "case_id": "tse-022",
+      "suite": "release",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-022"
+    },
+    {
+      "case_id": "tse-023",
+      "suite": "release",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-023"
+    },
+    {
+      "case_id": "tse-024",
+      "suite": "release",
+      "authorization_pattern": "role_boundary",
+      "path": "cases/case-024"
+    }
+  ]
+}

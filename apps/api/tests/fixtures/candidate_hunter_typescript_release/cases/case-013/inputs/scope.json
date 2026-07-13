@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-e2r8",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/capsules/e2r8/{capsuleId}/download"
+  ],
+  "local_only": true
+}

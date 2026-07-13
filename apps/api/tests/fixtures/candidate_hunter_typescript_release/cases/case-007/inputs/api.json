@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/reports/m6z1/{reportId}": {
+      "get": {
+        "operationId": "readReport_m6z1"
+      }
+    },
+    "/local/reports/m6z1/{reportId}/archive": {
+      "get": {
+        "operationId": "archiveReport_m6z1"
+      }
+    }
+  }
+}

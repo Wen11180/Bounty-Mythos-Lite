@@ -129,17 +129,93 @@ AUTHZ_NAME_MARKERS = (
     "login_required",
 )
 SENSITIVE_SINK_NAMES = {
+    "apply_user_update",
+    "db_select",
     "delete",
     "delete_file",
     "dispatch_agent_tool",
+    "execute_query",
     "export",
     "export_file",
     "execute_agent_tool",
+    "fetch",
+    "get_blob",
+    "persist_user",
+    "read_file",
+    "run_sql",
     "send_file",
+    "send_payload",
+    "_send_payload",
     "transfer",
     "update",
     "update_role",
+    "update_user",
 }
+# Outbound HTTP sinks used for SSRF-family gap root_cause selection.
+OUTBOUND_HTTP_SINK_NAMES = {
+    "fetch",
+    "send_payload",
+    "_send_payload",
+}
+# File-path sinks used for path-traversal-family gap root_cause selection.
+FILE_PATH_SINK_NAMES = {
+    "get_blob",
+    "read_file",
+}
+# User-field update sinks used for mass-assignment-family gap root_cause selection.
+# Keep distinct from generic "update" so authz ownership packages stay ownership-rooted.
+MASS_ASSIGN_SINK_NAMES = {
+    "apply_user_update",
+    "persist_user",
+    "update_user",
+}
+# Query/SQL sinks used for injection-family gap root_cause selection.
+INJECTION_SINK_NAMES = {
+    "db_select",
+    "execute_query",
+    "run_sql",
+}
+# Protective checks that gate user-controlled outbound URLs (SSRF).
+SSRF_GUARD_MARKERS = (
+    "ssrf",
+    "private_ip",
+    "blocked_hostname",
+    "validate_url",
+    "is_private_ip",
+    "is_blocked_hostname",
+)
+# Protective checks that gate user-controlled file paths (path traversal).
+PATH_GUARD_MARKERS = (
+    "path_base",
+    "filepath_base",
+    "sanitize_filename",
+    "make_filename",
+    "safe_path",
+    "safe_join",
+    "path_traversal",
+    "clean_filename",
+)
+# Protective checks that gate privilege / sensitive field updates (mass assignment).
+MASS_ASSIGN_GUARD_MARKERS = (
+    "assert_user_change",
+    "permission_attrs",
+    "mass_assign",
+    "field_allowlist",
+    "forbid_privilege",
+    "exclude_admin",
+    "privilege_field",
+)
+# Protective checks that sanitize / parameterize user-controlled query input (injection).
+INJECTION_GUARD_MARKERS = (
+    "make_search_string",
+    "sanitize_sql",
+    "parameterize",
+    "bind_query",
+    "escape_like",
+    "sql_sanitize",
+    "full_text_query",
+    "regex_full_text",
+)
 HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
 CALL_NAME_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 NON_CALL_KEYWORDS = {
@@ -157,6 +233,58 @@ NON_CALL_KEYWORDS = {
     "return",
     "while",
     "with",
+}
+TYPESCRIPT_SOURCE_SUFFIXES = (".ts", ".tsx", ".mts", ".cts")
+TYPESCRIPT_ROUTE_CALL_PATTERN = re.compile(
+    r"\b(?P<receiver>[A-Za-z_$][A-Za-z0-9_$]*)\."
+    r"(?P<method>get|post|put|patch|delete)\s*\(",
+    re.IGNORECASE,
+)
+TYPESCRIPT_USE_CALL_PATTERN = re.compile(
+    r"\b(?P<receiver>[A-Za-z_$][A-Za-z0-9_$]*)\.use\s*\(",
+    re.IGNORECASE,
+)
+TYPESCRIPT_FUNCTION_PATTERN = re.compile(
+    r"\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+"
+    r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)"
+    r"\s*(?::\s*[^\{=]+)?\{",
+    re.MULTILINE,
+)
+TYPESCRIPT_ARROW_FUNCTION_PATTERN = re.compile(
+    r"\b(?:export\s+)?(?:const|let)\s+"
+    r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)"
+    r"(?:\s*:\s*[^=;]+)?\s*=\s*(?:async\s+)?"
+    r"(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)"
+    r"\s*(?::\s*[^=\{]+)?=>\s*\{",
+    re.MULTILINE,
+)
+TYPESCRIPT_CALL_PATTERN = re.compile(
+    r"\b(?P<callee>[A-Za-z_$][A-Za-z0-9_$]*"
+    r"(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\("
+)
+TYPESCRIPT_COMPARISON_PATTERN = re.compile(
+    r"(?P<left>[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+)"
+    r"\s*(?:===|!==|==|!=)\s*"
+    r"(?P<right>[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+)"
+)
+TYPESCRIPT_PUBLIC_FILTER_PATTERN = re.compile(
+    r"\b(?:visibility|access|audience)\s*:\s*[\"']public[\"']",
+    re.IGNORECASE,
+)
+TYPESCRIPT_NON_SERVICE_CALLS = {
+    "catch",
+    "express",
+    "for",
+    "if",
+    "json",
+    "next",
+    "promise",
+    "router",
+    "send",
+    "send_status",
+    "status",
+    "switch",
+    "while",
 }
 
 
@@ -213,7 +341,15 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
         if not isinstance(source_path, str) or not isinstance(content, str):
             continue
         mapped_file_count += 1
-        facts.extend(_map_file(source_path=source_path, content=content))
+        if source_path.lower().endswith(TYPESCRIPT_SOURCE_SUFFIXES):
+            facts.extend(
+                _map_typescript_express_file(
+                    source_path=source_path,
+                    content=content,
+                )
+            )
+        else:
+            facts.extend(_map_file(source_path=source_path, content=content))
 
     facts = _dedupe_handler_authz_facts(
         _dedupe_facts(_resolve_dependency_wrapper_authz(facts))
@@ -1032,6 +1168,693 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     return facts
 
 
+def _map_typescript_express_file(
+    *,
+    source_path: str,
+    content: str,
+) -> list[CodebaseFactCandidate]:
+    source = _strip_typescript_comments(content)
+    express_objects = _typescript_express_objects(source)
+    if not express_objects:
+        return []
+
+    facts: list[CodebaseFactCandidate] = []
+    searchable_source = _mask_typescript_strings(source)
+    router_authz_refs = _typescript_router_authz_refs(source, express_objects)
+    for match in TYPESCRIPT_ROUTE_CALL_PATTERN.finditer(searchable_source):
+        receiver = match.group("receiver")
+        if receiver not in express_objects:
+            continue
+        call = _typescript_call_arguments(source, match.end() - 1)
+        if call is None:
+            continue
+        arguments, _ = call
+        if len(arguments) < 2:
+            continue
+        route_path = _typescript_static_string(arguments[0])
+        handler_ref = _typescript_callable_name(arguments[-1])
+        if route_path is None or handler_ref is None:
+            continue
+        handler_name = handler_ref.rsplit(".", 1)[-1]
+        route_line = _source_line_number(source, match.start())
+        facts.append(
+            CodebaseFactCandidate(
+                fact_type="route_handler",
+                source_path=source_path,
+                symbol_name=handler_name,
+                route_method=match.group("method").upper(),
+                route_path=route_path,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "handler": handler_name,
+                    "line": route_line,
+                    "mapping_mode": "static_code_snippet_analysis",
+                },
+            )
+        )
+
+        authz_refs = [
+            (name, line)
+            for position, name, line in router_authz_refs.get(receiver, [])
+            if position < match.start()
+        ]
+        for argument in arguments[1:-1]:
+            middleware_name = _typescript_callable_name(argument)
+            if middleware_name is not None and _is_typescript_authz_call(
+                middleware_name
+            ):
+                authz_refs.append((middleware_name.rsplit(".", 1)[-1], route_line))
+        for authz_name, authz_line in _dedupe_refs(authz_refs):
+            facts.append(
+                CodebaseFactCandidate(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=authz_name,
+                    route_method=None,
+                    route_path=None,
+                    authz_hint=_typescript_authz_hint(authz_name),
+                    sensitivity_label="low",
+                    payload={
+                        "handler": handler_name,
+                        "line": authz_line,
+                        "mapping_mode": "static_code_snippet_analysis",
+                    },
+                )
+            )
+
+    function_spans = _typescript_function_spans(source)
+    for function_name, declaration_start, body_start, body_end in function_spans:
+        nested_ranges = [
+            (nested_start, nested_end + 1)
+            for _, nested_start, _, nested_end in function_spans
+            if declaration_start < nested_start and nested_end <= body_end
+        ]
+        facts.extend(
+            _typescript_function_facts(
+                source_path=source_path,
+                source=source,
+                function_name=function_name,
+                body_start=body_start,
+                body_end=body_end,
+                nested_ranges=nested_ranges,
+            )
+        )
+    return facts
+
+
+def _typescript_express_objects(source: str) -> set[str]:
+    masked_source = _mask_typescript_strings(source)
+    express_aliases = set(
+        match.group(1)
+        for match in _typescript_code_matches(
+            r"(?m)^\s*import\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*[\"']express[\"']",
+            source,
+            masked_source,
+        )
+    )
+    express_aliases.update(
+        match.group(1)
+        for match in _typescript_code_matches(
+            r"(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+            r"\s+from\s*[\"']express[\"']",
+            source,
+            masked_source,
+        )
+    )
+    express_aliases.update(
+        match.group(1)
+        for match in _typescript_code_matches(
+            r"(?m)^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*"
+            r"require\(\s*[\"']express[\"']\s*\)",
+            source,
+            masked_source,
+        )
+    )
+
+    router_aliases: set[str] = set()
+    for match in _typescript_code_matches(
+        r"(?m)^\s*import\s*\{([^}]*)\}\s*from\s*[\"']express[\"']",
+        source,
+        masked_source,
+    ):
+        imported_names = match.group(1)
+        for imported_name in imported_names.split(","):
+            match = re.fullmatch(
+                r"\s*Router(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?\s*",
+                imported_name,
+            )
+            if match is not None:
+                router_aliases.add(match.group(1) or "Router")
+
+    objects: set[str] = set()
+    assignment_pattern = re.compile(
+        r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)"
+        r"(?:\s*:\s*[^=;\n]+)?\s*=\s*"
+        r"(?P<factory>[A-Za-z_$][A-Za-z0-9_$]*"
+        r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\s*\("
+    )
+    for match in assignment_pattern.finditer(_mask_typescript_strings(source)):
+        factory = match.group("factory")
+        if factory in express_aliases or factory in router_aliases:
+            objects.add(match.group("name"))
+            continue
+        if "." not in factory:
+            continue
+        namespace, constructor = factory.split(".", 1)
+        if namespace in express_aliases and constructor == "Router":
+            objects.add(match.group("name"))
+    return objects
+
+
+def _typescript_code_matches(
+    pattern: str,
+    source: str,
+    masked_source: str,
+) -> list[re.Match[str]]:
+    return [
+        match
+        for match in re.finditer(pattern, source)
+        if masked_source[match.start(1)] == source[match.start(1)]
+    ]
+
+
+def _typescript_router_authz_refs(
+    source: str,
+    express_objects: set[str],
+) -> dict[str, list[tuple[int, str, int]]]:
+    refs: dict[str, list[tuple[int, str, int]]] = {}
+    for match in TYPESCRIPT_USE_CALL_PATTERN.finditer(_mask_typescript_strings(source)):
+        receiver = match.group("receiver")
+        if receiver not in express_objects:
+            continue
+        call = _typescript_call_arguments(source, match.end() - 1)
+        if call is None:
+            continue
+        arguments, _ = call
+        if arguments and _typescript_static_string(arguments[0]) is not None:
+            continue
+        for argument in arguments:
+            authz_name = _typescript_callable_name(argument)
+            if authz_name is None or not _is_typescript_authz_call(authz_name):
+                continue
+            refs.setdefault(receiver, []).append(
+                (
+                    match.start(),
+                    authz_name.rsplit(".", 1)[-1],
+                    _source_line_number(source, match.start()),
+                )
+            )
+    return refs
+
+
+def _typescript_function_spans(source: str) -> list[tuple[str, int, int, int]]:
+    masked_source = _mask_typescript_strings(source)
+    spans: list[tuple[str, int, int, int]] = []
+    seen_open_braces: set[int] = set()
+    for pattern in (TYPESCRIPT_FUNCTION_PATTERN, TYPESCRIPT_ARROW_FUNCTION_PATTERN):
+        for match in pattern.finditer(masked_source):
+            open_brace = match.end() - 1
+            if open_brace in seen_open_braces:
+                continue
+            close_brace = _matching_typescript_delimiter(
+                source,
+                open_brace,
+                "{",
+                "}",
+            )
+            if close_brace is None:
+                continue
+            seen_open_braces.add(open_brace)
+            spans.append((match.group("name"), match.start(), open_brace + 1, close_brace))
+    return sorted(spans, key=lambda item: item[2])
+
+
+def _typescript_function_facts(
+    *,
+    source_path: str,
+    source: str,
+    function_name: str,
+    body_start: int,
+    body_end: int,
+    nested_ranges: list[tuple[int, int]],
+) -> list[CodebaseFactCandidate]:
+    facts: list[CodebaseFactCandidate] = []
+    body = _mask_typescript_ranges(
+        source[body_start:body_end],
+        [
+            (nested_start - body_start, nested_end - body_start)
+            for nested_start, nested_end in nested_ranges
+        ],
+    )
+    masked_body = _mask_typescript_strings(body)
+    for match in TYPESCRIPT_CALL_PATTERN.finditer(masked_body):
+        callee = re.sub(r"\s+", "", match.group("callee"))
+        call_name = callee.rsplit(".", 1)[-1]
+        line_number = _source_line_number(source, body_start + match.start())
+        if _is_typescript_authz_call(call_name):
+            facts.append(
+                _typescript_function_fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=call_name,
+                    function_name=function_name,
+                    line_number=line_number,
+                    authz_hint=_typescript_authz_hint(call_name),
+                )
+            )
+            continue
+        if _is_typescript_sensitive_sink(call_name):
+            facts.append(
+                _typescript_function_fact(
+                    fact_type="sensitive_sink",
+                    source_path=source_path,
+                    symbol_name=call_name,
+                    function_name=function_name,
+                    line_number=line_number,
+                )
+            )
+            continue
+        if _is_typescript_service_call(callee):
+            facts.append(
+                _typescript_function_fact(
+                    fact_type="service_call",
+                    source_path=source_path,
+                    symbol_name=call_name,
+                    function_name=function_name,
+                    line_number=line_number,
+                )
+            )
+
+    for line_offset, line in enumerate(body.splitlines()):
+        line_number = _source_line_number(source, body_start) + line_offset
+        boundary_field = _typescript_authz_boundary_field(line)
+        if boundary_field is not None:
+            facts.append(
+                _typescript_function_fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=f"{boundary_field}_filter",
+                    function_name=function_name,
+                    line_number=line_number,
+                    authz_hint=_authz_boundary_hint(boundary_field),
+                )
+            )
+            continue
+        if _typescript_role_comparison(line):
+            facts.append(
+                _typescript_function_fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name="role_check",
+                    function_name=function_name,
+                    line_number=line_number,
+                    authz_hint="role_check",
+                )
+            )
+            continue
+        if TYPESCRIPT_PUBLIC_FILTER_PATTERN.search(line):
+            facts.append(
+                _typescript_function_fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name="public_filter",
+                    function_name=function_name,
+                    line_number=line_number,
+                    authz_hint="public_filter",
+                )
+            )
+    return facts
+
+
+def _typescript_function_fact(
+    *,
+    fact_type: str,
+    source_path: str,
+    symbol_name: str,
+    function_name: str,
+    line_number: int,
+    authz_hint: str | None = None,
+) -> CodebaseFactCandidate:
+    payload_key = "caller" if fact_type == "service_call" else "handler"
+    return CodebaseFactCandidate(
+        fact_type=fact_type,
+        source_path=source_path,
+        symbol_name=symbol_name,
+        route_method=None,
+        route_path=None,
+        authz_hint=authz_hint,
+        sensitivity_label="low",
+        payload={
+            payload_key: function_name,
+            "line": line_number,
+            "mapping_mode": "static_code_snippet_analysis",
+        },
+    )
+
+
+def _typescript_call_arguments(
+    source: str,
+    open_parenthesis: int,
+) -> tuple[list[str], int] | None:
+    close_parenthesis = _matching_typescript_delimiter(
+        source,
+        open_parenthesis,
+        "(",
+        ")",
+    )
+    if close_parenthesis is None:
+        return None
+    return (
+        _split_typescript_arguments(source[open_parenthesis + 1 : close_parenthesis]),
+        close_parenthesis,
+    )
+
+
+def _matching_typescript_delimiter(
+    source: str,
+    start: int,
+    opening: str,
+    closing: str,
+) -> int | None:
+    if start >= len(source) or source[start] != opening:
+        return None
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(start, len(source)):
+        character = source[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            continue
+        if character == opening:
+            depth += 1
+        elif character == closing:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _split_typescript_arguments(arguments: str) -> list[str]:
+    values: list[str] = []
+    start = 0
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    closing_delimiters = {"(": ")", "[": "]", "{": "}"}
+    for index, character in enumerate(arguments):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+        elif character in closing_delimiters:
+            stack.append(closing_delimiters[character])
+        elif stack and character == stack[-1]:
+            stack.pop()
+        elif character == "," and not stack:
+            values.append(arguments[start:index].strip())
+            start = index + 1
+    final_value = arguments[start:].strip()
+    if final_value:
+        values.append(final_value)
+    return values
+
+
+def _typescript_static_string(value: str) -> str | None:
+    value = value.strip()
+    if len(value) < 2 or value[0] not in {"'", '"', "`"} or value[-1] != value[0]:
+        return None
+    if value[0] == "`" and "${" in value:
+        return None
+    return value[1:-1]
+
+
+def _typescript_callable_name(value: str) -> str | None:
+    value = value.strip()
+    reference = re.fullmatch(
+        r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*",
+        value,
+    )
+    if reference is not None:
+        return value
+    call = re.match(
+        r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*"
+        r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\(",
+        value,
+    )
+    if call is None:
+        return None
+    return call.group("name")
+
+
+def _is_typescript_service_call(callee: str) -> bool:
+    call_name = callee.rsplit(".", 1)[-1]
+    normalized = _normalized_typescript_name(call_name)
+    root = _normalized_typescript_name(callee.split(".", 1)[0])
+    if normalized in TYPESCRIPT_NON_SERVICE_CALLS:
+        return False
+    if root in {"console", "json", "math", "object", "promise", "res", "response"}:
+        return False
+    return not _is_typescript_authz_call(
+        call_name
+    ) and not _is_typescript_sensitive_sink(call_name)
+
+
+def _is_typescript_authz_call(call_name: str) -> bool:
+    normalized = _normalized_typescript_name(call_name)
+    if any(marker in normalized for marker in AUTHZ_NAME_MARKERS):
+        return True
+    if _is_ssrf_guard_name(normalized):
+        return True
+    if _is_path_guard_name(normalized):
+        return True
+    if _is_mass_assign_guard_name(normalized):
+        return True
+    return _is_injection_guard_name(normalized)
+
+
+def _typescript_authz_hint(call_name: str) -> str:
+    normalized = _normalized_typescript_name(call_name)
+    if _is_ssrf_guard_name(normalized):
+        return "ssrf_validation_check"
+    if _is_path_guard_name(normalized):
+        return "path_validation_check"
+    if _is_mass_assign_guard_name(normalized):
+        return "mass_assignment_check"
+    if _is_injection_guard_name(normalized):
+        return "injection_validation_check"
+    if "owner_or_admin" in normalized:
+        return "owner_or_admin_check"
+    if "permission" in normalized:
+        return "permission_check"
+    if "role" in normalized:
+        return "role_check"
+    return "authorization_boundary_candidate"
+
+
+def _is_typescript_sensitive_sink(call_name: str) -> bool:
+    return _normalized_typescript_name(call_name) in SENSITIVE_SINK_NAMES
+
+
+def _is_ssrf_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in SSRF_GUARD_MARKERS)
+
+
+def _is_path_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in PATH_GUARD_MARKERS)
+
+
+def _is_mass_assign_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in MASS_ASSIGN_GUARD_MARKERS)
+
+
+def _is_injection_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in INJECTION_GUARD_MARKERS)
+
+
+def _normalized_typescript_name(name: str) -> str:
+    leaf_name = name.rsplit(".", 1)[-1]
+    snake_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", leaf_name)
+    return re.sub(r"[^A-Za-z0-9]+", "_", snake_name).strip("_").lower()
+
+
+def _typescript_authz_boundary_field(line: str) -> str | None:
+    masked_line = _mask_typescript_strings(line)
+    for match in TYPESCRIPT_COMPARISON_PATTERN.finditer(masked_line):
+        left = match.group("left")
+        right = match.group("right")
+        left_field = _typescript_boundary_field(left)
+        right_field = _typescript_boundary_field(right)
+        if left_field is not None and _is_typescript_principal_identifier(right):
+            return left_field
+        if right_field is not None and _is_typescript_principal_identifier(left):
+            return right_field
+        if (
+            left_field is not None
+            and left_field == right_field
+            and (
+                _is_typescript_principal_context(left)
+                or _is_typescript_principal_context(right)
+            )
+        ):
+            return left_field
+    return None
+
+
+def _typescript_boundary_field(identifier: str) -> str | None:
+    field_name = _normalized_typescript_name(identifier.rsplit(".", 1)[-1])
+    if field_name in AUTHZ_BOUNDARY_FIELDS:
+        return field_name
+    return None
+
+
+def _is_typescript_principal_identifier(identifier: str) -> bool:
+    normalized_parts = [
+        _normalized_typescript_name(part) for part in identifier.split(".") if part
+    ]
+    normalized = ".".join(normalized_parts)
+    return normalized in {
+        "current_user.id",
+        "req.auth.user_id",
+        "req.user.id",
+        "request.auth.user_id",
+        "request.user.id",
+        "user.id",
+    }
+
+
+def _is_typescript_principal_context(identifier: str) -> bool:
+    normalized = ".".join(
+        _normalized_typescript_name(part) for part in identifier.split(".") if part
+    )
+    return normalized.startswith(("current_user.", "req.", "request.", "user."))
+
+
+def _typescript_role_comparison(line: str) -> bool:
+    principal_role = (
+        r"(?:req\.user|request\.user|currentUser|current_user|user)\.role"
+    )
+    string_value = r"(?:[\"'][^\"']+[\"'])"
+    patterns = (
+        rf"(?P<role>{principal_role})\s*(?:===|!==|==|!=)\s*{string_value}",
+        rf"{string_value}\s*(?:===|!==|==|!=)\s*(?P<role>{principal_role})",
+    )
+    masked_line = _mask_typescript_strings(line)
+    for pattern in patterns:
+        for match in re.finditer(pattern, line):
+            role_start, role_end = match.span("role")
+            if masked_line[role_start:role_end] == line[role_start:role_end]:
+                return True
+    return False
+
+
+def _strip_typescript_comments(source: str) -> str:
+    output: list[str] = []
+    quote: str | None = None
+    escaped = False
+    line_comment = False
+    block_comment = False
+    index = 0
+    while index < len(source):
+        character = source[index]
+        next_character = source[index + 1] if index + 1 < len(source) else ""
+        if line_comment:
+            if character == "\n":
+                line_comment = False
+                output.append(character)
+            else:
+                output.append(" ")
+            index += 1
+            continue
+        if block_comment:
+            if character == "*" and next_character == "/":
+                output.extend((" ", " "))
+                block_comment = False
+                index += 2
+            else:
+                output.append("\n" if character == "\n" else " ")
+                index += 1
+            continue
+        if quote is not None:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            output.append(character)
+            index += 1
+            continue
+        if character == "/" and next_character == "/":
+            output.extend((" ", " "))
+            line_comment = True
+            index += 2
+            continue
+        if character == "/" and next_character == "*":
+            output.extend((" ", " "))
+            block_comment = True
+            index += 2
+            continue
+        output.append(character)
+        index += 1
+    return "".join(output)
+
+
+def _mask_typescript_strings(source: str) -> str:
+    output: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for character in source:
+        if quote is not None:
+            output.append("\n" if character == "\n" else " ")
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            output.append(" ")
+        else:
+            output.append(character)
+    return "".join(output)
+
+
+def _mask_typescript_ranges(source: str, ranges: list[tuple[int, int]]) -> str:
+    masked = list(source)
+    for start, end in ranges:
+        for index in range(max(start, 0), min(end, len(masked))):
+            if masked[index] != "\n":
+                masked[index] = " "
+    return "".join(masked)
+
+
+def _source_line_number(source: str, position: int) -> int:
+    return source.count("\n", 0, position) + 1
+
+
 def _current_function(function_stack: list[tuple[str, int]]) -> str | None:
     if not function_stack:
         return None
@@ -1082,7 +1905,9 @@ def _authorization_gap_candidates(
             and fact.payload.get("handler") in service_calls
             for fact in facts
         )
-        if has_service_authz:
+        if has_service_authz and not route.source_path.lower().endswith(
+            TYPESCRIPT_SOURCE_SUFFIXES
+        ):
             continue
         sink_symbols = sorted(
             {
@@ -1100,6 +1925,7 @@ def _authorization_gap_candidates(
         sink_count = len(sink_symbols)
         if sink_count == 0:
             continue
+        root_cause, security_invariant, authz_hint = _gap_root_for_sinks(sink_symbols)
         candidates.append(
             CodebaseFactCandidate(
                 fact_type="authorization_gap_candidate",
@@ -1107,22 +1933,68 @@ def _authorization_gap_candidates(
                 symbol_name=handler,
                 route_method=route.route_method,
                 route_path=route.route_path,
-                authz_hint="missing_handler_authz_check",
+                authz_hint=authz_hint,
                 sensitivity_label="high",
                 payload={
                     "handler": handler,
                     "mapping_mode": "static_code_snippet_analysis",
                     "review_state": "needs_human_review",
-                    "root_cause": "missing_object_ownership_check",
-                    "security_invariant": (
-                        "Object-level actions must verify requester ownership or role before sensitive sinks run."
-                    ),
+                    "root_cause": root_cause,
+                    "security_invariant": security_invariant,
                     "sink_count": sink_count,
                     "sink_symbols": sink_symbols,
                 },
             )
         )
     return candidates
+
+
+def _gap_root_for_sinks(sink_symbols: list[str]) -> tuple[str, str, str]:
+    """Pick root_cause/invariant from sink family (SSRF / path / mass-assign / object authz)."""
+    normalized = {symbol.lower() for symbol in sink_symbols}
+    if normalized and normalized.issubset(OUTBOUND_HTTP_SINK_NAMES):
+        return (
+            "missing_ssrf_validation",
+            (
+                "Outbound requests to user-controlled URLs must validate the target "
+                "against private networks, metadata endpoints, and unsafe schemes."
+            ),
+            "missing_handler_ssrf_check",
+        )
+    if normalized and normalized.issubset(FILE_PATH_SINK_NAMES):
+        return (
+            "missing_path_validation",
+            (
+                "User-controlled file paths must be sanitized (basename / safe-join) "
+                "before reaching filesystem read sinks."
+            ),
+            "missing_handler_path_check",
+        )
+    if normalized and normalized.issubset(MASS_ASSIGN_SINK_NAMES):
+        return (
+            "missing_mass_assignment_guard",
+            (
+                "User-controlled update payloads must not set privilege or tenancy fields "
+                "without an explicit field allowlist or permission-attr guard."
+            ),
+            "missing_handler_mass_assignment_check",
+        )
+    if normalized and normalized.issubset(INJECTION_SINK_NAMES):
+        return (
+            "missing_injection_validation",
+            (
+                "User-controlled query or search input must be sanitized and bound as parameters "
+                "before reaching SQL or query execution sinks."
+            ),
+            "missing_handler_injection_check",
+        )
+    return (
+        "missing_object_ownership_check",
+        (
+            "Object-level actions must verify requester ownership or role before sensitive sinks run."
+        ),
+        "missing_handler_authz_check",
+    )
 
 
 def _reachable_service_handlers(
@@ -1726,11 +2598,27 @@ def _is_model_base(base_list: str) -> bool:
 
 def _is_authz_call(call_name: str) -> bool:
     normalized = call_name.lower()
-    return any(marker in normalized for marker in AUTHZ_NAME_MARKERS)
+    if any(marker in normalized for marker in AUTHZ_NAME_MARKERS):
+        return True
+    if _is_ssrf_guard_name(normalized):
+        return True
+    if _is_path_guard_name(normalized):
+        return True
+    if _is_mass_assign_guard_name(normalized):
+        return True
+    return _is_injection_guard_name(normalized)
 
 
 def _authz_hint(call_name: str) -> str:
     normalized = call_name.lower()
+    if _is_ssrf_guard_name(normalized):
+        return "ssrf_validation_check"
+    if _is_path_guard_name(normalized):
+        return "path_validation_check"
+    if _is_mass_assign_guard_name(normalized):
+        return "mass_assignment_check"
+    if _is_injection_guard_name(normalized):
+        return "injection_validation_check"
     if "owner_or_admin" in normalized:
         return "owner_or_admin_check"
     if "permission" in normalized:
@@ -2109,11 +2997,18 @@ def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandid
     seen: set[tuple[object, ...]] = set()
     deduped: list[CodebaseFactCandidate] = []
     for fact in facts:
-        caller = (
-            fact.payload.get("caller")
-            if fact.fact_type == "service_call" and isinstance(fact.payload, dict)
-            else None
-        )
+        caller = None
+        handler = None
+        if isinstance(fact.payload, dict):
+            if fact.fact_type == "service_call":
+                caller = fact.payload.get("caller")
+            if fact.fact_type in {
+                "sensitive_sink",
+                "authz_check",
+                "authorization_gap_candidate",
+                "service_call",
+            }:
+                handler = fact.payload.get("handler")
         key = (
             fact.fact_type,
             fact.source_path,
@@ -2122,6 +3017,7 @@ def _dedupe_facts(facts: list[CodebaseFactCandidate]) -> list[CodebaseFactCandid
             fact.route_path,
             fact.authz_hint,
             caller,
+            handler,
         )
         if key in seen:
             continue
@@ -2157,6 +3053,14 @@ def _authz_hint_priority(authz_hint: str | None) -> int:
     if authz_hint == "owner_or_admin_check":
         return 4
     if authz_hint == "ownership_boundary_check":
+        return 4
+    if authz_hint == "ssrf_validation_check":
+        return 4
+    if authz_hint == "path_validation_check":
+        return 4
+    if authz_hint == "mass_assignment_check":
+        return 4
+    if authz_hint == "injection_validation_check":
         return 4
     if authz_hint == "permission_check":
         return 3

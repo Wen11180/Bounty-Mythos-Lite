@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-w5d9",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/archives/w5d9/{archiveId}/unpack"
+  ],
+  "local_only": true
+}

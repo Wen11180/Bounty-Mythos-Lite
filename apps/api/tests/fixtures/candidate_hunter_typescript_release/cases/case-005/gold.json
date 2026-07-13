@@ -1,0 +1,23 @@
+{
+  "authorization_pattern": "tenant_boundary",
+  "expected_roots": [
+    {
+      "gold_id": "b9q4-primary-root",
+      "root_cause_id": "missing_object_ownership_check:exportinvoice",
+      "route": {
+        "method": "GET",
+        "path": "/local/invoices/b9q4/{invoiceId}/export"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:exportInvoice",
+        "api:GET:/local/invoices/b9q4/{invoiceId}/export"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

@@ -11,8 +11,8 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:run_tool",
-                                                              "code:code.py:load_tool_job",
+                                                              "code:code.ts:run_tool",
+                                                              "code:code.ts:load_tool_job",
                                                               "api:GET:/local/tools/u1h5/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

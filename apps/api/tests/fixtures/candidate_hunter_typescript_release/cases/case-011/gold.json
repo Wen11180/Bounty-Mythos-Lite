@@ -1,0 +1,39 @@
+{
+  "authorization_pattern": "role_boundary",
+  "expected_roots": [
+    {
+      "gold_id": "n7s9-primary-root",
+      "root_cause_id": "missing_object_ownership_check:runjob",
+      "route": {
+        "method": "POST",
+        "path": "/local/jobs/n7s9/{jobId}/run"
+      },
+      "vuln_type": "authorization",
+      "disposition": "deduplicate",
+      "worth_validation": false,
+      "required_evidence_refs": [],
+      "decisive_refutation_refs": [],
+      "duplicate_of": "missing_object_ownership_check:retryjob",
+      "scope_allowed": true
+    },
+    {
+      "gold_id": "n7s9-secondary-root",
+      "root_cause_id": "missing_object_ownership_check:retryjob",
+      "route": {
+        "method": "POST",
+        "path": "/local/jobs/n7s9/{jobId}/retry"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:retryJob",
+        "code:code.ts:dispatchJob",
+        "api:POST:/local/jobs/n7s9/{jobId}/retry"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

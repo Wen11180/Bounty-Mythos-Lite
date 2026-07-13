@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/snapshots/t3f5/{snapshotId}": {
+      "get": {
+        "operationId": "readSnapshot_t3f5"
+      }
+    }
+  }
+}

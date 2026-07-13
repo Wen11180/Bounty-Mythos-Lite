@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-t3f5",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/snapshots/t3f5/{snapshotId}"
+  ],
+  "local_only": true
+}

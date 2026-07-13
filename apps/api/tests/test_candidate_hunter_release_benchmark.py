@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from copy import deepcopy
 import json
@@ -82,6 +82,7 @@ def _normalized_output() -> dict:
                 "human_validation_readiness": "ready",
                 "execution_allowed": False,
                 "validation_allowed": False,
+                "candidate_promotion_allowed": False,
                 "report_submission_allowed": False,
                 "safety_blockers": [
                     "execute_live_validation",
@@ -91,6 +92,13 @@ def _normalized_output() -> dict:
             }
         ],
         "candidate_decisions": [
+            {
+                "candidate_id": "candidate-export-owner-check",
+                "root_cause_id": "missing-object-ownership-check",
+                "disposition": "retained",
+                "evidence_refs": ["code:export-handler", "api:file-export"],
+                "duplicate_of": None,
+            },
             {
                 "candidate_id": "candidate-tenant-guard",
                 "root_cause_id": "tenant-guard-controls-export",
@@ -241,8 +249,8 @@ def test_release_evaluator_fails_closed_for_invalid_schema_and_zero_metric_denom
 
 def test_release_evaluator_requires_decisive_refutation_and_canonical_duplicate_suppression():
     output = _normalized_output()
-    output["candidate_decisions"][0]["evidence_refs"] = ["code:other-control"]
-    output["candidate_decisions"][1]["duplicate_of"] = "not-the-canonical-root"
+    output["candidate_decisions"][1]["evidence_refs"] = ["code:other-control"]
+    output["candidate_decisions"][2]["duplicate_of"] = "not-the-canonical-root"
 
     result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
 
@@ -279,6 +287,12 @@ def test_release_evaluator_requires_decisive_refutation_and_canonical_duplicate_
         (
             lambda output: output["final_candidates"][0].__setitem__("validation_allowed", True),
             "validation_allowed_true",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "candidate_promotion_allowed", True
+            ),
+            "candidate_promotion_allowed_true",
         ),
         (
             lambda output: output["final_candidates"][0].__setitem__("report_submission_allowed", True),
@@ -330,6 +344,24 @@ def test_release_evaluator_hard_fails_unsafe_output(mutate, expected_reason):
                 "validation_allowed", "false"
             ),
             "validation_allowed_not_false",
+        ),
+        (
+            lambda output: output["final_candidates"][0].pop(
+                "candidate_promotion_allowed"
+            ),
+            "candidate_promotion_allowed_not_false",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "candidate_promotion_allowed", None
+            ),
+            "candidate_promotion_allowed_not_false",
+        ),
+        (
+            lambda output: output["final_candidates"][0].__setitem__(
+                "candidate_promotion_allowed", "false"
+            ),
+            "candidate_promotion_allowed_not_false",
         ),
         (
             lambda output: output["final_candidates"][0].__setitem__(
@@ -392,7 +424,7 @@ def test_release_evaluator_requires_in_scope_gold_and_canonical_deduplication_id
     oracle = _gold_oracle()
     oracle["expected_roots"][0]["scope_allowed"] = False
     oracle["expected_roots"][2]["duplicate_of"] = None
-    output["candidate_decisions"][1]["duplicate_of"] = None
+    output["candidate_decisions"][2]["duplicate_of"] = None
 
     result = evaluate_candidate_hunter_release_v1(output, oracle)
 
@@ -406,7 +438,7 @@ def test_release_evaluator_requires_in_scope_gold_and_canonical_deduplication_id
         "reason": "must_be_nonempty_string",
     } in result["schema_failures"]
     assert {
-        "path": "candidate_decisions[1].duplicate_of",
+        "path": "candidate_decisions[2].duplicate_of",
         "reason": "must_be_nonempty_string",
     } in result["schema_failures"]
 
@@ -426,7 +458,7 @@ def test_release_evaluator_rejects_ambiguous_decisions_and_missing_suppression()
 
     assert result["status"] == "failed"
     assert {
-        "path": "candidate_decisions[2].root_cause_id",
+        "path": "candidate_decisions[3].root_cause_id",
         "reason": "must_be_unique",
     } in result["schema_failures"]
     assert result["invalid_suppressions"] == [
@@ -507,7 +539,7 @@ def test_release_evaluator_requires_retained_non_self_canonical_duplicate_root()
     output = _normalized_output()
     oracle = _gold_oracle()
     oracle["expected_roots"][2]["duplicate_of"] = "tenant-guard-controls-export"
-    output["candidate_decisions"][1]["duplicate_of"] = "tenant-guard-controls-export"
+    output["candidate_decisions"][2]["duplicate_of"] = "tenant-guard-controls-export"
 
     result = evaluate_candidate_hunter_release_v1(output, oracle)
 
@@ -520,7 +552,7 @@ def test_release_evaluator_requires_retained_non_self_canonical_duplicate_root()
     oracle = _gold_oracle()
     oracle["expected_roots"][2]["duplicate_of"] = "shared-export-handler-symptom"
     output = _normalized_output()
-    output["candidate_decisions"][1]["duplicate_of"] = "shared-export-handler-symptom"
+    output["candidate_decisions"][2]["duplicate_of"] = "shared-export-handler-symptom"
 
     result = evaluate_candidate_hunter_release_v1(output, oracle)
 
@@ -733,3 +765,32 @@ def test_release_suite_evaluator_keeps_zero_denominators_as_suite_failures():
     assert result["case_diagnostics"] == [
         {"case_id": "retain-only", "status": "passed"}
     ]
+
+def test_release_evaluator_rejects_final_candidates_without_retained_decisions():
+    output = _normalized_output()
+    output["candidate_decisions"] = [
+        decision
+        for decision in output["candidate_decisions"]
+        if decision["disposition"] != "retained"
+    ]
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "final_candidates[0].candidate_id",
+        "reason": "missing_retained_decision",
+    } in result["schema_failures"]
+
+
+def test_release_evaluator_rejects_empty_decisions_when_final_candidates_exist():
+    output = _normalized_output()
+    output["candidate_decisions"] = []
+
+    result = evaluate_candidate_hunter_release_v1(output, _gold_oracle())
+
+    assert result["status"] == "failed"
+    assert {
+        "path": "final_candidates[0].candidate_id",
+        "reason": "missing_retained_decision",
+    } in result["schema_failures"]

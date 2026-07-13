@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 import re
 import shutil
@@ -29,47 +28,6 @@ def _copied_fixture_root(tmp_path: Path) -> Path:
 def _manifest_entry(fixture_root: Path, case_id: str) -> dict:
     manifest = json.loads((fixture_root / "suite-manifest.json").read_text())
     return next(entry for entry in manifest["cases"] if entry["case_id"] == case_id)
-
-
-def _has_ownership_guard(code: str) -> bool:
-    return bool(_ownership_guard_symbols(code))
-
-
-def _ownership_guard_symbols(code: str) -> set[str]:
-    tree = ast.parse(code)
-    return {
-        function.name
-        for function in ast.walk(tree)
-        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
-        if any(
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Compare)
-            and any(isinstance(operator, ast.NotEq) for operator in node.test.ops)
-            and any(isinstance(nested, ast.Raise) for nested in ast.walk(node))
-            for node in ast.walk(function)
-        )
-    }
-
-
-def _has_public_filter(code: str) -> bool:
-    return bool(_public_filter_symbols(code))
-
-
-def _public_filter_symbols(code: str) -> set[str]:
-    tree = ast.parse(code)
-    return {
-        function.name
-        for function in ast.walk(tree)
-        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
-        if any(
-            keyword.arg in {"visibility", "access", "audience"}
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value == "public"
-            for node in ast.walk(function)
-            if isinstance(node, ast.Call)
-            for keyword in node.keywords
-        )
-    }
 
 
 def test_fixture_manifest_defines_complete_balanced_corpus():
@@ -101,6 +59,67 @@ def test_fixture_manifest_defines_complete_balanced_corpus():
         "injection",
         "workflow",
     }
+
+
+def test_release_corpus_uses_opaque_typescript_express_inputs():
+    cases = (
+        *load_release_fixture_suite(FIXTURE_ROOT, "development"),
+        *load_release_fixture_suite(FIXTURE_ROOT, "release"),
+    )
+
+    for case in cases:
+        code_input = next(
+            item for item in stage_release_fixture_inputs(case) if item.kind == "code"
+        )
+        assert code_input.path.suffix == ".ts"
+        assert 'from "express"' in code_input.text
+
+
+def test_refute_fixtures_cover_distinct_typescript_authorization_controls():
+    cases = (
+        *load_release_fixture_suite(FIXTURE_ROOT, "development"),
+        *load_release_fixture_suite(FIXTURE_ROOT, "release"),
+    )
+    authz_symbols = set()
+
+    for case in cases:
+        if case.expected_disposition != "refute":
+            continue
+        code_input = next(
+            item for item in stage_release_fixture_inputs(case) if item.kind == "code"
+        )
+        result = map_authorized_code_files(
+            {
+                "authorized_code_files": [
+                    {"path": code_input.path.name, "content": code_input.text}
+                ]
+            }
+        )
+        authz_symbols.update(
+            fact.symbol_name
+            for fact in result.facts
+            if fact.fact_type == "authz_check" and fact.symbol_name
+        )
+
+    assert {"owner_id_filter", "role_check", "tenant_id_filter"} <= authz_symbols
+
+
+def test_fixture_loader_requires_typescript_code_input(tmp_path: Path):
+    fixture_root = _copied_fixture_root(tmp_path)
+    entry = _manifest_entry(fixture_root, "dev-001")
+    case_root = fixture_root / entry["path"]
+    code_path = case_root / "inputs" / "code.ts"
+    javascript_path = case_root / "inputs" / "code.js"
+    code_path.rename(javascript_path)
+    case_path = case_root / "case.json"
+    case = json.loads(case_path.read_text())
+    for item in case["inputs"]:
+        if item["kind"] == "code":
+            item["path"] = "inputs/code.js"
+    case_path.write_text(json.dumps(case))
+
+    with pytest.raises(ReleaseFixtureError, match="typescript_code_required"):
+        load_release_fixture_suite(fixture_root, "development")
 
 
 def test_staged_inputs_do_not_reveal_expected_dispositions():
@@ -243,7 +262,16 @@ def test_fixture_outcomes_are_distinguished_by_observed_semantics():
             assert routes
             assert "sensitive_sink" in fact_types
             assert fact_types.count("authorization_gap_candidate") == 1
-            assert _has_ownership_guard(staged_inputs["code"].text)
+            assert any(
+                fact.fact_type == "authz_check"
+                and fact.authz_hint
+                in {
+                    "owner_or_admin_check",
+                    "ownership_boundary_check",
+                    "role_check",
+                }
+                for fact in result.facts
+            )
         elif case.expected_disposition == "deduplicate":
             assert len(routes) == 2
             assert routes[0].route_path < routes[1].route_path
@@ -259,7 +287,11 @@ def test_fixture_outcomes_are_distinguished_by_observed_semantics():
         else:
             assert routes
             assert fact_types.count("authorization_gap_candidate") == 1
-            assert _has_public_filter(staged_inputs["code"].text)
+            assert any(
+                fact.fact_type == "authz_check"
+                and fact.authz_hint == "public_filter"
+                for fact in result.facts
+            )
 
 
 def test_risk_families_have_distinct_observed_code_signatures():
@@ -276,7 +308,18 @@ def test_risk_families_have_distinct_observed_code_signatures():
             if item.kind == "code"
         )
         result = map_authorized_code_files(
-            {"authorized_code_files": [{"path": "code.py", "content": code}]}
+            {
+                "authorized_code_files": [
+                    {
+                        "path": next(
+                            item.path.name
+                            for item in stage_release_fixture_inputs(case)
+                            if item.kind == "code"
+                        ),
+                        "content": code,
+                    }
+                ]
+            }
         )
         primary_gap = next(
             fact
@@ -359,14 +402,6 @@ def test_gold_oracles_reference_only_observed_routes_and_fact_refs():
             for fact in code_result.facts
             if fact.symbol_name
         }
-        observed_refs.update(
-            f"code:code.py:{symbol}:ownership_guard"
-            for symbol in _ownership_guard_symbols(staged_inputs["code"].text)
-        )
-        observed_refs.update(
-            f"code:code.py:{symbol}:public_filter"
-            for symbol in _public_filter_symbols(staged_inputs["code"].text)
-        )
         api = json.loads(staged_inputs["api"].text)
         observed_routes = set()
         for route_path, path_item in api["paths"].items():

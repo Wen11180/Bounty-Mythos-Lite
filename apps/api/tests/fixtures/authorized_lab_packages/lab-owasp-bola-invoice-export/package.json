@@ -1,0 +1,24 @@
+{
+  "package_id": "lab-owasp-bola-invoice-export",
+  "risk_family": "authorization",
+  "expected_disposition": "retain",
+  "synthetic": true,
+  "authorized_for_local_research": true,
+  "authorized_for_local_benchmark": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "Educational local package derived from the public OWASP API Security Top 10 A01 Broken Object Level Authorization teaching pattern (object-id resource export without ownership check). Not a clone of any production app. Local review only; no live endpoints; not registered in the 24-case suite.",
+  "provenance": {
+    "kind": "educational_pattern_derivation",
+    "pattern": "OWASP API Security Top 10 A01 BOLA object-level export",
+    "adaptation": "Sanitized TypeScript Express-style single-file snapshot for Mythos-Lite A+B package contract",
+    "contains_third_party_product_code": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

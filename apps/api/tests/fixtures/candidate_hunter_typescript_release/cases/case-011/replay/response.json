@@ -1,0 +1,55 @@
+{
+  "schema_version": "cross_source_candidate_model_v1",
+  "proposals": [
+    {
+      "vulnerability_family": "authorization",
+      "affected_endpoint": {
+        "method": "POST",
+        "path": "/local/jobs/n7s9/:jobId/run"
+      },
+      "affected_code_path": {
+        "source_path": "code.ts",
+        "symbol_name": "runJob"
+      },
+      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+      "evidence_requirements": [
+        "Review the cited route and handler boundary."
+      ],
+      "refutation_questions": [
+        "Does an observed upstream control enforce the applicable boundary?"
+      ],
+      "root_cause_summary": "missing_object_ownership_check",
+      "risk_estimate": "high",
+      "cited_fact_refs": [
+        "code:code.ts:runJob",
+        "api:POST:/local/jobs/n7s9/{jobId}/run"
+      ]
+    },
+    {
+      "vulnerability_family": "authorization",
+      "affected_endpoint": {
+        "method": "POST",
+        "path": "/local/jobs/n7s9/:jobId/retry"
+      },
+      "affected_code_path": {
+        "source_path": "code.ts",
+        "symbol_name": "retryJob"
+      },
+      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+      "evidence_requirements": [
+        "Review the cited route and handler boundary."
+      ],
+      "refutation_questions": [
+        "Does an observed upstream control enforce the applicable boundary?"
+      ],
+      "root_cause_summary": "missing_object_ownership_check",
+      "risk_estimate": "critical",
+      "cited_fact_refs": [
+        "code:code.ts:retryJob",
+        "api:POST:/local/jobs/n7s9/{jobId}/retry"
+      ]
+    }
+  ]
+}

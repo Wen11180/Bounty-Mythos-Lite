@@ -11,8 +11,8 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:transfer_funds",
-                                                              "code:code.py:load_transfer",
+                                                              "code:code.ts:transfer_funds",
+                                                              "code:code.ts:load_transfer",
                                                               "api:GET:/local/transfers/c6w5/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/notes/k2p1/{note_id}": {
+      "get": {
+        "operationId": "read_note_k2p1"
+      }
+    }
+  }
+}

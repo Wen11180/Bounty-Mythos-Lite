@@ -1,0 +1,6 @@
+{
+  "fixture_id": "local-lab-template",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": ["/local/REPLACE/{id}"],
+  "local_only": true
+}

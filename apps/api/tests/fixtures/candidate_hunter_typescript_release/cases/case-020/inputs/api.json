@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/catalog/j7q3/{catalogId}": {
+      "get": {
+        "operationId": "readCatalog_j7q3"
+      }
+    }
+  }
+}

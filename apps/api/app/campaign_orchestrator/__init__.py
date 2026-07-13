@@ -223,7 +223,6 @@ def _campaign_stop_reason(
         budget.time_budget_minutes,
         budget.token_budget,
         budget.tool_call_budget,
-        budget.validation_budget,
     ]
     if any(value is not None and value <= 0 for value in budgets):
         return "budget_exhausted"

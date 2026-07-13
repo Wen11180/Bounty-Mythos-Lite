@@ -39,6 +39,15 @@ from app.candidate_hunter_loop import (
     build_candidate_hunter_observations,
     run_candidate_hunter_loop,
 )
+from app.cross_source_candidate_generator import (
+    CandidateModelConfig,
+    CandidateReasoner,
+    RegistryCandidateReasoner,
+    build_fact_pack,
+    candidate_hunter_inputs,
+    generation_stage_payload,
+    generate_cross_source_candidates,
+)
 from app.hunter_intelligence import (
     HunterIntelligence,
 )
@@ -46,7 +55,7 @@ from app.intelligence_benchmark import (
     build_studio_expectations_template,
     evaluate_studio_candidates,
 )
-from app.llm.base import LLMRequest, LLMResponse
+from app.llm.base import LLMRequest, LLMResponse, ProviderName
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
 from app.mythos_brain import (
@@ -126,7 +135,17 @@ from app.studio_workspace import (
     resolve_workspace_file,
 )
 from app.worker.tasks import dispatch_agent_task
-from pydantic import BaseModel, Field
+from app.residual_patch_decision_api import (
+    ResidualPatchDecisionApiError,
+    ResidualPatchDecisionApply,
+    ResidualPatchDecisionCreate,
+    ResidualPatchDecisionView,
+    create_residual_patch_decision,
+    decide_residual_patch_decision,
+    get_residual_patch_decision,
+    list_residual_patch_decisions,
+)
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def _studio_web_origin() -> str | None:
@@ -222,8 +241,26 @@ class StudioArtifactImportRequest(BaseModel):
     source_path: str = Field(min_length=1)
 
 
+class StudioCandidateModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider: ProviderName | None = None
+    model: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_enabled_configuration(self):
+        if self.enabled:
+            if self.provider is None or self.model is None or not self.model.strip():
+                raise ValueError("enabled candidate model requires provider and model")
+        elif self.provider is not None or self.model is not None:
+            raise ValueError("disabled candidate model cannot include provider or model")
+        return self
+
+
 class StudioWorkspaceRunRequest(BaseModel):
     workspace_path: str = Field(min_length=1)
+    candidate_model: StudioCandidateModelRequest | None = None
 
 
 class StudioCampaignLaunchRequest(BaseModel):
@@ -1981,6 +2018,109 @@ def decide_mythos_approval(
     return _decide_approval_record_response(approval_id, request, session)
 
 
+
+
+@app.post(
+    "/mythos/factory/residual-patch-decisions",
+    response_model=ResidualPatchDecisionView,
+)
+def create_factory_residual_patch_decision(
+    request: ResidualPatchDecisionCreate,
+    session: Session = Depends(get_session),
+) -> ResidualPatchDecisionView:
+    """Create residual_review / patch_review decision (context only; never unlocks submit/PR)."""
+    repository = DatabaseRepository(session)
+    if request.program_id is not None:
+        _program_or_404_in_scope(repository, request.program_id)
+    if request.run_id is not None:
+        if repository.get_pipeline_run(request.run_id) is None:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        _raise_if_campaign_scoped_run_not_in_scope(repository, request.run_id)
+    try:
+        return create_residual_patch_decision(request, repository=repository)
+    except ResidualPatchDecisionApiError as exc:
+        detail = str(exc)
+        if detail.startswith("unsupported_approval_kind"):
+            raise HTTPException(status_code=400, detail=detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+
+@app.get(
+    "/mythos/factory/residual-patch-decisions",
+    response_model=list[ResidualPatchDecisionView],
+)
+def list_factory_residual_patch_decisions(
+    package_id: str | None = None,
+    candidate_id: str | None = None,
+    approval_kind: str | None = None,
+    run_id: str | None = None,
+    package_root: str | None = None,
+    limit: int = 100,
+    session: Session = Depends(get_session),
+) -> list[ResidualPatchDecisionView]:
+    repository = DatabaseRepository(session)
+    try:
+        return list_residual_patch_decisions(
+            repository=repository,
+            package_id=package_id,
+            candidate_id=candidate_id,
+            approval_kind=approval_kind,
+            run_id=run_id,
+            package_root=package_root,
+            limit=limit,
+        )
+    except ResidualPatchDecisionApiError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get(
+    "/mythos/factory/residual-patch-decisions/{approval_id}",
+    response_model=ResidualPatchDecisionView,
+)
+def get_factory_residual_patch_decision(
+    approval_id: str,
+    session: Session = Depends(get_session),
+) -> ResidualPatchDecisionView:
+    repository = DatabaseRepository(session)
+    try:
+        return get_residual_patch_decision(approval_id, repository=repository)
+    except ResidualPatchDecisionApiError as exc:
+        detail = str(exc)
+        if detail == "approval_not_found":
+            raise HTTPException(status_code=404, detail=detail) from exc
+        if detail == "not_residual_or_patch_approval":
+            raise HTTPException(status_code=404, detail=detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+
+@app.post(
+    "/mythos/factory/residual-patch-decisions/{approval_id}/decisions",
+    response_model=ResidualPatchDecisionView,
+)
+def decide_factory_residual_patch_decision(
+    approval_id: str,
+    request: ResidualPatchDecisionApply,
+    session: Session = Depends(get_session),
+) -> ResidualPatchDecisionView:
+    """Apply residual/patch human decision; never unlocks execution/submit/auto-PR."""
+    repository = DatabaseRepository(session)
+    try:
+        return decide_residual_patch_decision(
+            approval_id=approval_id,
+            body=request,
+            repository=repository,
+        )
+    except ResidualPatchDecisionApiError as exc:
+        detail = str(exc)
+        if detail == "approval_not_found":
+            raise HTTPException(status_code=404, detail=detail) from exc
+        if detail == "not_residual_or_patch_approval":
+            raise HTTPException(status_code=404, detail=detail) from exc
+        if detail.startswith("unsupported_decision"):
+            raise HTTPException(status_code=400, detail=detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+
 def _decide_approval_record_response(
     approval_id: str,
     request: ApprovalDecisionRequest,
@@ -2499,10 +2639,30 @@ def import_mythos_studio_workspace_artifact(
 
 
 @app.post("/mythos/studio/workspaces/runs")
-def run_mythos_studio_workspace_research(
+async def run_mythos_studio_workspace_research(
     request: StudioWorkspaceRunRequest,
     session: Session = Depends(get_session),
 ) -> dict:
+    return await _run_mythos_studio_workspace_research_service(request, session)
+
+
+async def _run_mythos_studio_workspace_research_service(
+    request: StudioWorkspaceRunRequest,
+    session: Session,
+    *,
+    reasoner_override: CandidateReasoner | None = None,
+    audit_mode: Literal["live", "replay"] = "live",
+) -> dict:
+    model_enabled = (
+        request.candidate_model is not None
+        and request.candidate_model.enabled
+    )
+    if reasoner_override is not None and (
+        audit_mode != "replay" or not model_enabled
+    ):
+        raise ValueError("replay_reasoner_requires_enabled_model_request")
+    if audit_mode == "replay" and reasoner_override is None:
+        raise ValueError("replay_audit_requires_reasoner")
     manifest = load_workspace_manifest(request.workspace_path)
     if _studio_missing_ab_artifacts(manifest):
         raise HTTPException(
@@ -2533,31 +2693,150 @@ def run_mythos_studio_workspace_research(
         ):
             if context_fact := _studio_empty_surface_context_fact(manifest, kind):
                 surface_facts.append(context_fact)
-    observations = build_candidate_hunter_observations(
+    code_files = _studio_authorized_code_files(repo_path)
+    context_facts = _studio_authorization_context_facts(manifest)
+    baseline_observations = build_candidate_hunter_observations(
         pipeline_run_id=record.id,
         candidates=candidates,
-        code_files=_studio_authorized_code_files(repo_path),
+        code_files=code_files,
         surface_facts=surface_facts,
-        context_facts=_studio_authorization_context_facts(manifest),
+        context_facts=context_facts,
     )
-    run_candidate_hunter_loop(
+    fact_pack = build_fact_pack(
+        pipeline_run_id=record.id,
+        scope_status=record.scope_status,
+        source_files=_studio_fact_pack_code_files(code_files),
+        facts=(
+            baseline_observations["facts"]
+            if isinstance(baseline_observations.get("facts"), list)
+            else []
+        ),
+        baseline_candidates=candidates,
+    )
+    model_config = None
+    reasoner = reasoner_override
+    if request.candidate_model is not None and request.candidate_model.enabled:
+        assert request.candidate_model.provider is not None
+        assert request.candidate_model.model is not None
+        model_config = CandidateModelConfig(
+            provider=request.candidate_model.provider,
+            model=request.candidate_model.model.strip(),
+        )
+        if reasoner is None:
+            reasoner = RegistryCandidateReasoner(build_default_registry())
+    generation = await generate_cross_source_candidates(
+        fact_pack=fact_pack,
+        baseline_candidates=fact_pack.baseline_candidates,
+        model_config=model_config,
+        reasoner=reasoner,
+    )
+    generation_payload = generation_stage_payload(
+        fact_pack=fact_pack,
+        result=generation,
+        model_config=model_config,
+    )
+    if model_config is not None:
+        audit_safety_notes = [
+            "prompt_hash_only",
+            "no_prompt_storage",
+            "provider_response_not_fact",
+            "model_proposals_unverified",
+            "human_approval_still_required",
+        ]
+        if generation.model_failure_reason:
+            audit_safety_notes.append("model_failure_recorded")
+        if audit_mode == "replay":
+            audit_safety_notes.append("synthetic_replay_no_provider_call")
+        repository.save_llm_run(
+            provider=model_config.provider.value,
+            model=model_config.model,
+            purpose="cross_source_candidate_generation",
+            prompt_hash=generation.prompt_hash,
+            mode=audit_mode,
+            latency_ms=generation.model_latency_ms,
+            error=generation.model_failure_reason,
+            safety_notes=audit_safety_notes,
+        )
+    repository.save_pipeline_stage(
+        pipeline_run_id=record.id,
+        campaign_id=None,
+        task_id=None,
+        stage_key="cross_source_candidate_generation",
+        stage_order=0,
+        status="completed",
+        input_refs=[],
+        output_refs=[],
+        safety_gate_state="safe",
+        stop_reason=generation.model_status,
+        payload=generation_payload,
+    )
+    hunter_candidates = candidate_hunter_inputs(
+        candidates=generation.working_candidates,
+        fact_pack=fact_pack,
+    )
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id=record.id,
+        candidates=hunter_candidates,
+        code_files=code_files,
+        surface_facts=surface_facts,
+        context_facts=context_facts,
+    )
+    loop_result = run_candidate_hunter_loop(
         repository=repository,
         record=record,
         policy_text=policy_text,
-        candidates=candidates,
+        candidates=hunter_candidates,
         observations=observations,
+        evidence_context=_studio_candidate_hunter_evidence_context(
+            repo_path=repo_path,
+            fact_pack=fact_pack,
+        ),
     )
+    if loop_result.get("status") == "awaiting_evidence":
+        evidence_task_id = loop_result.get("evidence_task_id")
+        if (
+            get_settings().worker_dispatch_mode == "inline"
+            and isinstance(evidence_task_id, str)
+            and evidence_task_id
+        ):
+            from app.worker.tasks import run_agent_task
+
+            run_agent_task(evidence_task_id, repository=repository)
     preview = build_report_preview_response(record)
     updated_manifest = record_workspace_run(
         request.workspace_path,
         run_id=record.id,
         status="submission_blocked" if preview.submission_blocked else "ready_for_review",
         report_path=None,
-        candidate_count=record.hypothesis_count,
+        candidate_count=len(hunter_candidates),
     )
+    candidate_generation = {
+        key: generation_payload[key]
+        for key in (
+            "model_requested",
+            "model_status",
+            "model_failure_reason",
+            "prompt_hash",
+            "model_latency_ms",
+            "baseline_count",
+            "proposed_count",
+            "accepted_count",
+            "rejected_count",
+            "working_candidate_count",
+            "execution_allowed",
+            "dispatch_allowed",
+            "validation_allowed",
+            "candidate_promotion_allowed",
+            "report_submission_allowed",
+        )
+    }
+    for key in ("provider", "model"):
+        if key in generation_payload:
+            candidate_generation[key] = generation_payload[key]
     return {
         "run_id": record.id,
-        "candidate_count": record.hypothesis_count,
+        "candidate_count": len(hunter_candidates),
+        "candidate_generation": candidate_generation,
         "submission_blocked": preview.submission_blocked,
         "report_title": safe_preview_text(record.report_title or preview.title),
         "safety_notes": safe_string_list(
@@ -3060,6 +3339,58 @@ def _studio_authorized_code_files(path_value: str | None) -> list[dict[str, str]
         if content.strip():
             files.append({"path": str(candidate), "content": content[:20000]})
     return files
+
+
+def _studio_fact_pack_code_files(code_files: list[dict[str, str]]) -> list[dict[str, str]]:
+    files: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for item in code_files:
+        path = item.get("path")
+        content = item.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            continue
+        source_path = Path(path).name
+        if not source_path or source_path in seen_paths:
+            continue
+        seen_paths.add(source_path)
+        files.append({"path": source_path, "content": content})
+    return files
+
+
+def _studio_candidate_hunter_evidence_context(
+    *,
+    repo_path: str | None,
+    fact_pack: object,
+) -> dict[str, object] | None:
+    if not repo_path:
+        return None
+    try:
+        root = Path(repo_path).resolve(strict=True)
+    except OSError:
+        return None
+    if not root.is_dir():
+        return None
+    source_snapshot_digest = getattr(fact_pack, "source_snapshot_digest", None)
+    source_manifest = getattr(fact_pack, "source_manifest", None)
+    if not isinstance(source_snapshot_digest, str) or not isinstance(source_manifest, list):
+        return None
+    manifest = []
+    for item in source_manifest:
+        model_dump = getattr(item, "model_dump", None)
+        if not callable(model_dump):
+            return None
+        value = model_dump(mode="json")
+        if not isinstance(value, dict):
+            return None
+        manifest.append(value)
+    return {
+        "source_snapshot_digest": source_snapshot_digest,
+        "source_manifest": manifest,
+        "saved_scope_guard": {
+            "scope_status": "in_scope",
+            "authorized_local_root": str(root),
+        },
+    }
 
 
 def _studio_authorized_json_artifact(kind: str, path_value: str) -> dict[str, object]:

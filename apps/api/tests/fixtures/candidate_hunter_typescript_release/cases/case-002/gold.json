@@ -1,0 +1,22 @@
+{
+  "authorization_pattern": "object_ownership",
+  "expected_roots": [
+    {
+      "gold_id": "k4v9-primary-root",
+      "root_cause_id": "missing_object_ownership_check:fetchledger",
+      "route": {
+        "method": "GET",
+        "path": "/local/ledgers/k4v9/{ledgerId}/file"
+      },
+      "vuln_type": "authorization",
+      "disposition": "refute",
+      "worth_validation": false,
+      "required_evidence_refs": [],
+      "decisive_refutation_refs": [
+        "code:code.ts:owner_id_filter"
+      ],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

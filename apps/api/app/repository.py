@@ -2137,12 +2137,15 @@ def _is_secret_like(value: str) -> bool:
         "secret=",
         "set-cookie:",
         "session=",
-        "sk-",
         "token=",
         "x-api-key:",
     )
+    # Require word-boundary + alnum after "sk-" so OpenAI-style keys match
+    # (sk-proj-..., sk-test...) without false-positives on path segments like
+    # "task-authz" (contains the substring "sk-").
     return (
         any(marker in normalized for marker in secret_markers)
+        or re.search(r"\bsk-[a-z0-9]", normalized) is not None
         or re.search(
             (
                 r"\b(?:[a-z0-9]+[_-])*"

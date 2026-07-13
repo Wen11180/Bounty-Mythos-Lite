@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/invoices/b9q4/{invoiceId}/export": {
+      "get": {
+        "operationId": "exportInvoice_b9q4"
+      }
+    }
+  }
+}

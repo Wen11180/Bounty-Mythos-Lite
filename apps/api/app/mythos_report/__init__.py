@@ -884,7 +884,6 @@ def safe_preview_text(value: object) -> str:
         "session=",
         "secret",
         "token",
-        "sk-",
         "x-api-key:",
         "real user data",
         "customer data",
@@ -895,6 +894,7 @@ def safe_preview_text(value: object) -> str:
     )
     if (
         any(marker in lowered for marker in secret_markers)
+        or re.search(r"\bsk-[a-z0-9]", lowered) is not None
         or EMAIL_PATTERN.search(text)
         or JWT_PATTERN.search(text)
     ):

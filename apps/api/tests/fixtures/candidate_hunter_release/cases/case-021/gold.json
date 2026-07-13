@@ -11,7 +11,7 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:run_tool",
+                                                              "code:code.ts:run_tool",
                                                               "api:GET:/local/tools/s4j8/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

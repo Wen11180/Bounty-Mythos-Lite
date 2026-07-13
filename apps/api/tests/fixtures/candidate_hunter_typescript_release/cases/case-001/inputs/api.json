@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/folios/a7m2/{folioId}": {
+      "get": {
+        "operationId": "readFolio_a7m2"
+      }
+    }
+  }
+}

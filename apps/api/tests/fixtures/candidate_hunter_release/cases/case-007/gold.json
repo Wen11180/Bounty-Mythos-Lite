@@ -11,8 +11,8 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:export_payload",
-                                                              "code:code.py:load_payload",
+                                                              "code:code.ts:export_payload",
+                                                              "code:code.ts:load_payload",
                                                               "api:GET:/local/exports/d4y7/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

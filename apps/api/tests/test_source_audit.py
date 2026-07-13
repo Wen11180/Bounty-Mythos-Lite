@@ -4468,11 +4468,10 @@ def test_source_audit_api_creates_pipeline_run_and_report_preview(tmp_path):
         }
         assert body["audit_gate_summary"] == {
             "crash_promotion_gate": "blocked_until_reproducible_local_crash",
-            "crash_promotion_allowed": False,
-            "blocked_preflight_checks": [
-                "authorized_asset_allowlist",
-                "test_account_roles",
-                "durable_human_approval",
+                "crash_promotion_allowed": False,
+                "blocked_preflight_checks": [
+                    "test_account_roles",
+                    "durable_human_approval",
                 "redacted_evidence_package",
             ],
             "blocked_transition_guard_count": 5,
@@ -4900,6 +4899,23 @@ def test_run_source_audit_blocks_unallowlisted_repo_before_semgrep(tmp_path):
     assert called is False
 
 
+def test_run_source_audit_default_does_not_launch_semgrep(monkeypatch, tmp_path):
+    repo, scope = controlled_source_audit_paths(tmp_path)
+    (repo / "app.py").write_text("print('safe fixture')\n", encoding="utf-8")
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("default source audit must not launch semgrep")
+
+    monkeypatch.setattr("subprocess.run", fail_if_called)
+
+    result = run_source_audit(repo, scope)
+
+    assert result.semgrep.status == "skipped"
+    assert result.semgrep.summary == "semgrep_requires_explicit_human_runner"
+    assert result.semgrep.findings == []
+
+
 def test_normalize_semgrep_json_keeps_only_report_safe_fields():
     findings = normalize_semgrep_json(
         {
@@ -4929,36 +4945,21 @@ def test_normalize_semgrep_json_keeps_only_report_safe_fields():
     assert "secret raw code" not in str(findings[0])
 
 
-def test_run_semgrep_invokes_json_auto_config_and_normalizes_results(monkeypatch, tmp_path):
-    calls = []
+def test_run_semgrep_is_plan_only_compatibility_shim(monkeypatch, tmp_path):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("legacy run_semgrep must not launch a subprocess")
 
-    class Completed:
-        returncode = 1
-        stdout = '{"results":[{"check_id":"rule.one","path":"app.py","start":{"line":7},"extra":{"message":"review","metadata":{"category":"security","confidence":"LOW"}}}]}'
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return Completed()
-
-    monkeypatch.setattr("app.source_audit.subprocess.run", fake_run)
+    monkeypatch.setattr("subprocess.run", fail_if_called)
 
     payload = run_semgrep(tmp_path)
     findings = normalize_semgrep_json(payload)
 
-    assert calls == [
-        (
-            ["semgrep", "--json", "--config", "auto", str(tmp_path)],
-            {
-                "check": False,
-                "capture_output": True,
-                "text": True,
-                "timeout": 120,
-            },
-        )
-    ]
-    assert payload["status"] == "completed"
-    assert payload["summary"] == "semgrep_json_normalized"
-    assert findings[0].rule_id == "rule.one"
+    assert payload == {
+        "status": "skipped",
+        "results": [],
+        "summary": "semgrep_requires_explicit_human_runner",
+    }
+    assert findings == []
 
 
 def test_load_scope_policy_accepts_utf8_bom_scope_files(tmp_path):

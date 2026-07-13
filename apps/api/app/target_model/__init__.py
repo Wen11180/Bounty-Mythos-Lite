@@ -292,6 +292,8 @@ def _safe_provenance_component(value: str) -> str:
 
 
 def _is_secret_like(value: str) -> bool:
+    import re
+
     lowered = value.lower()
     secret_markers = (
         "authorization:",
@@ -306,10 +308,11 @@ def _is_secret_like(value: str) -> bool:
         "session=",
         "secret",
         "token",
-        "sk-",
         "x-api-key:",
     )
-    return any(marker in lowered for marker in secret_markers)
+    return any(marker in lowered for marker in secret_markers) or (
+        re.search(r"\bsk-[a-z0-9]", lowered) is not None
+    )
 
 
 def _path_provenance_ref(path: str) -> str:

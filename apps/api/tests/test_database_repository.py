@@ -778,6 +778,39 @@ def test_repository_stores_campaign_default_asset_without_query_secret():
     finally:
         session.close()
 
+def test_repository_keeps_local_path_with_task_authz_segment():
+    """Path segments like 'task-authz' must not trip OpenAI-style sk- key detection."""
+    from app.repository import _is_secret_like, _safe_asset_value
+
+    package_segment = "my-gh-vikunja-task-authz-lab"
+    assert _is_secret_like(package_segment) is False
+    assert _is_secret_like("task-authz") is False
+    assert _is_secret_like("sk-proj-abcdefghijklmnop") is True
+
+    local_path = (
+        r"C:\Users\Administrator\Desktop\Bounty Mythos-Lite\apps\api"
+        r"\.pytest-tmp\operator-trial-workspaces\my-gh-vikunja-task-authz-lab"
+        r"\workspace-x\code\source"
+    )
+    assert _safe_asset_value(local_path) == local_path
+
+    session, _ = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Local path campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset=local_path,
+            created_by="operator",
+        )
+        assert campaign.default_asset == local_path
+        assert campaign.default_asset != "[REDACTED]"
+    finally:
+        session.close()
+
 
 def test_repository_reuses_pipeline_stage_with_same_idempotency_key():
     session, _ = build_session()

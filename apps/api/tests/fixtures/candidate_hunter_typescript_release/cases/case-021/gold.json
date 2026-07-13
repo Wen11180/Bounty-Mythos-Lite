@@ -1,0 +1,23 @@
+{
+  "authorization_pattern": "role_boundary",
+  "expected_roots": [
+    {
+      "gold_id": "u4n8-primary-root",
+      "root_cause_id": "missing_object_ownership_check:executeworkflow",
+      "route": {
+        "method": "POST",
+        "path": "/internal/workflows/u4n8/{workflowId}/execute"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:executeWorkflow",
+        "api:POST:/internal/workflows/u4n8/{workflowId}/execute"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

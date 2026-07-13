@@ -86,7 +86,7 @@ def build_candidate_hunter_observations(
                 _safe_source_name(fact.source_path)
                 for fact in matching_code_facts
                 if fact.fact_type == "route_handler"
-                and _route(fact.route_method, fact.route_path) == route
+                and _code_fact_matches_route(fact, route)
             }
             matching_semantic_facts = [
                 fact
@@ -100,10 +100,24 @@ def build_candidate_hunter_observations(
                 if _fact_matches_route(fact, route) or "route" not in fact
             ]
             candidate_facts = _safe_candidate_source_facts(candidate.get("source_facts"))
+            authorized_code_source_paths = {
+                _safe_source_name(item.get("path"))
+                for item in code_files
+                if isinstance(item, dict)
+                and _safe_source_name(item.get("path"))
+            }
             matching_candidate_facts = [
                 fact
                 for fact in candidate_facts
-                if _fact_matches_route(fact, route) or "route" not in fact
+                if (
+                    _fact_matches_route(fact, route)
+                    or "route" not in fact
+                )
+                and (
+                    fact.get("artifact_kind") != "code"
+                    or _safe_source_name(fact.get("source_path"))
+                    in authorized_code_source_paths
+                )
             ]
             initial_evidence_refs = _ordered_unique(
                 _text(fact.get("fact_ref"))
@@ -165,6 +179,9 @@ def build_candidate_hunter_observations(
                     else "needs_evidence"
                 ),
                 "priority_score": _priority_score(candidate.get("priority_score")),
+                "model_priority_score": _priority_score(
+                    candidate.get("model_priority_score")
+                ),
                 "gap_evidence_ref": _text(gap_fact.get("fact_ref")) if gap_fact else "",
                 "shared_root": shared_root,
                 "shared_root_evidence_ref": shared_ref,
@@ -179,6 +196,20 @@ def build_candidate_hunter_observations(
                 ),
                 None,
             )
+            if control_fact is None:
+                preferred = set()
+                if "ssrf" in root_cause:
+                    preferred.add("ssrf_validation_check")
+                if "path" in root_cause:
+                    preferred.add("path_validation_check")
+                if "mass_assignment" in root_cause:
+                    preferred.add("mass_assignment_check")
+                if "injection" in root_cause:
+                    preferred.add("injection_validation_check")
+                control_fact = _typescript_control_fact(
+                    matching_code_facts,
+                    preferred_hints=preferred,
+                )
             public_fact = next(
                 (
                     fact
@@ -187,6 +218,8 @@ def build_candidate_hunter_observations(
                 ),
                 None,
             )
+            if public_fact is None:
+                public_fact = _typescript_public_filter_fact(matching_code_facts)
             if control_fact is not None:
                 state["control_evidence_ref"] = control_fact["fact_ref"]
             if public_fact is not None:
@@ -238,6 +271,55 @@ def build_candidate_hunter_observations(
         "safety_status": "safe",
         **_false_safety_fields(),
     }
+
+
+def _typescript_control_fact(
+    facts: list[CodebaseFactCandidate],
+    *,
+    preferred_hints: set[str] | None = None,
+) -> dict[str, Any] | None:
+    decisive_hints = {
+        "owner_or_admin_check",
+        "ownership_boundary_check",
+        "role_check",
+        "permission_check",
+        "ssrf_validation_check",
+        "path_validation_check",
+        "mass_assignment_check",
+        "injection_validation_check",
+    }
+    preferred_hints = preferred_hints or set()
+    candidates: list[CodebaseFactCandidate] = []
+    for fact in facts:
+        if (
+            fact.fact_type == "authz_check"
+            and fact.authz_hint in decisive_hints
+            and fact.source_path.lower().endswith(
+                (".ts", ".tsx", ".mts", ".cts")
+            )
+        ):
+            candidates.append(fact)
+    if not candidates:
+        return None
+    for fact in candidates:
+        if fact.authz_hint in preferred_hints:
+            return _safe_code_fact(fact)
+    return _safe_code_fact(candidates[0])
+
+
+def _typescript_public_filter_fact(
+    facts: list[CodebaseFactCandidate],
+) -> dict[str, Any] | None:
+    for fact in facts:
+        if (
+            fact.fact_type == "authz_check"
+            and fact.authz_hint == "public_filter"
+            and fact.source_path.lower().endswith(
+                (".ts", ".tsx", ".mts", ".cts")
+            )
+        ):
+            return _safe_code_fact(fact)
+    return None
 
 
 def _safe_code_fact(fact: CodebaseFactCandidate) -> dict[str, Any]:
@@ -560,6 +642,23 @@ def _route(method: object, path: object) -> dict[str, str]:
     return {"method": safe_method, "path": safe_path}
 
 
+
+def _code_fact_matches_route(
+    fact: CodebaseFactCandidate,
+    route: dict[str, str],
+) -> bool:
+    fact_route = _route(fact.route_method, fact.route_path)
+    return (
+        bool(route)
+        and bool(fact_route)
+        and fact_route.get("method") == route.get("method")
+        and _route_paths_match(
+            _text(fact_route.get("path")),
+            _text(route.get("path")),
+        )
+    )
+
+
 def _fact_matches_route(fact: dict, route: dict[str, str]) -> bool:
     fact_route = fact.get("route")
     return (
@@ -608,7 +707,7 @@ def _matching_code_facts(
         _safe_text(fact.payload.get("handler"))
         for fact in facts
         if fact.fact_type == "route_handler"
-        and _route(fact.route_method, fact.route_path) == route
+        and _code_fact_matches_route(fact, route)
         and isinstance(fact.payload, dict)
     }
     calls_by_handler: dict[str, list[CodebaseFactCandidate]] = {}
@@ -630,7 +729,7 @@ def _matching_code_facts(
         fact
         for fact in facts
         if (
-            _route(fact.route_method, fact.route_path) == route
+            _code_fact_matches_route(fact, route)
             or (
                 isinstance(fact.payload, dict)
                 and (
@@ -662,7 +761,7 @@ def _route_handler(
     for fact in facts:
         if (
             fact.fact_type == "route_handler"
-            and _route(fact.route_method, fact.route_path) == route
+            and _code_fact_matches_route(fact, route)
             and isinstance(fact.payload, dict)
         ):
             return _safe_text(fact.payload.get("handler"))
@@ -701,6 +800,7 @@ def _shared_root(
         return "", ""
     calls: dict[str, set[str]] = {}
     sinks = set()
+    sink_symbols_by_handler: dict[str, set[str]] = {}
     source_by_symbol: dict[str, str] = {}
     for fact in facts:
         if fact.fact_type == "service_call" and isinstance(fact.payload, dict):
@@ -711,10 +811,17 @@ def _shared_root(
                 source_by_symbol.setdefault(callee, _safe_source_name(fact.source_path))
         elif fact.fact_type == "sensitive_sink" and isinstance(fact.payload, dict):
             sink_handler = _safe_text(fact.payload.get("handler"))
+            sink_symbol = _safe_text(fact.symbol_name)
             if sink_handler:
                 sinks.add(sink_handler)
                 source_by_symbol.setdefault(
                     sink_handler,
+                    _safe_source_name(fact.source_path),
+                )
+            if sink_handler and sink_symbol:
+                sink_symbols_by_handler.setdefault(sink_handler, set()).add(sink_symbol)
+                source_by_symbol.setdefault(
+                    sink_symbol,
                     _safe_source_name(fact.source_path),
                 )
 
@@ -732,9 +839,19 @@ def _shared_root(
         return False
 
     root = next(
-        (callee for callee in sorted(calls.get(handler, set())) if reaches_sink(callee)),
-        handler if handler in sinks else "",
+        (
+            callee
+            for callee in sorted(calls.get(handler, set()))
+            if reaches_sink(callee)
+        ),
+        "",
     )
+    if not root:
+        sink_symbols = sorted(sink_symbols_by_handler.get(handler, set()))
+        if sink_symbols:
+            root = sink_symbols[0]
+        elif handler in sinks:
+            root = handler
     if not root:
         return "", ""
     return root, _code_fact_ref(source_by_symbol.get(root, "code.py"), root, "service_call")
@@ -919,6 +1036,17 @@ def advance_candidate_hunter_round(
                 }
             )
             continue
+        route = state["route"] if isinstance(state.get("route"), dict) else {}
+        route_method = _text(route.get("method")).upper()
+        route_path = _text(route.get("path"))
+        route_label = f"{route_method} {route_path}".strip()
+        root_symbol = _text(state.get("root_cause_id")).rpartition(":")[2]
+        code_refs = [
+            ref for ref in evidence_refs if _text(ref).startswith("code:")
+        ]
+        affected_code_path = code_refs[0] if code_refs else (
+            f"code:{root_symbol}" if root_symbol else ""
+        )
         candidate_projection = {
             "candidate_id": state["candidate_id"],
             "rank": len(final_candidates) + 1,
@@ -926,6 +1054,7 @@ def advance_candidate_hunter_round(
             "root_cause_id": state["root_cause_id"],
             "route": state["route"],
             "source_fact_refs": evidence_refs,
+            "affected_code_path": affected_code_path,
             "evidence_trace_status": "traceable",
             "human_validation_readiness": "ready",
             "execution_allowed": False,
@@ -933,8 +1062,15 @@ def advance_candidate_hunter_round(
             "validation_allowed": False,
             "candidate_promotion_allowed": False,
             "report_submission_allowed": False,
+            "refutation_questions": _refutation_questions(state),
             "safe_validation_plan": [
-                "Review the cited local evidence before any validation request."
+                (
+                    f"Local review only for {route_label}: confirm whether an ownership "
+                    f"or authorization guard runs before the sensitive sink"
+                    + (f" reached via {root_symbol}" if root_symbol else "")
+                    + "."
+                ),
+                "Do not execute live validation, access production accounts, or submit a report.",
             ],
             "next_allowed_action": "Human review of the cited local evidence.",
             "safety_blockers": [
@@ -1015,6 +1151,7 @@ def run_candidate_hunter_loop(
     policy_text: str,
     candidates: list[dict],
     observations: dict | None,
+    evidence_context: dict | None = None,
 ) -> dict[str, Any]:
     run_id = _text(getattr(record, "id", None))
     authoritative_record = repository.get_pipeline_run(run_id) if run_id else None
@@ -1059,12 +1196,21 @@ def run_candidate_hunter_loop(
             **_false_safety_fields(),
         }
     if not owners:
+        safe_evidence_context = _safe_evidence_context(
+            evidence_context,
+            asset=authoritative_record.asset,
+        )
         campaign_payload = {
             "pipeline_run_id": run_id,
             "source_pipeline_run_ref": f"pipeline_run:{run_id}",
             "submission_blocked": True,
             **_false_safety_fields(),
         }
+        if safe_evidence_context is not None:
+            campaign_payload.update(safe_evidence_context)
+        allowed_tools = ["static_analyzer", "api_artifact_mapper"]
+        if safe_evidence_context is not None:
+            allowed_tools.append("candidate_hunter_local_evidence_inspector")
         campaign = repository.create_campaign(
             program_id=authoritative_record.program_id,
             name=f"Candidate Hunter loop for {run_id}",
@@ -1073,15 +1219,15 @@ def run_candidate_hunter_loop(
             policy_text=policy_text,
             default_asset=authoritative_record.asset,
             target_classes=["authorization"],
-            allowed_tools=["static_analyzer", "api_artifact_mapper"],
+            allowed_tools=allowed_tools,
             created_by="candidate_hunter_loop",
             payload=campaign_payload,
         )
         repository.upsert_campaign_budget(
             campaign_id=campaign.id,
-            time_budget_minutes=None,
-            token_budget=None,
-            tool_call_budget=0,
+            time_budget_minutes=15 if safe_evidence_context is not None else None,
+            token_budget=8000 if safe_evidence_context is not None else None,
+            tool_call_budget=4 if safe_evidence_context is not None else 0,
             validation_budget=0,
         )
         task = repository.create_campaign_task(
@@ -1102,7 +1248,8 @@ def run_candidate_hunter_loop(
     if not isinstance(candidate_states, list):
         candidate_states = []
     initial_candidate_states = observations.get("initial_candidate_states")
-    if not isinstance(initial_candidate_states, list):
+    has_initial_candidate_states = isinstance(initial_candidate_states, list)
+    if not has_initial_candidate_states:
         initial_candidate_states = candidate_states
     existing_stages = [
         stage
@@ -1163,8 +1310,15 @@ def run_candidate_hunter_loop(
             else []
         )
         round_candidate_states = (
-            initial_candidate_states
-            if round_number == 1 and latest_rerank is None
+            _initial_states_with_safe_context(
+                initial_candidate_states,
+                candidate_states,
+            )
+            if (
+                round_number == 1
+                and latest_rerank is None
+                and has_initial_candidate_states
+            )
             else candidate_states
         )
         round_result = advance_candidate_hunter_round(
@@ -1282,6 +1436,55 @@ def run_candidate_hunter_loop(
             "safety_invariant_failed",
         }:
             return _persisted_loop_result(repository, run_id, campaign, task)
+        if (
+            round_result.get("evidence_requests")
+            and _campaign_has_evidence_specialist(campaign)
+        ):
+            from app.candidate_hunter_evidence import materialize_evidence_inspection_task
+
+            try:
+                evidence_task = materialize_evidence_inspection_task(
+                    repository=repository,
+                    pipeline_run=authoritative_record,
+                    campaign=campaign,
+                    owner_task=task,
+                    evidence_request_stage=stages[1],
+                )
+            except ValueError:
+                return _persisted_loop_result(
+                    repository,
+                    run_id,
+                    campaign,
+                    task,
+                    stop_reason_override="evidence_task_materialization_failed",
+                )
+            projection = load_candidate_hunter_projection(
+                repository=repository,
+                pipeline_run_id=run_id,
+            )
+            if projection.get("status") != "ready":
+                return _persisted_loop_result(
+                    repository,
+                    run_id,
+                    campaign,
+                    task,
+                    stop_reason_override="invalid_stage_sequence",
+                )
+            audit = projection["audit"]
+            return {
+                "status": "awaiting_evidence",
+                "pipeline_run_id": run_id,
+                "campaign_id": campaign.id,
+                "task_id": task.id,
+                "evidence_task_id": evidence_task.id,
+                "round_count": audit["round_count"],
+                "stage_refs": [item["stage_id"] for item in audit["stage_refs"]],
+                "state_digest": audit["state_digest"],
+                "stop_reason": "awaiting_evidence",
+                "final_candidates": projection["final_candidates"],
+                "candidate_decisions": projection["candidate_decisions"],
+                **_false_safety_fields(),
+            }
         current_snapshot = round_result.get("snapshot_candidates", [])
         reanalyzed_snapshot = sorted(
             (_snapshot_candidate(state) for state in candidate_states),
@@ -1616,6 +1819,82 @@ def _find_candidate_hunter_owners(repository: Any, run_id: str) -> list[tuple[An
     ]
 
 
+def _safe_evidence_context(value: object, *, asset: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    source_snapshot_digest = _safe_text(value.get("source_snapshot_digest"))
+    source_manifest = value.get("source_manifest")
+    saved_scope_guard = value.get("saved_scope_guard")
+    if (
+        len(source_snapshot_digest) != 64
+        or any(character not in "0123456789abcdef" for character in source_snapshot_digest.lower())
+        or not isinstance(source_manifest, list)
+        or not isinstance(saved_scope_guard, dict)
+        or saved_scope_guard.get("scope_status") != "in_scope"
+    ):
+        return None
+    authorized_root = _safe_text(saved_scope_guard.get("authorized_local_root"))
+    asset_path = _safe_text(asset)
+    try:
+        if (
+            not authorized_root
+            or not asset_path
+            or Path(authorized_root).resolve(strict=True)
+            != Path(asset_path).resolve(strict=True)
+        ):
+            return None
+    except OSError:
+        return None
+    manifest: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for item in source_manifest:
+        if not isinstance(item, dict):
+            return None
+        source_path = _safe_text(item.get("source_path")).replace("\\", "/")
+        content_digest = _safe_text(item.get("content_digest"))
+        if (
+            not source_path
+            or source_path.startswith("/")
+            or ":" in source_path
+            or ".." in source_path.split("/")
+            or source_path in seen_paths
+            or len(content_digest) != 64
+            or any(character not in "0123456789abcdef" for character in content_digest.lower())
+        ):
+            return None
+        seen_paths.add(source_path)
+        manifest.append(
+            {
+                "source_path": source_path,
+                "content_digest": content_digest.lower(),
+            }
+        )
+    if not manifest:
+        return None
+    return {
+        "source_snapshot_digest": source_snapshot_digest.lower(),
+        "source_manifest": sorted(manifest, key=lambda item: item["source_path"]),
+        "saved_scope_guard": {
+            "scope_status": "in_scope",
+            "authorized_local_root": authorized_root,
+        },
+        "inspector_tool_allowlist": ["candidate_hunter_local_evidence_inspector"],
+    }
+
+
+def _campaign_has_evidence_specialist(campaign: Any) -> bool:
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    return (
+        _safe_text(payload.get("source_snapshot_digest"))
+        and isinstance(payload.get("source_manifest"), list)
+        and isinstance(payload.get("saved_scope_guard"), dict)
+        and "candidate_hunter_local_evidence_inspector"
+        in payload.get("inspector_tool_allowlist", [])
+        and "candidate_hunter_local_evidence_inspector"
+        in getattr(campaign, "allowed_tools", [])
+    )
+
+
 def _stage_idempotency_key(
     run_id: str,
     round_number: int,
@@ -1706,6 +1985,17 @@ def _safe_prior_candidate_projection(
         or any(value.get(field) is not False for field in SAFETY_FIELDS[:-1])
     ):
         return None
+    refutation_questions = [
+        safe_text
+        for item in value.get("refutation_questions", [])
+        if (safe_text := _safe_text(item))
+    ] if isinstance(value.get("refutation_questions"), list) else []
+    if not refutation_questions:
+        refutation_questions = _refutation_questions({})
+    affected_code_path = _safe_text(value.get("affected_code_path"))
+    if not affected_code_path:
+        code_refs = [ref for ref in source_fact_refs if ref.startswith("code:")]
+        affected_code_path = code_refs[0] if code_refs else ""
     return {
         "candidate_id": candidate_id,
         "rank": _priority_score(value.get("rank")) or 1,
@@ -1713,6 +2003,7 @@ def _safe_prior_candidate_projection(
         "root_cause_id": root_cause_id,
         "route": safe_route,
         "source_fact_refs": source_fact_refs,
+        "affected_code_path": affected_code_path,
         "evidence_trace_status": "traceable",
         "human_validation_readiness": "ready",
         "execution_allowed": False,
@@ -1720,6 +2011,7 @@ def _safe_prior_candidate_projection(
         "validation_allowed": False,
         "candidate_promotion_allowed": False,
         "report_submission_allowed": False,
+        "refutation_questions": refutation_questions,
         "safe_validation_plan": [
             safe_text
             for item in value.get("safe_validation_plan", [])
@@ -1732,6 +2024,53 @@ def _safe_prior_candidate_projection(
             if (safe_text := _safe_text(item))
         ] if isinstance(value.get("safety_blockers"), list) else [],
     }
+
+
+def _initial_states_with_safe_context(
+    initial_states: list[dict],
+    reanalyzed_states: list[dict],
+) -> list[dict]:
+    reanalyzed_by_id = {
+        _text(state.get("candidate_id")): state
+        for state in reanalyzed_states
+        if isinstance(state, dict) and _text(state.get("candidate_id"))
+    }
+    states = []
+    for initial in initial_states:
+        if not isinstance(initial, dict):
+            continue
+        state = dict(initial)
+        reanalyzed = reanalyzed_by_id.get(_text(initial.get("candidate_id")))
+        if reanalyzed is None:
+            states.append(state)
+            continue
+        safe_context_refs = [
+            ref
+            for ref in _string_list(reanalyzed.get("source_fact_refs"))
+            if not ref.startswith("code:") and not ref.startswith("evidence:")
+        ]
+        state["source_fact_refs"] = _ordered_unique(
+            [*_string_list(initial.get("source_fact_refs")), *safe_context_refs]
+        )
+        state["observed_artifact_kinds"] = _ordered_unique(
+            [
+                *_string_list(initial.get("observed_artifact_kinds")),
+                *[
+                    kind
+                    for kind in _string_list(reanalyzed.get("observed_artifact_kinds"))
+                    if kind != "code"
+                ],
+            ]
+        )
+        required = _string_list(state.get("required_artifact_kinds"))
+        state["evidence_trace_status"] = (
+            "traceable"
+            if required and set(required).issubset(state["observed_artifact_kinds"])
+            else "needs_evidence"
+        )
+        state["reanalysis_status"] = "pending"
+        states.append(state)
+    return states
 
 
 def _snapshot_candidate(value: object) -> dict[str, Any]:
@@ -1769,6 +2108,9 @@ def _snapshot_candidate(value: object) -> dict[str, Any]:
             if (safe_value := _safe_text(item))
         ] if isinstance(value.get(field), list) else []
     snapshot["priority_score"] = _priority_score(value.get("priority_score"))
+    snapshot["model_priority_score"] = _priority_score(
+        value.get("model_priority_score")
+    )
     return snapshot
 
 
@@ -1838,6 +2180,7 @@ def _duplicate_targets(
             states,
             key=lambda state: (
                 -_priority_score(state.get("priority_score")),
+                -_priority_score(state.get("model_priority_score")),
                 _text(state.get("candidate_id")),
             ),
         )

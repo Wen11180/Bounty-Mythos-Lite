@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-u4n8",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/workflows/u4n8/{workflowId}/execute"
+  ],
+  "local_only": true
+}

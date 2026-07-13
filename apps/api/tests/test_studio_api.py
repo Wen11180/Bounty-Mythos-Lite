@@ -1,3 +1,4 @@
+import asyncio
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -12,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
 from app.config import get_settings
+from app.cross_source_candidate_generator import ReplayCandidateReasoner
 from app.main import (
     app,
     _studio_candidate_hunter_backlog,
@@ -29,6 +31,8 @@ from app.main import (
     _studio_report_candidate_guidance,
     _studio_authorized_code_files,
 )
+from app.llm.base import LLMMode, LLMResponse, ProviderName
+from app.llm.registry import LLMRegistry
 from app.repository import DatabaseRepository
 from app.repository import seed_sample_data
 from app.worker.tasks import run_agent_task
@@ -2461,6 +2465,50 @@ def stage_workspace_artifacts(
     return staged
 
 
+def create_runnable_studio_workspace(tmp_path: Path) -> str:
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/files/{file_id}/export")',
+                "def export_file(file_id: str):",
+                "    return send_file(file_id)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope_path = tmp_path / "scope.yaml"
+    scope_path.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    artifacts = (
+        ("scope", scope_path),
+        ("policy", write_policy_artifact(tmp_path)),
+        ("code", repo),
+        ("api", write_api_artifact(tmp_path)),
+        ("har", write_har_artifact(tmp_path)),
+        ("sarif", write_sarif_artifact(tmp_path)),
+    )
+    workspace_response = client.post(
+        "/mythos/studio/workspaces",
+        json={"root_path": str(tmp_path), "name": "acme-api"},
+    )
+    assert workspace_response.status_code == 200
+    workspace_path = workspace_response.json()["path"]
+    for kind, source_path in stage_workspace_artifacts(workspace_path, artifacts):
+        import_response = client.post(
+            "/mythos/studio/workspaces/imports",
+            json={
+                "workspace_path": workspace_path,
+                "kind": kind,
+                "source_path": str(source_path),
+            },
+        )
+        assert import_response.status_code == 200
+    return workspace_path
+
+
 def test_create_workspace_and_import_scope_updates_manifest(tmp_path: Path):
     response = client.post(
         "/mythos/studio/workspaces",
@@ -2821,6 +2869,717 @@ def test_studio_workspace_can_launch_campaign_hunter_from_authorized_artifacts(
         app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize(
+    "candidate_model",
+    [
+        {"enabled": True, "model": "gpt-4.1-mini"},
+        {"enabled": True, "provider": "openai"},
+        {"enabled": True, "provider": "openai", "model": "   "},
+        {"enabled": False, "provider": "openai"},
+        {"enabled": False, "model": "gpt-4.1-mini"},
+        {
+            "enabled": True,
+            "provider": "openai",
+            "model": "gpt-4.1-mini",
+            "api_key": "must-not-be-accepted",
+        },
+    ],
+)
+def test_studio_run_rejects_ambiguous_candidate_model_before_persistence(
+    tmp_path: Path,
+    monkeypatch,
+    candidate_model: dict,
+):
+    load_calls = 0
+
+    def track_manifest_load(_workspace_path: str) -> dict:
+        nonlocal load_calls
+        load_calls += 1
+        return {}
+
+    monkeypatch.setattr(main_module, "load_workspace_manifest", track_manifest_load)
+    session_override, testing_session = studio_test_session_override()
+    app.dependency_overrides[get_session] = session_override
+    try:
+        response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={
+                "workspace_path": str(tmp_path),
+                "candidate_model": candidate_model,
+            },
+        )
+
+        assert response.status_code == 422
+        assert isinstance(response.json()["detail"], list)
+        assert load_calls == 0
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            assert repository.list_pipeline_runs() == []
+            assert repository.list_llm_runs() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_internal_studio_service_runs_replay_with_safe_audit(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = getattr(
+        main_module,
+        "_run_mythos_studio_workspace_research_service",
+        None,
+    )
+    assert callable(service)
+
+    def fail_if_registry_is_built():
+        raise AssertionError("replay must not build an LLM registry")
+
+    monkeypatch.setattr(main_module, "build_default_registry", fail_if_registry_is_built)
+    raw_marker = "fixture-replay-impact-marker"
+    payload = {
+        "schema_version": "cross_source_candidate_model_v1",
+        "proposals": [
+            {
+                "vulnerability_family": "authorization",
+                "affected_endpoint": {
+                    "method": "GET",
+                    "path": "/files/{file_id}/export",
+                },
+                "affected_code_path": {
+                    "source_path": "routes.py",
+                    "symbol_name": "export_file",
+                },
+                "suspected_broken_invariant": (
+                    "Object export should verify ownership before a sensitive sink."
+                ),
+                "impact_rationale": raw_marker,
+                "evidence_requirements": ["Review local ownership checks."],
+                "refutation_questions": [
+                    "Does observed middleware enforce object ownership?"
+                ],
+                "root_cause_summary": "missing_object_ownership_check",
+                "risk_estimate": "high",
+                "cited_fact_refs": [
+                    "code:routes.py:export_file",
+                    "api:GET:/files/{file_id}/export",
+                ],
+            }
+        ],
+    }
+    received_fact_packs = []
+    replay_reasoner = ReplayCandidateReasoner(payload)
+
+    class RecordingReplayReasoner:
+        async def generate(self, *, fact_pack, model_config, request_key):
+            received_fact_packs.append(fact_pack)
+            return await replay_reasoner.generate(
+                fact_pack=fact_pack,
+                model_config=model_config,
+                request_key=request_key,
+            )
+
+    session_override, testing_session = studio_test_session_override()
+    app.dependency_overrides[get_session] = session_override
+    try:
+        workspace_path = create_runnable_studio_workspace(tmp_path)
+        request = main_module.StudioWorkspaceRunRequest.model_validate(
+            {
+                "workspace_path": workspace_path,
+                "candidate_model": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "model": "fixture-replay-v1",
+                },
+            }
+        )
+        with testing_session() as session:
+            body = asyncio.run(
+                service(
+                    request,
+                    session,
+                    reasoner_override=RecordingReplayReasoner(),
+                    audit_mode="replay",
+                )
+            )
+            repository = DatabaseRepository(session)
+            llm_runs = repository.list_llm_runs()
+            generation_stage = next(
+                stage
+                for stage in repository.list_pipeline_stages_for_run(body["run_id"])
+                if stage.stage_key == "cross_source_candidate_generation"
+            )
+
+        assert body["candidate_generation"]["model_status"] == "completed"
+        assert body["candidate_generation"]["accepted_count"] == 1, (
+            generation_stage.payload.get("rejection_reason_counts"),
+            generation_stage.payload.get("model_failure_reason"),
+            received_fact_packs[0].allowed_fact_refs,
+        )
+        assert len(llm_runs) == 1
+        assert llm_runs[0].mode == "replay"
+        assert "synthetic_replay_no_provider_call" in llm_runs[0].safety_notes
+        serialized = json.dumps(
+            {
+                "body": body,
+                "llm_run": {
+                    "provider": llm_runs[0].provider,
+                    "model": llm_runs[0].model,
+                    "mode": llm_runs[0].mode,
+                    "prompt_hash": llm_runs[0].prompt_hash,
+                    "safety_notes": llm_runs[0].safety_notes,
+                },
+                "generation_stage": generation_stage.payload,
+            }
+        )
+        assert raw_marker not in serialized
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("candidate_model", "include_reasoner", "expected_reason"),
+    (
+        (None, True, "replay_reasoner_requires_enabled_model_request"),
+        (
+            {"enabled": False},
+            True,
+            "replay_reasoner_requires_enabled_model_request",
+        ),
+        (
+            {
+                "enabled": True,
+                "provider": "openai",
+                "model": "fixture-replay-v1",
+            },
+            False,
+            "replay_audit_requires_reasoner",
+        ),
+    ),
+)
+def test_internal_studio_service_rejects_invalid_replay_boundary_before_persistence(
+    tmp_path: Path,
+    monkeypatch,
+    candidate_model: dict | None,
+    include_reasoner: bool,
+    expected_reason: str,
+):
+    manifest_loads = []
+
+    def track_manifest_load(workspace_path: str):
+        manifest_loads.append(workspace_path)
+        return {}
+
+    monkeypatch.setattr(main_module, "load_workspace_manifest", track_manifest_load)
+    request_payload = {"workspace_path": str(tmp_path)}
+    if candidate_model is not None:
+        request_payload["candidate_model"] = candidate_model
+    request = main_module.StudioWorkspaceRunRequest.model_validate(request_payload)
+    reasoner = (
+        ReplayCandidateReasoner(
+            {
+                "schema_version": "cross_source_candidate_model_v1",
+                "proposals": [],
+            }
+        )
+        if include_reasoner
+        else None
+    )
+    _, testing_session = studio_test_session_override()
+    with testing_session() as session:
+        with pytest.raises(ValueError, match=expected_reason):
+            asyncio.run(
+                main_module._run_mythos_studio_workspace_research_service(
+                    request,
+                    session,
+                    reasoner_override=reasoner,
+                    audit_mode="replay",
+                )
+            )
+        repository = DatabaseRepository(session)
+        assert repository.list_pipeline_runs() == []
+        assert repository.list_llm_runs() == []
+    assert manifest_loads == []
+
+
+def test_studio_run_routes_explicit_candidate_model_through_registry_reasoner(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FactBoundProvider:
+        name = ProviderName.OPENAI
+
+        def __init__(self):
+            self.requests = []
+
+        async def generate(self, request):
+            self.requests.append(request)
+            fact_pack = json.loads(request.prompt)["fact_pack"]
+            code_fact = next(
+                fact
+                for fact in fact_pack["code_facts"]
+                if fact["fact_type"] == "authorization_gap_candidate"
+                and fact.get("route")
+            )
+            api_fact = next(
+                fact
+                for fact in fact_pack["surface_facts"]
+                if fact["artifact_kind"] == "api" and fact.get("route")
+            )
+            proposal = {
+                "vulnerability_family": "authorization",
+                "affected_endpoint": code_fact["route"],
+                "affected_code_path": {
+                    "source_path": code_fact["source_path"],
+                    "symbol_name": code_fact["symbol_name"],
+                },
+                "suspected_broken_invariant": (
+                    "Object export must verify ownership before a sensitive sink."
+                ),
+                "impact_rationale": (
+                    "An unauthorized object export could expose another account's file."
+                ),
+                "evidence_requirements": ["Review local ownership checks."],
+                "refutation_questions": [
+                    "Does observed middleware enforce object ownership?"
+                ],
+                "root_cause_summary": code_fact["root_cause"],
+                "risk_estimate": "high",
+                "cited_fact_refs": [
+                    code_fact["fact_ref"],
+                    api_fact["fact_ref"],
+                ],
+            }
+            return LLMResponse(
+                provider=request.provider,
+                model=request.model,
+                text=json.dumps(
+                    {
+                        "schema_version": "cross_source_candidate_model_v1",
+                        "proposals": [proposal],
+                    }
+                ),
+                mode=request.mode,
+                prompt_hash="provider-placeholder",
+                latency_ms=1,
+                error=None,
+            )
+
+    provider = FactBoundProvider()
+    monkeypatch.setattr(
+        main_module,
+        "build_default_registry",
+        lambda: LLMRegistry({ProviderName.OPENAI: provider}),
+    )
+    captured_hunter_inputs: list[dict] = []
+    original_run_candidate_hunter_loop = main_module.run_candidate_hunter_loop
+
+    def capture_hunter_inputs(**kwargs):
+        captured_hunter_inputs.extend(kwargs["candidates"])
+        return original_run_candidate_hunter_loop(**kwargs)
+
+    monkeypatch.setattr(
+        main_module,
+        "run_candidate_hunter_loop",
+        capture_hunter_inputs,
+    )
+    session_override, testing_session = studio_test_session_override()
+    app.dependency_overrides[get_session] = session_override
+    try:
+        workspace_path = create_runnable_studio_workspace(tmp_path)
+
+        response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={
+                "workspace_path": workspace_path,
+                "candidate_model": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "model": "test-model",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert provider.requests
+        prompt_fact_pack = json.loads(provider.requests[0].prompt)["fact_pack"]
+        assert any(
+            fact["fact_type"] == "authorization_gap_candidate"
+            and fact.get("route")
+            for fact in prompt_fact_pack["code_facts"]
+        ), prompt_fact_pack["code_facts"]
+        assert any(
+            fact["artifact_kind"] == "api" and fact.get("route")
+            for fact in prompt_fact_pack["surface_facts"]
+        ), prompt_fact_pack["surface_facts"]
+        assert body["candidate_generation"]["model_requested"] is True
+        assert body["candidate_generation"]["provider"] == "openai"
+        assert body["candidate_generation"]["model"] == "test-model"
+        assert body["candidate_generation"]["model_failure_reason"] is None
+        assert body["candidate_generation"]["model_status"] == "completed"
+        assert body["candidate_generation"]["proposed_count"] == 1
+        assert body["candidate_generation"]["accepted_count"] == 1
+        assert body["candidate_generation"]["rejected_count"] == 0
+        assert all(
+            body["candidate_generation"][field] is False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+        assert body["submission_blocked"] is True
+        assert len(provider.requests) == 1
+        model_request = provider.requests[0]
+        assert model_request.mode == LLMMode.LIVE
+        assert model_request.purpose == "cross_source_candidate_generation"
+        assert model_request.temperature == 0
+        assert model_request.max_tokens == 2400
+        assert captured_hunter_inputs
+        hunter_candidate = captured_hunter_inputs[0]
+        assert hunter_candidate["refutation_status"] == "unverified"
+        assert (
+            "Does observed middleware enforce object ownership?"
+            in hunter_candidate["false_positive_checks"]
+        )
+        assert {fact["artifact_kind"] for fact in hunter_candidate["source_facts"]} >= {
+            "code",
+            "api",
+        }
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            llm_runs = repository.list_llm_runs()
+            assert len(llm_runs) == 1
+            llm_run = llm_runs[0]
+            assert llm_run.provider == "openai"
+            assert llm_run.model == "test-model"
+            assert llm_run.purpose == "cross_source_candidate_generation"
+            assert llm_run.mode == "live"
+            assert len(llm_run.prompt_hash) == 64
+            assert llm_run.latency_ms is not None
+            assert llm_run.error is None
+            assert "prompt_hash_only" in llm_run.safety_notes
+            assert "no_prompt_storage" in llm_run.safety_notes
+            assert "provider_response_not_fact" in llm_run.safety_notes
+            generation_stage = next(
+                stage
+                for stage in repository.list_pipeline_stages_for_run(body["run_id"])
+                if stage.stage_key == "cross_source_candidate_generation"
+            )
+            accepted = generation_stage.payload["accepted_candidates"][0]
+            assert accepted["origin"] == "model"
+            assert accepted["evidence_trace_status"] == "traceable"
+            assert all(
+                accepted[field] is False
+                for field in (
+                    "execution_allowed",
+                    "dispatch_allowed",
+                    "validation_allowed",
+                    "candidate_promotion_allowed",
+                    "report_submission_allowed",
+                )
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_reason"),
+    [
+        ("provider_error", "provider_error"),
+        ("timeout", "timeout"),
+    ],
+)
+def test_studio_run_model_failure_is_audited_and_keeps_baseline_candidates(
+    tmp_path: Path,
+    monkeypatch,
+    failure_kind: str,
+    expected_reason: str,
+):
+    raw_provider_error = "Authorization: Bearer raw-provider-secret"
+
+    class FailingProvider:
+        name = ProviderName.OPENAI
+
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            if failure_kind == "timeout":
+                raise TimeoutError(raw_provider_error)
+            raise RuntimeError(raw_provider_error)
+
+    provider = FailingProvider()
+    monkeypatch.setattr(
+        main_module,
+        "build_default_registry",
+        lambda: LLMRegistry({ProviderName.OPENAI: provider}),
+    )
+    session_override, testing_session = studio_test_session_override()
+    app.dependency_overrides[get_session] = session_override
+    try:
+        workspace_path = create_runnable_studio_workspace(tmp_path)
+
+        response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={
+                "workspace_path": workspace_path,
+                "candidate_model": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "model": "test-model",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        summary = body["candidate_generation"]
+        assert summary["model_status"] == "needs_model_review"
+        assert summary["model_failure_reason"] == expected_reason
+        assert summary["accepted_count"] == 0
+        assert summary["working_candidate_count"] == summary["baseline_count"]
+        assert summary["working_candidate_count"] >= 1
+        assert body["candidate_count"] == summary["working_candidate_count"]
+        assert body["submission_blocked"] is True
+        assert provider.calls == 1
+        assert all(
+            summary[field] is False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+
+        manifest_response = client.get(
+            "/mythos/studio/workspaces/manifest",
+            params={"workspace_path": workspace_path},
+        )
+        assert manifest_response.status_code == 200
+        assert "candidate_model" not in json.dumps(manifest_response.json())
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            llm_runs = repository.list_llm_runs()
+            assert len(llm_runs) == 1
+            llm_run = llm_runs[0]
+            assert llm_run.error == expected_reason
+            assert "model_failure_recorded" in llm_run.safety_notes
+            generation_stage = next(
+                stage
+                for stage in repository.list_pipeline_stages_for_run(body["run_id"])
+                if stage.stage_key == "cross_source_candidate_generation"
+            )
+            assert generation_stage.payload["working_candidates"]
+            serialized = json.dumps(
+                {
+                    "response": body,
+                    "generation_stage": generation_stage.payload,
+                    "llm_run": {
+                        "provider": llm_run.provider,
+                        "model": llm_run.model,
+                        "purpose": llm_run.purpose,
+                        "prompt_hash": llm_run.prompt_hash,
+                        "mode": llm_run.mode,
+                        "latency_ms": llm_run.latency_ms,
+                        "error": llm_run.error,
+                        "safety_notes": llm_run.safety_notes,
+                    },
+                    "manifest": manifest_response.json(),
+                }
+            )
+            assert raw_provider_error not in serialized
+            assert "raw-provider-secret" not in serialized
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    (
+        "output_kind",
+        "expected_status",
+        "expected_failure_reason",
+        "expected_rejection_counts",
+        "expected_audit_error",
+    ),
+    [
+        ("invalid_schema", "needs_model_review", "invalid_schema", {}, "invalid_schema"),
+        ("sensitive", "completed", None, {"sensitive_content": 1}, None),
+    ],
+)
+def test_studio_run_rejects_invalid_or_sensitive_model_output_without_persisting_raw_text(
+    tmp_path: Path,
+    monkeypatch,
+    output_kind: str,
+    expected_status: str,
+    expected_failure_reason: str | None,
+    expected_rejection_counts: dict[str, int],
+    expected_audit_error: str | None,
+):
+    raw_marker = (
+        "raw-invalid-schema-marker"
+        if output_kind == "invalid_schema"
+        else "Authorization: Bearer raw-model-secret"
+    )
+
+    class InvalidOutputProvider:
+        name = ProviderName.OPENAI
+
+        async def generate(self, request):
+            fact_pack = json.loads(request.prompt)["fact_pack"]
+            code_fact = next(
+                fact
+                for fact in fact_pack["code_facts"]
+                if fact["fact_type"] == "authorization_gap_candidate"
+                and fact.get("route")
+            )
+            api_fact = next(
+                fact
+                for fact in fact_pack["surface_facts"]
+                if fact["artifact_kind"] == "api" and fact.get("route")
+            )
+            proposal = {
+                "vulnerability_family": "authorization",
+                "affected_endpoint": code_fact["route"],
+                "affected_code_path": {
+                    "source_path": code_fact["source_path"],
+                    "symbol_name": code_fact["symbol_name"],
+                },
+                "suspected_broken_invariant": (
+                    "Object export must verify ownership before a sensitive sink."
+                ),
+                "impact_rationale": "Potential cross-account file disclosure.",
+                "evidence_requirements": ["Review local ownership checks."],
+                "refutation_questions": [
+                    "Does observed middleware enforce object ownership?"
+                ],
+                "root_cause_summary": code_fact["root_cause"],
+                "risk_estimate": "high",
+                "cited_fact_refs": [
+                    code_fact["fact_ref"],
+                    api_fact["fact_ref"],
+                ],
+            }
+            if output_kind == "invalid_schema":
+                proposal["unexpected_permission"] = raw_marker
+            else:
+                proposal["impact_rationale"] = raw_marker
+            return LLMResponse(
+                provider=request.provider,
+                model=request.model,
+                text=json.dumps(
+                    {
+                        "schema_version": "cross_source_candidate_model_v1",
+                        "proposals": [proposal],
+                    }
+                ),
+                mode=request.mode,
+                prompt_hash="provider-placeholder",
+                latency_ms=1,
+                error=None,
+            )
+
+    monkeypatch.setattr(
+        main_module,
+        "build_default_registry",
+        lambda: LLMRegistry(
+            {ProviderName.OPENAI: InvalidOutputProvider()}
+        ),
+    )
+    captured_hunter_inputs: list[dict] = []
+    original_run_candidate_hunter_loop = main_module.run_candidate_hunter_loop
+
+    def capture_hunter_inputs(**kwargs):
+        captured_hunter_inputs.extend(kwargs["candidates"])
+        return original_run_candidate_hunter_loop(**kwargs)
+
+    monkeypatch.setattr(
+        main_module,
+        "run_candidate_hunter_loop",
+        capture_hunter_inputs,
+    )
+    session_override, testing_session = studio_test_session_override()
+    app.dependency_overrides[get_session] = session_override
+    try:
+        workspace_path = create_runnable_studio_workspace(tmp_path)
+
+        response = client.post(
+            "/mythos/studio/workspaces/runs",
+            json={
+                "workspace_path": workspace_path,
+                "candidate_model": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "model": "test-model",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        summary = body["candidate_generation"]
+        assert summary["model_status"] == expected_status
+        assert summary["model_failure_reason"] == expected_failure_reason
+        assert summary["accepted_count"] == 0
+        assert summary["rejected_count"] == sum(expected_rejection_counts.values())
+        assert summary["working_candidate_count"] == summary["baseline_count"]
+        assert all(
+            summary[field] is False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+        assert captured_hunter_inputs
+        assert all(raw_marker not in json.dumps(item) for item in captured_hunter_inputs)
+
+        manifest_response = client.get(
+            "/mythos/studio/workspaces/manifest",
+            params={"workspace_path": workspace_path},
+        )
+        assert manifest_response.status_code == 200
+        assert "candidate_model" not in json.dumps(manifest_response.json())
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            llm_runs = repository.list_llm_runs()
+            assert len(llm_runs) == 1
+            llm_run = llm_runs[0]
+            assert llm_run.error == expected_audit_error
+            generation_stage = next(
+                stage
+                for stage in repository.list_pipeline_stages_for_run(body["run_id"])
+                if stage.stage_key == "cross_source_candidate_generation"
+            )
+            assert (
+                generation_stage.payload["rejection_reason_counts"]
+                == expected_rejection_counts
+            )
+            serialized = json.dumps(
+                {
+                    "response": body,
+                    "generation_stage": generation_stage.payload,
+                    "llm_run": {
+                        "error": llm_run.error,
+                        "safety_notes": llm_run.safety_notes,
+                    },
+                    "manifest": manifest_response.json(),
+                }
+            )
+            assert raw_marker not in serialized
+            assert "raw-model-secret" not in serialized
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
     tmp_path: Path,
 ):
@@ -2885,6 +3644,23 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
 
         with testing_session() as session:
             repository = DatabaseRepository(session)
+            generation_stages = [
+                stage
+                for stage in repository.list_pipeline_stages_for_run(run_body["run_id"])
+                if stage.stage_key == "cross_source_candidate_generation"
+            ]
+            assert len(generation_stages) == 1
+            generation_stage = generation_stages[0]
+            assert generation_stage.stage_order == 0
+            assert generation_stage.status == "completed"
+            assert generation_stage.safety_gate_state == "safe"
+            assert generation_stage.payload["model_status"] == "model_not_requested"
+            assert generation_stage.payload["working_candidates"]
+            assert generation_stage.payload["execution_allowed"] is False
+            assert generation_stage.payload["validation_allowed"] is False
+            assert generation_stage.payload["report_submission_allowed"] is False
+            assert "return send_file" not in json.dumps(generation_stage.payload)
+            assert generation_stage.payload["source_manifest"]
             loop_campaigns = [
                 campaign
                 for campaign in repository.list_campaigns()
@@ -2892,19 +3668,24 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
             ]
             assert len(loop_campaigns) == 1
             loop_tasks = repository.list_campaign_tasks(loop_campaigns[0].id)
-            assert [task.task_type for task in loop_tasks] == [
-                "candidate_hunter_loop"
-            ]
+            owner_task = next(
+                task
+                for task in loop_tasks
+                if task.task_type == "candidate_hunter_loop"
+            )
+            evidence_task = next(
+                task
+                for task in loop_tasks
+                if task.task_type == "candidate_hunter_evidence_inspection"
+            )
+            assert owner_task.status == "needs_evidence"
+            assert evidence_task.status == "queued"
             loop_stages = [
                 stage
                 for stage in repository.list_pipeline_stages_for_run(run_body["run_id"])
-                if stage.task_id == loop_tasks[0].id
+                if stage.task_id == owner_task.id
             ]
             assert [stage.stage_key for stage in loop_stages] == [
-                "candidate_hunter_snapshot",
-                "candidate_hunter_evidence_request",
-                "candidate_hunter_decision",
-                "candidate_hunter_rerank",
                 "candidate_hunter_snapshot",
                 "candidate_hunter_evidence_request",
                 "candidate_hunter_decision",
@@ -2915,19 +3696,9 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
                 1,
                 1,
                 1,
-                2,
-                2,
-                2,
-                2,
             ]
             assert loop_stages[1].payload["evidence_requests"]
             assert loop_stages[2].payload["candidate_decisions"] == []
-            assert loop_stages[6].payload["candidate_decisions"], (
-                loop_stages[5].payload["evidence_requests"]
-            )
-            assert loop_stages[6].payload["candidate_decisions"][0][
-                "disposition"
-            ] == "retained"
             serialized_stages = json.dumps(
                 [stage.payload for stage in loop_stages]
             )

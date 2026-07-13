@@ -2617,7 +2617,7 @@ def test_run_agent_task_blocks_paused_campaign_with_specific_stop_reason():
         session.close()
 
 
-def test_run_agent_task_blocks_budget_exhausted_without_materializing_artifacts():
+def test_run_agent_task_allows_read_only_work_when_validation_budget_is_zero():
     repository, session = build_repository()
     try:
         campaign = repository.create_campaign(
@@ -2649,12 +2649,11 @@ def test_run_agent_task_blocks_budget_exhausted_without_materializing_artifacts(
 
         updated_task = repository.list_campaign_tasks(campaign.id)[0]
         agent_run = repository.list_campaign_agent_runs(campaign.id)[0]
-        assert result["status"] == "blocked"
-        assert result["stop_reason"] == "budget_exhausted"
-        assert updated_task.status == "blocked"
-        assert agent_run.status == "blocked"
-        assert agent_run.stop_reason == "budget_exhausted"
-        assert repository.list_campaign_codebase_maps(campaign.id) == []
+        assert result["status"] == "completed"
+        assert result["stop_reason"] is None
+        assert updated_task.status == "completed"
+        assert agent_run.status == "completed"
+        assert repository.list_campaign_codebase_maps(campaign.id)
         assert "session=secret" not in str(agent_run.payload)
     finally:
         session.close()

@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-y6b3",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/artifacts/y6b3/{artifactId}/render"
+  ],
+  "local_only": true
+}

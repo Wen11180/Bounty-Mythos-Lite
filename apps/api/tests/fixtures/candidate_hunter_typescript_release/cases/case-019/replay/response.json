@@ -1,0 +1,55 @@
+{
+  "schema_version": "cross_source_candidate_model_v1",
+  "proposals": [
+    {
+      "vulnerability_family": "authorization",
+      "affected_endpoint": {
+        "method": "GET",
+        "path": "/internal/metrics/s2v6/:metricId/detail"
+      },
+      "affected_code_path": {
+        "source_path": "code.ts",
+        "symbol_name": "readMetricDetail"
+      },
+      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+      "evidence_requirements": [
+        "Review the cited route and handler boundary."
+      ],
+      "refutation_questions": [
+        "Does an observed upstream control enforce the applicable boundary?"
+      ],
+      "root_cause_summary": "missing_object_ownership_check",
+      "risk_estimate": "critical",
+      "cited_fact_refs": [
+        "code:code.ts:readMetricDetail",
+        "api:GET:/internal/metrics/s2v6/{metricId}/detail"
+      ]
+    },
+    {
+      "vulnerability_family": "authorization",
+      "affected_endpoint": {
+        "method": "GET",
+        "path": "/internal/metrics/s2v6/:metricId/chart"
+      },
+      "affected_code_path": {
+        "source_path": "code.ts",
+        "symbol_name": "readMetricChart"
+      },
+      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+      "evidence_requirements": [
+        "Review the cited route and handler boundary."
+      ],
+      "refutation_questions": [
+        "Does an observed upstream control enforce the applicable boundary?"
+      ],
+      "root_cause_summary": "missing_object_ownership_check",
+      "risk_estimate": "high",
+      "cited_fact_refs": [
+        "code:code.ts:readMetricChart",
+        "api:GET:/internal/metrics/s2v6/{metricId}/chart"
+      ]
+    }
+  ]
+}

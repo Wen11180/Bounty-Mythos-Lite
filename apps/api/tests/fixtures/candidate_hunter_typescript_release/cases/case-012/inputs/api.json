@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/notices/v4k6/{noticeId}": {
+      "get": {
+        "operationId": "readNotice_v4k6"
+      }
+    }
+  }
+}

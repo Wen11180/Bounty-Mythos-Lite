@@ -3462,6 +3462,434 @@ def test_map_authorized_code_files_preserves_tab_indented_handler_scope():
     }
 
 
+def test_map_authorized_code_files_maps_express_route_middleware_and_one_hop_service():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/files/:fileId/export", requireUser, exportFile);
+
+async function exportFile(req: Request, res: Response) {
+  return exportFileForUser(req.params.fileId);
+}
+
+async function exportFileForUser(fileId: string) {
+  return sendFile(fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+    service = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "service_call"
+        and fact.symbol_name == "exportFileForUser"
+    )
+    sink = next(fact for fact in result.facts if fact.fact_type == "sensitive_sink")
+
+    assert route.symbol_name == "exportFile"
+    assert route.route_method == "GET"
+    assert route.route_path == "/files/:fileId/export"
+    assert route.payload["handler"] == "exportFile"
+    assert authz.symbol_name == "requireUser"
+    assert authz.authz_hint == "authorization_boundary_candidate"
+    assert authz.payload["handler"] == "exportFile"
+    assert service.payload["caller"] == "exportFile"
+    assert sink.symbol_name == "sendFile"
+    assert sink.payload["handler"] == "exportFileForUser"
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_express_missing_authz_through_one_hop_service():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import express from "express";
+
+const app = express();
+
+app.get("/files/:fileId/export", exportFile);
+
+const exportFile = async (req: Request, res: Response) => {
+  return exportFileForUser(req.params.fileId);
+};
+
+const exportFileForUser = async (fileId: string) => {
+  return sendFile(fileId);
+};
+''',
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "exportFile"
+    assert gap.route_method == "GET"
+    assert gap.route_path == "/files/:fileId/export"
+    assert gap.payload["sink_symbols"] == ["sendFile"]
+    assert gap.payload["review_state"] == "needs_human_review"
+
+
+def test_map_authorized_code_files_maps_express_ownership_comparison_as_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.delete("/files/:fileId", deleteFile);
+
+async function deleteFile(req: Request, res: Response) {
+  const file = await loadFile(req.params.fileId);
+  if (file.ownerId !== req.user.id) {
+    return res.sendStatus(403);
+  }
+  return fileStore.deleteFile(file.id);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert authz.symbol_name == "owner_id_filter"
+    assert authz.authz_hint == "owner_or_admin_check"
+    assert authz.payload["handler"] == "deleteFile"
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "deleteFile"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_express_one_hop_authz_for_targeted_review():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/records.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/records/:recordId", readRecord);
+
+async function readRecord(req: Request, res: Response) {
+  await verifyRecordAccess(req.params.recordId, req.user);
+  return sendFile(req.params.recordId);
+}
+
+async function verifyRecordAccess(recordId: string, user: User) {
+  const record = await loadRecord(recordId);
+  if (record.ownerId !== user.id) {
+    return res.sendStatus(403);
+  }
+  return record;
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == "owner_id_filter"
+        and fact.payload["handler"] == "verifyRecordAccess"
+        for fact in result.facts
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.symbol_name == "readRecord"
+    assert gap.payload["review_state"] == "needs_human_review"
+
+
+def test_map_authorized_code_files_does_not_invent_express_dynamic_routes():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+const method = "get";
+const path = "/files/:fileId/export";
+
+router[method](path, exportFile);
+
+function exportFile(req: Request, res: Response) {
+  return sendFile(req.params.fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_map_express_route_text_inside_string():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+const example = 'router.get("/files/:fileId/export", exportFile)';
+
+function exportFile(req: Request, res: Response) {
+  return sendFile(req.params.fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_express_import_text_as_code():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+const example = 'import { Router } from "express"';
+const router = Router();
+router.get("/files/:fileId/export", exportFile);
+
+function exportFile(req: Request, res: Response) {
+  return sendFile(req.params.fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_express_router_middleware_as_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+router.use(requireRole("reviewer"));
+router.get("/files/:fileId/export", exportFile);
+
+function exportFile(req: Request, res: Response) {
+  return sendFile(req.params.fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert authz.symbol_name == "requireRole"
+    assert authz.authz_hint == "role_check"
+    assert authz.payload["handler"] == "exportFile"
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_apply_scoped_express_middleware_to_other_routes():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+router.use("/admin", requireUser);
+router.get("/files/:fileId/export", exportFile);
+
+function exportFile(req: Request, res: Response) {
+  return sendFile(req.params.fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "exportFile"
+    assert not any(fact.fact_type == "authz_check" for fact in result.facts)
+
+
+def test_map_authorized_code_files_does_not_treat_role_text_as_an_authz_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+router.get("/files/:fileId/export", exportFile);
+
+function exportFile(req: Request, res: Response) {
+  const example = 'req.user.role !== "admin"';
+  return sendFile(req.params.fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "authz_check" for fact in result.facts)
+    assert any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_apply_nested_express_helper_authz_to_handler():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+router.get("/files/:fileId/export", exportFile);
+
+function exportFile(req: Request, res: Response) {
+  function unusedAuthorizationHelper() {
+    requireUser();
+  }
+  return sendFile(req.params.fileId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert gap.symbol_name == "exportFile"
+    assert authz.payload["handler"] == "unusedAuthorizationHelper"
+
+
+def test_map_authorized_code_files_maps_express_role_and_tenant_comparisons():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/files.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+router.delete("/files/:fileId", deleteFile);
+router.post("/files/:fileId/publish", publishFile);
+
+function deleteFile(req: Request, res: Response) {
+  if (req.user.role !== "admin") {
+    return res.sendStatus(403);
+  }
+  return fileStore.deleteFile(req.params.fileId);
+}
+
+function publishFile(req: Request, res: Response) {
+  const file = loadFile(req.params.fileId);
+  if (file.tenantId !== req.user.tenantId) {
+    return res.sendStatus(403);
+  }
+  return update(file);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    authz_by_handler = {
+        fact.payload["handler"]: (fact.symbol_name, fact.authz_hint)
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+    }
+
+    assert authz_by_handler == {
+        "deleteFile": ("role_check", "role_check"),
+        "publishFile": ("tenant_id_filter", "ownership_boundary_check"),
+    }
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
 def test_map_authorized_code_files_restores_handler_scope_after_nested_function():
     result = map_authorized_code_files(
         {
@@ -3496,3 +3924,419 @@ def export_file(file_id: str):
         ("authz_check", "authorize_owner_or_admin"): "export_file",
         ("sensitive_sink", "send_file"): "export_file",
     }
+
+
+
+def test_map_authorized_code_files_marks_outbound_fetch_without_ssrf_guard_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const target = req.body.subscriberUrl;
+  return fetch(target);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("sensitive_sink") >= 1
+    assert fact_types.count("authorization_gap_candidate") == 1
+    assert gap.symbol_name == "deliver_webhook"
+    assert gap.route_method == "POST"
+    assert gap.route_path == "/webhooks/deliver"
+    assert gap.authz_hint == "missing_handler_ssrf_check"
+    assert gap.payload["root_cause"] == "missing_ssrf_validation"
+    assert "fetch" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_treats_ssrf_guard_as_control_for_outbound_fetch():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function verify_subscriber_url(url: string) {
+  return validateUrlForSSRF(url);
+}
+
+async function deliver_webhook(req: Request, res: Response) {
+  const target = req.body.subscriberUrl;
+  await verify_subscriber_url(target);
+  return fetch(target);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "ssrf_validation_check"
+    )
+    # TypeScript keeps gap candidates for targeted review even when service helper has controls.
+    gaps = [fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"]
+
+    assert fact_types.count("sensitive_sink") >= 1
+    assert authz.symbol_name == "validateUrlForSSRF"
+    assert authz.payload["handler"] == "verify_subscriber_url"
+    assert gaps  # emitted for route-level review; hunter refutes via control evidence
+
+
+def test_map_authorized_code_files_python_fetch_without_ssrf_guard_is_ssrf_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(subscriber_url: str):
+    return fetch(subscriber_url)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.authz_hint == "missing_handler_ssrf_check"
+    assert gap.payload["root_cause"] == "missing_ssrf_validation"
+
+
+def test_map_authorized_code_files_marks_get_blob_without_path_guard_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/media.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/media/:filepath", serve_media);
+
+async function serve_media(req: Request, res: Response) {
+  const key = req.params.filepath;
+  return get_blob(key);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "serve_media"
+    assert gap.route_method == "GET"
+    assert gap.route_path == "/media/:filepath"
+    assert gap.authz_hint == "missing_handler_path_check"
+    assert gap.payload["root_cause"] == "missing_path_validation"
+    assert "get_blob" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_treats_path_guard_as_control_for_get_blob():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/media.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/media/:filepath", serve_media);
+
+function makeFilename(name: string) {
+  return filepath_base(name);
+}
+
+async function serve_media(req: Request, res: Response) {
+  const key = makeFilename(req.params.filepath);
+  return get_blob(key);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "path_validation_check"
+    )
+    assert any(f.fact_type == "sensitive_sink" for f in result.facts)
+    assert authz.symbol_name in {"filepath_base", "makeFilename"}
+
+
+def test_map_authorized_code_files_python_read_file_without_path_guard_is_path_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/media.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/media/{filepath}")
+def serve_media(filepath: str):
+    return read_file(filepath)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.authz_hint == "missing_handler_path_check"
+    assert gap.payload["root_cause"] == "missing_path_validation"
+
+
+def test_map_authorized_code_files_marks_update_user_without_mass_assign_guard_as_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/users.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.put("/users/:id", update_self_user);
+
+async function update_self_user(req: Request, res: Response) {
+  const body = req.body;
+  return update_user(req.params.id, body);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.symbol_name == "update_self_user"
+    assert gap.authz_hint == "missing_handler_mass_assignment_check"
+    assert gap.payload["root_cause"] == "missing_mass_assignment_guard"
+    assert "update_user" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_treats_mass_assign_guard_as_control_for_update_user():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/users.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.put("/users/:id", update_self_user);
+
+function assert_user_change_allowed(user_id: string, body: any) {
+  return forbid_privilege_fields(body);
+}
+
+async function update_self_user(req: Request, res: Response) {
+  const body = req.body;
+  await prepare_user_update(req.params.id, body);
+  return update_user(req.params.id, body);
+}
+
+async function prepare_user_update(user_id: string, body: any) {
+  return assert_user_change_allowed(user_id, body);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "mass_assignment_check"
+    )
+    assert any(f.fact_type == "sensitive_sink" for f in result.facts)
+    assert authz.symbol_name in {
+        "assert_user_change_allowed",
+        "forbid_privilege_fields",
+    }
+    gaps = [f for f in result.facts if f.fact_type == "authorization_gap_candidate"]
+    assert gaps  # TS emits gaps for review; hunter refutes via control
+
+
+def test_map_authorized_code_files_python_update_user_without_guard_is_mass_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/users.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.put("/users/{item_id}")
+def update_self_user(item_id: str, new_data: dict):
+    return update_user(item_id, new_data)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.authz_hint == "missing_handler_mass_assignment_check"
+    assert gap.payload["root_cause"] == "missing_mass_assignment_guard"
+
+def test_map_authorized_code_files_marks_run_sql_without_injection_guard_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/search.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/campaigns/search", search_campaigns);
+
+async function search_campaigns(req: Request, res: Response) {
+  const q = req.query.q;
+  return run_sql(q);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.symbol_name == "search_campaigns"
+    assert gap.authz_hint == "missing_handler_injection_check"
+    assert gap.payload["root_cause"] == "missing_injection_validation"
+    assert "run_sql" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_treats_injection_guard_as_control_for_run_sql():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/search.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/campaigns/search", search_campaigns);
+
+function makeSearchString(q: string) {
+  return q;
+}
+
+function prepare_search(q: string) {
+  return makeSearchString(q);
+}
+
+async function search_campaigns(req: Request, res: Response) {
+  const q = req.query.q;
+  const safe = prepare_search(q);
+  return run_sql(safe);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "injection_validation_check"
+    )
+    assert authz.symbol_name in {"makeSearchString", "prepare_search"}
+    assert any(f.fact_type == "sensitive_sink" for f in result.facts)
+
+
+def test_map_authorized_code_files_python_execute_query_without_guard_is_injection_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/search.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/campaigns/search")
+def search_campaigns(q: str):
+    return execute_query(q)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.authz_hint == "missing_handler_injection_check"
+    assert gap.payload["root_cause"] == "missing_injection_validation"

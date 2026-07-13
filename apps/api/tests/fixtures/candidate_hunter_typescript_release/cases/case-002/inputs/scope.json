@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-k4v9",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/ledgers/k4v9/{ledgerId}/file"
+  ],
+  "local_only": true
+}

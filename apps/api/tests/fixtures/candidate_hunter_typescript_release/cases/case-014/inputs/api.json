@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/artifacts/y6b3/{artifactId}/render": {
+      "post": {
+        "operationId": "renderArtifact_y6b3"
+      }
+    }
+  }
+}

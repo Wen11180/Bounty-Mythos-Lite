@@ -4,7 +4,6 @@ from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
 from pathlib import Path
-import subprocess
 from typing import Protocol
 
 from app.authorized_web_api import AuthorizedBugBountyPlan, build_authorized_bug_bounty_plan
@@ -908,32 +907,11 @@ def build_dependency_summary(repo_path: Path) -> DependencySummary:
 
 
 def run_semgrep(repo_path: Path) -> dict:
-    command = ["semgrep", "--json", "--config", "auto", str(repo_path)]
-    try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except FileNotFoundError:
-        return {"status": "skipped", "results": [], "summary": "semgrep_not_installed"}
-    except OSError:
-        return {"status": "skipped", "results": [], "summary": "semgrep_unavailable"}
-    except subprocess.TimeoutExpired:
-        return {"status": "failed", "results": [], "summary": "semgrep_timeout"}
-
-    try:
-        payload = json.loads(completed.stdout or "{}")
-    except json.JSONDecodeError:
-        return {"status": "failed", "results": [], "summary": "semgrep_invalid_json"}
-
-    status = "completed" if completed.returncode in {0, 1} else "failed"
+    """Compatibility shim; local execution requires an explicit safe runner."""
     return {
-        "status": status,
-        "results": payload.get("results", []),
-        "summary": "semgrep_json_normalized",
+        "status": "skipped",
+        "results": [],
+        "summary": "semgrep_requires_explicit_human_runner",
     }
 
 
@@ -996,13 +974,23 @@ def _source_fact_from_codebase_candidate(fact: CodebaseFactCandidate) -> dict:
         "symbol_name": safe_display_text(fact.symbol_name or ""),
     }
     if fact.fact_type == "authorization_gap_candidate":
+        root_cause = safe_display_text(
+            str(payload.get("root_cause") or "missing_object_ownership_check")
+        )
+        security_invariant = safe_display_text(
+            str(
+                payload.get("security_invariant")
+                or (
+                    "Object-level actions must verify requester ownership or role "
+                    "before sensitive sinks run."
+                )
+            )
+        )
         source_fact.update(
             {
                 "authz_hint": safe_display_text(fact.authz_hint or ""),
-                "root_cause": "missing_object_ownership_check",
-                "security_invariant": (
-                    "Object-level actions must verify requester ownership or role before sensitive sinks run."
-                ),
+                "root_cause": root_cause,
+                "security_invariant": security_invariant,
                 "sink_count": _safe_int(payload.get("sink_count")),
                 "sink_symbols": _safe_semantic_symbol_list(payload.get("sink_symbols")),
                 "review_state": safe_display_text(
@@ -1035,25 +1023,17 @@ def build_source_hypotheses(
         if fact.fact_type != "authorization_gap_candidate":
             continue
         location = _route_location(fact)
+        vuln_type = _gap_vuln_type(fact)
         hypotheses.append(
             VulnerabilityHypothesis(
                 hypothesis_id=f"H-{len(hypotheses) + 1:03d}",
-                vuln_type="authorization",
+                vuln_type=vuln_type,
                 location=location,
-                reason=(
-                    "Mapped route reaches a sensitive operation without an obvious "
-                    "handler-level authorization check."
-                ),
-                evidence_needed=[
-                    "review service-layer ownership checks",
-                    "two authorized local or test-account fixtures",
-                    "redacted request/response diff before report use",
-                ],
+                reason=_gap_reason(fact, vuln_type),
+                evidence_needed=_gap_evidence_needed(vuln_type),
                 false_positive_checks=[
                     *_fact_refutation_reasons(fact),
-                    "authorization may be enforced in middleware or dependency injection",
-                    "service layer may enforce object ownership before returning data",
-                    "route may only expose public or self-owned resources",
+                    *_gap_false_positive_checks(vuln_type),
                 ],
                 refutation_status=_fact_refutation_status(fact),
                 priority_score=_fact_priority_score(fact),
@@ -1147,9 +1127,7 @@ def _fact_priority_score(fact: CodebaseFactCandidate) -> int:
         false_positive_check_count=len(
             [
                 *_fact_refutation_reasons(fact),
-                "authorization may be enforced in middleware or dependency injection",
-                "service layer may enforce object ownership before returning data",
-                "route may only expose public or self-owned resources",
+                *_gap_false_positive_checks(_gap_vuln_type(fact)),
             ]
         ),
     )
@@ -1159,9 +1137,10 @@ def _fact_priority_score(fact: CodebaseFactCandidate) -> int:
 def _fact_ranking_reasons(fact: CodebaseFactCandidate) -> list[str]:
     status = _fact_refutation_status(fact)
     sink_symbols = _fact_sink_symbols(fact)
+    vuln_type = _gap_vuln_type(fact)
     return [
         "traceable_source_fact",
-        "broken_invariant:authorization",
+        f"broken_invariant:{vuln_type}",
         "evidence_needed:3",
         "false_positive_checks:present",
         f"refutation_status:{status}",
@@ -1227,12 +1206,125 @@ def _fact_impact_reason(sink_symbols: list[str]) -> str:
 
 def _is_privilege_or_destructive_sink(sink_symbol: str) -> bool:
     normalized = sink_symbol.lower()
-    return normalized in {"delete", "delete_file", "transfer", "update_role"}
+    return normalized in {
+        "delete",
+        "delete_file",
+        "transfer",
+        "update_role",
+        "fetch",
+        "send_payload",
+        "_send_payload",
+    }
 
 
 def _is_sensitive_data_sink(sink_symbol: str) -> bool:
     normalized = sink_symbol.lower()
     return normalized in {"export", "export_file", "send_file", "update"}
+
+
+def _gap_vuln_type(fact: CodebaseFactCandidate) -> str:
+    payload = fact.payload if isinstance(fact.payload, dict) else {}
+    root_cause = str(payload.get("root_cause") or "")
+    if root_cause == "missing_ssrf_validation" or "ssrf" in root_cause:
+        return "ssrf"
+    if root_cause == "missing_path_validation" or "path_validation" in root_cause or "path_traversal" in root_cause:
+        return "path_traversal"
+    if root_cause == "missing_mass_assignment_guard" or "mass_assignment" in root_cause:
+        return "mass_assignment"
+    if root_cause == "missing_injection_validation" or "injection" in root_cause:
+        return "injection"
+    return "authorization"
+
+
+def _gap_reason(fact: CodebaseFactCandidate, vuln_type: str) -> str:
+    if vuln_type == "ssrf":
+        return (
+            "Mapped route reaches an outbound HTTP sink without an obvious "
+            "handler-level SSRF validation check."
+        )
+    if vuln_type == "path_traversal":
+        return (
+            "Mapped route reaches a filesystem path sink without an obvious "
+            "handler-level path sanitization check."
+        )
+    if vuln_type == "mass_assignment":
+        return (
+            "Mapped route reaches a user-field update sink without an obvious "
+            "handler-level privilege-field / mass-assignment guard."
+        )
+    if vuln_type == "injection":
+        return (
+            "Mapped route reaches a SQL/query sink without an obvious "
+            "handler-level search sanitization or parameterization check."
+        )
+    return (
+        "Mapped route reaches a sensitive operation without an obvious "
+        "handler-level authorization check."
+    )
+
+
+def _gap_evidence_needed(vuln_type: str) -> list[str]:
+    if vuln_type == "ssrf":
+        return [
+            "review URL validation before outbound fetch",
+            "confirm user-controlled subscriber/target URL path",
+            "non-destructive local residual only; no real network pivot",
+        ]
+    if vuln_type == "path_traversal":
+        return [
+            "review basename/safe-join before filesystem read",
+            "confirm user-controlled filepath parameter path",
+            "local residual only; no real host file disclosure",
+        ]
+    if vuln_type == "mass_assignment":
+        return [
+            "review privilege field allowlist before user update",
+            "confirm client cannot set admin/group/household/permission attrs",
+            "local residual only; no real account takeover attempts",
+        ]
+    if vuln_type == "injection":
+        return [
+            "review search/query sanitization before SQL execution",
+            "confirm user input is bound as a parameter, not concatenated",
+            "local residual only; no live destructive SQL against third parties",
+        ]
+    return [
+        "review service-layer ownership checks",
+        "two authorized local or test-account fixtures",
+        "redacted request/response diff before report use",
+    ]
+
+
+def _gap_false_positive_checks(vuln_type: str) -> list[str]:
+    if vuln_type == "ssrf":
+        return [
+            "SSRF validation may run before webhook delivery",
+            "framework or shared client may block private IPs and metadata hosts",
+            "URL may be restricted to pre-approved allowlists",
+        ]
+    if vuln_type == "path_traversal":
+        return [
+            "filepath.Base / basename may strip directory components before join",
+            "upload path may use makeFilename / sanitizeFilename sanitization",
+            "media store may only serve under a fixed upload root",
+        ]
+    if vuln_type == "mass_assignment":
+        return [
+            "assert_user_change_allowed may reject privilege attr changes",
+            "schema may exclude admin/group fields on self-update DTOs",
+            "admin API may be the only path that sets elevated permissions",
+        ]
+    if vuln_type == "injection":
+        return [
+            "makeSearchString / full-text sanitizer may neutralize special chars",
+            "query may be executed only via bound parameters ($N / ?)",
+            "ORM or sqlx named queries may prevent structural concatenation",
+        ]
+    return [
+        "authorization may be enforced in middleware or dependency injection",
+        "service layer may enforce object ownership before returning data",
+        "route may only expose public or self-owned resources",
+    ]
 
 
 def _priority_score(
@@ -1614,6 +1706,10 @@ def _broken_invariant_for_hypothesis(hypothesis: VulnerabilityHypothesis) -> str
         return "User-controlled input must not reach a sink without structured validation."
     if hypothesis.vuln_type == "ssrf":
         return "Server-side outbound requests must not be controlled by untrusted input."
+    if hypothesis.vuln_type == "path_traversal":
+        return "User-controlled path segments must not escape the intended media or upload root."
+    if hypothesis.vuln_type == "mass_assignment":
+        return "User-controlled update bodies must not elevate privileges or change tenancy without guards."
     return "Every source-audit claim needs local evidence, refutation, and human review before promotion."
 
 
@@ -2151,6 +2247,10 @@ def _finding_vuln_type(finding: StaticFinding) -> str:
         return "injection"
     if "ssrf" in signals:
         return "ssrf"
+    if "path" in signals and ("travers" in signals or "file" in signals):
+        return "path_traversal"
+    if "mass" in signals and "assign" in signals:
+        return "mass_assignment"
     if "auth" in signals:
         return "authorization"
     return "static-analysis"

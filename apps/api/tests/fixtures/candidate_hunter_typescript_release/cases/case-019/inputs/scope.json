@@ -1,0 +1,11 @@
+{
+  "fixture_id": "fixture-s2v6",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/metrics/s2v6/{metricId}/detail",
+    "/internal/metrics/s2v6/{metricId}/chart"
+  ],
+  "local_only": true
+}

@@ -11,7 +11,7 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:transfer_funds",
+                                                              "code:code.ts:transfer_funds",
                                                               "api:GET:/local/transfers/p4x8/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

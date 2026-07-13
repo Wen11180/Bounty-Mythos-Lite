@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/entries/l3x7/{entryId}/view": {
+      "get": {
+        "operationId": "viewEntry_l3x7"
+      }
+    }
+  }
+}

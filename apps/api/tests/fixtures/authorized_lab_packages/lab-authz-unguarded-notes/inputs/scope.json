@@ -1,0 +1,6 @@
+{
+  "fixture_id": "lab-notes-k2p1",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": ["/local/notes/k2p1/{note_id}"],
+  "local_only": true
+}

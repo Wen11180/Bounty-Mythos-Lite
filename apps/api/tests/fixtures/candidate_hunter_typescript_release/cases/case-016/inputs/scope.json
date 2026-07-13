@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-l3x7",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/entries/l3x7/{entryId}/view"
+  ],
+  "local_only": true
+}

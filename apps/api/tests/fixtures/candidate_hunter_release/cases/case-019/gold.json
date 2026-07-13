@@ -11,8 +11,8 @@
                                "disposition":  "retain",
                                "worth_validation":  true,
                                "required_evidence_refs":  [
-                                                              "code:code.py:change_role",
-                                                              "code:code.py:load_role_change",
+                                                              "code:code.ts:change_role",
+                                                              "code:code.ts:load_role_change",
                                                               "api:GET:/local/roles/z2r9/{record_id}"
                                                           ],
                                "decisive_refutation_refs":  [

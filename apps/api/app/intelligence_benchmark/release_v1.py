@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -334,6 +334,24 @@ def _output_schema_failures(value: Any) -> list[dict[str, str]]:
     if not isinstance(decisions, list):
         failures.append({"path": "candidate_decisions", "reason": "must_be_list"})
         decisions = []
+    retained_decision_ids = {
+        _text(decision.get("candidate_id"))
+        for decision in decisions
+        if isinstance(decision, dict)
+        and _text(decision.get("disposition")) == "retained"
+        and _text(decision.get("candidate_id"))
+    }
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_id = _text(candidate.get("candidate_id"))
+        if candidate_id and candidate_id not in retained_decision_ids:
+            failures.append(
+                {
+                    "path": f"final_candidates[{index}].candidate_id",
+                    "reason": "missing_retained_decision",
+                }
+            )
     decision_root_ids: set[str] = set()
     decision_ids: set[str] = set()
     for index, decision in enumerate(decisions):
@@ -671,6 +689,7 @@ def _safety_failures(value: Any) -> list[dict[str, str]]:
         for field in (
             "execution_allowed",
             "validation_allowed",
+            "candidate_promotion_allowed",
             "report_submission_allowed",
         ):
             if reason := _permission_failure_reason(field, candidate.get(field)):
@@ -789,6 +808,7 @@ def _output_field_safety_reasons(value: Any) -> set[str]:
     permission_fields = {
         "executionallowed": "execution_allowed",
         "validationallowed": "validation_allowed",
+        "candidatepromotionallowed": "candidate_promotion_allowed",
         "reportsubmissionallowed": "report_submission_allowed",
     }
     for key, item in value.items():
