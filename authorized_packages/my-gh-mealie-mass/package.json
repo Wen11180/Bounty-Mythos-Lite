@@ -1,0 +1,35 @@
+{
+  "package_id": "my-gh-mealie-user-mass-lab",
+  "risk_family": "mass_assignment",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Mealie (mealie-recipes/mealie) user self-update mass-assignment modeling package. Faithful model of PUT /users/{id} with UserBase body after assert_user_change_allowed (permission_attrs: admin/can_invite/can_manage/can_manage_household/can_organize; non-admin cannot edit others or change group/household). Expected refute. Researcher static/local self-host only. No real secrets. Report submission blocked.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_mealie_source_derived_local_modeling_excerpt",
+    "upstream_project": "mealie-recipes/mealie",
+    "upstream_url": "github.com/mealie-recipes/mealie",
+    "upstream_files": [
+      "mealie/routes/users/crud.py",
+      "mealie/routes/users/_helpers.py",
+      "mealie/schema/user/user.py",
+      "SECURITY.md"
+    ],
+    "version_pin": "v3.20.1",
+    "security_contact": "mealie SECURITY.md -> GitHub private vulnerability reporting",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    { "kind": "scope", "path": "inputs/scope.json" },
+    { "kind": "policy", "path": "inputs/policy.md" },
+    { "kind": "api", "path": "inputs/api.json" },
+    { "kind": "har", "path": "inputs/traffic.har.json" },
+    { "kind": "code", "path": "inputs/code.ts" }
+  ]
+}

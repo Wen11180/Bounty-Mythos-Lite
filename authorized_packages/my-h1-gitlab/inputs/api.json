@@ -1,0 +1,39 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local self-managed GitLab API excerpt from public CE sources",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/gitlab/api/v4/projects/{id}": {
+      "get": {
+        "operationId": "get_local_project",
+        "summary": "Show project by id (models API::Projects GET :id + find_project!)"
+      }
+    },
+    "/local/gitlab/api/v4/projects/{id}/export": {
+      "post": {
+        "operationId": "start_local_project_export",
+        "summary": "Start export (models API::ProjectExport POST :id/export + authorize_admin_project)"
+      }
+    },
+    "/local/gitlab/api/v4/projects/{id}/export/download": {
+      "get": {
+        "operationId": "download_local_project_export",
+        "summary": "Download export archive (models GET :id/export/download + authorize_admin_project)"
+      }
+    },
+    "/local/gitlab/api/v4/projects/{id}/export_relations": {
+      "post": {
+        "operationId": "start_local_project_export_relations",
+        "summary": "Start relations export (models POST :id/export_relations + authorize_admin_project)"
+      }
+    },
+    "/local/gitlab/api/v4/projects/{id}/repository/archive": {
+      "get": {
+        "operationId": "download_local_repository_archive",
+        "summary": "Download repository archive (models GET :id/repository/archive + authorize_read_code!)"
+      }
+    }
+  }
+}

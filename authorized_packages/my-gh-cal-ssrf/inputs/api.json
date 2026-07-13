@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Cal.com webhook SSRF modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/cal/api/webhooks/deliver": {
+      "post": {
+        "operationId": "deliver_local_cal_webhook",
+        "summary": "Deliver webhook after validateUrlForSSRF on subscriberUrl"
+      }
+    },
+    "/local/cal/api/webhooks/test": {
+      "post": {
+        "operationId": "test_local_cal_webhook",
+        "summary": "Test webhook target after validateUrlForSSRF"
+      }
+    }
+  }
+}

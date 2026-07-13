@@ -1,0 +1,35 @@
+{
+  "package_id": "my-gh-mealie-recipe-inject-lab",
+  "risk_family": "injection",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Mealie (mealie-recipes/mealie) recipe search/query-filter injection modeling package. Faithful model of page_all search path: SearchFilter normalizes/tokenizes user search then filter_query_by_search / QueryFilterBuilder uses SQLAlchemy bound column values (not string-concat SQL) before db_select/run_sql. Expected refute. Researcher static/local self-host only. No real secrets. Report submission blocked.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_mealie_source_derived_local_modeling_excerpt",
+    "upstream_project": "mealie-recipes/mealie",
+    "upstream_url": "github.com/mealie-recipes/mealie",
+    "upstream_files": [
+      "mealie/schema/response/query_search.py",
+      "mealie/repos/repository_generic.py",
+      "mealie/services/query_filter/builder.py",
+      "SECURITY.md"
+    ],
+    "version_pin": "v3.20.1",
+    "security_contact": "mealie SECURITY.md -> GitHub private vulnerability reporting",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    { "kind": "scope", "path": "inputs/scope.json" },
+    { "kind": "policy", "path": "inputs/policy.md" },
+    { "kind": "api", "path": "inputs/api.json" },
+    { "kind": "har", "path": "inputs/traffic.har.json" },
+    { "kind": "code", "path": "inputs/code.ts" }
+  ]
+}

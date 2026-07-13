@@ -1,0 +1,37 @@
+{
+  "package_id": "my-gh-hedgedoc-note-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public HedgeDoc (hedgedoc/hedgedoc) note object authz modeling package. Faithful model of note view/edit/delete for private permission notes: checkViewPermission requires authenticated owner; mayEdit for locked/private/protected is owner-only; freely/editable/limited paths documented. Researcher may use self-hosted HedgeDoc or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security via SECURITY.md to SISheogorath OpenPGP.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_hedgedoc_source_derived_local_modeling_excerpt",
+    "upstream_project": "hedgedoc/hedgedoc",
+    "upstream_url": "github.com/hedgedoc/hedgedoc",
+    "upstream_files": [
+      "lib/web/note/util.js",
+      "lib/web/note/controller.js",
+      "lib/web/note/router.js",
+      "lib/realtime.js",
+      "lib/models/note.js",
+      "SECURITY.md"
+    ],
+    "version_pin": "v1.11.0",
+    "security_contact": "hedgedoc SECURITY.md -> SISheogorath OpenPGP",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

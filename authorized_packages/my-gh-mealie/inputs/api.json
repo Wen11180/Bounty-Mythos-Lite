@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Mealie recipe controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/mealie/api/recipes/{id}": {
+      "get": {
+        "operationId": "get_local_mealie_recipe",
+        "summary": "Get recipe by id/slug after group-scoped load"
+      },
+      "put": {
+        "operationId": "update_local_mealie_recipe",
+        "summary": "Update recipe after RecipeService.can_update"
+      },
+      "delete": {
+        "operationId": "delete_local_mealie_recipe",
+        "summary": "Delete recipe after RecipeService.can_delete ownership check"
+      }
+    }
+  }
+}

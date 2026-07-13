@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local teaching injection retain lab",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/lab/campaigns/search": {
+      "get": {
+        "operationId": "search_local_lab_campaigns",
+        "summary": "Search campaigns with raw query string without sanitization before run_sql"
+      }
+    },
+    "/local/lab/campaigns/query-preview": {
+      "get": {
+        "operationId": "preview_local_lab_campaign_query",
+        "summary": "Secondary residual route for injection reverse calibration"
+      }
+    }
+  }
+}

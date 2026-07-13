@@ -1,0 +1,18 @@
+{
+  "fixture_id": "my-local-juice-shop-basket-lab",
+  "authorization_note": "Researcher-owned local OWASP Juice Shop intentionally vulnerable lab; public MIT sources used for static modeling only",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": [
+    "/local/juice/rest/basket/{basket_id}"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "internet facing hosts",
+    "other people juice shop instances",
+    "real user private data",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

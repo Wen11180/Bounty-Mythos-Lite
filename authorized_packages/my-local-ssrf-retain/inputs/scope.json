@@ -1,0 +1,21 @@
+{
+  "fixture_id": "my-local-ssrf-webhook-retain-lab",
+  "authorization_note": "Researcher-owned teaching lab modeling package; intentionally vulnerable SSRF class for A+B reverse calibration only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/lab/webhooks/deliver",
+    "/local/lab/webhooks/test"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "internet facing hosts",
+    "other people sites",
+    "real user private data",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

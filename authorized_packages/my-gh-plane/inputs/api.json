@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Plane issue controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/plane/api/projects/{project_id}/issues/{id}": {
+      "get": {
+        "operationId": "get_local_plane_issue",
+        "summary": "Retrieve issue after allow_permission ADMIN/MEMBER/GUEST or creator"
+      },
+      "patch": {
+        "operationId": "update_local_plane_issue",
+        "summary": "Partial update after allow_permission ADMIN/MEMBER or creator"
+      },
+      "delete": {
+        "operationId": "delete_local_plane_issue",
+        "summary": "Destroy issue after allow_permission ADMIN or creator"
+      }
+    }
+  }
+}

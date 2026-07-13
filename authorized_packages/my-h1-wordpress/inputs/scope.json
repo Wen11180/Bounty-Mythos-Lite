@@ -1,0 +1,20 @@
+{
+  "fixture_id": "my-h1-wordpress-core-rest",
+  "program_handle": "wordpress",
+  "authorization_note": "HackerOne WordPress program lists WordPress Core SOURCE_CODE in scope for local research; public Core REST controller modeling only",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": [
+    "/local/wp/wp-json/wp/v2/posts/{id}",
+    "/local/wp/wp-json/wp/v2/posts/{id}/export",
+    "/local/wp/wp-json/wp/v2/posts/{id}"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "wordpress.com production",
+    "other people wordpress sites",
+    "real user private data",
+    "live destructive testing",
+    "automatic report submission",
+    "trac instances"
+  ]
+}

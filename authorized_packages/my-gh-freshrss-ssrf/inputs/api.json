@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local FreshRSS feed SSRF modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/freshrss/api/feeds/create": {
+      "post": {
+        "operationId": "create_local_freshrss_feed",
+        "summary": "Create feed after checkUrl + serverIsPublic/SSRF validation before httpGet"
+      }
+    },
+    "/local/freshrss/api/feeds/refresh": {
+      "post": {
+        "operationId": "refresh_local_freshrss_feed",
+        "summary": "Refresh feed URL after private-network block then httpGet"
+      }
+    }
+  }
+}

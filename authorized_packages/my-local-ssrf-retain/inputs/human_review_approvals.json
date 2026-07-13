@@ -1,0 +1,20 @@
+{
+  "approvals": [
+    {
+      "approval_kind": "residual_review",
+      "status": "approved",
+      "candidate_id": "H-001",
+      "actor": "local-lab-reviewer",
+      "reason": "Teaching residual checklist cleared offline; local static only; no live validation.",
+      "decision_reason": "Residual questions answered from package residual checklist; context only."
+    },
+    {
+      "approval_kind": "patch_review",
+      "status": "approved",
+      "candidate_id": "H-001",
+      "actor": "local-lab-reviewer",
+      "reason": "Advisory patch direction OK for teaching lab; no auto-PR; patch_ready remains false.",
+      "decision_reason": "Advisory accept only; never open PR or mark patch ready."
+    }
+  ]
+}

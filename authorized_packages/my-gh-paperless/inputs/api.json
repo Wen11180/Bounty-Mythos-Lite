@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local paperless-ngx document controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/paperless/api/documents/{id}": {
+      "get": {
+        "operationId": "get_local_paperless_document",
+        "summary": "Get document by id after PaperlessObjectPermissions owner or object perm"
+      },
+      "put": {
+        "operationId": "update_local_paperless_document",
+        "summary": "Update document after change object permission or owner"
+      },
+      "delete": {
+        "operationId": "delete_local_paperless_document",
+        "summary": "Delete document after delete object permission or owner"
+      }
+    }
+  }
+}

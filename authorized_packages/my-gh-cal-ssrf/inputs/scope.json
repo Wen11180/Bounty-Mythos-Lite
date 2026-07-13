@@ -1,0 +1,23 @@
+{
+  "fixture_id": "my-gh-cal-webhook-ssrf-lab",
+  "authorization_note": "Public open-source Cal.com sources from GitHub (calcom/cal.com) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/cal/api/webhooks/deliver",
+    "/local/cal/api/webhooks/test"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Cal.com Cloud attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning",
+    "DoS against cal.com infrastructure",
+    "real outbound SSRF pivots against third-party hosts"
+  ]
+}

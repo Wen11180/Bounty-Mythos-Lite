@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Documenso document controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/documenso/api/documents/{id}": {
+      "get": {
+        "operationId": "get_local_documenso_document",
+        "summary": "Get document after getEnvelopeWhereInput owner or team visibility"
+      },
+      "put": {
+        "operationId": "update_local_documenso_document",
+        "summary": "Update document/envelope after getEnvelopeWhereInput access"
+      },
+      "delete": {
+        "operationId": "delete_local_documenso_document",
+        "summary": "Delete document after getEnvelopeWhereInput hasDeleteAccess"
+      }
+    }
+  }
+}

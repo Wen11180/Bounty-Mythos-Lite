@@ -1,0 +1,4 @@
+v2.14.0
+source: GitHub release tag v2.14.0 (documenso/documenso)
+fetched: raw.githubusercontent.com source excerpts for v2.14.0 / main-equivalent authz surface
+research_mode: local_static_review_only

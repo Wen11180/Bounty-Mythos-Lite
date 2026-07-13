@@ -1,0 +1,22 @@
+{
+  "expected_roots": [
+    {
+      "gold_id": "observed-primary-root",
+      "root_cause_id": "missing_mass_assignment_guard:update_local_lab_profile",
+      "route": {
+        "method": "PUT",
+        "path": "/local/lab/users/profile-update"
+      },
+      "vuln_type": "mass_assignment",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:update_local_lab_profile",
+        "api:PUT:/local/lab/users/profile-update"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

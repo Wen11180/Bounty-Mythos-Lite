@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Mealie user mass-assignment modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/mealie/api/users/self-update": {
+      "put": {
+        "operationId": "update_local_mealie_self_user",
+        "summary": "Self user update after assert_user_change_allowed privilege-field guard"
+      }
+    },
+    "/local/mealie/api/users/admin-self-guard": {
+      "put": {
+        "operationId": "update_local_mealie_admin_self",
+        "summary": "Admin self-edit still blocks own permission_attrs changes"
+      }
+    }
+  }
+}

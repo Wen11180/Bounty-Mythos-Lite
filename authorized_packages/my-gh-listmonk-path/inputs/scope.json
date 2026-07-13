@@ -1,0 +1,22 @@
+{
+  "fixture_id": "my-gh-listmonk-media-path-lab",
+  "authorization_note": "Public open-source listmonk sources from GitHub (knadh/listmonk) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/listmonk/api/media/serve",
+    "/local/listmonk/api/media/upload-name"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant listmonk attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning",
+    "real host file disclosure pivots"
+  ]
+}

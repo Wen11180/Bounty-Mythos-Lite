@@ -1,0 +1,35 @@
+{
+  "package_id": "my-gh-freshrss-feed-ssrf-lab",
+  "risk_family": "ssrf",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public FreshRSS (FreshRSS/FreshRSS) feed-fetch SSRF modeling package. Faithful model of feed URL outbound fetch after checkUrl absolute http(s) + Minz_Request::serverIsPublic private/loopback/LAN/local-DNS block before FreshRSS_http_Util::httpGet. Expected refute. Researcher static/local self-host only. No real secrets. Report submission blocked.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_freshrss_source_derived_local_modeling_excerpt",
+    "upstream_project": "FreshRSS/FreshRSS",
+    "upstream_url": "github.com/FreshRSS/FreshRSS",
+    "upstream_files": [
+      "lib/Minz/Request.php",
+      "app/Utils/httpUtil.php",
+      "app/Models/Feed.php",
+      "SECURITY.md"
+    ],
+    "version_pin": "1.29.1",
+    "security_contact": "FreshRSS SECURITY.md -> GitHub security advisory or alexandre@alapetite.fr",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    { "kind": "scope", "path": "inputs/scope.json" },
+    { "kind": "policy", "path": "inputs/policy.md" },
+    { "kind": "api", "path": "inputs/api.json" },
+    { "kind": "har", "path": "inputs/traffic.har.json" },
+    { "kind": "code", "path": "inputs/code.ts" }
+  ]
+}

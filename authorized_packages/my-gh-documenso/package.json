@@ -1,0 +1,38 @@
+{
+  "package_id": "my-gh-documenso-document-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Documenso (documenso/documenso) document/envelope authz modeling package. Faithful model of get/update/delete document via getEnvelopeWhereInput: owner userId OR team membership with TEAM_DOCUMENT_VISIBILITY_MAP role visibility OR team email path. Team membership modeled as group_id. Researcher may use self-hosted Documenso or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security via SECURITY.md GitHub private advisory or security@documenso.com.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_documenso_source_derived_local_modeling_excerpt",
+    "upstream_project": "documenso/documenso",
+    "upstream_url": "github.com/documenso/documenso",
+    "upstream_files": [
+      "packages/lib/server-only/envelope/get-envelope-by-id.ts",
+      "packages/lib/server-only/document/delete-document.ts",
+      "packages/lib/server-only/envelope/update-envelope.ts",
+      "packages/trpc/server/document-router/get-document.ts",
+      "packages/trpc/server/document-router/delete-document.ts",
+      "packages/lib/constants/teams.ts",
+      "SECURITY.md"
+    ],
+    "version_pin": "v2.14.0",
+    "security_contact": "documenso SECURITY.md -> GitHub private advisory or security@documenso.com",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

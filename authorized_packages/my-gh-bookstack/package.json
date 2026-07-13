@@ -1,0 +1,36 @@
+{
+  "package_id": "my-gh-bookstack-page-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public BookStack (BookStackApp/BookStack) page object authz modeling package. Faithful model of GET/PUT/DELETE /api/pages/{id} using findVisibleByIdOrFail (scopes visible + joint permissions) plus checkOwnablePermission for update/delete. Researcher may use self-hosted BookStack or static review only. Not a public multi-tenant BookStack SaaS attack package. No real secrets. Report submission blocked; upstream disclosure via BookStack security contact if ever needed.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_bookstack_source_derived_local_modeling_excerpt",
+    "upstream_project": "BookStackApp/BookStack",
+    "upstream_url": "https://github.com/BookStackApp/BookStack",
+    "upstream_files": [
+      "app/Entities/Controllers/PageApiController.php",
+      "app/Entities/Queries/PageQueries.php",
+      "app/Permissions/PermissionApplicator.php",
+      "app/Http/Controller.php",
+      ".forgejo/SECURITY.md"
+    ],
+    "version_pin": "v26.05.2",
+    "security_contact": "https://www.bookstackapp.com/links/contact/ (lead maintainer; see SECURITY.md)",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

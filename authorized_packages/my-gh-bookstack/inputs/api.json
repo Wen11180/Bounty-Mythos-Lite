@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local BookStack page controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/bookstack/api/pages/{id}": {
+      "get": {
+        "operationId": "get_local_bookstack_page",
+        "summary": "Get page by id (models findVisibleByIdOrFail + joint permission scope)"
+      },
+      "put": {
+        "operationId": "update_local_bookstack_page",
+        "summary": "Update page after visible load + PageUpdate ownable check"
+      },
+      "delete": {
+        "operationId": "delete_local_bookstack_page",
+        "summary": "Delete page after visible load + PageDelete ownable check"
+      }
+    }
+  }
+}

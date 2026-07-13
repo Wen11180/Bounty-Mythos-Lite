@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local paperless-ngx document path modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/paperless/api/documents/read-source": {
+      "get": {
+        "operationId": "read_local_paperless_source",
+        "summary": "Read document source after sanitize_filename / PurePath.name before read_file"
+      }
+    },
+    "/local/paperless/api/documents/prepare-filename": {
+      "post": {
+        "operationId": "prepare_local_paperless_filename",
+        "summary": "Sanitize original/title filename components before generate_unique_filename residual"
+      }
+    }
+  }
+}

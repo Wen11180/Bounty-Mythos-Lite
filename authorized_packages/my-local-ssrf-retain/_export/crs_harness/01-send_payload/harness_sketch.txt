@@ -1,0 +1,9 @@
+# plan-only harness sketch for send_payload
+# source: inputs/code.ts
+# type: parser
+# language: typescript
+# 1) compile/import target under local sandbox only
+# 2) feed bytes from local seed corpus (no network)
+# 3) capture crashes with ASAN/UBSAN if applicable
+# 4) stop; never promote crash without human review
+execution_allowed=false

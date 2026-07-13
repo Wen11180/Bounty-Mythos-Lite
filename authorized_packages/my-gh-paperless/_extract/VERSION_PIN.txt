@@ -1,0 +1,4 @@
+v2.9.0
+source: GitHub release tag v2.9.0 (paperless-ngx/paperless-ngx)
+fetched: raw.githubusercontent.com source excerpts for v2.9.0
+research_mode: local_static_review_only

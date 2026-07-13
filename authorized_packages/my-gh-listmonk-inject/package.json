@@ -1,0 +1,34 @@
+{
+  "package_id": "my-gh-listmonk-campaign-inject-lab",
+  "risk_family": "injection",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public listmonk (knadh/listmonk) campaign search injection modeling package. Faithful model of QueryCampaigns search path: makeSearchString sanitizes searchStr then bound parameter $4 (tsquery/ILIKE) before db_select/run_sql. Expected refute. Researcher static/local self-host only. No real secrets. Report submission blocked.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_listmonk_source_derived_local_modeling_excerpt",
+    "upstream_project": "knadh/listmonk",
+    "upstream_url": "github.com/knadh/listmonk",
+    "upstream_files": [
+      "internal/core/core.go",
+      "internal/core/campaigns.go",
+      "queries/campaigns.sql"
+    ],
+    "version_pin": "v6.2.0",
+    "security_contact": "listmonk GitHub security advisory / maintainers",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    { "kind": "scope", "path": "inputs/scope.json" },
+    { "kind": "policy", "path": "inputs/policy.md" },
+    { "kind": "api", "path": "inputs/api.json" },
+    { "kind": "har", "path": "inputs/traffic.har.json" },
+    { "kind": "code", "path": "inputs/code.ts" }
+  ]
+}

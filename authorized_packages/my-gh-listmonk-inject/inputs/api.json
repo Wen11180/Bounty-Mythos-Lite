@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local listmonk campaign search injection modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/listmonk/api/campaigns/search": {
+      "get": {
+        "operationId": "search_local_listmonk_campaigns",
+        "summary": "Search campaigns after makeSearchString sanitize before run_sql"
+      }
+    },
+    "/local/listmonk/api/campaigns/query-preview": {
+      "get": {
+        "operationId": "preview_local_listmonk_campaign_query",
+        "summary": "Preview query path with same sanitization before run_sql"
+      }
+    }
+  }
+}

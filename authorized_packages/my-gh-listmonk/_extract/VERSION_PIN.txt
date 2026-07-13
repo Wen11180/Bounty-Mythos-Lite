@@ -1,0 +1,4 @@
+v6.2.0
+source: GitHub release tag v6.2.0 (knadh/listmonk)
+fetched: GitHub release zip archive (listmonk-6.2.0)
+research_mode: local_static_review_only

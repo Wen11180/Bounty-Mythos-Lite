@@ -1,0 +1,22 @@
+{
+  "expected_roots": [
+    {
+      "gold_id": "observed-primary-root",
+      "root_cause_id": "missing_ssrf_validation:deliver_local_lab_webhook",
+      "route": {
+        "method": "POST",
+        "path": "/local/lab/webhooks/deliver"
+      },
+      "vuln_type": "ssrf",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:deliver_local_lab_webhook",
+        "api:POST:/local/lab/webhooks/deliver"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+v26.05.2
+source: https://github.com/BookStackApp/BookStack/releases/tag/v26.05.2
+fetched: GitHub release zip archive (BookStack-26.05.2)
+research_mode: local_static_review_only

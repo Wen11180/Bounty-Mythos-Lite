@@ -1,0 +1,22 @@
+{
+  "expected_roots": [
+    {
+      "gold_id": "observed-primary-root",
+      "root_cause_id": "missing_path_validation:preview_local_lab_media",
+      "route": {
+        "method": "GET",
+        "path": "/local/lab/media/preview"
+      },
+      "vuln_type": "path_traversal",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:preview_local_lab_media",
+        "api:GET:/local/lab/media/preview"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

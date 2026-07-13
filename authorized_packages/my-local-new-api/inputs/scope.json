@@ -1,0 +1,18 @@
+{
+  "fixture_id": "my-local-new-api-access-key-lab",
+  "authorization_note": "Researcher-owned local new-api (Calcium-Ion/new-api) instance on loopback; open-source self-hosted gateway for local static authz modeling only",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": [
+    "/local/newapi/api/access-key/{key_id}"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "internet facing new-api deployments",
+    "other people instances",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

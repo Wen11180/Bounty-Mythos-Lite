@@ -1,0 +1,4 @@
+v1.11.0
+source: GitHub hedgedoc/hedgedoc package.json version 1.11.0 (master pin)
+fetched: raw.githubusercontent.com source excerpts
+research_mode: local_static_review_only

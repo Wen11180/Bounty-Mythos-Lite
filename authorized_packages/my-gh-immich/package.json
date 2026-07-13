@@ -1,0 +1,51 @@
+{
+  "package_id": "my-gh-immich-asset-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Immich (immich-app/immich) asset object authz modeling package. Faithful model of GET/PUT/DELETE asset by id using requireAccess/checkAccess: AssetRead allows owner OR album OR partner access; AssetUpdate and AssetDelete require owner access (checkOwnerAccess). Researcher may use self-hosted Immich or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security path via SECURITY.md security@immich.app.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_immich_source_derived_local_modeling_excerpt",
+    "upstream_project": "immich-app/immich",
+    "upstream_url": "github.com/immich-app/immich",
+    "upstream_files": [
+      "server/src/utils/access.ts",
+      "server/src/repositories/access.repository.ts",
+      "server/src/services/asset.service.ts",
+      "server/src/controllers/asset.controller.ts",
+      "SECURITY.md"
+    ],
+    "version_pin": "v2.7.5",
+    "security_contact": "immich SECURITY.md -> security@immich.app",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {
+      "kind": "scope",
+      "path": "inputs/scope.json"
+    },
+    {
+      "kind": "policy",
+      "path": "inputs/policy.md"
+    },
+    {
+      "kind": "api",
+      "path": "inputs/api.json"
+    },
+    {
+      "kind": "har",
+      "path": "inputs/traffic.har.json"
+    },
+    {
+      "kind": "code",
+      "path": "inputs/code.ts"
+    }
+  ]
+}

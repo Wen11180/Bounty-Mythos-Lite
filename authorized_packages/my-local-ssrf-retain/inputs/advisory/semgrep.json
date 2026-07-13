@@ -1,0 +1,18 @@
+{
+  "engine": "semgrep_advisory",
+  "findings": [
+    {
+      "rule_id": "javascript.lang.security.audit.ssrf.fetch",
+      "message": "User-controlled subscriberUrl reaches fetch without SSRF validation",
+      "path": "inputs/code.ts",
+      "root_cause_id": "missing_ssrf_validation:deliver_local_lab_webhook",
+      "polarity": "support",
+      "level": "warning"
+    }
+  ],
+  "notes": [
+    "offline teaching advisory only",
+    "not a live scanner run",
+    "not a confirmed vulnerability"
+  ]
+}

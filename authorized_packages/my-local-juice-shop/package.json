@@ -1,0 +1,28 @@
+{
+  "package_id": "my-local-juice-shop-basket-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "retain",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "Researcher-owned OWASP Juice Shop lab materials. Models intentional basket-by-id access without ownership gate from public MIT source (routes/basket.ts retrieveBasket). Not a public production target. Not a bounty submission package.",
+  "provenance": {
+    "authorization_source": "researcher_owned_local_juice_shop_lab",
+    "in_scope_class": "local_intentionally_vulnerable_lab",
+    "code_kind": "public_owasp_juice_shop_source_derived_local_modeling_excerpt",
+    "upstream_files": ["basket.ts", "order.ts", "fileServer.ts", "userProfile.ts", "security.ts"],
+    "upstream_project": "juice-shop/juice-shop",
+    "license": "MIT",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Mealie recipe search injection modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/mealie/api/recipes/search": {
+      "get": {
+        "operationId": "search_local_mealie_recipes",
+        "summary": "Search recipes after SearchFilter normalize/parameterize before run_sql"
+      }
+    },
+    "/local/mealie/api/recipes/query-filter": {
+      "get": {
+        "operationId": "filter_local_mealie_recipes",
+        "summary": "Query-filter path with QueryFilterBuilder bind before run_sql"
+      }
+    }
+  }
+}

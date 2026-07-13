@@ -1,0 +1,25 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Joplin Server item controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/joplin/api/items/{id}": {
+      "get": {
+        "operationId": "get_local_joplin_item",
+        "summary": "Load item after user_items membership or owner_id scope"
+      },
+      "delete": {
+        "operationId": "delete_local_joplin_item",
+        "summary": "Delete item after loadByName scope plus checkIfAllowed share gates"
+      }
+    },
+    "/local/joplin/api/shares/{id}": {
+      "get": {
+        "operationId": "get_local_joplin_share",
+        "summary": "Load share after owner_id check"
+      }
+    }
+  }
+}

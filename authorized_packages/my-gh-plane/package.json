@@ -1,0 +1,36 @@
+{
+  "package_id": "my-gh-plane-issue-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Plane (makeplane/plane) issue object authz modeling package. Faithful model of retrieve/partial_update/destroy using allow_permission: project role gate OR creator (created_by) short-circuit. Project membership modeled as group_id. Researcher may use self-hosted Plane or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security via SECURITY.md security@plane.so.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_plane_source_derived_local_modeling_excerpt",
+    "upstream_project": "makeplane/plane",
+    "upstream_url": "github.com/makeplane/plane",
+    "upstream_files": [
+      "apps/api/plane/app/permissions/base.py",
+      "apps/api/plane/app/views/issue/base.py",
+      "apps/api/plane/app/views/base.py",
+      "apps/api/plane/app/permissions/project.py",
+      "SECURITY.md"
+    ],
+    "version_pin": "v1.3.1",
+    "security_contact": "plane SECURITY.md -> security@plane.so",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

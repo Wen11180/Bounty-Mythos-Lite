@@ -1,0 +1,50 @@
+{
+  "package_id": "my-gh-paperless-doc-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public paperless-ngx document object authz modeling package. Faithful model of GET/PUT/DELETE /documents/{id} using PaperlessObjectPermissions (owner short-circuit or django-guardian object perms) plus ObjectOwnedOrGrantedPermissionsFilter and has_perms_owner_aware for file/note siblings. Researcher may use self-hosted paperless-ngx or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security path via SECURITY.md private advisory reporting.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_paperless_ngx_source_derived_local_modeling_excerpt",
+    "upstream_project": "paperless-ngx/paperless-ngx",
+    "upstream_url": "github.com/paperless-ngx/paperless-ngx",
+    "upstream_files": [
+      "src/documents/permissions.py",
+      "src/documents/views.py",
+      "src/documents/filters.py",
+      "SECURITY.md"
+    ],
+    "version_pin": "v2.9.0",
+    "security_contact": "paperless-ngx SECURITY.md -> GitHub Security Advisory private report",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {
+      "kind": "scope",
+      "path": "inputs/scope.json"
+    },
+    {
+      "kind": "policy",
+      "path": "inputs/policy.md"
+    },
+    {
+      "kind": "api",
+      "path": "inputs/api.json"
+    },
+    {
+      "kind": "har",
+      "path": "inputs/traffic.har.json"
+    },
+    {
+      "kind": "code",
+      "path": "inputs/code.ts"
+    }
+  ]
+}

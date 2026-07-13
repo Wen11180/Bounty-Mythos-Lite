@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Immich user self-update mass-assignment modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/immich/api/users/me": {
+      "put": {
+        "operationId": "update_local_immich_me",
+        "summary": "Self-update after UserUpdateMeDto field allowlist excludes privilege fields"
+      }
+    },
+    "/local/immich/api/users/me-guard": {
+      "put": {
+        "operationId": "update_local_immich_me_privilege_guard",
+        "summary": "Self-update residual privilege-field forbid before update_user"
+      }
+    }
+  }
+}

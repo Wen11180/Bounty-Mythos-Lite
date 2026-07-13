@@ -1,0 +1,8 @@
+container=mythos-dvwa
+image=vulnerables/web-dvwa status=running ports=127.0.0.1:8080
+bind=127.0.0.1:8080 only (local researcher-owned lab)
+php=PHP 7.0.30-0+deb9u1 (cli) (built: Jun 14 2018 13:50:25) ( NTS )
+source_modules=fi low/impossible, csrf low/impossible, sqli low (ID lookup without ownership)
+research_mode=local_static_modeling_only
+live_validation_default=false
+report_submission_default=false

@@ -1,0 +1,38 @@
+{
+  "package_id": "my-gh-cal-booking-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Cal.com (calcom/cal.com) booking object authz modeling package. Faithful model of booking confirm/editLocation access via BookingAccessService: organizer (userId/owner_id) OR multi-host OR team/org admin residual. EventType get uses findById owner/users/team membership filters (documented residual). Researcher may use self-hosted Cal.com or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security via SECURITY.md security@cal.com.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_calcom_source_derived_local_modeling_excerpt",
+    "upstream_project": "calcom/cal.com",
+    "upstream_url": "github.com/calcom/cal.com",
+    "upstream_files": [
+      "packages/features/bookings/services/BookingAccessService.ts",
+      "packages/trpc/server/routers/viewer/bookings/confirm.handler.ts",
+      "packages/trpc/server/routers/viewer/bookings/editLocation.handler.ts",
+      "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "packages/features/eventtypes/repositories/eventTypeRepository.ts",
+      "packages/trpc/server/routers/viewer/eventTypes/util.ts",
+      "SECURITY.md"
+    ],
+    "version_pin": "v6.2.0",
+    "security_contact": "cal.com SECURITY.md -> security@cal.com",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

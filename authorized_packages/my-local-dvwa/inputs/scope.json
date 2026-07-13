@@ -1,0 +1,18 @@
+{
+  "fixture_id": "my-local-dvwa-authz-lab",
+  "authorization_note": "Researcher-owned local DVWA Docker lab (mythos-dvwa) bound to loopback only; intentional vulnerable teaching app",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": [
+    "/local/dvwa/users/{user_id}/export"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "internet facing hosts",
+    "other people sites",
+    "real user private data",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

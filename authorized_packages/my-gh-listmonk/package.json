@@ -1,0 +1,36 @@
+{
+  "package_id": "my-gh-listmonk-campaign-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public listmonk (knadh/listmonk) campaign object authz modeling package. Faithful model of GET/PUT/DELETE campaign by id using checkCampaignPerm: campaigns get_all/manage_all short-circuit or CampaignHasLists against user permitted lists. Researcher may use self-hosted listmonk or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security path via SECURITY.md docs.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_listmonk_source_derived_local_modeling_excerpt",
+    "upstream_project": "knadh/listmonk",
+    "upstream_url": "github.com/knadh/listmonk",
+    "upstream_files": [
+      "cmd/campaigns.go",
+      "internal/core/campaigns.go",
+      "internal/auth/models.go",
+      "internal/auth/auth.go",
+      "SECURITY.md"
+    ],
+    "version_pin": "v6.2.0",
+    "security_contact": "listmonk SECURITY.md -> listmonk.app docs security-reports",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

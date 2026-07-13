@@ -1,0 +1,22 @@
+{
+  "fixture_id": "my-gh-plane-user-mass-lab",
+  "authorization_note": "Public open-source Plane sources from GitHub (makeplane/plane) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/plane/api/users/me",
+    "/local/plane/api/users/me-guard"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Plane Cloud attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning",
+    "DoS against Plane infrastructure"
+  ]
+}

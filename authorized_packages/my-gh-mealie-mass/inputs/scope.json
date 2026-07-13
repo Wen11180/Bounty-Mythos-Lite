@@ -1,0 +1,19 @@
+{
+  "fixture_id": "my-gh-mealie-user-mass-lab",
+  "authorization_note": "Public open-source Mealie sources from GitHub (mealie-recipes/mealie) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": [
+    "/local/mealie/api/users/self-update",
+    "/local/mealie/api/users/admin-self-guard"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Mealie attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "real privilege escalation against third-party hosts"
+  ]
+}

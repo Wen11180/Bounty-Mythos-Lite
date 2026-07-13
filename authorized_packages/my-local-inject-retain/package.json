@@ -1,0 +1,41 @@
+{
+  "package_id": "my-local-inject-search-retain-lab",
+  "risk_family": "injection",
+  "expected_disposition": "retain",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "Teaching reverse-calibration package for injection retain quality. Intentionally unguarded run_sql(raw_q). Complements my-gh-listmonk-inject refute. Local static only. Not a public target. Submission blocked.",
+  "provenance": {
+    "authorization_source": "researcher_owned_teaching_reverse_calibration_lab",
+    "in_scope_class": "local_intentionally_vulnerable_lab",
+    "code_kind": "teaching_unguarded_modeling_excerpt",
+    "contrasts_with": "my-gh-listmonk-inject",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {
+      "kind": "scope",
+      "path": "inputs/scope.json"
+    },
+    {
+      "kind": "policy",
+      "path": "inputs/policy.md"
+    },
+    {
+      "kind": "api",
+      "path": "inputs/api.json"
+    },
+    {
+      "kind": "har",
+      "path": "inputs/traffic.har.json"
+    },
+    {
+      "kind": "code",
+      "path": "inputs/code.ts"
+    }
+  ]
+}

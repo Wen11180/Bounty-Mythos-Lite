@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local teaching SSRF retain lab",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/lab/webhooks/deliver": {
+      "post": {
+        "operationId": "deliver_local_lab_webhook",
+        "summary": "Deliver webhook to user-controlled URL without SSRF validation before fetch"
+      }
+    },
+    "/local/lab/webhooks/test": {
+      "post": {
+        "operationId": "test_local_lab_webhook",
+        "summary": "Secondary residual route for ssrf reverse calibration"
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local NocoDB table records controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/nocodb/api/tables/{id}/records": {
+      "get": {
+        "operationId": "get_local_nocodb_records",
+        "summary": "List table records after GlobalGuard and @Acl dataList (base VIEWER+)"
+      },
+      "patch": {
+        "operationId": "update_local_nocodb_records",
+        "summary": "Update table records after GlobalGuard and @Acl dataUpdate (base EDITOR+)"
+      },
+      "delete": {
+        "operationId": "delete_local_nocodb_records",
+        "summary": "Delete table records after GlobalGuard and @Acl dataDelete (base EDITOR+)"
+      }
+    }
+  }
+}

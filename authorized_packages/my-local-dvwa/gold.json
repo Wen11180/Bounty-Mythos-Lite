@@ -1,0 +1,22 @@
+{
+  "expected_roots": [
+    {
+      "gold_id": "observed-primary-root",
+      "root_cause_id": "missing_object_ownership_check:export_local_dvwa_user",
+      "route": {
+        "method": "GET",
+        "path": "/local/dvwa/users/{user_id}/export"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:export_local_dvwa_user",
+        "api:GET:/local/dvwa/users/{user_id}/export"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

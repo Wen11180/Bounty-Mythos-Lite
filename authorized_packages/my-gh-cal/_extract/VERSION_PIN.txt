@@ -1,0 +1,4 @@
+v6.2.0
+source: GitHub calcom/cal.com apps/web package.json version 6.2.0 (main tree analyzed)
+fetched: raw.githubusercontent.com/calcom/cal.com/main source excerpts
+research_mode: local_static_review_only

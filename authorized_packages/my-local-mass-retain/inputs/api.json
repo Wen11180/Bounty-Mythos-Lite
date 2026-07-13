@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local teaching mass-assignment retain lab",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/lab/users/self-update": {
+      "put": {
+        "operationId": "update_local_lab_self_user",
+        "summary": "Self-update user fields without privilege field allowlist before update_user"
+      }
+    },
+    "/local/lab/users/profile-update": {
+      "put": {
+        "operationId": "update_local_lab_profile",
+        "summary": "Secondary residual route for mass_assignment reverse calibration"
+      }
+    }
+  }
+}

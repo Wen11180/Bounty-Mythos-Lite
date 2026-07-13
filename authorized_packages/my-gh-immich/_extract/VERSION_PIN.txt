@@ -1,0 +1,4 @@
+v2.7.5
+source: GitHub release tag v2.7.5 (immich-app/immich)
+fetched: raw.githubusercontent.com source excerpts for v2.7.5
+research_mode: local_static_review_only

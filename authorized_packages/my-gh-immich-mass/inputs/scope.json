@@ -1,0 +1,21 @@
+{
+  "fixture_id": "my-gh-immich-user-mass-lab",
+  "authorization_note": "Public open-source Immich sources from GitHub (immich-app/immich) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/immich/api/users/me",
+    "/local/immich/api/users/me-guard"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Immich attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

@@ -1,0 +1,4 @@
+v3.7.1
+source: GitHub laurent22/joplin packages/server package.json version 3.7.1
+fetched: raw.githubusercontent.com/laurent22/joplin/dev and v3.7.1 pin check
+research_mode: local_static_review_only

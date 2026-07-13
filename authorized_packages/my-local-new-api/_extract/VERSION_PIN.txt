@@ -1,0 +1,7 @@
+project=Calcium-Ion/new-api
+local_service=127.0.0.1:3001
+image=calciumion/new-api:latest
+upstream_files=token.go,auth.go,user.go
+research_mode=local_static_modeling_only
+live_validation_default=false
+report_submission_default=false

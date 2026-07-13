@@ -1,0 +1,29 @@
+{
+  "package_id": "my-local-new-api-access-key-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "Researcher-owned local new-api instance (calciumion/new-api on 127.0.0.1:3001). Faithful model of access-key Get/Update/Delete using GetTokenByIds/DeleteTokenById scoped by session user id. Expect refute of naive missing-ownership claims. Not a public multi-tenant SaaS attack package. No real secrets in inputs.",
+  "provenance": {
+    "authorization_source": "researcher_owned_local_docker_or_host_instance",
+    "in_scope_class": "local_self_hosted_open_source_app",
+    "code_kind": "public_new_api_source_derived_local_modeling_excerpt",
+    "upstream_project": "Calcium-Ion/new-api",
+    "upstream_files": ["token.go", "auth.go", "user.go"],
+    "local_bind": "127.0.0.1:3001",
+    "container_image": "calciumion/new-api:latest",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

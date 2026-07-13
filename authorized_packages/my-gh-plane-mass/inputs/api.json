@@ -1,0 +1,21 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Plane user mass-assignment modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/plane/api/users/me": {
+      "patch": {
+        "operationId": "update_local_plane_me",
+        "summary": "Self-update after UserSerializer allowlist + privilege read_only before update_user"
+      }
+    },
+    "/local/plane/api/users/me-guard": {
+      "patch": {
+        "operationId": "update_local_plane_me_privilege_guard",
+        "summary": "Residual privilege-guard path with forbid_privilege_fields before update_user"
+      }
+    }
+  }
+}

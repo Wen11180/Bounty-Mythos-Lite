@@ -1,0 +1,11 @@
+upstream: go-gitea/gitea
+url: https://github.com/go-gitea/gitea
+latest_release_observed: v1.26.4
+docker_image: gitea/gitea:1.26.4
+local_instance: 127.0.0.1:3002 (mythos-gitea, researcher-owned loopback)
+local_version_api: GET /api/v1/version => 1.26.4
+excerpt_tag: v1.26.4
+excerpt_dir: tmp/gitea_upstream_v1.26.4
+security_contact: security@gitea.io
+research_mode: static_plus_owned_loopback
+updated: 2026-07-12T11:00:38Z

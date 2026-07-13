@@ -1,0 +1,39 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Node.js core permission/fs modeling excerpt from public sources",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/nodejs/core/fs/read/{resource_id}": {
+      "get": {
+        "operationId": "read_local_node_resource",
+        "summary": "Read resource path (models fs read path after permission.has fs.read gate)"
+      }
+    },
+    "/local/nodejs/core/fs/export/{resource_id}": {
+      "get": {
+        "operationId": "export_local_node_resource",
+        "summary": "Export/archive resource (models sensitive read sink after fs.read grant)"
+      }
+    },
+    "/local/nodejs/core/fs/write/{resource_id}": {
+      "put": {
+        "operationId": "write_local_node_resource",
+        "summary": "Write resource path (models fs write path after permission.has fs.write gate)"
+      }
+    },
+    "/local/nodejs/core/fs/delete/{resource_id}": {
+      "delete": {
+        "operationId": "delete_local_node_resource",
+        "summary": "Delete resource path (models destructive fs write-class action after fs.write grant)"
+      }
+    },
+    "/local/nodejs/core/fs/symlink/{resource_id}": {
+      "post": {
+        "operationId": "symlink_local_node_resource",
+        "summary": "Symlink-style action (models fs.symlink requiring full fs read+write when permission model enabled)"
+      }
+    }
+  }
+}

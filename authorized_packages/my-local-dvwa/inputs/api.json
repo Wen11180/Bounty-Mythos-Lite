@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local DVWA authz modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/dvwa/users/{user_id}/export": {
+      "get": {
+        "operationId": "export_local_dvwa_user",
+        "summary": "Export user profile by id after missing ownership gate"
+      }
+    }
+  }
+}

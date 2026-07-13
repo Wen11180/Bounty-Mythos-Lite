@@ -1,0 +1,16 @@
+{
+  "package_id": "my-local-ssrf-webhook-retain-lab",
+  "target_symbol": "send_payload",
+  "source_path": "inputs/code.ts",
+  "harness_kind": "local_unit_harness",
+  "status": "exported_sketch_only",
+  "execution_allowed": false,
+  "export_relative_path": "_export/crs_harness/01-send_payload",
+  "safety": [
+    "plan_only",
+    "no_fuzzer_execution",
+    "no_network",
+    "no_crash_promotion",
+    "human_approval_required_before_run"
+  ]
+}

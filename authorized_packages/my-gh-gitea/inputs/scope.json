@@ -1,0 +1,20 @@
+{
+  "fixture_id": "my-gh-gitea-issue-authz-lab",
+  "authorization_note": "Public open-source Gitea sources from GitHub (go-gitea/gitea) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/gitea/api/v1/repos/{owner}/{repo}/issues/{index}"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Gitea SaaS attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

@@ -1,0 +1,4 @@
+v2026.06.1
+source: GitHub release tag v2026.06.1 (nocodb/nocodb)
+fetched: raw.githubusercontent.com source excerpts for v2026.06.1
+research_mode: local_static_review_only

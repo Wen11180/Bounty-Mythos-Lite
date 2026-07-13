@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local HedgeDoc note controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/hedgedoc/notes/{id}": {
+      "get": {
+        "operationId": "get_local_hedgedoc_note",
+        "summary": "Show note after checkViewPermission (private requires owner)"
+      },
+      "put": {
+        "operationId": "update_local_hedgedoc_note",
+        "summary": "Edit note after mayEdit (private/locked/protected owner only)"
+      },
+      "delete": {
+        "operationId": "delete_local_hedgedoc_note",
+        "summary": "Delete note modeled as owner-only private permission gate"
+      }
+    }
+  }
+}

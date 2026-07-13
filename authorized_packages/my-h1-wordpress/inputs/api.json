@@ -1,0 +1,29 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local WordPress Core REST excerpt from public Core sources",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/wp/wp-json/wp/v2/posts/{id}": {
+      "get": {
+        "operationId": "get_local_wp_post",
+        "summary": "Get post by id (models WP_REST_Posts_Controller::get_item + get_item_permissions_check)"
+      },
+      "put": {
+        "operationId": "update_local_wp_post",
+        "summary": "Update post by id (models update_item + update_item_permissions_check)"
+      },
+      "delete": {
+        "operationId": "delete_local_wp_post",
+        "summary": "Delete post by id (models delete_item + delete_item_permissions_check)"
+      }
+    },
+    "/local/wp/wp-json/wp/v2/posts/{id}/export": {
+      "get": {
+        "operationId": "export_local_wp_post",
+        "summary": "Export post content by id after read permission check (local modeling sink)"
+      }
+    }
+  }
+}

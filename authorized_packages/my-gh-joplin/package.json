@@ -1,0 +1,37 @@
+{
+  "package_id": "my-gh-joplin-note-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Joplin Server (laurent22/joplin packages/server) item object authz modeling package. Faithful model of item get/delete: loadByName(s) scoped via user_items.user_id membership; delete checkIfAllowed share owner or accepted shareUser; item.owner_id residual. Researcher may use self-hosted Joplin Server or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security via GitHub private vulnerability reporting.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_joplin_server_source_derived_local_modeling_excerpt",
+    "upstream_project": "laurent22/joplin",
+    "upstream_url": "github.com/laurent22/joplin",
+    "upstream_files": [
+      "packages/server/src/models/ItemModel.ts",
+      "packages/server/src/models/ShareModel.ts",
+      "packages/server/src/routes/api/items.ts",
+      "packages/server/src/routes/api/shares.ts",
+      "packages/server/src/models/BaseModel.ts",
+      "SECURITY.md"
+    ],
+    "version_pin": "v3.7.1",
+    "security_contact": "joplin SECURITY.md -> GitHub private vulnerability reporting",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

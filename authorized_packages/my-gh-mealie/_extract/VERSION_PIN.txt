@@ -1,0 +1,4 @@
+v3.20.1
+source: GitHub release tag v3.20.1 (mealie-recipes/mealie)
+fetched: raw.githubusercontent.com source excerpts for v3.20.1
+research_mode: local_static_review_only

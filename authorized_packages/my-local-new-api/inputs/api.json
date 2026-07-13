@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local new-api access-key controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/newapi/api/access-key/{key_id}": {
+      "get": {
+        "operationId": "get_local_newapi_access_key",
+        "summary": "Get access-key by id (models GetTokenByIds(id, userId))"
+      },
+      "put": {
+        "operationId": "update_local_newapi_access_key",
+        "summary": "Update access-key by id (models UpdateToken ownership via GetTokenByIds)"
+      },
+      "delete": {
+        "operationId": "delete_local_newapi_access_key",
+        "summary": "Delete access-key by id (models DeleteTokenById(id, userId))"
+      }
+    }
+  }
+}

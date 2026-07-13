@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Juice Shop basket modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/juice/rest/basket/{basket_id}": {
+      "get": {
+        "operationId": "export_local_juice_basket",
+        "summary": "Retrieve basket by id (models retrieveBasket without ownership gate before response)"
+      }
+    }
+  }
+}

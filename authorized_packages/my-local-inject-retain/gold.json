@@ -1,0 +1,22 @@
+{
+  "expected_roots": [
+    {
+      "gold_id": "observed-primary-root",
+      "root_cause_id": "missing_injection_validation:preview_local_lab_campaign_query",
+      "route": {
+        "method": "GET",
+        "path": "/local/lab/campaigns/query-preview"
+      },
+      "vuln_type": "injection",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:preview_local_lab_campaign_query",
+        "api:GET:/local/lab/campaigns/query-preview"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

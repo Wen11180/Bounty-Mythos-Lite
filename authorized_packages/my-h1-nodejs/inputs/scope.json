@@ -1,0 +1,24 @@
+{
+  "fixture_id": "my-h1-nodejs-core-permission",
+  "program_handle": "nodejs",
+  "authorization_note": "HackerOne Node.js program lists Node.js core SOURCE_CODE (github.com/nodejs/node) as bounty-eligible for local research; public core permission/fs modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/nodejs/core/fs/read/{resource_id}",
+    "/local/nodejs/core/fs/export/{resource_id}",
+    "/local/nodejs/core/fs/write/{resource_id}",
+    "/local/nodejs/core/fs/delete/{resource_id}",
+    "/local/nodejs/core/fs/symlink/{resource_id}"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "nodejs.org production websites",
+    "third-party npm packages outside core",
+    "real user private data",
+    "live destructive testing",
+    "automatic report submission",
+    "non-open-source-only reproduction claims"
+  ]
+}

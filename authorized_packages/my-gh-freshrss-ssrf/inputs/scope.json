@@ -1,0 +1,23 @@
+{
+  "fixture_id": "my-gh-freshrss-feed-ssrf-lab",
+  "authorization_note": "Public open-source FreshRSS sources from GitHub (FreshRSS/FreshRSS) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/freshrss/api/feeds/create",
+    "/local/freshrss/api/feeds/refresh"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant FreshRSS attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning",
+    "DoS against FreshRSS infrastructure",
+    "real outbound SSRF pivots against third-party hosts"
+  ]
+}

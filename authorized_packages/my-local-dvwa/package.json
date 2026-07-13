@@ -1,0 +1,28 @@
+{
+  "package_id": "my-local-dvwa-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "retain",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "Researcher-owned local DVWA container mythos-dvwa on loopback only. Models intentional low-security unguarded object-id access for A+B retain quality. Not a public target. Not a bounty submission package.",
+  "provenance": {
+    "authorization_source": "researcher_owned_local_docker_lab",
+    "in_scope_class": "local_intentionally_vulnerable_lab",
+    "code_kind": "container_source_derived_local_modeling_excerpt",
+    "upstream_modules": ["sqli", "fi", "csrf"],
+    "container_name": "mythos-dvwa",
+    "bind": "127.0.0.1:8080",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "fixture_id": "my-h1-gitlab-own-instance",
+  "program_handle": "gitlab",
+  "authorization_note": "HackerOne GitLab program encourages local GDK or self-managed research; public CE source modeling for local static review only",
+  "allowed_repos": ["${STAGED_CODE_ROOT}"],
+  "allowed_routes": [
+    "/local/gitlab/api/v4/projects/{id}",
+    "/local/gitlab/api/v4/projects/{id}/export",
+    "/local/gitlab/api/v4/projects/{id}/export/download",
+    "/local/gitlab/api/v4/projects/{id}/export_relations",
+    "/local/gitlab/api/v4/projects/{id}/repository/archive"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "gitlab.com production",
+    "customers.gitlab.com",
+    "registry.gitlab.com",
+    "other customers instances",
+    "real user private data",
+    "live destructive testing",
+    "automatic report submission"
+  ]
+}

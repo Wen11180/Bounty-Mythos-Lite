@@ -1,0 +1,20 @@
+{
+  "fixture_id": "my-gh-immich-asset-authz-lab",
+  "authorization_note": "Public open-source Immich sources from GitHub (immich-app/immich) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/immich/api/assets/{id}"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Immich SaaS attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "package_id": "my-gh-listmonk-media-path-lab",
+  "risk_family": "path_traversal",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public listmonk (knadh/listmonk) media path modeling package. Faithful model of ServeS3Media / GetBlob after filepath.Base and upload makeFilename sanitization. Expected refute. Researcher static/local self-host only. No real secrets. Report submission blocked; upstream security via project security channel.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_listmonk_source_derived_local_modeling_excerpt",
+    "upstream_project": "knadh/listmonk",
+    "upstream_url": "github.com/knadh/listmonk",
+    "upstream_files": [
+      "internal/media/providers/filesystem/filesystem.go",
+      "cmd/media.go",
+      "cmd/utils.go"
+    ],
+    "version_pin": "v6.2.0",
+    "security_contact": "listmonk GitHub security advisory / maintainers",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    { "kind": "scope", "path": "inputs/scope.json" },
+    { "kind": "policy", "path": "inputs/policy.md" },
+    { "kind": "api", "path": "inputs/api.json" },
+    { "kind": "har", "path": "inputs/traffic.har.json" },
+    { "kind": "code", "path": "inputs/code.ts" }
+  ]
+}

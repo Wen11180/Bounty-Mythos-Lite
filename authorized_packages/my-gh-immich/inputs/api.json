@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Immich asset controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/immich/api/assets/{id}": {
+      "get": {
+        "operationId": "get_local_immich_asset",
+        "summary": "Get asset by id after requireAccess AssetRead (owner/album/partner)"
+      },
+      "put": {
+        "operationId": "update_local_immich_asset",
+        "summary": "Update asset after requireAccess AssetUpdate (owner only)"
+      },
+      "delete": {
+        "operationId": "delete_local_immich_asset",
+        "summary": "Delete asset after requireAccess AssetDelete (owner only)"
+      }
+    }
+  }
+}

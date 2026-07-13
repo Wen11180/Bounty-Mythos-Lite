@@ -1,0 +1,50 @@
+{
+  "package_id": "my-gh-gitea-issue-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Gitea (go-gitea/gitea) issue object authz modeling package. Faithful model of GET /repos/{owner}/{repo}/issues/{index} using repository-scoped GetIssueWithAttrsByIndex(repoID, index) plus Permission.CanReadIssuesOrPulls. Researcher may use self-hosted Gitea or static review only. Not a public gitea.com attack package. No real secrets. Report submission blocked; upstream disclosure path is security@gitea.io if ever needed.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_gitea_source_derived_local_modeling_excerpt",
+    "upstream_project": "go-gitea/gitea",
+    "upstream_url": "https://github.com/go-gitea/gitea",
+    "upstream_files": [
+      "routers/api/v1/repo/issue.go",
+      "models/perm/access/repo_permission.go",
+      "services/context/permission.go",
+      "SECURITY.md"
+    ],
+    "version_pin": "v1.26.4 (latest release observed at package creation) / main excerpts",
+    "security_contact": "security@gitea.io",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {
+      "kind": "scope",
+      "path": "inputs/scope.json"
+    },
+    {
+      "kind": "policy",
+      "path": "inputs/policy.md"
+    },
+    {
+      "kind": "api",
+      "path": "inputs/api.json"
+    },
+    {
+      "kind": "har",
+      "path": "inputs/traffic.har.json"
+    },
+    {
+      "kind": "code",
+      "path": "inputs/code.ts"
+    }
+  ]
+}

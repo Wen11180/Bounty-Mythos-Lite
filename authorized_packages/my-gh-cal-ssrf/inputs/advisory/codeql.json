@@ -1,0 +1,22 @@
+{
+  "engine": "codeql_advisory",
+  "findings": [
+    {
+      "rule_id": "js/ssrf-control-present",
+      "message": "validateUrlForSSRF control present before outbound webhook fetch",
+      "path": "inputs/code.ts",
+      "root_cause_id": "missing_ssrf_validation:deliver",
+      "polarity": "control",
+      "tags": [
+        "control",
+        "mitigated"
+      ],
+      "level": "note"
+    }
+  ],
+  "notes": [
+    "offline teaching advisory only",
+    "models control path from public Cal.com ssrfProtection",
+    "not a confirmed vulnerability"
+  ]
+}

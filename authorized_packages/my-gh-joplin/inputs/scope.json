@@ -1,0 +1,21 @@
+{
+  "fixture_id": "my-gh-joplin-note-authz-lab",
+  "authorization_note": "Public open-source Joplin Server sources from GitHub (laurent22/joplin) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/joplin/api/items/{id}",
+    "/local/joplin/api/shares/{id}"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Joplin Cloud attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning"
+  ]
+}

@@ -1,0 +1,4 @@
+v2.3.0
+source: GitHub release tag v2.3.0 (go-vikunja/vikunja)
+fetched: GitHub release zip archive (vikunja-2.3.0)
+research_mode: local_static_review_only

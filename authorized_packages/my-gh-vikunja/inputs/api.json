@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Vikunja task controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/vikunja/api/tasks/{id}": {
+      "get": {
+        "operationId": "get_local_vikunja_task",
+        "summary": "Get task by id after Task.CanRead -> Project.CanRead"
+      },
+      "put": {
+        "operationId": "update_local_vikunja_task",
+        "summary": "Update task after canDoTask -> Project.CanWrite"
+      },
+      "delete": {
+        "operationId": "delete_local_vikunja_task",
+        "summary": "Delete task after canDoTask -> Project.CanWrite"
+      }
+    }
+  }
+}

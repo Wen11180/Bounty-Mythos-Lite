@@ -1,0 +1,36 @@
+{
+  "package_id": "my-gh-nocodb-record-authz-lab",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public NocoDB (nocodb/nocodb) table record authz modeling package. Faithful model of GET/PATCH/DELETE table records using GlobalGuard plus @Acl dataList/dataUpdate/dataDelete against base-scoped ProjectRoles (VIEWER can list; EDITOR+ can update/delete). Base membership modeled as group_id. Researcher may use self-hosted NocoDB or static review only. Not a public multi-tenant attack package. No real secrets. Report submission blocked; upstream security path via SECURITY.md security@nocodb.com.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_nocodb_source_derived_local_modeling_excerpt",
+    "upstream_project": "nocodb/nocodb",
+    "upstream_url": "github.com/nocodb/nocodb",
+    "upstream_files": [
+      "packages/nocodb/src/controllers/data-table.controller.ts",
+      "packages/nocodb/src/utils/acl.ts",
+      "packages/nocodb/src/middlewares/extract-ids/extract-ids.middleware.ts",
+      "packages/nocodb/src/guards/global/global.guard.ts",
+      "SECURITY.md"
+    ],
+    "version_pin": "v2026.06.1",
+    "security_contact": "nocodb SECURITY.md -> security@nocodb.com",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {"kind": "scope", "path": "inputs/scope.json"},
+    {"kind": "policy", "path": "inputs/policy.md"},
+    {"kind": "api", "path": "inputs/api.json"},
+    {"kind": "har", "path": "inputs/traffic.har.json"},
+    {"kind": "code", "path": "inputs/code.ts"}
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "package_id": "my-h1-nodejs-core-permission",
+  "risk_family": "authorization",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "Built from public Node.js core permission-model and fs gate sources for local SOURCE_CODE review under HackerOne program handle=nodejs. Faithful model includes permission-model enabled gate, fs.read/fs.write path grants, and resource owner boundary before sensitive sinks. Expect refute of naive missing-ownership claims when guards are observed. Not a live nodejs.org or production process attack package.",
+  "provenance": {
+    "authorization_source": "HackerOne program handle=nodejs",
+    "in_scope_class": "Node.js core SOURCE_CODE local research",
+    "code_kind": "public_core_source_derived_local_modeling_excerpt",
+    "upstream_files": [
+      "permission.js",
+      "perm_permission.cc",
+      "perm_fs_permission.cc",
+      "fs.js",
+      "SECURITY.md"
+    ],
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    {
+      "kind": "scope",
+      "path": "inputs/scope.json"
+    },
+    {
+      "kind": "policy",
+      "path": "inputs/policy.md"
+    },
+    {
+      "kind": "api",
+      "path": "inputs/api.json"
+    },
+    {
+      "kind": "har",
+      "path": "inputs/traffic.har.json"
+    },
+    {
+      "kind": "code",
+      "path": "inputs/code.ts"
+    }
+  ]
+}

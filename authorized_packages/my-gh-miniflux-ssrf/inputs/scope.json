@@ -1,0 +1,23 @@
+{
+  "fixture_id": "my-gh-miniflux-feed-ssrf-lab",
+  "authorization_note": "Public open-source Miniflux sources from GitHub (miniflux/v2) for researcher-owned static/local self-hosted modeling only",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/miniflux/api/feeds/create",
+    "/local/miniflux/api/feeds/refresh"
+  ],
+  "local_only": true,
+  "forbidden": [
+    "public production multi-tenant Miniflux Cloud attacks",
+    "other people's instances without authorization",
+    "real credential secrets in packages",
+    "live destructive testing",
+    "automatic report submission",
+    "credential stuffing",
+    "mass scanning",
+    "DoS against miniflux infrastructure",
+    "real outbound SSRF pivots against third-party hosts"
+  ]
+}

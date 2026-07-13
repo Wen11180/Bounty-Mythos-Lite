@@ -1,0 +1,36 @@
+{
+  "package_id": "my-gh-miniflux-feed-ssrf-lab",
+  "risk_family": "ssrf",
+  "expected_disposition": "refute",
+  "synthetic": false,
+  "authorized_for_local_research": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "operator_notes": "GitHub-sourced public Miniflux (miniflux/v2) feed-fetch SSRF modeling package. Faithful model of feed URL outbound fetch after IsNonPublicIP / BlockPrivateNetworks dial-time private-network blocking (connect-time check eliminates DNS rebinding TOCTOU). Expected refute. Researcher static/local self-host only. No real secrets. Report submission blocked; upstream security via SECURITY.md / GitHub private advisory / security@miniflux.net.",
+  "provenance": {
+    "authorization_source": "public_github_open_source_plus_researcher_local_review",
+    "in_scope_class": "public_source_self_hostable_oss",
+    "code_kind": "public_miniflux_source_derived_local_modeling_excerpt",
+    "upstream_project": "miniflux/v2",
+    "upstream_url": "github.com/miniflux/v2",
+    "upstream_files": [
+      "internal/urllib/url.go",
+      "internal/http/client/client.go",
+      "internal/reader/fetcher/request_builder.go",
+      "internal/validator/feed.go",
+      "SECURITY.md"
+    ],
+    "version_pin": "v2.3.2",
+    "security_contact": "miniflux SECURITY.md -> GitHub private vulnerability reporting / security@miniflux.net",
+    "research_mode": "local_static_review_only",
+    "live_validation_default": false,
+    "report_submission_default": false
+  },
+  "inputs": [
+    { "kind": "scope", "path": "inputs/scope.json" },
+    { "kind": "policy", "path": "inputs/policy.md" },
+    { "kind": "api", "path": "inputs/api.json" },
+    { "kind": "har", "path": "inputs/traffic.har.json" },
+    { "kind": "code", "path": "inputs/code.ts" }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Local Gitea issue controller modeling excerpt",
+    "version": "local-research-only"
+  },
+  "paths": {
+    "/local/gitea/api/v1/repos/{owner}/{repo}/issues/{index}": {
+      "get": {
+        "operationId": "get_local_gitea_issue",
+        "summary": "Get issue by repo-scoped index (models GetIssueWithAttrsByIndex + CanReadIssuesOrPulls)"
+      }
+    }
+  }
+}

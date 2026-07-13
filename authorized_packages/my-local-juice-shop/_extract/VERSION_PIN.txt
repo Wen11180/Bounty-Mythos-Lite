@@ -1,0 +1,8 @@
+project=juice-shop/juice-shop
+license=MIT
+local_container_name=juice-shop
+source_files=basket.ts,order.ts,fileServer.ts,userProfile.ts,security.ts
+research_mode=local_static_modeling_only
+live_validation_default=false
+report_submission_default=false
+note=docker CLI hung during this turn; modeling uses public MIT sources already present under _upstream/
