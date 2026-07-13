@@ -28,3 +28,16 @@ htmlcov/
 *.egg-info/
 pip-wheel-metadata/
 docker-compose.override.yml
+
+# local researcher secrets / desktop dumps
+**/1.txt
+Desktop/1.txt
+
+
+authorized_packages/**/_upstream/
+
+# local test and research scratch trees
+.pytest-tmp*/
+/tmp/
+/tmpmythos-pytestbase/
+apps/web/test-results/
