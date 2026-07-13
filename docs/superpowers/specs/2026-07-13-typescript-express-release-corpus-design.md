@@ -197,8 +197,10 @@ The dispositions have distinct meanings:
 - `deduplicate`: a canonical retained root and a second presentation of that
   same semantic root exist; the duplicate is mapped to the canonical root and
   excluded from the final Top 5.
-- `suppress`: scope, policy, or human-worth criteria require exclusion without
-  claiming that decisive technical refutation evidence exists.
+- `suppress`: the route remains inside the authorized benchmark scope, but an
+  observed public-data filter, policy rule, or human-worth criterion requires
+  exclusion without claiming that decisive technical refutation evidence
+  exists.
 
 All cases are fully synthetic and offline. Each contains:
 
@@ -232,6 +234,10 @@ Only `gold.json` contains:
 - canonical duplicate relationships;
 - scope eligibility; and
 - human-worth-validation labels.
+
+Every gold root keeps `scope_allowed=true`, as required by the existing V1
+oracle contract. Suppression is therefore an in-scope disposition and never a
+way to benchmark Scope Guard bypass or out-of-scope execution.
 
 For the new profile, gold also repeats `authorization_pattern` so the
 post-capture oracle validator can prove the complete 3-by-4 matrix and detect a
