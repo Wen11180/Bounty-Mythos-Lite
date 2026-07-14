@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 SUPPORTED_EVIDENCE_TYPES = {
     "request_response_diff",
     "role_matrix_snapshot",
+    "sanitized_cross_account_diff",
+    "sanitized_parent_child_matrix",
     "screenshot_ref",
     "log_ref",
     "local_code_reference",

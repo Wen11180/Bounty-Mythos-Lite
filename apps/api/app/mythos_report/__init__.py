@@ -54,6 +54,72 @@ REPORT_SAFE_REVIEW_EVIDENCE_REFS = {
     "sanitized_role_matrix",
     "screenshot_ref",
 }
+BLACK_BOX_REVIEW_EVIDENCE_REFS = {
+    "sanitized_cross_account_diff",
+    "sanitized_parent_child_matrix",
+}
+
+
+def build_black_box_report_review_packet(candidate: dict) -> dict:
+    """Build a review-only packet from a redacted black-box candidate."""
+    if not isinstance(candidate, dict):
+        raise ValueError("black_box_candidate_required")
+    if candidate.get("status") != "review_ready":
+        raise ValueError("review_ready_candidate_required")
+    if candidate.get("human_review_required") is not True:
+        raise ValueError("human_review_required")
+    if candidate.get("submission_blocked") is not True:
+        raise ValueError("submission_blocked_required")
+    if any(
+        candidate.get(field) is not False
+        for field in (
+            "human_confirmed",
+            "finding_promotion_allowed",
+            "execution_allowed",
+            "validation_allowed",
+            "report_submission_allowed",
+            "submitted",
+        )
+    ):
+        raise ValueError("black_box_candidate_permissions_must_be_false")
+    raw_evidence_refs = candidate.get("evidence_refs")
+    if not isinstance(raw_evidence_refs, list):
+        raise ValueError("sanitized_black_box_evidence_required")
+    evidence_refs = [safe_preview_text(ref) for ref in raw_evidence_refs]
+    if not evidence_refs or any(
+        ref not in BLACK_BOX_REVIEW_EVIDENCE_REFS for ref in evidence_refs
+    ):
+        raise ValueError("sanitized_black_box_evidence_required")
+    route = candidate.get("route") if isinstance(candidate.get("route"), dict) else {}
+    method = safe_preview_text(route.get("method", ""))
+    path = safe_preview_text(route.get("path", ""))
+    if not method or not path or "?" in path:
+        raise ValueError("normalized_black_box_route_required")
+
+    return {
+        "candidate_id": safe_preview_text(candidate.get("candidate_id", "")),
+        "status": "review_ready",
+        "human_review_required": True,
+        "submission_blocked": True,
+        "human_confirmed": False,
+        "finding_promotion_allowed": False,
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+        "submitted": False,
+        "evidence_refs": evidence_refs,
+        "next_allowed_action": "Human review of redacted differential evidence.",
+        "report_draft": {
+            "title": "Potential authorization-boundary issue",
+            "severity": "unconfirmed",
+            "affected_route": f"{method} {path}",
+            "safety_notes": [
+                "submission_blocked",
+                "not_human_confirmed",
+                "redacted_local_lab_evidence_only",
+            ],
+        },
+    }
 
 
 class ClaimLedgerEntry(BaseModel):

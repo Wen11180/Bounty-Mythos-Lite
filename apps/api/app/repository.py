@@ -1408,6 +1408,57 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def record_validation_run_bounded_result(
+        self,
+        validation_run_id: str,
+        *,
+        audit_digest: str,
+        decision_status: str,
+        evidence_refs: list[str],
+        payload: dict,
+    ) -> ValidationRunRecord | None:
+        record = self.get_validation_run(validation_run_id)
+        if record is None:
+            return None
+        if record.status != "preflight_passed" or not record.allowed_to_execute:
+            return None
+        terminal_state = {
+            "review_ready": ("evidence_recorded", "black_box_review_ready"),
+            "refuted": ("refuted", "black_box_refuted"),
+            "hypothesis": ("needs_evidence", "black_box_needs_evidence"),
+            "observed": ("needs_evidence", "black_box_needs_evidence"),
+            "reproduced": ("needs_evidence", "black_box_needs_evidence"),
+            "inconclusive": ("needs_evidence", "black_box_inconclusive"),
+        }.get(_safe_display_value(decision_status))
+        if terminal_state is None:
+            return None
+
+        safe_evidence_refs = _safe_display_value(evidence_refs)
+        safe_evidence_ref_count = _safe_evidence_ref_count(safe_evidence_refs)
+        record.status, record.safety_gate_state = terminal_state
+        record.allowed_to_execute = False
+        record.evidence_ref_count = safe_evidence_ref_count
+        record.summary = _safe_display_value(
+            f"Bounded black-box result recorded: {decision_status}"
+        )
+        record.finished_at = datetime.now(UTC)
+        record_payload = dict(record.payload)
+        record_payload["black_box_bounded_result"] = _safe_display_value(
+            {
+                "audit_digest": audit_digest,
+                "decision_status": decision_status,
+                "evidence_refs": safe_evidence_refs,
+                "execution_started": False,
+                "result_payload": payload,
+                "recorded_at": record.finished_at.isoformat(),
+            }
+        )
+        record.payload = record_payload
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
     def save_learning_signal(
         self,
         *,

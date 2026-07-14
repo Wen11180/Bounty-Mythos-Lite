@@ -106,3 +106,30 @@ def test_build_evidence_bundle_rejects_unsupported_evidence_type():
             "finding-unsupported",
             [{"type": "raw_http_request", "content": "GET /admin"}],
         )
+
+
+def test_build_evidence_bundle_accepts_only_sanitized_black_box_evidence_types():
+    bundle = build_evidence_bundle(
+        "black-box-review",
+        [
+            {
+                "type": "sanitized_cross_account_diff",
+                "content": {
+                    "route": "GET /widgets/{object}",
+                    "canary_match": True,
+                },
+            },
+            {
+                "type": "sanitized_parent_child_matrix",
+                "content": {
+                    "route": "GET /parents/{object}/children/{object}",
+                    "state_effect": False,
+                },
+            },
+        ],
+    )
+
+    assert [item.type for item in bundle.items] == [
+        "sanitized_cross_account_diff",
+        "sanitized_parent_child_matrix",
+    ]

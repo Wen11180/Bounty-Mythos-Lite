@@ -12,6 +12,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.artifact_ingestion import normalize_artifact
+from app.black_box_hunter.audit import (
+    BlackBoxAuditError,
+    BlackBoxAuditProjection,
+    BlackBoxBoundedResultRequest,
+    load_black_box_audit_projection,
+    record_black_box_bounded_result,
+)
 from app.config import get_settings
 from app.db import get_session
 from app.db_models import (
@@ -95,6 +102,7 @@ from app.mythos_report import (
     ClaimReviewDecisionResponse,
     ReportPreviewResponse,
     best_finding_candidate_claim,
+    build_black_box_report_review_packet,
     build_report_preview_response,
     review_evidence_refs_are_report_safe,
     safe_preview_lines,
@@ -1817,6 +1825,57 @@ def record_mythos_validation_run_manual_result(
             usage_records=[usage],
         )
     return _validation_run_response(updated_run, repository=repository)
+
+
+@app.post(
+    "/mythos/black-box/validation-runs/{validation_run_id}/bounded-results",
+    response_model=BlackBoxAuditProjection,
+)
+def record_black_box_bounded_result_api(
+    validation_run_id: str,
+    result: BlackBoxBoundedResultRequest,
+    session: Session = Depends(get_session),
+) -> BlackBoxAuditProjection:
+    repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(validation_run_id)
+    if validation_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    _raise_if_validation_run_approval_not_active(
+        repository=repository,
+        validation_run=validation_run,
+        campaign=campaign,
+    )
+    try:
+        return record_black_box_bounded_result(
+            repository=repository,
+            validation_run_id=validation_run_id,
+            plan_index=result.plan_index,
+            evidence=result.evidence,
+        )
+    except BlackBoxAuditError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/mythos/black-box/validation-runs/{validation_run_id}/review-packet")
+def get_black_box_review_packet(
+    validation_run_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    try:
+        projection = load_black_box_audit_projection(
+            repository=repository,
+            validation_run_id=validation_run_id,
+        )
+    except BlackBoxAuditError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if projection.status != "review_ready" or projection.candidate is None:
+        raise HTTPException(status_code=409, detail="review_ready_candidate_required")
+    try:
+        return build_black_box_report_review_packet(projection.candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get(
