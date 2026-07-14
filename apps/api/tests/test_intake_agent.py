@@ -31,11 +31,12 @@ def test_intake_profile_ssrf_retain_detects_ts_express_routes():
     assert profile.attack_surface_summary["entrypoint_count"] >= 1
 
 
-def test_intake_profile_gitea_detects_go_and_auth_components():
+def test_intake_profile_gitea_detects_typescript_model_and_auth_components():
     profile = build_intake_profile(package_root=PKG_GITEA)
     assert profile.status == STATUS_OK
-    assert "Go" in profile.language
-    assert "Gitea" in profile.framework or any("permission" in a for a in profile.auth_components)
+    assert "TypeScript" in profile.language
+    assert "Express" in profile.framework
+    assert any("/local/gitea/" in entrypoint for entrypoint in profile.entrypoints)
     assert profile.auth_components
     assert profile.execution_allowed is False
 

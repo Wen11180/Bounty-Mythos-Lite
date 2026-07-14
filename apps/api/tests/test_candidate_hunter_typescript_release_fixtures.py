@@ -31,7 +31,7 @@ TYPESCRIPT_FIXTURE_ROOT = (
     Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release"
 )
 LEGACY_FIXTURE_TREE_DIGEST = (
-    "3e375d5a4d56cb46ba6065eccbc1a994c1693d51da11d0f17e8ac1543cd606a1"
+    "b051ca8af471b150a73fc21d84a3d090f8149fa73d919e4b8bc400cd35552be3"
 )
 TYPESCRIPT_PROFILE = "candidate_hunter_typescript_express"
 TYPESCRIPT_VERSION = "candidate_hunter_typescript_express_fixture_v1"
