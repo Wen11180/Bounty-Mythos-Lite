@@ -6,7 +6,7 @@ from hashlib import sha256
 import json
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.black_box_hunter import (
     BLACK_BOX_VALIDATION_TYPE,
@@ -16,6 +16,8 @@ from app.black_box_hunter import (
     DifferentialPlan,
     ObservedWorkflowModel,
     TrialObservation,
+    WorkflowPathParameter,
+    _normalize_route_template,
     evaluate_differential_evidence,
 )
 from app.scope_guard import (
@@ -26,7 +28,7 @@ from app.scope_guard import (
 from app.repository import approval_record_is_active
 
 
-AUDIT_SCHEMA_VERSION = "black_box_audit_v1"
+AUDIT_SCHEMA_VERSION = "black_box_audit_v2"
 INITIAL_STAGE_KEYS = (
     "black_box_lease",
     "black_box_workflow",
@@ -104,6 +106,7 @@ def open_black_box_audit(
     )
     existing = _find_existing_owner(repository, audit_digest)
     if existing is not None:
+        _validated_stages(repository, existing)
         return existing
 
     campaign = repository.create_campaign(
@@ -227,7 +230,11 @@ def record_black_box_bounded_result(
         raise BlackBoxAuditError("preflight_passed_required")
     _require_active_owner_approval(repository, owner, validation_run)
 
-    stages = _validated_stages(repository, owner)
+    stages = _validated_stages(
+        repository,
+        owner,
+        allow_partial_terminal=True,
+    )
     decision = evaluate_differential_evidence(evidence)
     plan_stage = stages["black_box_plan"]
     selected_plan = _selected_plan(plan_stage.payload.get("plans"), plan_index)
@@ -269,6 +276,37 @@ def record_black_box_bounded_result(
         ),
         start=4,
     ):
+        input_refs = [f"validation_run:{owner.validation_run_id}"]
+        output_refs = evidence_refs
+        stop_reason = (
+            _stop_reasons(evidence)[0]
+            if _stop_reasons(evidence)
+            else None
+        )
+        payload = _stage_payload(
+            owner.audit_digest,
+            stage_key,
+            content,
+            stage_order=stage_order,
+            status=status,
+            input_refs=input_refs,
+            output_refs=output_refs,
+            safety_gate_state="preflight_passed",
+            stop_reason=stop_reason,
+        )
+        existing_stage = stages.get(stage_key)
+        if existing_stage is not None:
+            _require_matching_existing_stage(
+                existing_stage,
+                stage_order=stage_order,
+                status=status,
+                input_refs=input_refs,
+                output_refs=output_refs,
+                safety_gate_state="preflight_passed",
+                stop_reason=stop_reason,
+                payload=payload,
+            )
+            continue
         repository.save_pipeline_stage(
             pipeline_run_id=None,
             campaign_id=owner.campaign_id,
@@ -276,15 +314,11 @@ def record_black_box_bounded_result(
             stage_key=stage_key,
             stage_order=stage_order,
             status=status,
-            input_refs=[f"validation_run:{owner.validation_run_id}"],
-            output_refs=evidence_refs,
+            input_refs=input_refs,
+            output_refs=output_refs,
             safety_gate_state="preflight_passed",
-            stop_reason=(
-                _stop_reasons(evidence)[0]
-                if _stop_reasons(evidence)
-                else None
-            ),
-            payload=_stage_payload(owner.audit_digest, stage_key, content),
+            stop_reason=stop_reason,
+            payload=payload,
         )
     updated = repository.record_validation_run_bounded_result(
         owner.validation_run_id,
@@ -496,7 +530,12 @@ def _require_active_owner_approval(
         raise BlackBoxAuditError("approval_validation_run_mismatch")
 
 
-def _validated_stages(repository: Any, owner: BlackBoxAuditOwner) -> dict[str, Any]:
+def _validated_stages(
+    repository: Any,
+    owner: BlackBoxAuditOwner,
+    *,
+    allow_partial_terminal: bool = False,
+) -> dict[str, Any]:
     stage_records = [
         stage
         for stage in repository.list_campaign_pipeline_stages(owner.campaign_id)
@@ -512,8 +551,11 @@ def _validated_stages(repository: Any, owner: BlackBoxAuditOwner) -> dict[str, A
         if stage is None:
             raise BlackBoxAuditError("initial_audit_stages_required")
         _validate_stage(stage, owner.audit_digest, stage_key, order)
+    _validate_initial_projection(stages, owner.audit_digest)
     terminal_present = [key for key in FINAL_STAGE_KEYS[3:] if key in stages]
-    if terminal_present and len(terminal_present) != 2:
+    if terminal_present and len(terminal_present) != 2 and not (
+        allow_partial_terminal and terminal_present == ["black_box_trial"]
+    ):
         raise BlackBoxAuditError("incomplete_terminal_stages")
     for order, stage_key in enumerate(FINAL_STAGE_KEYS[3:], start=4):
         stage = stages.get(stage_key)
@@ -532,6 +574,19 @@ def _validate_stage(stage: Any, audit_digest: str, stage_key: str, stage_order: 
         raise BlackBoxAuditError("audit_stage_linkage_invalid")
     if any(payload.get(key) is not value for key, value in SAFE_AUDIT_FLAGS.items()):
         raise BlackBoxAuditError("audit_stage_safety_flags_invalid")
+    envelope_digest = _digest(
+        _stage_envelope(
+            stage_key=stage_key,
+            stage_order=stage.stage_order,
+            status=stage.status,
+            input_refs=stage.input_refs,
+            output_refs=stage.output_refs,
+            safety_gate_state=stage.safety_gate_state,
+            stop_reason=stage.stop_reason,
+        )
+    )
+    if payload.get("envelope_digest") != envelope_digest:
+        raise BlackBoxAuditError("audit_stage_envelope_invalid")
     content = {
         key: value
         for key, value in payload.items()
@@ -540,6 +595,7 @@ def _validate_stage(stage: Any, audit_digest: str, stage_key: str, stage_order: 
             "schema_version",
             "audit_digest",
             "content_digest",
+            "envelope_digest",
             "idempotency_key",
             *SAFE_AUDIT_FLAGS,
         }
@@ -551,6 +607,52 @@ def _validate_stage(stage: Any, audit_digest: str, stage_key: str, stage_order: 
         != f"{audit_digest}:{stage_key}:{content_digest}"
     ):
         raise BlackBoxAuditError("audit_stage_digest_invalid")
+
+
+def _validate_initial_projection(stages: dict[str, Any], audit_digest: str) -> None:
+    lease_payload = stages["black_box_lease"].payload.get("lease")
+    try:
+        lease = BlackBoxExecutionLease.model_validate(lease_payload)
+    except ValidationError as exc:
+        raise BlackBoxAuditError("black_box_lease_projection_invalid") from exc
+    if lease.safe_projection() != lease_payload:
+        raise BlackBoxAuditError("black_box_lease_projection_invalid")
+
+    workflows = stages["black_box_workflow"].payload.get("workflows")
+    plans = stages["black_box_plan"].payload.get("plans")
+    if not isinstance(workflows, list) or not isinstance(plans, list):
+        raise BlackBoxAuditError("initial_audit_projection_invalid")
+    if _digest(
+        {
+            "lease": lease_payload,
+            "workflows": {"workflows": workflows},
+            "plans": plans,
+        }
+    ) != audit_digest:
+        raise BlackBoxAuditError("initial_audit_projection_digest_invalid")
+
+
+def _require_matching_existing_stage(
+    stage: Any,
+    *,
+    stage_order: int,
+    status: str,
+    input_refs: list[str],
+    output_refs: list[str],
+    safety_gate_state: str,
+    stop_reason: str | None,
+    payload: dict,
+) -> None:
+    if (
+        stage.stage_order != stage_order
+        or stage.status != status
+        or stage.input_refs != input_refs
+        or stage.output_refs != output_refs
+        or stage.safety_gate_state != safety_gate_state
+        or stage.stop_reason != stop_reason
+        or stage.payload != payload
+    ):
+        raise BlackBoxAuditError("partial_terminal_stage_mismatch")
 
 
 def _evidence_projection(evidence: DifferentialEvidenceBundle) -> dict:
@@ -650,15 +752,37 @@ def _candidate_projection(
         not isinstance(route, dict)
         or not isinstance(route.get("method"), str)
         or not isinstance(route.get("path"), str)
-        or "?" in route["path"]
     ):
         raise BlackBoxAuditError("normalized_candidate_route_required")
+    raw_path_parameters = route.get("path_parameters", [])
+    if not isinstance(raw_path_parameters, list):
+        raise BlackBoxAuditError("normalized_candidate_route_required")
+    try:
+        path_parameters = [
+            WorkflowPathParameter.model_validate(parameter)
+            for parameter in raw_path_parameters
+        ]
+        normalized_path = _normalize_route_template(
+            route["path"],
+            path_parameters,
+            reject_undeclared_slug_segments=True,
+        )
+    except (ValidationError, ValueError) as exc:
+        raise BlackBoxAuditError("normalized_candidate_route_required") from exc
+    if "{object}" not in normalized_path:
+        raise BlackBoxAuditError("normalized_candidate_route_required")
+    candidate_route = {"method": route["method"], "path": normalized_path}
+    if path_parameters:
+        candidate_route["path_parameters"] = [
+            parameter.model_dump()
+            for parameter in path_parameters
+        ]
     return {
         "candidate_id": f"black_box_{audit_digest[:16]}",
         "plan_index": plan_index,
         "trial_class": plan.get("trial_class"),
         "vulnerability_type": "authorization_boundary",
-        "route": {"method": route["method"], "path": route["path"]},
+        "route": candidate_route,
         "evidence_refs": evidence_refs,
         "status": "review_ready",
         "human_review_required": True,
@@ -718,20 +842,25 @@ def _save_initial_stages(
     records = (
         (
             "black_box_lease",
-            {
-                "lease_id": lease.lease_id,
-                "policy_digest": lease.policy_digest,
-                "scope_digest": lease.scope_digest,
-                "plan_digest": lease.plan_digest,
-                "account_aliases": lease.account_aliases,
-                "role_aliases": lease.role_aliases,
-            },
+            {"lease": lease.safe_projection()},
         ),
         ("black_box_workflow", workflows),
         ("black_box_plan", {"plans": plans}),
     )
     for stage_order, (stage_key, content) in enumerate(records, start=1):
-        payload = _stage_payload(owner.audit_digest, stage_key, content)
+        input_refs = [f"black_box_audit:{owner.audit_digest}"]
+        output_refs = [f"validation_run:{owner.validation_run_id}"]
+        payload = _stage_payload(
+            owner.audit_digest,
+            stage_key,
+            content,
+            stage_order=stage_order,
+            status="recorded",
+            input_refs=input_refs,
+            output_refs=output_refs,
+            safety_gate_state="awaiting_approval",
+            stop_reason=None,
+        )
         repository.save_pipeline_stage(
             pipeline_run_id=None,
             campaign_id=owner.campaign_id,
@@ -739,23 +868,66 @@ def _save_initial_stages(
             stage_key=stage_key,
             stage_order=stage_order,
             status="recorded",
-            input_refs=[f"black_box_audit:{owner.audit_digest}"],
-            output_refs=[f"validation_run:{owner.validation_run_id}"],
+            input_refs=input_refs,
+            output_refs=output_refs,
             safety_gate_state="awaiting_approval",
             stop_reason=None,
             payload=payload,
         )
 
 
-def _stage_payload(audit_digest: str, stage_key: str, content: dict) -> dict:
+def _stage_payload(
+    audit_digest: str,
+    stage_key: str,
+    content: dict,
+    *,
+    stage_order: int,
+    status: str,
+    input_refs: list[str],
+    output_refs: list[str],
+    safety_gate_state: str,
+    stop_reason: str | None,
+) -> dict:
     content_digest = _digest(content)
     return {
         "schema_version": AUDIT_SCHEMA_VERSION,
         "audit_digest": audit_digest,
         "content_digest": content_digest,
+        "envelope_digest": _digest(
+            _stage_envelope(
+                stage_key=stage_key,
+                stage_order=stage_order,
+                status=status,
+                input_refs=input_refs,
+                output_refs=output_refs,
+                safety_gate_state=safety_gate_state,
+                stop_reason=stop_reason,
+            )
+        ),
         "idempotency_key": f"{audit_digest}:{stage_key}:{content_digest}",
         **SAFE_AUDIT_FLAGS,
         **content,
+    }
+
+
+def _stage_envelope(
+    *,
+    stage_key: str,
+    stage_order: int,
+    status: str,
+    input_refs: list[str],
+    output_refs: list[str],
+    safety_gate_state: str,
+    stop_reason: str | None,
+) -> dict:
+    return {
+        "stage_key": stage_key,
+        "stage_order": stage_order,
+        "status": status,
+        "input_refs": input_refs,
+        "output_refs": output_refs,
+        "safety_gate_state": safety_gate_state,
+        "stop_reason": stop_reason,
     }
 
 
@@ -794,13 +966,19 @@ def _plan_projection(plans: list[DifferentialPlan]) -> list[dict]:
 
 
 def _planned_trial_projection(stage: Any) -> dict:
+    route = {
+        "method": stage.workflow.method,
+        "path": stage.workflow.route_template,
+    }
+    if stage.workflow.path_parameters:
+        route["path_parameters"] = [
+            parameter.model_dump()
+            for parameter in stage.workflow.path_parameters
+        ]
     return {
         "phase": stage.phase,
         "changed_variable": stage.changed_variable,
-        "route": {
-            "method": stage.workflow.method,
-            "path": stage.workflow.route_template,
-        },
+        "route": route,
         "account_alias": stage.session.account_alias,
         "role_alias": stage.session.role_alias,
         "object_alias": stage.test_object.alias,

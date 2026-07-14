@@ -1,0 +1,2 @@
+# This corpus has a byte-for-byte digest guard and must checkout identically.
+apps/api/tests/fixtures/candidate_hunter_release/** text eol=lf

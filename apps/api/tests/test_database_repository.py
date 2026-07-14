@@ -758,6 +758,43 @@ def test_campaign_status_tracks_budget_runtime_across_pause_and_resume():
         session.close()
 
 
+def test_update_pipeline_stage_status_preserves_legacy_stage_updates():
+    session, _ = build_session()
+    try:
+        repository = DatabaseRepository(session)
+        stage = repository.save_pipeline_stage(
+            pipeline_run_id=None,
+            campaign_id=None,
+            task_id=None,
+            stage_key="validation_manual_result",
+            stage_order=1,
+            status="recorded",
+            input_refs=[],
+            output_refs=[],
+            safety_gate_state="manual_review",
+            stop_reason=None,
+            payload={"execution_started": False},
+        )
+
+        updated = repository.update_pipeline_stage_status(
+            stage.id,
+            status="reviewed",
+            safety_gate_state="human_review_complete",
+            stop_reason=None,
+            payload={"execution_started": False, "reviewed": True},
+        )
+
+        assert updated is not None
+        assert updated.status == "reviewed"
+        assert updated.safety_gate_state == "human_review_complete"
+        assert updated.payload == {
+            "execution_started": False,
+            "reviewed": True,
+        }
+    finally:
+        session.close()
+
+
 def test_repository_stores_campaign_default_asset_without_query_secret():
     session, _ = build_session()
     try:

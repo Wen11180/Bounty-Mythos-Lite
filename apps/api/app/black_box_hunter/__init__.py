@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -23,6 +24,65 @@ ALLOWED_METHODS_BY_ACTION = {
     "reversible_update": {"POST", "PUT", "PATCH"},
 }
 BLACK_BOX_VALIDATION_TYPE = "black_box_differential"
+ALLOWED_TIMING_BUCKETS = {
+    "synthetic",
+    "under_100ms",
+    "under_500ms",
+    "under_1s",
+    "under_3s",
+    "over_3s",
+}
+ALLOWED_STOP_REASONS = {
+    "out_of_scope",
+    "automation_not_allowed",
+    "forbidden_validation",
+    "research_only_action",
+    "human_approval_required",
+    "validation_not_allowed",
+    "approval_record_required",
+    "timezone_aware_time_required",
+    "approval_preflight_mismatch",
+    "lease_not_active",
+    "lease_or_approval_expired",
+    "duration_budget_exhausted",
+    "active_origin_required",
+    "active_origin_not_scope_approved",
+    "root_route_not_trialable",
+    "action_not_leased",
+    "unsupported_black_box_action",
+    "method_action_mismatch",
+    "session_inactive",
+    "runtime_session_required",
+    "account_not_leased",
+    "role_not_leased",
+    "test_owned_object_required",
+    "demonstrated_object_provenance_required",
+    "demonstrated_workflow_step_required",
+    "object_provenance_mismatch",
+    "object_owner_not_leased",
+    "workflow_budget_exhausted",
+    "request_budget_exhausted",
+    "concurrency_limit",
+    "rate_limit",
+    "rollback_required",
+    "loopback_origin_required",
+    "local_lab_route_required",
+    "third_party_data_detected",
+    "off_origin_redirect",
+    "expired_session",
+    "session_expired",
+    "rate_limited",
+    "server_error",
+    "rollback_failed",
+    "unstable_response",
+    "unknown_test_object",
+    "request_failed",
+    "captcha_or_waf_detected",
+    "page_closed",
+    "browser_crash",
+    "lease_expired",
+    "app_exit",
+}
 SECRET_MARKERS = (
     "authorization:",
     "bearer ",
@@ -60,6 +120,141 @@ def _require_exact_origin(value: str) -> str:
     ):
         raise ValueError("exact_origin_required")
     return value
+
+
+_UUID_SEGMENT = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_HEX_ID_SEGMENT = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
+_NUMERIC_ID_SEGMENT = re.compile(r"^[0-9]+$")
+_ULID_SEGMENT = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$", re.IGNORECASE)
+_SLUG_SEGMENT = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)+$", re.IGNORECASE)
+_BRACED_PLACEHOLDER = re.compile(r"^\{([^{}]+)\}$")
+_ANGLE_PLACEHOLDER = re.compile(r"^<([^<>]+)>$")
+
+
+def _normalized_parameter_name(value: str) -> str:
+    return value.strip().lower().replace("-", "_")
+
+
+def _placeholder_name(segment: str) -> str | None:
+    placeholder = _BRACED_PLACEHOLDER.fullmatch(segment)
+    if placeholder is not None:
+        return placeholder.group(1)
+    if segment.startswith(":") and len(segment) > 1:
+        return segment[1:]
+    angle_placeholder = _ANGLE_PLACEHOLDER.fullmatch(segment)
+    if angle_placeholder is not None:
+        return angle_placeholder.group(1).split(":")[-1]
+    return None
+
+
+def _is_identifier_placeholder(value: str) -> bool:
+    normalized_name = _normalized_parameter_name(value)
+    return (
+        normalized_name == "object"
+        or normalized_name.endswith("_id")
+        or normalized_name in {"id", "pk", "uuid"}
+    )
+
+
+def _normalize_route_template(
+    value: str,
+    path_parameters: list["WorkflowPathParameter"],
+    *,
+    reject_undeclared_slug_segments: bool = False,
+) -> str:
+    parsed = urlsplit(value)
+    if (
+        not value.startswith("/")
+        or value.startswith("//")
+        or parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or "\\" in value
+        or "%" in value
+    ):
+        raise ValueError("normalized_route_template_required")
+
+    non_empty_segments = [segment for segment in value.split("/") if segment]
+    parameters_by_segment: dict[int, WorkflowPathParameter] = {}
+    for parameter in path_parameters:
+        if parameter.segment > len(non_empty_segments):
+            raise ValueError("path_parameter_segment_required")
+        if parameter.segment in parameters_by_segment:
+            raise ValueError("path_parameter_segment_unique")
+        parameters_by_segment[parameter.segment] = parameter
+
+    normalized_segments: list[str] = []
+    non_empty_index = 0
+    for segment in value.split("/"):
+        if not segment:
+            normalized_segments.append(segment)
+            continue
+        non_empty_index += 1
+        if segment in {".", ".."} or any(
+            ord(character) < 0x20 or ord(character) == 0x7F
+            for character in segment
+        ):
+            raise ValueError("unsafe_route_segment")
+
+        placeholder_name = _placeholder_name(segment)
+        declared_parameter = parameters_by_segment.get(non_empty_index)
+
+        if (
+            _NUMERIC_ID_SEGMENT.fullmatch(segment)
+            or _UUID_SEGMENT.fullmatch(segment)
+            or _ULID_SEGMENT.fullmatch(segment)
+            or _HEX_ID_SEGMENT.fullmatch(segment)
+        ):
+            raise ValueError("concrete_object_id_route_forbidden")
+
+        if declared_parameter is not None:
+            if placeholder_name is None:
+                raise ValueError("path_parameter_segment_required")
+            if (
+                _normalized_parameter_name(placeholder_name) != "object"
+                and _normalized_parameter_name(placeholder_name)
+                != _normalized_parameter_name(declared_parameter.name)
+            ):
+                raise ValueError("path_parameter_name_mismatch")
+
+        if placeholder_name is not None:
+            if _is_identifier_placeholder(placeholder_name) or declared_parameter is not None:
+                normalized_segments.append("{object}")
+                continue
+            raise ValueError("path_parameter_metadata_required")
+        if declared_parameter is not None:
+            raise ValueError("path_parameter_segment_required")
+        if (
+            reject_undeclared_slug_segments
+            and _SLUG_SEGMENT.fullmatch(segment)
+        ):
+            raise ValueError("path_parameter_metadata_required")
+        normalized_segments.append(segment)
+
+    return "/".join(normalized_segments)
+
+
+def _origin_matches_scope_asset(origin: str, asset: str) -> bool:
+    if "://" in asset:
+        try:
+            return _require_exact_origin(asset) == origin
+        except ValueError:
+            return False
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc == asset
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 class RuntimeSessionRegistry:
@@ -218,12 +413,36 @@ class SessionAlias(BaseModel):
         return value
 
 
+class WorkflowPathParameter(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    name: str = Field(min_length=1, max_length=255)
+    segment: int = Field(ge=1)
+    value_type: Literal["string", "integer", "uuid", "ulid", "slug"] = Field(
+        default="string",
+        alias="type",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def require_safe_name(cls, value: str) -> str:
+        if (
+            value.strip() != value
+            or "/" in value
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+            or _has_secret_marker(value)
+        ):
+            raise ValueError("safe_path_parameter_name_required")
+        return value
+
+
 class WorkflowStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow_index: int = Field(ge=1)
     origin: str = Field(min_length=1, max_length=255)
     route_template: str = Field(min_length=1, max_length=1024)
+    path_parameters: list[WorkflowPathParameter] = Field(default_factory=list)
     method: str = Field(min_length=1, max_length=16)
     action: str = Field(min_length=1, max_length=255)
     state: str = Field(min_length=1, max_length=255)
@@ -233,12 +452,13 @@ class WorkflowStep(BaseModel):
     def require_exact_origin(cls, value: str) -> str:
         return _require_exact_origin(value)
 
-    @field_validator("route_template")
-    @classmethod
-    def reject_query_values(cls, value: str) -> str:
-        if "?" in value:
-            raise ValueError("normalized_route_template_required")
-        return value
+    @model_validator(mode="after")
+    def normalize_route_template(self):
+        self.route_template = _normalize_route_template(
+            self.route_template,
+            self.path_parameters,
+        )
+        return self
 
     @field_validator("state")
     @classmethod
@@ -333,7 +553,10 @@ class ObservedWorkflowModel(BaseModel):
                         if workflow.role_rank is not None
                         else {}
                     ),
-                    "steps": [step.model_dump() for step in workflow.steps],
+                    "steps": [
+                        step.model_dump(exclude_defaults=True)
+                        for step in workflow.steps
+                    ],
                     "objects": [
                         {
                             "alias": obj.alias,
@@ -716,6 +939,13 @@ def _build_state_transition_plan(
 class DifferentialTrial(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    trial_class: Literal[
+        "cross_account_object_swap",
+        "lower_role_replay",
+        "unauthenticated_read_only_replay",
+        "owned_parent_child_swap",
+        "reversible_out_of_order_state_transition",
+    ] | None = None
     workflow: WorkflowStep
     session: SessionAlias
     test_object: TestObjectAlias
@@ -732,6 +962,13 @@ class BlackBoxStop(BaseModel):
 
     reason: str = Field(min_length=1, max_length=255)
     terminal: Literal[True] = True
+
+    @field_validator("reason")
+    @classmethod
+    def require_allowlisted_reason(cls, value: str) -> str:
+        if value not in ALLOWED_STOP_REASONS:
+            raise ValueError("unsupported_black_box_stop_reason")
+        return value
 
 
 class TrialObservation(BaseModel):
@@ -752,6 +989,15 @@ class TrialObservation(BaseModel):
     def reject_secret_text(cls, value: str) -> str:
         if _has_secret_marker(value):
             raise ValueError("secret_like_fingerprint")
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+            raise ValueError("sha256_fingerprint_required")
+        return value
+
+    @field_validator("timing_bucket")
+    @classmethod
+    def require_allowlisted_timing_bucket(cls, value: str) -> str:
+        if value not in ALLOWED_TIMING_BUCKETS:
+            raise ValueError("unsupported_timing_bucket")
         return value
 
 
@@ -916,6 +1162,8 @@ def validate_black_box_trial(
     trial: DifferentialTrial,
     *,
     now: datetime,
+    observed_workflows: ObservedWorkflowModel | None = None,
+    runtime_registry: RuntimeSessionRegistry | None = None,
 ) -> BlackBoxTrialDecision:
     scope_decision = evaluate_validation_request(
         rule,
@@ -941,6 +1189,11 @@ def validate_black_box_trial(
         return _blocked_trial_reason("lease_or_approval_expired")
     if (now - lease.issued_at).total_seconds() >= lease.duration_seconds:
         return _blocked_trial_reason("duration_budget_exhausted")
+    if any(
+        not _origin_matches_scope_asset(origin, rule.asset)
+        for origin in lease.active_origins
+    ):
+        return _blocked_trial_reason("active_origin_not_scope_approved")
     if trial.workflow.origin not in lease.active_origins:
         return _blocked_trial_reason("active_origin_required")
     if trial.workflow.route_template == "/":
@@ -953,14 +1206,58 @@ def validate_black_box_trial(
         trial.workflow.action
     ]:
         return _blocked_trial_reason("method_action_mismatch")
-    if not trial.session.active:
+    unauthenticated_read_only_replay = (
+        trial.trial_class == "unauthenticated_read_only_replay"
+        and trial.session.account_alias == "unauthenticated"
+        and trial.session.role_alias == "unauthenticated"
+        and not trial.session.active
+        and trial.workflow.action == "read_only_replay"
+    )
+    if not trial.session.active and not unauthenticated_read_only_replay:
         return _blocked_trial_reason("session_inactive")
-    if trial.session.account_alias not in lease.account_aliases:
+    if (
+        trial.session.account_alias not in lease.account_aliases
+        and not unauthenticated_read_only_replay
+    ):
         return _blocked_trial_reason("account_not_leased")
-    if trial.session.role_alias not in lease.role_aliases:
+    if (
+        trial.session.role_alias not in lease.role_aliases
+        and not unauthenticated_read_only_replay
+    ):
         return _blocked_trial_reason("role_not_leased")
     if not trial.test_object.test_owned:
         return _blocked_trial_reason("test_owned_object_required")
+    if observed_workflows is None or runtime_registry is None:
+        return _blocked_trial_reason("demonstrated_object_provenance_required")
+    observed_object_matches = [
+        (workflow, observed_object)
+        for workflow in observed_workflows.workflows
+        for observed_object in workflow.objects
+        if observed_object.alias == trial.test_object.alias
+    ]
+    try:
+        runtime_registry.object_id(trial.test_object.alias)
+    except KeyError:
+        return _blocked_trial_reason("demonstrated_object_provenance_required")
+    if len(observed_object_matches) != 1:
+        return _blocked_trial_reason("demonstrated_object_provenance_required")
+    observed_workflow, observed_object = observed_object_matches[0]
+    if (
+        trial.test_object.owner_alias != observed_object.owner_alias
+        or trial.test_object.state != observed_object.state
+        or trial.test_object.reversible != observed_object.reversible
+    ):
+        return _blocked_trial_reason("object_provenance_mismatch")
+    if trial.workflow not in observed_workflow.steps:
+        return _blocked_trial_reason("demonstrated_workflow_step_required")
+    try:
+        session_handle = runtime_registry.session_handle(
+            trial.session.account_alias
+        )
+    except KeyError:
+        return _blocked_trial_reason("runtime_session_required")
+    if session_handle is None:
+        return _blocked_trial_reason("runtime_session_required")
     if trial.test_object.owner_alias not in lease.account_aliases:
         return _blocked_trial_reason("object_owner_not_leased")
     if trial.workflow.workflow_index > lease.workflow_budget:

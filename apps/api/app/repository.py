@@ -1068,6 +1068,13 @@ class DatabaseRepository:
         record = self.get_pipeline_stage(stage_id)
         if record is None:
             return None
+        record_payload = record.payload if isinstance(record.payload, dict) else {}
+        if (
+            record.stage_key.startswith("black_box_")
+            and record_payload.get("schema_version")
+            in {"black_box_audit_v1", "black_box_audit_v2"}
+        ):
+            raise ValueError("append_only_black_box_audit_stage")
         record.status = _safe_display_value(status)
         record.safety_gate_state = _safe_display_value(safety_gate_state)
         record.stop_reason = _safe_display_value(stop_reason)

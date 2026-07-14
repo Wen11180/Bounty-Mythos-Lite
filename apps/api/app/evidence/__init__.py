@@ -1,6 +1,8 @@
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.black_box_hunter import WorkflowPathParameter, _normalize_route_template
 
 
 SUPPORTED_EVIDENCE_TYPES = {
@@ -14,6 +16,66 @@ SUPPORTED_EVIDENCE_TYPES = {
 }
 DEFAULT_SAFETY_NOTES = ["test_accounts_only", "no_real_user_data"]
 REDACTED = "[REDACTED]"
+BLACK_BOX_ROUTE_METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH"}
+
+
+class _SanitizedBlackBoxEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    route: str = Field(min_length=1, max_length=1024)
+    path_parameters: list[WorkflowPathParameter] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+    )
+
+    @model_validator(mode="after")
+    def require_normalized_route(self):
+        method, separator, path = self.route.partition(" ")
+        if (
+            separator != " "
+            or method not in BLACK_BOX_ROUTE_METHODS
+        ):
+            raise ValueError("normalized_black_box_route_required")
+        try:
+            normalized_path = _normalize_route_template(
+                path,
+                self.path_parameters,
+                reject_undeclared_slug_segments=True,
+            )
+        except ValueError as exc:
+            raise ValueError("normalized_black_box_route_required") from exc
+        if "{object}" not in normalized_path:
+            raise ValueError("normalized_black_box_route_required")
+        self.route = f"{method} {normalized_path}"
+        return self
+
+
+class SanitizedCrossAccountDiff(_SanitizedBlackBoxEvidence):
+    canary_match: bool | None = None
+    structural_identity_match: bool | None = None
+
+    @model_validator(mode="after")
+    def require_structural_signal(self):
+        if self.canary_match is None and self.structural_identity_match is None:
+            raise ValueError("sanitized_cross_account_signal_required")
+        return self
+
+
+class SanitizedParentChildMatrix(_SanitizedBlackBoxEvidence):
+    state_effect: bool | None = None
+    structural_identity_match: bool | None = None
+
+    @model_validator(mode="after")
+    def require_structural_signal(self):
+        if self.state_effect is None and self.structural_identity_match is None:
+            raise ValueError("sanitized_parent_child_signal_required")
+        return self
+
+
+BLACK_BOX_EVIDENCE_MODELS = {
+    "sanitized_cross_account_diff": SanitizedCrossAccountDiff,
+    "sanitized_parent_child_matrix": SanitizedParentChildMatrix,
+}
 
 
 class EvidenceItem(BaseModel):
@@ -35,10 +97,15 @@ def build_evidence_bundle(finding_id: str, items: list[dict]) -> EvidenceBundle:
         evidence_type = str(item.get("type", ""))
         if evidence_type not in SUPPORTED_EVIDENCE_TYPES:
             raise ValueError(f"unsupported evidence type: {evidence_type}")
+        content = item.get("content")
+        if evidence_model := BLACK_BOX_EVIDENCE_MODELS.get(evidence_type):
+            content = evidence_model.model_validate(content).model_dump(
+                exclude_none=True
+            )
         evidence_items.append(
             EvidenceItem(
                 type=evidence_type,
-                content=_redact_secret_like_strings(item.get("content")),
+                content=_redact_secret_like_strings(content),
             )
         )
 

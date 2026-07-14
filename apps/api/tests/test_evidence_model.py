@@ -133,3 +133,165 @@ def test_build_evidence_bundle_accepts_only_sanitized_black_box_evidence_types()
         "sanitized_cross_account_diff",
         "sanitized_parent_child_matrix",
     ]
+
+
+@pytest.mark.parametrize(
+    ("evidence_type", "content"),
+    [
+        (
+            "sanitized_cross_account_diff",
+            {
+                "route": "GET /widgets/{object}",
+                "canary_match": True,
+                "request_headers": {"X-Test": "raw"},
+            },
+        ),
+        (
+            "sanitized_cross_account_diff",
+            {
+                "route": "GET /widgets/{object}",
+                "canary_match": True,
+                "response_body": "raw response content",
+            },
+        ),
+        (
+            "sanitized_cross_account_diff",
+            {
+                "route": "GET /widgets/{object}",
+                "canary_match": True,
+                "query_values": {"object": "concrete-id"},
+            },
+        ),
+        (
+            "sanitized_parent_child_matrix",
+            {
+                "route": "GET /parents/{object}/children/{object}",
+                "state_effect": False,
+                "object_id": "concrete-id",
+            },
+        ),
+        (
+            "sanitized_cross_account_diff",
+            {
+                "route": "GET /widgets/{object}",
+                "state_effect": True,
+            },
+        ),
+        (
+            "sanitized_parent_child_matrix",
+            {
+                "route": "GET /parents/{object}/children/{object}",
+                "canary_match": True,
+            },
+        ),
+    ],
+)
+def test_sanitized_black_box_evidence_rejects_raw_or_wrong_schema_fields(
+    evidence_type,
+    content,
+):
+    with pytest.raises(ValueError):
+        build_evidence_bundle(
+            "black-box-unsafe",
+            [{"type": evidence_type, "content": content}],
+        )
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "GET /widgets/{object}/123",
+        "GET /widgets/{object}/550e8400-e29b-41d4-a716-446655440000",
+        "GET https://api.example.com/widgets/{object}",
+        "GET //api.example.com/widgets/{object}",
+    ],
+)
+def test_sanitized_black_box_evidence_rejects_absolute_or_concrete_routes(route):
+    with pytest.raises(ValueError, match="normalized_black_box_route_required"):
+        build_evidence_bundle(
+            "black-box-unsafe-route",
+            [
+                {
+                    "type": "sanitized_cross_account_diff",
+                    "content": {"route": route, "canary_match": True},
+                }
+            ],
+        )
+
+
+def test_sanitized_black_box_evidence_normalizes_route_placeholders():
+    bundle = build_evidence_bundle(
+        "black-box-normalized-route",
+        [
+            {
+                "type": "sanitized_cross_account_diff",
+                "content": {
+                    "route": "GET /widgets/{widget_id}",
+                    "canary_match": True,
+                },
+            }
+        ],
+    )
+
+    assert bundle.items[0].content["route"] == "GET /widgets/{object}"
+
+
+def test_sanitized_black_box_evidence_rejects_undeclared_slug_segment():
+    with pytest.raises(ValueError, match="normalized_black_box_route_required"):
+        build_evidence_bundle(
+            "black-box-ambiguous-route",
+            [
+                {
+                    "type": "sanitized_cross_account_diff",
+                    "content": {
+                        "route": "GET /widgets/{object}/customer-alpha",
+                        "canary_match": True,
+                    },
+                }
+            ],
+        )
+
+
+def test_sanitized_black_box_evidence_carries_declared_slug_metadata():
+    bundle = build_evidence_bundle(
+        "black-box-declared-route",
+        [
+            {
+                "type": "sanitized_cross_account_diff",
+                "content": {
+                    "route": "GET /widgets/{object}/:customer_slug",
+                    "path_parameters": [
+                        {
+                            "name": "customer_slug",
+                            "segment": 3,
+                            "value_type": "slug",
+                        }
+                    ],
+                    "canary_match": True,
+                },
+            }
+        ],
+    )
+
+    content = bundle.items[0].content
+    assert content["route"] == "GET /widgets/{object}/{object}"
+    assert content["path_parameters"] == [
+        {"name": "customer_slug", "segment": 3, "value_type": "slug"}
+    ]
+
+
+def test_sanitized_black_box_evidence_preserves_static_state_literal():
+    bundle = build_evidence_bundle(
+        "black-box-static-route",
+        [
+            {
+                "type": "sanitized_cross_account_diff",
+                "content": {
+                    "route": "GET /widgets/{object}/state",
+                    "canary_match": True,
+                },
+            }
+        ],
+    )
+
+    assert bundle.items[0].content["route"] == "GET /widgets/{object}/state"

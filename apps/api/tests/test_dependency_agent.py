@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from shutil import copytree, ignore_patterns
 
 from app.dependency_agent import (
     STATUS_OK,
@@ -32,13 +33,28 @@ def test_dependency_profile_ssrf_retain_express_from_import():
     assert profile.network_access is False
 
 
-def test_dependency_profile_cal_ssrf_detects_reachable_express_import():
-    profile = build_dependency_profile(package_root=PKG_CAL)
+def test_dependency_profile_cal_ssrf_multiple_npm_imports(tmp_path: Path):
+    package_root = tmp_path / PKG_CAL.name
+    copytree(
+        PKG_CAL,
+        package_root,
+        ignore=ignore_patterns("_upstream"),
+    )
+    upstream = package_root / "_upstream"
+    upstream.mkdir()
+    (upstream / "synthetic_dependencies.ts").write_text(
+        'import axios from "axios";\n'
+        'import ipaddr from "ipaddr.js";\n',
+        encoding="utf-8",
+    )
+
+    profile = build_dependency_profile(package_root=package_root)
+
     assert profile.status == STATUS_OK
-    assert profile.component_count >= 1
+    assert profile.component_count >= 3
     assert profile.reachable_count >= 1
     packages = {c.package for c in profile.components}
-    assert "express" in packages
+    assert {"axios", "express", "ipaddr.js"}.issubset(packages)
     assert profile.live_advisory_lookup is False
     assert profile.execution_allowed is False
 

@@ -1863,6 +1863,15 @@ def get_black_box_review_packet(
     session: Session = Depends(get_session),
 ) -> dict:
     repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(validation_run_id)
+    if validation_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    _raise_if_validation_run_approval_not_active(
+        repository=repository,
+        validation_run=validation_run,
+        campaign=campaign,
+    )
     try:
         projection = load_black_box_audit_projection(
             repository=repository,

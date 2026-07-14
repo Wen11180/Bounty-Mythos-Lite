@@ -4,6 +4,9 @@ from pydantic import ValidationError
 from app import black_box_hunter
 
 
+VALID_FINGERPRINT = f"sha256:{'a' * 64}"
+
+
 def test_observed_workflow_model_keeps_only_safe_alias_provenance():
     workflow = black_box_hunter.ObservedWorkflow(
         workflow_alias="create_widget_a",
@@ -357,7 +360,7 @@ def test_loopback_lab_models_safe_stops_without_preserving_response_data(
 def _observation(**updates):
     payload = {
         "status_class": "2xx",
-        "response_schema_fingerprint": "sha256:synthetic_schema",
+        "response_schema_fingerprint": VALID_FINGERPRINT,
         "timing_bucket": "synthetic",
         "canary_match": None,
         "structural_identity_match": None,

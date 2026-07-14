@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from shutil import copytree, ignore_patterns
 
 from app.intake_agent import (
     STATUS_OK,
@@ -31,13 +32,28 @@ def test_intake_profile_ssrf_retain_detects_ts_express_routes():
     assert profile.attack_surface_summary["entrypoint_count"] >= 1
 
 
-def test_intake_profile_gitea_detects_typescript_model_and_auth_components():
-    profile = build_intake_profile(package_root=PKG_GITEA)
+def test_intake_profile_gitea_detects_go_and_auth_components(tmp_path: Path):
+    package_root = tmp_path / PKG_GITEA.name
+    copytree(
+        PKG_GITEA,
+        package_root,
+        ignore=ignore_patterns("_upstream"),
+    )
+    upstream = package_root / "_upstream"
+    upstream.mkdir()
+    (upstream / "permission.go").write_text(
+        "package synthetic\n\n"
+        'import "code.gitea.io/gitea/modules/context"\n\n'
+        "func CanRead(permission bool) bool { return permission }\n",
+        encoding="utf-8",
+    )
+
+    profile = build_intake_profile(package_root=package_root)
+
     assert profile.status == STATUS_OK
-    assert "TypeScript" in profile.language
-    assert "Express" in profile.framework
-    assert any("/local/gitea/" in entrypoint for entrypoint in profile.entrypoints)
-    assert profile.auth_components
+    assert "Go" in profile.language
+    assert "Gitea" in profile.framework
+    assert "_upstream/permission.go" in profile.auth_components
     assert profile.execution_allowed is False
 
 
