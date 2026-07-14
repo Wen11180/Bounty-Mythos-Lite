@@ -265,6 +265,454 @@ class TestObjectAlias(BaseModel):
         return value
 
 
+class ObservedTestObject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alias: str = Field(min_length=1, max_length=255)
+    owner_alias: str = Field(min_length=1, max_length=255)
+    parent_alias: str | None = Field(default=None, min_length=1, max_length=255)
+    state: str = Field(min_length=1, max_length=255)
+    reversible: bool
+    provenance: Literal["demonstrated_normal_flow"]
+
+    @field_validator("alias", "owner_alias", "parent_alias", "state")
+    @classmethod
+    def reject_secret_text(cls, value: str | None) -> str | None:
+        if value is not None and _has_secret_marker(value):
+            raise ValueError("secret_like_alias")
+        return value
+
+    @model_validator(mode="after")
+    def reject_self_parent(self):
+        if self.parent_alias == self.alias:
+            raise ValueError("object_parent_must_differ")
+        return self
+
+
+class ObservedWorkflow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_alias: str = Field(min_length=1, max_length=255)
+    session: SessionAlias
+    steps: list[WorkflowStep] = Field(min_length=1)
+    objects: list[ObservedTestObject] = Field(min_length=1)
+    role_rank: int | None = Field(default=None, ge=0, le=100)
+    baseline_stable: bool
+    rollback_ready: bool
+
+    @field_validator("workflow_alias")
+    @classmethod
+    def reject_secret_text(cls, value: str) -> str:
+        if _has_secret_marker(value):
+            raise ValueError("secret_like_alias")
+        return value
+
+    @model_validator(mode="after")
+    def require_session_owned_objects(self):
+        if any(obj.owner_alias != self.session.account_alias for obj in self.objects):
+            raise ValueError("workflow_object_owner_mismatch")
+        return self
+
+
+class ObservedWorkflowModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflows: list[ObservedWorkflow] = Field(min_length=1)
+
+    def safe_projection(self) -> dict:
+        return {
+            "workflows": [
+                {
+                    "workflow_alias": workflow.workflow_alias,
+                    "account_alias": workflow.session.account_alias,
+                    "role_alias": workflow.session.role_alias,
+                    "baseline_stable": workflow.baseline_stable,
+                    "rollback_ready": workflow.rollback_ready,
+                    **(
+                        {"role_rank": workflow.role_rank}
+                        if workflow.role_rank is not None
+                        else {}
+                    ),
+                    "steps": [step.model_dump() for step in workflow.steps],
+                    "objects": [
+                        {
+                            "alias": obj.alias,
+                            "owner_alias": obj.owner_alias,
+                            **(
+                                {"parent_alias": obj.parent_alias}
+                                if obj.parent_alias is not None
+                                else {}
+                            ),
+                            "state": obj.state,
+                            "reversible": obj.reversible,
+                            "provenance": obj.provenance,
+                        }
+                        for obj in workflow.objects
+                    ],
+                }
+                for workflow in self.workflows
+            ]
+        }
+
+
+class PlannedDifferentialTrial(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trial_class: Literal[
+        "cross_account_object_swap",
+        "lower_role_replay",
+        "unauthenticated_read_only_replay",
+        "owned_parent_child_swap",
+        "reversible_out_of_order_state_transition",
+    ]
+    phase: Literal[
+        "baseline",
+        "trial",
+        "owner_control",
+        "session_control",
+        "repeat",
+        "rollback",
+    ]
+    changed_variable: Literal["object", "role", "session", "parent", "state"]
+    workflow: WorkflowStep
+    session: SessionAlias
+    test_object: TestObjectAlias
+    parent_object_alias: str | None = Field(default=None, min_length=1, max_length=255)
+    requires_rollback: bool
+    rollback_ready: bool
+
+    @field_validator("parent_object_alias")
+    @classmethod
+    def reject_secret_parent_alias(cls, value: str | None) -> str | None:
+        if value is not None and _has_secret_marker(value):
+            raise ValueError("secret_like_alias")
+        return value
+
+
+class DifferentialPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trial_class: Literal[
+        "cross_account_object_swap",
+        "lower_role_replay",
+        "unauthenticated_read_only_replay",
+        "owned_parent_child_swap",
+        "reversible_out_of_order_state_transition",
+    ]
+    baseline: PlannedDifferentialTrial
+    trial: PlannedDifferentialTrial
+    owner_control: PlannedDifferentialTrial
+    session_control: PlannedDifferentialTrial
+    repeat: PlannedDifferentialTrial
+    rollback: PlannedDifferentialTrial | None = None
+
+    @model_validator(mode="after")
+    def require_consistent_trial_stages(self):
+        stages = (
+            self.baseline,
+            self.trial,
+            self.owner_control,
+            self.session_control,
+            self.repeat,
+        )
+        if any(stage.trial_class != self.trial_class for stage in stages):
+            raise ValueError("plan_trial_class_mismatch")
+        if self.rollback is not None and self.rollback.trial_class != self.trial_class:
+            raise ValueError("plan_rollback_class_mismatch")
+        return self
+
+
+def plan_differential_trials(model: ObservedWorkflowModel) -> list[DifferentialPlan]:
+    _require_plannable_workflows(model)
+    source_workflow = max(model.workflows, key=lambda workflow: workflow.role_rank)
+    alternate_workflow = min(model.workflows, key=lambda workflow: workflow.role_rank)
+    source_object = source_workflow.objects[0]
+    alternate_object = alternate_workflow.objects[0]
+    source_read = _workflow_step(source_workflow, "read_only_replay")
+    alternate_read = _workflow_step(alternate_workflow, "read_only_replay")
+    update_step = _workflow_step(source_workflow, "reversible_update")
+    child_object = next(
+        (obj for obj in source_workflow.objects if obj.parent_alias is not None),
+        None,
+    )
+    alternate_parent = next(
+        (
+            obj
+            for obj in source_workflow.objects
+            if obj.parent_alias is None and obj.alias != child_object.parent_alias
+        ),
+        None,
+    ) if child_object is not None else None
+    if child_object is None or alternate_parent is None:
+        raise ValueError("owned_parent_child_relationship_required")
+
+    cross_account = _build_read_only_plan(
+        trial_class="cross_account_object_swap",
+        changed_variable="object",
+        source_workflow=source_workflow,
+        alternate_workflow=alternate_workflow,
+        source_object=source_object,
+        alternate_object=alternate_object,
+        source_read=source_read,
+        trial_session=alternate_workflow.session,
+    )
+    lower_role = _build_read_only_plan(
+        trial_class="lower_role_replay",
+        changed_variable="role",
+        source_workflow=source_workflow,
+        alternate_workflow=alternate_workflow,
+        source_object=source_object,
+        alternate_object=alternate_object,
+        source_read=source_read,
+        trial_session=alternate_workflow.session,
+    )
+    unauthenticated = _build_read_only_plan(
+        trial_class="unauthenticated_read_only_replay",
+        changed_variable="session",
+        source_workflow=source_workflow,
+        alternate_workflow=alternate_workflow,
+        source_object=source_object,
+        alternate_object=alternate_object,
+        source_read=source_read,
+        trial_session=SessionAlias(
+            account_alias="unauthenticated",
+            role_alias="unauthenticated",
+            active=False,
+        ),
+    )
+    parent_child = _build_read_only_plan(
+        trial_class="owned_parent_child_swap",
+        changed_variable="parent",
+        source_workflow=source_workflow,
+        alternate_workflow=alternate_workflow,
+        source_object=child_object,
+        alternate_object=alternate_object,
+        source_read=source_read,
+        trial_session=source_workflow.session,
+        parent_object_alias=alternate_parent.alias,
+    )
+    state_transition = _build_state_transition_plan(
+        source_workflow=source_workflow,
+        alternate_workflow=alternate_workflow,
+        source_object=source_object,
+        alternate_object=alternate_object,
+        source_read=source_read,
+        alternate_read=alternate_read,
+        update_step=update_step,
+    )
+    return [cross_account, lower_role, unauthenticated, parent_child, state_transition]
+
+
+def _require_plannable_workflows(model: ObservedWorkflowModel) -> None:
+    if len(model.workflows) < 2:
+        raise ValueError("two_demonstrated_workflows_required")
+    if any(not workflow.baseline_stable for workflow in model.workflows):
+        raise ValueError("stable_baseline_required")
+    if any(workflow.role_rank is None for workflow in model.workflows):
+        raise ValueError("role_rank_required")
+    if len({workflow.session.account_alias for workflow in model.workflows}) < 2:
+        raise ValueError("two_account_aliases_required")
+    if len({workflow.role_rank for workflow in model.workflows}) < 2:
+        raise ValueError("lower_role_relationship_required")
+    if any(not workflow.rollback_ready for workflow in model.workflows):
+        raise ValueError("rollback_ready_required")
+    if any(
+        not obj.reversible
+        for workflow in model.workflows
+        for obj in workflow.objects
+    ):
+        raise ValueError("reversible_objects_required")
+
+
+def _workflow_step(workflow: ObservedWorkflow, action: str) -> WorkflowStep:
+    step = next((step for step in workflow.steps if step.action == action), None)
+    if step is None:
+        raise ValueError(f"demonstrated_{action}_required")
+    return step
+
+
+def _planned_trial(
+    *,
+    trial_class: Literal[
+        "cross_account_object_swap",
+        "lower_role_replay",
+        "unauthenticated_read_only_replay",
+        "owned_parent_child_swap",
+        "reversible_out_of_order_state_transition",
+    ],
+    phase: Literal[
+        "baseline",
+        "trial",
+        "owner_control",
+        "session_control",
+        "repeat",
+        "rollback",
+    ],
+    changed_variable: Literal["object", "role", "session", "parent", "state"],
+    workflow: WorkflowStep,
+    session: SessionAlias,
+    observed_object: ObservedTestObject,
+    requires_rollback: bool,
+    parent_object_alias: str | None = None,
+) -> PlannedDifferentialTrial:
+    return PlannedDifferentialTrial(
+        trial_class=trial_class,
+        phase=phase,
+        changed_variable=changed_variable,
+        workflow=workflow,
+        session=session,
+        test_object=TestObjectAlias(
+            alias=observed_object.alias,
+            owner_alias=observed_object.owner_alias,
+            test_owned=True,
+            reversible=observed_object.reversible,
+            state=observed_object.state,
+        ),
+        parent_object_alias=parent_object_alias,
+        requires_rollback=requires_rollback,
+        rollback_ready=requires_rollback,
+    )
+
+
+def _build_read_only_plan(
+    *,
+    trial_class: Literal[
+        "cross_account_object_swap",
+        "lower_role_replay",
+        "unauthenticated_read_only_replay",
+        "owned_parent_child_swap",
+    ],
+    changed_variable: Literal["object", "role", "session", "parent"],
+    source_workflow: ObservedWorkflow,
+    alternate_workflow: ObservedWorkflow,
+    source_object: ObservedTestObject,
+    alternate_object: ObservedTestObject,
+    source_read: WorkflowStep,
+    trial_session: SessionAlias,
+    parent_object_alias: str | None = None,
+) -> DifferentialPlan:
+    return DifferentialPlan(
+        trial_class=trial_class,
+        baseline=_planned_trial(
+            trial_class=trial_class,
+            phase="baseline",
+            changed_variable=changed_variable,
+            workflow=source_read,
+            session=source_workflow.session,
+            observed_object=source_object,
+            requires_rollback=False,
+        ),
+        trial=_planned_trial(
+            trial_class=trial_class,
+            phase="trial",
+            changed_variable=changed_variable,
+            workflow=source_read,
+            session=trial_session,
+            observed_object=source_object,
+            requires_rollback=False,
+            parent_object_alias=parent_object_alias,
+        ),
+        owner_control=_planned_trial(
+            trial_class=trial_class,
+            phase="owner_control",
+            changed_variable=changed_variable,
+            workflow=source_read,
+            session=source_workflow.session,
+            observed_object=source_object,
+            requires_rollback=False,
+        ),
+        session_control=_planned_trial(
+            trial_class=trial_class,
+            phase="session_control",
+            changed_variable=changed_variable,
+            workflow=_workflow_step(alternate_workflow, "read_only_replay"),
+            session=alternate_workflow.session,
+            observed_object=alternate_object,
+            requires_rollback=False,
+        ),
+        repeat=_planned_trial(
+            trial_class=trial_class,
+            phase="repeat",
+            changed_variable=changed_variable,
+            workflow=source_read,
+            session=trial_session,
+            observed_object=source_object,
+            requires_rollback=False,
+            parent_object_alias=parent_object_alias,
+        ),
+    )
+
+
+def _build_state_transition_plan(
+    *,
+    source_workflow: ObservedWorkflow,
+    alternate_workflow: ObservedWorkflow,
+    source_object: ObservedTestObject,
+    alternate_object: ObservedTestObject,
+    source_read: WorkflowStep,
+    alternate_read: WorkflowStep,
+    update_step: WorkflowStep,
+) -> DifferentialPlan:
+    trial_class = "reversible_out_of_order_state_transition"
+    return DifferentialPlan(
+        trial_class=trial_class,
+        baseline=_planned_trial(
+            trial_class=trial_class,
+            phase="baseline",
+            changed_variable="state",
+            workflow=source_read,
+            session=source_workflow.session,
+            observed_object=source_object,
+            requires_rollback=True,
+        ),
+        trial=_planned_trial(
+            trial_class=trial_class,
+            phase="trial",
+            changed_variable="state",
+            workflow=update_step,
+            session=source_workflow.session,
+            observed_object=source_object,
+            requires_rollback=True,
+        ),
+        owner_control=_planned_trial(
+            trial_class=trial_class,
+            phase="owner_control",
+            changed_variable="state",
+            workflow=source_read,
+            session=source_workflow.session,
+            observed_object=source_object,
+            requires_rollback=True,
+        ),
+        session_control=_planned_trial(
+            trial_class=trial_class,
+            phase="session_control",
+            changed_variable="state",
+            workflow=alternate_read,
+            session=alternate_workflow.session,
+            observed_object=alternate_object,
+            requires_rollback=True,
+        ),
+        repeat=_planned_trial(
+            trial_class=trial_class,
+            phase="repeat",
+            changed_variable="state",
+            workflow=update_step,
+            session=source_workflow.session,
+            observed_object=source_object,
+            requires_rollback=True,
+        ),
+        rollback=_planned_trial(
+            trial_class=trial_class,
+            phase="rollback",
+            changed_variable="state",
+            workflow=update_step,
+            session=source_workflow.session,
+            observed_object=source_object,
+            requires_rollback=True,
+        ),
+    )
+
+
 class DifferentialTrial(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -279,6 +727,13 @@ class DifferentialTrial(BaseModel):
     rollback_ready: bool
 
 
+class BlackBoxStop(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=255)
+    terminal: Literal[True] = True
+
+
 class TrialObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -286,8 +741,11 @@ class TrialObservation(BaseModel):
     response_schema_fingerprint: str = Field(min_length=1, max_length=255)
     timing_bucket: str = Field(min_length=1, max_length=64)
     canary_match: bool | None = None
+    structural_identity_match: bool | None = None
     state_effect: bool | None = None
+    intended_sharing: bool = False
     redacted: Literal[True]
+    stop: BlackBoxStop | None = None
 
     @field_validator("response_schema_fingerprint")
     @classmethod
@@ -297,11 +755,150 @@ class TrialObservation(BaseModel):
         return value
 
 
-class BlackBoxStop(BaseModel):
+class DifferentialEvidenceBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    baseline_a: TrialObservation | None = None
+    baseline_b: TrialObservation | None = None
+    trial: TrialObservation
+    owner_control: TrialObservation | None = None
+    session_control: TrialObservation | None = None
+    repeat: TrialObservation | None = None
+    rollback: TrialObservation | None = None
+    independent_repeat: bool
+    rollback_required: bool
+
+
+class DifferentialEvidenceDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal[
+        "hypothesis",
+        "observed",
+        "reproduced",
+        "review_ready",
+        "refuted",
+        "inconclusive",
+    ]
     reason: str = Field(min_length=1, max_length=255)
-    terminal: Literal[True] = True
+
+
+def evaluate_differential_evidence(
+    bundle: DifferentialEvidenceBundle,
+) -> DifferentialEvidenceDecision:
+    observations = [
+        observation
+        for observation in (
+            bundle.baseline_a,
+            bundle.baseline_b,
+            bundle.trial,
+            bundle.owner_control,
+            bundle.session_control,
+            bundle.repeat,
+            bundle.rollback,
+        )
+        if observation is not None
+    ]
+    if any(observation.stop is not None for observation in observations):
+        return DifferentialEvidenceDecision(
+            status="inconclusive",
+            reason="terminal_transport_stop",
+        )
+    if bundle.trial.intended_sharing:
+        return DifferentialEvidenceDecision(
+            status="refuted",
+            reason="intended_sharing_observed",
+        )
+    if not _strong_signal(bundle.trial):
+        return DifferentialEvidenceDecision(
+            status="inconclusive",
+            reason="status_only_signal_insufficient",
+        )
+    if not _stable_baselines(bundle.baseline_a, bundle.baseline_b):
+        return DifferentialEvidenceDecision(
+            status="inconclusive",
+            reason="stable_dual_baseline_required",
+        )
+    if not _safe_control(bundle.owner_control) or not _safe_control(bundle.session_control):
+        return DifferentialEvidenceDecision(
+            status="hypothesis",
+            reason="owner_and_session_controls_required",
+        )
+    if bundle.repeat is None:
+        return DifferentialEvidenceDecision(
+            status="observed",
+            reason="independent_repeat_required",
+        )
+    if not bundle.independent_repeat or not _matches_trial(bundle.trial, bundle.repeat):
+        return DifferentialEvidenceDecision(
+            status="observed",
+            reason="matching_independent_repeat_required",
+        )
+    if bundle.rollback_required:
+        if bundle.rollback is None:
+            return DifferentialEvidenceDecision(
+                status="reproduced",
+                reason="rollback_observation_required",
+            )
+        if not _successful_rollback(bundle.rollback):
+            return DifferentialEvidenceDecision(
+                status="inconclusive",
+                reason="rollback_not_confirmed",
+            )
+    return DifferentialEvidenceDecision(
+        status="review_ready",
+        reason="bounded_differential_evidence_complete",
+    )
+
+
+def _strong_signal(observation: TrialObservation) -> bool:
+    return any(
+        (
+            observation.canary_match is True,
+            observation.structural_identity_match is True,
+            observation.state_effect is True,
+        )
+    )
+
+
+def _safe_control(observation: TrialObservation | None) -> bool:
+    return (
+        observation is not None
+        and observation.status_class == "2xx"
+        and not observation.intended_sharing
+        and _strong_signal(observation)
+    )
+
+
+def _stable_baselines(
+    baseline_a: TrialObservation | None,
+    baseline_b: TrialObservation | None,
+) -> bool:
+    return (
+        _safe_control(baseline_a)
+        and _safe_control(baseline_b)
+        and baseline_a.response_schema_fingerprint
+        == baseline_b.response_schema_fingerprint
+    )
+
+
+def _matches_trial(
+    trial: TrialObservation,
+    repeat: TrialObservation,
+) -> bool:
+    return (
+        repeat.status_class == "2xx"
+        and _strong_signal(repeat)
+        and repeat.response_schema_fingerprint == trial.response_schema_fingerprint
+    )
+
+
+def _successful_rollback(observation: TrialObservation) -> bool:
+    return (
+        observation.status_class == "2xx"
+        and observation.stop is None
+        and observation.state_effect is True
+    )
 
 
 class BlackBoxTrialDecision(BaseModel):
