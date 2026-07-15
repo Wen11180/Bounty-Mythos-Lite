@@ -76,6 +76,16 @@ test("desktop shell gives child services the derived workspace root and local St
   assert.doesNotMatch(main, /process\.env\.STUDIO_WEB_ORIGIN/);
 });
 
+test("desktop runner binds remote lease decisions only to the derived loopback API", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+
+  assert.match(main, /createRemoteLeaseApiClient/);
+  assert.match(main, /studioApiBaseUrl\s*=\s*config\.apiBaseUrl/);
+  assert.match(main, /authorizeRemoteRequest:\s*remoteLeaseApi\.authorize/);
+  assert.match(main, /completeRemoteRequest:\s*remoteLeaseApi\.complete/);
+  assert.match(main, /stopRemoteLease:\s*remoteLeaseApi\.stop/);
+});
+
 test("Compose keeps infrastructure private and binds Studio HTTP services to loopback", async () => {
   const compose = await fs.readFile(
     path.join(__dirname, "..", "..", "infra", "docker-compose.yml"),

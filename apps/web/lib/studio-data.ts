@@ -1,4 +1,5 @@
 import type { CampaignControlCenter } from "./campaigns-data";
+import type { StudioBlackBoxRemoteStatusResponse } from "./api";
 
 export type StudioWorkspaceManifest = {
   name?: string;
@@ -59,6 +60,64 @@ export type StudioWorkspaceSummary = {
   scopeGuardLabel: string;
   blockedActions: string[];
 };
+
+export type StudioBlackBoxRemoteStatusView = {
+  detail: string;
+  label: string;
+  warning: boolean;
+};
+
+export function toStudioBlackBoxRemoteStatus(
+  status: StudioBlackBoxRemoteStatusResponse,
+): StudioBlackBoxRemoteStatusView {
+  if (
+    status.profile !== "remote_human_lease"
+    || status.report_submission_allowed !== false
+    || status.human_confirmation_allowed !== false
+    || (status.state === "active" && (!status.expires_at || status.relogin_required))
+  ) {
+    return {
+      label: "Blocked invalid status",
+      detail: "Remote execution remains blocked because the status contract drifted.",
+      warning: true,
+    };
+  }
+  if (status.state === "active") {
+    return {
+      label: "Active human lease",
+      detail: `Expires ${status.expires_at}. Report submission and human confirmation remain blocked.`,
+      warning: false,
+    };
+  }
+  if (status.state === "expired") {
+    return {
+      label: "Expired - re-login required",
+      detail: "The prior browser sessions and execution lease are no longer reusable.",
+      warning: true,
+    };
+  }
+  if (status.state === "stopped" || status.state === "relogin_required") {
+    return {
+      label: "Stopped - re-login required",
+      detail: status.stop_reason
+        ? `Terminal stop: ${status.stop_reason}. Start again only with fresh human approval.`
+        : "Start again only with fresh human approval.",
+      warning: true,
+    };
+  }
+  if (status.state === "awaiting_lease") {
+    return {
+      label: "Awaiting fresh human lease",
+      detail: "No remote execution is active. A dedicated approval and preflight are required.",
+      warning: true,
+    };
+  }
+  return {
+    label: "Disabled by default",
+    detail: "The remote human-lease profile is disabled and cannot dispatch requests.",
+    warning: true,
+  };
+}
 
 export type StudioMissionCandidateInput = {
   affected_code_path?: string;

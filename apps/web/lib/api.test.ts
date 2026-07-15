@@ -9,6 +9,7 @@ import {
   createStudioWorkspaceBenchmarkTemplate,
   createStudioWorkspace,
   createFindingCandidate,
+  getStudioBlackBoxRemoteStatus,
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
   exportStudioWorkspaceCampaignHunterReport,
@@ -626,6 +627,41 @@ test("studio black-box lab helpers send only alias-only local review contracts",
       JSON.stringify(calls),
       /cookie|credential|password|authorization|session_storage|workspace_manifest/i,
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio remote black-box status is read-only and keeps both human gates blocked", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  let requestedMethod = "";
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    requestedMethod = init?.method ?? "GET";
+    return new Response(
+      JSON.stringify({
+        profile: "remote_human_lease",
+        enabled: true,
+        state: "active",
+        expires_at: "2026-07-15T12:30:00Z",
+        relogin_required: false,
+        stop_reason: null,
+        report_submission_allowed: false,
+        human_confirmation_allowed: false,
+      }),
+      { status: 200 },
+    );
+  };
+
+  try {
+    const status = await getStudioBlackBoxRemoteStatus();
+
+    assert.equal(new URL(requestedUrl).pathname, "/mythos/studio/black-box-remote/status");
+    assert.equal(requestedMethod, "GET");
+    assert.equal(status.state, "active");
+    assert.equal(status.report_submission_allowed, false);
+    assert.equal(status.human_confirmation_allowed, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

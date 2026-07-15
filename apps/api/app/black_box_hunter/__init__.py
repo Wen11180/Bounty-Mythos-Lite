@@ -81,7 +81,15 @@ ALLOWED_STOP_REASONS = {
     "page_closed",
     "browser_crash",
     "lease_expired",
+    "operator_stop",
     "app_exit",
+    "policy_or_scope_changed",
+    "lease_digest_mismatch",
+    "session_changed",
+    "approval_preflight_changed",
+    "ambiguous_authority",
+    "remote_profile_disabled",
+    "relogin_required",
 }
 SECRET_MARKERS = (
     "authorization:",

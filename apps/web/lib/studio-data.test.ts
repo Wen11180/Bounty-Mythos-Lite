@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import test from "node:test";
 import {
   toStudioArtifactChecklist,
+  toStudioBlackBoxRemoteStatus,
   toStudioCampaignHunterCandidateCards,
   toStudioCandidateCards,
   toStudioMissionHandoffBrief,
@@ -26,6 +27,48 @@ test("workspace summary maps manifest safety state", () => {
   assert.equal(summary.name, "acme-api");
   assert.equal(summary.scopeGuardLabel, "Missing scope");
   assert.deepEqual(summary.blockedActions, ["execute_live_validation"]);
+});
+
+test("remote human-lease status exposes expiry and fails closed on gate drift", () => {
+  const active = toStudioBlackBoxRemoteStatus({
+    profile: "remote_human_lease",
+    enabled: true,
+    state: "active",
+    expires_at: "2026-07-15T12:30:00Z",
+    relogin_required: false,
+    stop_reason: null,
+    report_submission_allowed: false,
+    human_confirmation_allowed: false,
+  });
+  assert.equal(active.label, "Active human lease");
+  assert.equal(active.warning, false);
+  assert.match(active.detail, /2026-07-15T12:30:00Z/);
+
+  const expired = toStudioBlackBoxRemoteStatus({
+    profile: "remote_human_lease",
+    enabled: true,
+    state: "expired",
+    expires_at: "2026-07-15T12:30:00Z",
+    relogin_required: true,
+    stop_reason: null,
+    report_submission_allowed: false,
+    human_confirmation_allowed: false,
+  });
+  assert.equal(expired.label, "Expired - re-login required");
+  assert.equal(expired.warning, true);
+
+  const gateDrift = toStudioBlackBoxRemoteStatus({
+    profile: "remote_human_lease",
+    enabled: true,
+    state: "active",
+    expires_at: null,
+    relogin_required: false,
+    stop_reason: null,
+    report_submission_allowed: true,
+    human_confirmation_allowed: false,
+  });
+  assert.equal(gateDrift.label, "Blocked invalid status");
+  assert.equal(gateDrift.warning, true);
 });
 
 test("workspace summary counts campaign hunter runs as desktop sessions", () => {
@@ -2815,6 +2858,21 @@ test("studio workbench exposes explicit non-persistent local black-box lab contr
   const labEnd = workbench.indexOf("async function handleOpenWorkspace");
   assert.ok(labStart >= 0 && labEnd > labStart);
   assert.doesNotMatch(workbench.slice(labStart, labEnd), /setManifest|localStorage|sessionStorage/);
+});
+
+test("studio workbench shows remote human-lease status without execution controls", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /getStudioBlackBoxRemoteStatus/);
+  assert.match(workbench, /toStudioBlackBoxRemoteStatus/);
+  assert.match(workbench, /Remote human-lease profile \(read-only\)/);
+  assert.match(workbench, /Refresh remote status/);
+  assert.match(workbench, /Report submission remains blocked/);
+  assert.match(workbench, /Re-login required/);
+  assert.doesNotMatch(workbench, /Run remote trial|Enable remote automation|issueRemoteBlackBoxLease/);
 });
 
 test("studio workbench surfaces exported markdown report drafts", async () => {

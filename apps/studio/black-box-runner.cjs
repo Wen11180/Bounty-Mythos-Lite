@@ -1,4 +1,4 @@
-const { createHash } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 
 const allowedOperations = new Set([
   "create_sessions",
@@ -12,6 +12,68 @@ const allowedMethodsByAction = {
   reversible_update: new Set(["PATCH", "POST", "PUT"]),
   test_object_create: new Set(["POST"]),
 };
+const remoteTrialClasses = new Set([
+  "cross_account_object_swap",
+  "lower_role_replay",
+  "unauthenticated_read_only_replay",
+  "owned_parent_child_swap",
+  "reversible_out_of_order_state_transition",
+]);
+const remoteStopReasons = new Set([
+  "account_not_leased",
+  "action_not_leased",
+  "active_origin_not_scope_approved",
+  "active_origin_required",
+  "approval_preflight_changed",
+  "approval_preflight_mismatch",
+  "approval_record_required",
+  "app_exit",
+  "ambiguous_authority",
+  "automation_not_allowed",
+  "browser_crash",
+  "captcha_or_waf_detected",
+  "concurrency_limit",
+  "demonstrated_object_provenance_required",
+  "demonstrated_workflow_step_required",
+  "duration_budget_exhausted",
+  "expired_session",
+  "forbidden_validation",
+  "human_approval_required",
+  "lease_digest_mismatch",
+  "lease_expired",
+  "lease_not_active",
+  "lease_or_approval_expired",
+  "method_action_mismatch",
+  "object_owner_not_leased",
+  "object_provenance_mismatch",
+  "off_origin_redirect",
+  "operator_stop",
+  "out_of_scope",
+  "page_closed",
+  "policy_or_scope_changed",
+  "rate_limit",
+  "rate_limited",
+  "research_only_action",
+  "relogin_required",
+  "remote_profile_disabled",
+  "request_budget_exhausted",
+  "request_failed",
+  "role_not_leased",
+  "rollback_required",
+  "rollback_failed",
+  "root_route_not_trialable",
+  "server_error",
+  "session_changed",
+  "session_expired",
+  "session_inactive",
+  "test_owned_object_required",
+  "third_party_data_detected",
+  "timezone_aware_time_required",
+  "unsupported_black_box_action",
+  "unstable_response",
+  "validation_not_allowed",
+  "workflow_budget_exhausted",
+]);
 const allowedParameterTypes = new Set([
   "boolean",
   "integer",
@@ -72,7 +134,10 @@ function createAppExitHandler({ closeSessions, exit, killChildren }) {
 
 class BlackBoxRunner {
   constructor(options) {
+    this.authorizeRemoteRequest = options.authorizeRemoteRequest ?? null;
     this.browserType = options.browserType ?? null;
+    this.completeRemoteRequest = options.completeRemoteRequest ?? null;
+    this.createId = options.createId ?? (() => randomUUID().replaceAll("-", ""));
     this.now = options.now ?? Date.now;
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
@@ -80,6 +145,11 @@ class BlackBoxRunner {
     this.browser = null;
     this.expiryTimer = null;
     this.lease = null;
+    this.sessionGeneration = null;
+    this.remoteRequestCounts = new Map();
+    this.remoteLastRequestAt = null;
+    this.remoteBackendStopped = false;
+    this.stopRemoteLease = options.stopRemoteLease ?? null;
     this.sessions = new Map();
     this.workflows = new Map();
     this.recordedWorkflows = new Map();
@@ -151,6 +221,12 @@ class BlackBoxRunner {
         await context.route("**/*", (route) =>
           this._guardRoute(route, request.lease, generation),
         );
+        if (request.lease.profile === "remote_human_lease") {
+          this._assertCreationCurrent(generation);
+          await context.routeWebSocket("**/*", (webSocketRoute) =>
+            this._guardRemoteWebSocket(webSocketRoute, generation),
+          );
+        }
         this._assertCreationCurrent(generation);
         const page = await context.newPage();
         this._assertCreationCurrent(generation);
@@ -159,6 +235,16 @@ class BlackBoxRunner {
 
       this.browser = browser;
       this.lease = request.lease;
+      this.sessionGeneration = request.lease.profile === "remote_human_lease"
+        ? safeAlias(`session_generation_${String(this.createId()).replaceAll("-", "")}`)
+        : null;
+      this.remoteRequestCounts = new Map(
+        request.lease.profile === "remote_human_lease"
+          ? [...request.lease.remote_workflows.keys()].map((alias) => [alias, 0])
+          : [],
+      );
+      this.remoteLastRequestAt = null;
+      this.remoteBackendStopped = false;
       this.stopEvent = null;
       for (const record of records) {
         this.sessions.set(record.session_alias, record);
@@ -230,6 +316,9 @@ class BlackBoxRunner {
     if (new Set(workflows.map((workflow) => workflow.aliases.workflow_alias)).size !== workflows.length) {
       throw new Error("unique_workflow_aliases_required");
     }
+    if (this.lease.profile === "remote_human_lease") {
+      validateRemoteRecordedWorkflows(workflows, this.lease);
+    }
 
     this.workflows = new Map(
       workflows.map((workflow) => [workflow.aliases.workflow_alias, workflow]),
@@ -274,10 +363,17 @@ class BlackBoxRunner {
     if (this.now() >= this.lease.expires_at_ms) {
       return this._stopOnce("lease_expired");
     }
+    const remote = this.lease.profile === "remote_human_lease";
     if (this.activeTrial) {
+      if (remote) {
+        return this._stopOnce("concurrency_limit");
+      }
       throw new Error("trial_already_running");
     }
-    if (!payload || !hasOnlyKeys(payload, ["session_alias", "workflow_alias"])) {
+    const trialKeys = remote
+      ? ["session_alias", "trial_class", "workflow_alias"]
+      : ["session_alias", "workflow_alias"];
+    if (!payload || !hasOnlyKeys(payload, trialKeys)) {
       throw new Error("safe_trial_aliases_required");
     }
 
@@ -289,18 +385,200 @@ class BlackBoxRunner {
     if (!this.lease.active_origins.has(recorded.workflow.origin)) {
       throw new Error("active_origin_not_lease_approved");
     }
-    if (!allowedMethodsByAction.read_only_replay.has(recorded.workflow.method)) {
+    let remoteWorkflow = null;
+    if (remote) {
+      remoteWorkflow = this.lease.remote_workflows.get(payload.workflow_alias);
+      if (
+        !remoteWorkflow
+        || !remoteWorkflow.allowed_trial_classes.has(payload.trial_class)
+        || recorded.workflow.action !== remoteWorkflow.action
+        || recorded.workflow.method !== remoteWorkflow.method
+        || recorded.workflow.route_template !== remoteWorkflow.route_template
+        || recorded.workflow.aliases.object_aliases.length !== 1
+        || recorded.workflow.aliases.object_aliases[0] !== remoteWorkflow.object_alias
+      ) {
+        return this._stopOnce("demonstrated_workflow_step_required");
+      }
+      if (remoteWorkflow.action !== "read_only_replay") {
+        return this._stopOnce("rollback_required");
+      }
+      const budgetStop = this._remoteBudgetStopReason(payload.workflow_alias);
+      if (budgetStop) {
+        return this._stopOnce(budgetStop);
+      }
+    } else if (!allowedMethodsByAction.read_only_replay.has(recorded.workflow.method)) {
       throw new Error("unsupported_trial_action");
     }
 
     const trial = { generation: this.lifecycleGeneration };
     this.activeTrial = trial;
     try {
+      if (remote) {
+        return await this._runRemoteTrial(
+          session,
+          recorded,
+          remoteWorkflow,
+          payload.trial_class,
+          trial,
+        );
+      }
       return await this._runTrial(session, recorded, trial);
     } finally {
       if (this.activeTrial === trial) {
         this.activeTrial = null;
       }
+    }
+  }
+
+  _remoteBudgetStopReason(workflowAlias) {
+    const now = this.now();
+    if (
+      now - this.lease.issued_at_ms >= this.lease.duration_seconds * 1_000
+      || now >= this.lease.expires_at_ms
+    ) {
+      return "duration_budget_exhausted";
+    }
+    if (
+      (this.remoteRequestCounts.get(workflowAlias) ?? 0)
+      >= this.lease.request_budget_per_workflow
+    ) {
+      return "request_budget_exhausted";
+    }
+    if (
+      this.remoteLastRequestAt !== null
+      && now - this.remoteLastRequestAt < this.lease.min_interval_seconds * 1_000
+    ) {
+      return "rate_limit";
+    }
+    return null;
+  }
+
+  async _runRemoteTrial(session, recorded, remoteWorkflow, trialClass, trial) {
+    if (typeof this.authorizeRemoteRequest !== "function") {
+      return this._stopOnce("approval_preflight_changed");
+    }
+
+    let authorization;
+    try {
+      authorization = validateRemoteDecision(await this.authorizeRemoteRequest({
+        lease_digest: this.lease.lease_digest,
+        request: {
+          object_alias: remoteWorkflow.object_alias,
+          session_generation: this.sessionGeneration,
+          target_account_alias: session.account_alias,
+          target_role_alias: session.role_alias,
+          trial_class: trialClass,
+          workflow_alias: remoteWorkflow.workflow_alias,
+        },
+      }), "authorization");
+    } catch {
+      return this._stopOnce("ambiguous_authority");
+    }
+    if (!authorization.allowed) {
+      this.remoteBackendStopped = true;
+      return this._stopOnce(authorization.reason);
+    }
+    const cancelledAfterAuthorization = this._cancelledTrialResult(trial);
+    if (cancelledAfterAuthorization) {
+      return cancelledAfterAuthorization;
+    }
+
+    this.remoteRequestCounts.set(
+      remoteWorkflow.workflow_alias,
+      (this.remoteRequestCounts.get(remoteWorkflow.workflow_alias) ?? 0) + 1,
+    );
+    this.remoteLastRequestAt = this.now();
+    const startedAt = this.now();
+    let response;
+    try {
+      response = await session.context.request.fetch(recorded.request_url, {
+        failOnStatusCode: false,
+        maxRedirects: 0,
+        method: recorded.workflow.method,
+      });
+    } catch {
+      const cancelled = this._cancelledTrialResult(trial);
+      if (cancelled) {
+        return cancelled;
+      }
+      return this._completeRemoteTrial(authorization.request_grant_id, "request_failed");
+    }
+
+    let cancelled = this._cancelledTrialResult(trial);
+    if (cancelled) {
+      return cancelled;
+    }
+    let outcome;
+    let trace;
+    try {
+      outcome = await this._responseStopReason(response);
+      if (
+        !outcome
+        && response.status() >= 200
+        && response.status() < 300
+        && session.account_alias !== remoteWorkflow.object_owner_alias
+      ) {
+        outcome = "ambiguous_authority";
+      }
+      if (!outcome) {
+        trace = await this._buildTrace(
+          recorded.workflow,
+          session,
+          response,
+          startedAt,
+        );
+      }
+    } catch {
+      cancelled = this._cancelledTrialResult(trial);
+      if (cancelled) {
+        return cancelled;
+      }
+      return this._completeRemoteTrial(
+        authorization.request_grant_id,
+        "unstable_response",
+      );
+    }
+    cancelled = this._cancelledTrialResult(trial);
+    if (cancelled) {
+      return cancelled;
+    }
+    if (outcome) {
+      return this._completeRemoteTrial(authorization.request_grant_id, outcome);
+    }
+    const completion = await this._completeRemoteGrant(
+      authorization.request_grant_id,
+      "success",
+    );
+    if (!completion.allowed) {
+      this.remoteBackendStopped = true;
+      return this._stopOnce(completion.reason);
+    }
+    const result = this._safeEvent({ event: "trial_result", trace });
+    this.emit(result);
+    return result;
+  }
+
+  async _completeRemoteTrial(requestGrantId, outcome) {
+    const completion = await this._completeRemoteGrant(requestGrantId, outcome);
+    if (!completion.allowed) {
+      this.remoteBackendStopped = true;
+    }
+    return this._stopOnce(completion.allowed ? outcome : completion.reason);
+  }
+
+  async _completeRemoteGrant(requestGrantId, outcome) {
+    try {
+      return validateRemoteDecision(await this.completeRemoteRequest({
+        lease_digest: this.lease.lease_digest,
+        outcome,
+        request_grant_id: requestGrantId,
+      }), "completion");
+    } catch {
+      return {
+        allowed: false,
+        reason: "ambiguous_authority",
+        request_grant_id: null,
+      };
     }
   }
 
@@ -356,7 +634,10 @@ class BlackBoxRunner {
     if (reason === "lease_expired" || reason === "browser_crash") {
       return this._stopOnce(reason);
     }
-    await this._closeResources();
+    await Promise.all([
+      this._notifyRemoteStop(reason),
+      this._closeResources(),
+    ]);
     return this._safeEvent({ event: "sessions_closed", reason });
   }
 
@@ -560,6 +841,9 @@ class BlackBoxRunner {
     if (status === 429) {
       return "rate_limited";
     }
+    if (this.lease.profile === "remote_human_lease" && status >= 500) {
+      return "server_error";
+    }
     if (status === 401 || authenticationRoutePattern.test(parsed.pathname)) {
       return "session_expired";
     }
@@ -631,6 +915,16 @@ class BlackBoxRunner {
     }
   }
 
+  async _guardRemoteWebSocket(webSocketRoute, generation) {
+    try {
+      await webSocketRoute.close({ code: 1008 });
+    } finally {
+      if (generation === this.lifecycleGeneration && !this.closing && !this.stopEvent) {
+        await this._enqueue(() => this._stopOnce("ambiguous_authority"));
+      }
+    }
+  }
+
   _cancelledTrialResult(trial) {
     if (this.activeTrial === trial && trial.generation === this.lifecycleGeneration) {
       return null;
@@ -649,7 +943,10 @@ class BlackBoxRunner {
     this.state = "stopped";
     const safeStop = this._safeEvent(this.stopEvent);
     this.emit(safeStop);
-    await this._closeResources();
+    await Promise.all([
+      this._notifyRemoteStop(reason),
+      this._closeResources(),
+    ]);
     return safeStop;
   }
 
@@ -695,6 +992,10 @@ class BlackBoxRunner {
       this.traces = [];
       this.browser = null;
       this.lease = null;
+      this.sessionGeneration = null;
+      this.remoteRequestCounts.clear();
+      this.remoteLastRequestAt = null;
+      this.remoteBackendStopped = false;
       await Promise.allSettled(contexts.map((context) => context.close()));
       if (browser) {
         try {
@@ -714,9 +1015,44 @@ class BlackBoxRunner {
   _safeEvent(event) {
     return JSON.parse(JSON.stringify(event));
   }
+
+  async _notifyRemoteStop(reason) {
+    if (
+      this.remoteBackendStopped
+      || this.lease?.profile !== "remote_human_lease"
+      || typeof this.stopRemoteLease !== "function"
+    ) {
+      return;
+    }
+    this.remoteBackendStopped = true;
+    try {
+      const decision = validateRemoteDecision(await this.stopRemoteLease({
+        lease_digest: this.lease.lease_digest,
+        reason,
+      }), "stop");
+      if (decision.allowed) {
+        throw new Error("terminal_remote_stop_required");
+      }
+    } catch {
+      // The local contexts still close; remote authorization remains fail-closed.
+    }
+  }
 }
 
 function validateSessionRequest(payload, now) {
+  if (
+    payload
+    && typeof payload === "object"
+    && !Array.isArray(payload)
+    && hasOnlyKeys(payload, ["remote_lease", "sessions"])
+    && payload.remote_lease
+  ) {
+    return validateRemoteSessionRequest(payload, now);
+  }
+  return validateLocalSessionRequest(payload, now);
+}
+
+function validateLocalSessionRequest(payload, now) {
   if (
     !payload
     || typeof payload !== "object"
@@ -780,8 +1116,501 @@ function validateSessionRequest(payload, now) {
       active_origins: activeOrigins,
       expires_at_ms: expiresAt,
       passive_origins: passiveOrigins,
+      profile: "local_lab",
     },
     sessions,
+  };
+}
+
+function validateRemoteSessionRequest(payload, now) {
+  if (
+    !payload
+    || typeof payload !== "object"
+    || Array.isArray(payload)
+    || !hasOnlyKeys(payload, ["remote_lease", "sessions"])
+  ) {
+    throw new Error("safe_session_request_required");
+  }
+  const authority = payload.remote_lease;
+  if (
+    !authority
+    || typeof authority !== "object"
+    || Array.isArray(authority)
+    || !hasOnlyKeys(authority, [
+      "approval_id",
+      "approved_at",
+      "human_confirmation_allowed",
+      "lease",
+      "lease_digest",
+      "preflight_id",
+      "profile",
+      "report_submission_allowed",
+      "workflows",
+    ])
+    || authority.profile !== "remote_human_lease"
+  ) {
+    throw new Error("safe_remote_human_lease_required");
+  }
+  if (
+    authority.report_submission_allowed !== false
+    || authority.human_confirmation_allowed !== false
+  ) {
+    throw new Error("remote_human_gate_must_remain_blocked");
+  }
+  if (
+    typeof authority.lease_digest !== "string"
+    || !/^sha256:[0-9a-f]{64}$/u.test(authority.lease_digest)
+    || remoteLeaseDigest(authority) !== authority.lease_digest
+  ) {
+    throw new Error("lease_digest_mismatch");
+  }
+  safeAlias(authority.approval_id);
+  safeAlias(authority.preflight_id);
+
+  const lease = authority.lease;
+  if (
+    !lease
+    || typeof lease !== "object"
+    || Array.isArray(lease)
+    || !hasOnlyKeys(lease, [
+      "account_aliases",
+      "active_origins",
+      "allowed_actions",
+      "asset",
+      "duration_seconds",
+      "expires_at",
+      "issued_at",
+      "lease_id",
+      "min_interval_seconds",
+      "passive_origins",
+      "plan_digest",
+      "policy_digest",
+      "request_budget_per_workflow",
+      "role_aliases",
+      "rollback_required",
+      "scope_digest",
+      "workflow_budget",
+    ])
+  ) {
+    throw new Error("safe_remote_execution_lease_required");
+  }
+  safeAlias(lease.lease_id);
+  const activeOrigins = validateRemoteOrigins(lease.active_origins);
+  const passiveOrigins = validateRemoteOrigins(lease.passive_origins);
+  if (activeOrigins.size !== 1) {
+    throw new Error("single_remote_active_origin_required");
+  }
+  if ([...activeOrigins].some((origin) => passiveOrigins.has(origin))) {
+    throw new Error("active_passive_origin_overlap");
+  }
+  const activeOrigin = [...activeOrigins][0];
+  const parsedActiveOrigin = parseUrl(activeOrigin);
+  if (
+    typeof lease.asset !== "string"
+    || ![activeOrigin, parsedActiveOrigin.hostname, parsedActiveOrigin.host].includes(lease.asset)
+  ) {
+    throw new Error("remote_origin_approval_mismatch");
+  }
+  for (const digest of [lease.policy_digest, lease.scope_digest, lease.plan_digest]) {
+    if (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(digest)) {
+      throw new Error("safe_remote_digest_required");
+    }
+  }
+  const accountAliases = validateSafeAliasList(lease.account_aliases, 2, 2);
+  const roleAliases = validateSafeAliasList(lease.role_aliases, 1, 10);
+  const allowedActions = validateAllowedActions(lease.allowed_actions);
+  if (lease.rollback_required !== true) {
+    throw new Error("remote_rollback_required");
+  }
+  if (
+    !Number.isInteger(lease.workflow_budget)
+    || lease.workflow_budget < 1
+    || lease.workflow_budget > 3
+    || !Number.isInteger(lease.request_budget_per_workflow)
+    || lease.request_budget_per_workflow < 1
+    || lease.request_budget_per_workflow > 50
+    || !Number.isInteger(lease.duration_seconds)
+    || lease.duration_seconds < 1
+    || lease.duration_seconds > 1_800
+    || !Number.isInteger(lease.min_interval_seconds)
+    || lease.min_interval_seconds < 3
+  ) {
+    throw new Error("fixed_remote_budget_required");
+  }
+  const issuedAt = Date.parse(lease.issued_at);
+  const expiresAt = Date.parse(lease.expires_at);
+  const approvedAt = Date.parse(authority.approved_at);
+  if (
+    !Number.isFinite(issuedAt)
+    || !Number.isFinite(expiresAt)
+    || !Number.isFinite(approvedAt)
+    || issuedAt > now
+    || approvedAt > now
+    || now - approvedAt > 30 * 60 * 1_000
+    || expiresAt <= now
+    || expiresAt - issuedAt > lease.duration_seconds * 1_000
+  ) {
+    throw new Error("fresh_single_run_remote_lease_required");
+  }
+  if (
+    !Array.isArray(authority.workflows)
+    || authority.workflows.length < 1
+    || authority.workflows.length !== lease.workflow_budget
+  ) {
+    throw new Error("recorded_remote_workflows_required");
+  }
+  const remoteWorkflows = new Map();
+  for (const workflow of authority.workflows) {
+    const validated = validateRemoteWorkflowLease(
+      workflow,
+      activeOrigin,
+      accountAliases,
+      roleAliases,
+      allowedActions,
+    );
+    if (
+      remoteWorkflows.has(validated.workflow_alias)
+      || [...remoteWorkflows.values()].some(
+        (candidate) => candidate.workflow_index === validated.workflow_index,
+      )
+    ) {
+      throw new Error("unique_remote_workflows_required");
+    }
+    remoteWorkflows.set(validated.workflow_alias, validated);
+  }
+  if ([...remoteWorkflows.values()].some(
+    (workflow) => workflow.workflow_index > remoteWorkflows.size,
+  )) {
+    throw new Error("contiguous_remote_workflow_indexes_required");
+  }
+
+  const sessions = validateSessions(payload.sessions);
+  if (sessions.some(
+    (session) => !accountAliases.has(session.account_alias)
+      || !roleAliases.has(session.role_alias),
+  )) {
+    throw new Error("leased_remote_sessions_required");
+  }
+  return {
+    lease: {
+      account_aliases: accountAliases,
+      active_origins: activeOrigins,
+      allowed_actions: allowedActions,
+      duration_seconds: lease.duration_seconds,
+      expires_at_ms: expiresAt,
+      issued_at_ms: issuedAt,
+      lease_digest: authority.lease_digest,
+      min_interval_seconds: lease.min_interval_seconds,
+      passive_origins: passiveOrigins,
+      profile: "remote_human_lease",
+      remote_workflows: remoteWorkflows,
+      request_budget_per_workflow: lease.request_budget_per_workflow,
+      role_aliases: roleAliases,
+      workflow_budget: lease.workflow_budget,
+    },
+    sessions,
+  };
+}
+
+function remoteLeaseDigest(authority) {
+  try {
+    const unsigned = {
+      approval_id: authority.approval_id,
+      approved_at: authority.approved_at,
+      human_confirmation_allowed: authority.human_confirmation_allowed,
+      lease: authority.lease,
+      preflight_id: authority.preflight_id,
+      profile: authority.profile,
+      report_submission_allowed: authority.report_submission_allowed,
+      workflows: authority.workflows,
+    };
+    const canonical = canonicalJson(unsigned);
+    if (typeof canonical !== "string") {
+      return null;
+    }
+    return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+  } catch {
+    return null;
+  }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+    ).join(",")}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new Error("canonical_json_value_required");
+  }
+  return encoded;
+}
+
+function validateRemoteOrigins(origins) {
+  if (!Array.isArray(origins)) {
+    throw new Error("exact_https_remote_origin_required");
+  }
+  const normalized = origins.map(exactHttpsRemoteOrigin);
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error("unique_exact_origins_required");
+  }
+  return new Set(normalized);
+}
+
+function exactHttpsRemoteOrigin(value) {
+  const parsed = parseUrl(value);
+  if (
+    typeof value !== "string"
+    || !isAscii(value)
+    || value.includes("*")
+    || !parsed
+    || parsed.protocol !== "https:"
+    || Boolean(parsed.username)
+    || Boolean(parsed.password)
+    || value !== parsed.origin
+  ) {
+    throw new Error("exact_https_remote_origin_required");
+  }
+  return parsed.origin;
+}
+
+function validateSafeAliasList(values, minimum, maximum) {
+  if (!Array.isArray(values) || values.length < minimum || values.length > maximum) {
+    throw new Error("safe_alias_list_required");
+  }
+  const aliases = values.map(safeAlias);
+  if (new Set(aliases).size !== aliases.length) {
+    throw new Error("unique_safe_aliases_required");
+  }
+  return new Set(aliases);
+}
+
+function validateAllowedActions(actions) {
+  if (!Array.isArray(actions) || actions.length < 1 || actions.length > 3) {
+    throw new Error("safe_remote_actions_required");
+  }
+  const normalized = actions.map((action) => {
+    if (typeof action !== "string" || !allowedMethodsByAction[action]) {
+      throw new Error("safe_remote_actions_required");
+    }
+    return action;
+  });
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error("unique_remote_actions_required");
+  }
+  return new Set(normalized);
+}
+
+function validateRemoteWorkflowLease(
+  workflow,
+  activeOrigin,
+  accountAliases,
+  roleAliases,
+  allowedActions,
+) {
+  if (
+    !workflow
+    || typeof workflow !== "object"
+    || Array.isArray(workflow)
+    || !hasOnlyKeys(workflow, [
+      "action",
+      "allowed_trial_classes",
+      "method",
+      "object_alias",
+      "object_owner_alias",
+      "object_reversible",
+      "object_state",
+      "origin",
+      "rollback_ready",
+      "route_template",
+      "source_account_alias",
+      "source_role_alias",
+      "workflow_alias",
+      "workflow_index",
+    ])
+    || !Number.isInteger(workflow.workflow_index)
+    || workflow.workflow_index < 1
+    || workflow.workflow_index > 3
+  ) {
+    throw new Error("safe_remote_workflow_lease_required");
+  }
+  const workflowAlias = safeAlias(workflow.workflow_alias);
+  const sourceAccountAlias = safeAlias(workflow.source_account_alias);
+  const sourceRoleAlias = safeAlias(workflow.source_role_alias);
+  const objectAlias = safeAlias(workflow.object_alias);
+  const objectOwnerAlias = safeAlias(workflow.object_owner_alias);
+  const objectState = safeAlias(workflow.object_state);
+  if (
+    !accountAliases.has(sourceAccountAlias)
+    || !accountAliases.has(objectOwnerAlias)
+    || objectOwnerAlias !== sourceAccountAlias
+    || !roleAliases.has(sourceRoleAlias)
+  ) {
+    throw new Error("test_owned_object_required");
+  }
+  const origin = exactHttpsRemoteOrigin(workflow.origin);
+  if (origin !== activeOrigin) {
+    throw new Error("remote_origin_approval_mismatch");
+  }
+  if (!allowedActions.has(workflow.action)) {
+    throw new Error("safe_remote_workflow_action_required");
+  }
+  const method = String(workflow.method ?? "").toUpperCase();
+  if (!allowedMethodsByAction[workflow.action]?.has(method)) {
+    throw new Error("safe_remote_workflow_action_required");
+  }
+  if (
+    typeof workflow.object_reversible !== "boolean"
+    || typeof workflow.rollback_ready !== "boolean"
+    || (
+      workflow.action !== "read_only_replay"
+      && (!workflow.object_reversible || !workflow.rollback_ready)
+    )
+  ) {
+    throw new Error("remote_rollback_required");
+  }
+  const routeTemplate = validateRouteTemplate(workflow.route_template, []);
+  if (
+    !isAscii(routeTemplate)
+    || routeTemplate.split("/").filter(Boolean).filter((segment) => segment === "{object}").length !== 1
+  ) {
+    throw new Error("normalized_remote_object_route_required");
+  }
+  if (
+    !Array.isArray(workflow.allowed_trial_classes)
+    || workflow.allowed_trial_classes.length < 1
+  ) {
+    throw new Error("safe_remote_trial_classes_required");
+  }
+  const allowedTrialClasses = workflow.allowed_trial_classes.map((trialClass) => {
+    if (typeof trialClass !== "string" || !remoteTrialClasses.has(trialClass)) {
+      throw new Error("safe_remote_trial_classes_required");
+    }
+    return trialClass;
+  });
+  if (new Set(allowedTrialClasses).size !== allowedTrialClasses.length) {
+    throw new Error("unique_remote_trial_classes_required");
+  }
+  return {
+    action: workflow.action,
+    allowed_trial_classes: new Set(allowedTrialClasses),
+    method,
+    object_alias: objectAlias,
+    object_owner_alias: objectOwnerAlias,
+    object_reversible: workflow.object_reversible,
+    object_state: objectState,
+    origin,
+    rollback_ready: workflow.rollback_ready,
+    route_template: routeTemplate,
+    source_account_alias: sourceAccountAlias,
+    source_role_alias: sourceRoleAlias,
+    workflow_alias: workflowAlias,
+    workflow_index: workflow.workflow_index,
+  };
+}
+
+function validateSessions(sessionsInput) {
+  if (!Array.isArray(sessionsInput) || sessionsInput.length !== 2) {
+    throw new Error("exactly_two_sessions_required");
+  }
+  const sessions = sessionsInput.map((session) => {
+    if (
+      !session
+      || typeof session !== "object"
+      || Array.isArray(session)
+      || !hasOnlyKeys(session, ["account_alias", "role_alias", "session_alias"])
+    ) {
+      throw new Error("safe_session_aliases_required");
+    }
+    return {
+      account_alias: safeAlias(session.account_alias),
+      role_alias: safeAlias(session.role_alias),
+      session_alias: safeAlias(session.session_alias),
+    };
+  });
+  if (
+    new Set(sessions.map((session) => session.session_alias)).size !== 2
+    || new Set(sessions.map((session) => session.account_alias)).size !== 2
+    || !sessions.every((session) => session.session_alias === "session_a" || session.session_alias === "session_b")
+  ) {
+    throw new Error("independent_session_aliases_required");
+  }
+  return sessions;
+}
+
+function validateRemoteRecordedWorkflows(workflows, lease) {
+  if (workflows.length !== lease.remote_workflows.size) {
+    throw new Error("recorded_remote_workflow_mismatch");
+  }
+  for (const workflow of workflows) {
+    const planned = lease.remote_workflows.get(workflow.aliases.workflow_alias);
+    if (
+      !planned
+      || workflow.action !== planned.action
+      || workflow.method !== planned.method
+      || workflow.origin !== planned.origin
+      || workflow.route_template !== planned.route_template
+      || workflow.aliases.account_alias !== planned.source_account_alias
+      || workflow.aliases.role_alias !== planned.source_role_alias
+      || workflow.aliases.object_aliases.length !== 1
+      || workflow.aliases.object_aliases[0] !== planned.object_alias
+    ) {
+      throw new Error("recorded_remote_workflow_mismatch");
+    }
+  }
+}
+
+function validateRemoteDecision(decision, phase) {
+  if (
+    !decision
+    || typeof decision !== "object"
+    || Array.isArray(decision)
+    || !hasOnlyKeys(decision, [
+      "allowed",
+      "human_confirmation_allowed",
+      "reason",
+      "report_submission_allowed",
+      "request_grant_id",
+      "stop",
+    ])
+    || typeof decision.allowed !== "boolean"
+    || typeof decision.reason !== "string"
+    || decision.report_submission_allowed !== false
+    || decision.human_confirmation_allowed !== false
+  ) {
+    throw new Error("safe_remote_authorization_decision_required");
+  }
+  if (decision.allowed) {
+    const expectedReason = phase === "authorization"
+      ? "remote_request_authorized"
+      : "remote_request_completed";
+    const validGrant = phase === "authorization"
+      ? typeof decision.request_grant_id === "string"
+        && /^remote_grant_[a-z0-9]{16,48}$/u.test(decision.request_grant_id)
+      : decision.request_grant_id === null;
+    if (decision.reason !== expectedReason || !validGrant || decision.stop !== null) {
+      throw new Error("safe_remote_authorization_decision_required");
+    }
+  } else if (
+    decision.request_grant_id !== null
+    || !remoteStopReasons.has(decision.reason)
+    || !decision.stop
+    || typeof decision.stop !== "object"
+    || Array.isArray(decision.stop)
+    || !hasOnlyKeys(decision.stop, ["reason", "terminal"])
+    || decision.stop.reason !== decision.reason
+    || decision.stop.terminal !== true
+  ) {
+    throw new Error("safe_remote_terminal_stop_required");
+  }
+  return {
+    allowed: decision.allowed,
+    reason: decision.reason,
+    request_grant_id: decision.request_grant_id,
   };
 }
 
@@ -812,7 +1641,9 @@ function validateWorkflow(workflow, lease, sessions) {
   if (!allowedMethods || !allowedMethods.has(method)) {
     throw new Error("safe_workflow_action_required");
   }
-  const origin = exactLoopbackOrigin(workflow.origin);
+  const origin = lease.profile === "remote_human_lease"
+    ? exactHttpsRemoteOrigin(workflow.origin)
+    : exactLoopbackOrigin(workflow.origin);
   const active = lease.active_origins.has(origin);
   const passive = lease.passive_origins.has(origin);
   if (!active && !passive) {
@@ -1018,6 +1849,10 @@ function safeAlias(value) {
     throw new Error("safe_alias_required");
   }
   return value;
+}
+
+function isAscii(value) {
+  return typeof value === "string" && /^[\x20-\x7e]*$/u.test(value);
 }
 
 function isConcreteIdentifier(value) {

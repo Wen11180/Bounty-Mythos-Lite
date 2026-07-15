@@ -12,6 +12,7 @@ import {
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   getCampaignControlCenter,
+  getStudioBlackBoxRemoteStatus,
   getStudioWorkspaceManifest,
   getStudioWorkspaceMission,
   importStudioWorkspaceArtifact,
@@ -28,12 +29,14 @@ import {
   type StudioBlackBoxLabLeasePreviewResponse,
   type StudioBlackBoxLabRunApprovalResponse,
   type StudioBlackBoxLabTraceReviewRequest,
+  type StudioBlackBoxRemoteStatusResponse,
   type StudioMissionDossierExportResponse,
   type StudioReportExportResponse,
   type StudioWorkspaceRunRequest,
 } from "@/lib/api";
 import {
   toStudioArtifactChecklist,
+  toStudioBlackBoxRemoteStatus,
   toStudioCampaignHunterCandidateCards,
   toStudioCandidateCards,
   toStudioMissionHandoffBrief,
@@ -80,6 +83,17 @@ const emptyManifest: StudioWorkspaceManifest = {
     scope_guard_status: "missing_scope",
     blocked_actions: ["execute_live_validation", "touch_real_user_data", "submit_report"],
   },
+};
+
+const remoteStatusFallback: StudioBlackBoxRemoteStatusResponse = {
+  profile: "remote_human_lease",
+  enabled: false,
+  state: "relogin_required",
+  expires_at: null,
+  relogin_required: true,
+  stop_reason: "relogin_required",
+  report_submission_allowed: false,
+  human_confirmation_allowed: false,
 };
 
 function blackBoxLabLeaseExpiry() {
@@ -130,6 +144,8 @@ export function StudioWorkbench() {
   const [labTraceReviewConfirmed, setLabTraceReviewConfirmed] = useState(false);
   const [labApproval, setLabApproval] = useState<StudioBlackBoxLabRunApprovalResponse | null>(null);
   const [labRunnerState, setLabRunnerState] = useState<BlackBoxLabRunnerState>("idle");
+  const [remoteStatus, setRemoteStatus] =
+    useState<StudioBlackBoxRemoteStatusResponse>(remoteStatusFallback);
   const [busy, setBusy] = useState<string | null>(null);
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([
@@ -201,6 +217,11 @@ export function StudioWorkbench() {
     (value) => value.trim(),
   );
   const benchmarkEvidenceGaps = benchmarkResult?.benchmark.evidence_gaps ?? [];
+  const remoteStatusView = useMemo(
+    () => toStudioBlackBoxRemoteStatus(remoteStatus),
+    [remoteStatus],
+  );
+  const remoteReloginRequired = remoteStatusView.warning || remoteStatus.relogin_required;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -208,6 +229,27 @@ export function StudioWorkbench() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    void getStudioBlackBoxRemoteStatus().then((status) => {
+      if (mounted) {
+        setRemoteStatus(status);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  async function handleRefreshRemoteStatus() {
+    setBusy("remote-status");
+    try {
+      setRemoteStatus(await getStudioBlackBoxRemoteStatus());
+    } finally {
+      setBusy(null);
+    }
+  }
 
   function studioResearchRunRequest(path: string): StudioWorkspaceRunRequest | null {
     if (!candidateModelEnabled) {
@@ -1232,6 +1274,40 @@ export function StudioWorkbench() {
               {optionalContextArtifacts.map((item) => `${item.label}: ${item.status}`).join(", ")}
             </p>
           </div>
+        </div>
+      </section>
+
+      <section className="mt-6 border border-[var(--line)] bg-white">
+        <SectionHeader title="Remote human-lease profile (read-only)" />
+        <div className="grid gap-4 p-5 text-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <p className="max-w-3xl text-[var(--muted)]">{remoteStatusView.detail}</p>
+            <ActionButton
+              busy={busy === "remote-status"}
+              disabled={Boolean(busy) && busy !== "remote-status"}
+              icon={<ShieldCheck size={16} aria-hidden="true" />}
+              label="Refresh remote status"
+              onClick={handleRefreshRemoteStatus}
+            />
+          </div>
+          <dl className="grid gap-3 sm:grid-cols-3">
+            <StatusRow
+              label="Lease state"
+              value={remoteStatusView.label}
+              warning={remoteStatusView.warning}
+            />
+            <StatusRow
+              label="Re-login required"
+              value={remoteReloginRequired ? "yes" : "no"}
+              warning={remoteReloginRequired}
+            />
+            <StatusRow label="Report submission" value="blocked" />
+          </dl>
+          <p className="text-xs text-[var(--muted)]">
+            Report submission remains blocked. Human confirmation remains blocked. Any first real
+            run must be user-operated with a fresh dedicated approval; no background scheduling,
+            retry, discovery, or CI execution is available here.
+          </p>
         </div>
       </section>
 

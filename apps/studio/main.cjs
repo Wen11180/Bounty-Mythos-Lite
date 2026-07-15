@@ -6,10 +6,19 @@ const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./la
 const { createAppExitHandler, createBlackBoxRunner } = require("./black-box-runner.cjs");
 const { installStudioNavigationGuard } = require("./navigation-guard.cjs");
 const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
+const { createRemoteLeaseApiClient } = require("./remote-api-client.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
-const blackBoxRunner = createBlackBoxRunner();
+let studioApiBaseUrl = null;
+const remoteLeaseApi = createRemoteLeaseApiClient({
+  getBaseUrl: () => studioApiBaseUrl,
+});
+const blackBoxRunner = createBlackBoxRunner({
+  authorizeRemoteRequest: remoteLeaseApi.authorize,
+  completeRemoteRequest: remoteLeaseApi.complete,
+  stopRemoteLease: remoteLeaseApi.stop,
+});
 
 function spawnChild(command, args, cwd, env = {}) {
   const child = spawn(command, args, {
@@ -108,6 +117,7 @@ app.whenReady().then(async () => {
     const workspaceRoot =
       process.env.STUDIO_WORKSPACE_ROOT || path.join(app.getPath("userData"), "workspaces");
     const config = await createStudioLaunchConfig();
+    studioApiBaseUrl = config.apiBaseUrl;
     startServices(config, workspaceRoot);
     await waitForUrl(config.studioUrl);
     installStudioNavigationGuard(window, config.studioUrl);

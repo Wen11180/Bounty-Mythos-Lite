@@ -589,6 +589,23 @@ export type StudioBlackBoxLabRunApprovalResponse = {
   validation_run_id: string;
 };
 
+export type StudioBlackBoxRemoteStatusResponse = {
+  profile: "remote_human_lease";
+  enabled: boolean;
+  state:
+    | "disabled"
+    | "awaiting_lease"
+    | "active"
+    | "stopped"
+    | "expired"
+    | "relogin_required";
+  expires_at: string | null;
+  relogin_required: boolean;
+  stop_reason: string | null;
+  report_submission_allowed: boolean;
+  human_confirmation_allowed: boolean;
+};
+
 export type StudioWorkspaceCreateRequest = {
   root_path: string;
   name: string;
@@ -1354,6 +1371,19 @@ export function approveStudioBlackBoxLabRun(
   request: StudioBlackBoxLabRunApprovalRequest,
 ): Promise<StudioBlackBoxLabRunApprovalResponse | null> {
   return apiPost("/mythos/studio/black-box-lab/runs/approve", request);
+}
+
+export function getStudioBlackBoxRemoteStatus(): Promise<StudioBlackBoxRemoteStatusResponse> {
+  return apiGet("/mythos/studio/black-box-remote/status", {
+    profile: "remote_human_lease",
+    enabled: false,
+    state: "relogin_required",
+    expires_at: null,
+    relogin_required: true,
+    stop_reason: "relogin_required",
+    report_submission_allowed: false,
+    human_confirmation_allowed: false,
+  });
 }
 
 export function getStudioWorkspaceManifest(

@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -11,6 +12,8 @@ const {
 
 const ACTIVE_ORIGIN = "http://127.0.0.1:4100";
 const PASSIVE_ORIGIN = "http://127.0.0.1:4101";
+const REMOTE_ORIGIN = "https://api.example.test";
+const REMOTE_PASSIVE_ORIGIN = "https://static.example.test";
 const OBJECT_ID = "507f1f77bcf86cd799439011";
 
 test("create_sessions launches exactly two isolated ephemeral contexts", async () => {
@@ -737,6 +740,383 @@ test("[hardening] lease expiry invalidates a pending trial without a late result
   }]);
 });
 
+test("remote sessions require one untampered single-run HTTPS lease", async () => {
+  const fixture = createFixture();
+  const created = await fixture.runner.createSessions(remoteSessionRequest());
+  assert.equal(created.event, "sessions_created");
+  await fixture.runner.closeSessions("operator_stop");
+
+  const tampered = remoteSessionRequest();
+  tampered.remote_lease.lease.policy_digest = `sha256:${"d".repeat(64)}`;
+  await assert.rejects(
+    createFixture().runner.createSessions(tampered),
+    /lease_digest_mismatch/,
+  );
+
+  const discovered = remoteSessionRequest();
+  discovered.remote_lease.root_url = REMOTE_ORIGIN;
+  await assert.rejects(
+    createFixture().runner.createSessions(discovered),
+    /safe_remote_human_lease_required/,
+  );
+
+  await assert.rejects(
+    createFixture().runner.createSessions(remoteSessionRequest({
+      active_origin: "http://api.example.test",
+    })),
+    /exact_https_remote_origin_required/,
+  );
+
+  const readOnly = createFixture();
+  await readOnly.runner.createSessions(remoteSessionRequest({
+    object_reversible: false,
+    rollback_ready: false,
+  }));
+  await readOnly.runner.closeSessions("operator_stop");
+});
+
+test("remote contexts block WebSockets before pages without reading messages", async () => {
+  const fixture = createFixture();
+  await fixture.runner.createSessions(remoteSessionRequest());
+
+  assert.deepEqual(
+    fixture.browser.contexts.map((context) => context.webSocketRoutes.length),
+    [1, 1],
+  );
+  const socket = new FakeWebSocketRoute();
+  await fixture.browser.contexts[0].webSocketRoutes[0].handler(socket);
+  await fixture.runner.flush();
+
+  assert.equal(socket.closeCalls, 1);
+  assert.equal(socket.connectCalls, 0);
+  assert.equal(fixture.events[0].reason, "ambiguous_authority");
+});
+
+test("remote recording accepts only the exact leased workflow plan", async () => {
+  const fixture = createFixture();
+  await fixture.runner.createSessions(remoteSessionRequest());
+  await fixture.runner.startRecording({
+    sessions_ready: true,
+    workflows: [remoteWorkflow()],
+  });
+  const request = new FakeRequest({
+    url: `${REMOTE_ORIGIN}/v1/widgets/${OBJECT_ID}`,
+  });
+  emitExchange(fixture.browser.contexts[0].page, {
+    request,
+    response: new FakeResponse({ request, status: 200, url: request.url() }),
+  });
+  await fixture.runner.flush();
+  const stopped = await fixture.runner.stopRecording();
+  assert.equal(stopped.traces.length, 1);
+  assert.equal(stopped.traces[0].route_template, "/v1/widgets/{object}");
+
+  const mismatch = createFixture();
+  await mismatch.runner.createSessions(remoteSessionRequest());
+  await assert.rejects(
+    mismatch.runner.startRecording({
+      sessions_ready: true,
+      workflows: [remoteWorkflow({ route_template: "/v1/other/{object}" })],
+    }),
+    /recorded_remote_workflow_mismatch/,
+  );
+});
+
+test("remote writes remain fail-closed until an explicit rollback executor exists", async () => {
+  let authorizeCalls = 0;
+  const fixture = createFixture({
+    async authorizeRemoteRequest() {
+      authorizeCalls += 1;
+      return remoteAllowedDecision();
+    },
+  });
+  await fixture.runner.createSessions(remoteSessionRequest({
+    action: "reversible_update",
+    allowed_trial_classes: ["reversible_out_of_order_state_transition"],
+    method: "PATCH",
+  }));
+  await fixture.runner.startRecording({
+    sessions_ready: true,
+    workflows: [remoteWorkflow({ action: "reversible_update", method: "PATCH" })],
+  });
+  const requestUrl = `${REMOTE_ORIGIN}/v1/widgets/${OBJECT_ID}`;
+  const request = new FakeRequest({ method: "PATCH", url: requestUrl });
+  emitExchange(fixture.browser.contexts[0].page, {
+    request,
+    response: new FakeResponse({ request, status: 204, url: requestUrl }),
+  });
+  await fixture.runner.flush();
+  await fixture.runner.stopRecording();
+
+  const stopped = await fixture.runner.runTrial({
+    session_alias: "session_b",
+    trial_class: "reversible_out_of_order_state_transition",
+    workflow_alias: "read_widget_a",
+  });
+
+  assert.equal(stopped.reason, "rollback_required");
+  assert.equal(authorizeCalls, 0);
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 0);
+});
+
+test("remote trial authorizes before fetch and completes without exposing its grant", async () => {
+  const order = [];
+  const authorizations = [];
+  const completions = [];
+  const fixture = createFixture({
+    async authorizeRemoteRequest(input) {
+      order.push("authorize");
+      authorizations.push(input);
+      return remoteAllowedDecision();
+    },
+    async completeRemoteRequest(input) {
+      order.push("complete");
+      completions.push(input);
+      return remoteCompletedDecision();
+    },
+  });
+  const requestUrl = await prepareRemoteRecordedTrial(fixture);
+  fixture.browser.contexts[1].fetchHandler = () => {
+    order.push("fetch");
+    return new FakeResponse({ status: 403, url: requestUrl });
+  };
+
+  const result = await fixture.runner.runTrial({
+    session_alias: "session_b",
+    workflow_alias: "read_widget_a",
+    trial_class: "cross_account_object_swap",
+  });
+
+  assert.deepEqual(order, ["authorize", "fetch", "complete"]);
+  assert.deepEqual(authorizations, [{
+    lease_digest: fixture.remoteLeaseDigest,
+    request: {
+      object_alias: "widget_a",
+      session_generation: "session_generation_test",
+      target_account_alias: "account_b",
+      target_role_alias: "member",
+      trial_class: "cross_account_object_swap",
+      workflow_alias: "read_widget_a",
+    },
+  }]);
+  assert.deepEqual(completions, [{
+    lease_digest: fixture.remoteLeaseDigest,
+    outcome: "success",
+    request_grant_id: "remote_grant_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  }]);
+  assert.equal(result.event, "trial_result");
+  assert.equal(result.trace.status_class, "4xx");
+  assert.doesNotMatch(JSON.stringify(result), /remote_grant|session_generation/);
+});
+
+test("remote authorization denial stops the whole path without fetch or retry", async () => {
+  let authorizeCalls = 0;
+  const fixture = createFixture({
+    async authorizeRemoteRequest() {
+      authorizeCalls += 1;
+      return remoteStoppedDecision("approval_preflight_changed");
+    },
+  });
+  await prepareRemoteRecordedTrial(fixture);
+
+  const first = await fixture.runner.runTrial({
+    session_alias: "session_b",
+    workflow_alias: "read_widget_a",
+    trial_class: "cross_account_object_swap",
+  });
+  const second = await fixture.runner.runTrial({
+    session_alias: "session_b",
+    workflow_alias: "read_widget_a",
+    trial_class: "cross_account_object_swap",
+  });
+
+  assert.equal(first.reason, "approval_preflight_changed");
+  assert.equal(second.reason, "approval_preflight_changed");
+  assert.equal(authorizeCalls, 1);
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 0);
+});
+
+test("remote operator close invalidates pending authorization before fetch", async () => {
+  const authorization = deferred();
+  const serverStop = deferred();
+  const fixture = createFixture({
+    authorizeRemoteRequest: () => authorization.promise,
+    stopRemoteLease: () => serverStop.promise,
+  });
+  await prepareRemoteRecordedTrial(fixture);
+  const trial = fixture.runner.runTrial(remoteTrialRequest());
+  const trialCancelled = assert.rejects(trial, /trial_cancelled/);
+  await Promise.resolve();
+
+  const close = fixture.runner.closeSessions("operator_stop");
+  authorization.resolve(remoteAllowedDecision());
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 0);
+  serverStop.resolve(remoteStoppedDecision("operator_stop"));
+  await close;
+  await trialCancelled;
+});
+
+test("remote runner independently enforces request count and three-second delay", async () => {
+  let authorizeCalls = 0;
+  const fixture = createFixture({
+    async authorizeRemoteRequest() {
+      authorizeCalls += 1;
+      return remoteAllowedDecision();
+    },
+    async completeRemoteRequest() {
+      return remoteCompletedDecision();
+    },
+  });
+  const requestUrl = await prepareRemoteRecordedTrial(fixture, {
+    request_budget_per_workflow: 2,
+  });
+  fixture.browser.contexts[1].fetchResponse = new FakeResponse({
+    status: 403,
+    url: requestUrl,
+  });
+
+  const first = await fixture.runner.runTrial(remoteTrialRequest());
+  assert.equal(first.event, "trial_result");
+  fixture.clock.advance(3_000);
+  const second = await fixture.runner.runTrial(remoteTrialRequest());
+  assert.equal(second.event, "trial_result");
+  fixture.clock.advance(3_000);
+  const exhausted = await fixture.runner.runTrial(remoteTrialRequest());
+
+  assert.equal(exhausted.reason, "request_budget_exhausted");
+  assert.equal(authorizeCalls, 2);
+
+  const earlyFixture = createFixture({
+    authorizeRemoteRequest: async () => remoteAllowedDecision(),
+    completeRemoteRequest: async () => remoteCompletedDecision(),
+  });
+  const earlyUrl = await prepareRemoteRecordedTrial(earlyFixture);
+  earlyFixture.browser.contexts[1].fetchResponse = new FakeResponse({
+    status: 403,
+    url: earlyUrl,
+  });
+  await earlyFixture.runner.runTrial(remoteTrialRequest());
+  const early = await earlyFixture.runner.runTrial(remoteTrialRequest());
+  assert.equal(early.reason, "rate_limit");
+});
+
+test("remote 2xx cross-account content stops as ambiguous without reading the body", async () => {
+  const completions = [];
+  const fixture = createFixture({
+    authorizeRemoteRequest: async () => remoteAllowedDecision(),
+    async completeRemoteRequest(input) {
+      completions.push(input);
+      return remoteStoppedDecision(input.outcome);
+    },
+  });
+  const requestUrl = await prepareRemoteRecordedTrial(fixture);
+  fixture.browser.contexts[1].fetchResponse = new FakeResponse({
+    body: "third-party-content-must-never-be-read-or-returned",
+    status: 200,
+    url: requestUrl,
+  });
+
+  const result = await fixture.runner.runTrial(remoteTrialRequest());
+
+  assert.equal(result.reason, "ambiguous_authority");
+  assert.equal(completions[0].outcome, "ambiguous_authority");
+  assert.doesNotMatch(JSON.stringify(result), /third-party-content/);
+});
+
+test("remote response metadata failure completes the grant and stops", async () => {
+  const outcomes = [];
+  const fixture = createFixture({
+    authorizeRemoteRequest: async () => remoteAllowedDecision(),
+    async completeRemoteRequest(input) {
+      outcomes.push(input.outcome);
+      return remoteStoppedDecision(input.outcome);
+    },
+  });
+  const requestUrl = await prepareRemoteRecordedTrial(fixture);
+  const response = new FakeResponse({ status: 403, url: requestUrl });
+  response.headerValue = async () => {
+    throw new Error("response metadata unavailable");
+  };
+  fixture.browser.contexts[1].fetchResponse = response;
+
+  const result = await fixture.runner.runTrial(remoteTrialRequest());
+
+  assert.equal(result.reason, "unstable_response");
+  assert.deepEqual(outcomes, ["unstable_response"]);
+});
+
+test("remote 429 and server instability report one terminal completion", async (t) => {
+  for (const [status, reason] of [[429, "rate_limited"], [503, "server_error"]]) {
+    await t.test(String(status), async () => {
+      const outcomes = [];
+      const fixture = createFixture({
+        authorizeRemoteRequest: async () => remoteAllowedDecision(),
+        async completeRemoteRequest(input) {
+          outcomes.push(input.outcome);
+          return remoteStoppedDecision(input.outcome);
+        },
+      });
+      const requestUrl = await prepareRemoteRecordedTrial(fixture);
+      fixture.browser.contexts[1].fetchResponse = new FakeResponse({ status, url: requestUrl });
+
+      const result = await fixture.runner.runTrial(remoteTrialRequest());
+      const retry = await fixture.runner.runTrial(remoteTrialRequest());
+
+      assert.equal(result.reason, reason);
+      assert.equal(retry.reason, reason);
+      assert.deepEqual(outcomes, [reason]);
+    });
+  }
+});
+
+test("remote lease cannot grant report submission or human confirmation", async () => {
+  await assert.rejects(
+    createFixture().runner.createSessions(remoteSessionRequest({
+      human_confirmation_allowed: true,
+    })),
+    /remote_human_gate_must_remain_blocked/,
+  );
+  await assert.rejects(
+    createFixture().runner.createSessions(remoteSessionRequest({
+      report_submission_allowed: true,
+    })),
+    /remote_human_gate_must_remain_blocked/,
+  );
+});
+
+test("remote operator close and lease expiry clear server-side execution state", async (t) => {
+  for (const reason of ["operator_stop", "lease_expired"]) {
+    await t.test(reason, async () => {
+      const stops = [];
+      const fixture = createFixture({
+        async stopRemoteLease(input) {
+          stops.push(input);
+          return remoteStoppedDecision(input.reason);
+        },
+      });
+      const request = remoteSessionRequest();
+      await fixture.runner.createSessions(request);
+
+      if (reason === "lease_expired") {
+        await fixture.clock.fireNextTimer();
+      } else {
+        await fixture.runner.closeSessions(reason);
+      }
+
+      assert.deepEqual(stops, [{
+        lease_digest: request.remote_lease.lease_digest,
+        reason,
+      }]);
+      assert.deepEqual(
+        fixture.browser.contexts.map((context) => context.closeCalls),
+        [1, 1],
+      );
+    });
+  }
+});
+
 test("before-quit waits for one app-exit cleanup then exits without recursion", async () => {
   const close = deferred();
   const calls = { close: 0, exit: [], kill: 0, prevented: 0 };
@@ -976,6 +1356,135 @@ function workflow(overrides = {}) {
   };
 }
 
+function remoteSessionRequest(overrides = {}) {
+  const activeOrigin = overrides.active_origin ?? REMOTE_ORIGIN;
+  const authority = {
+    profile: "remote_human_lease",
+    lease: {
+      lease_id: "remote_lease_test",
+      asset: "api.example.test",
+      policy_digest: `sha256:${"a".repeat(64)}`,
+      scope_digest: `sha256:${"b".repeat(64)}`,
+      plan_digest: `sha256:${"c".repeat(64)}`,
+      active_origins: [activeOrigin],
+      passive_origins: [REMOTE_PASSIVE_ORIGIN],
+      account_aliases: ["account_a", "account_b"],
+      role_aliases: ["member"],
+      allowed_actions: [overrides.action ?? "read_only_replay"],
+      rollback_required: true,
+      workflow_budget: 1,
+      request_budget_per_workflow: overrides.request_budget_per_workflow ?? 2,
+      duration_seconds: 300,
+      min_interval_seconds: 3,
+      issued_at: "2026-07-14T12:00:00Z",
+      expires_at: "2026-07-14T12:05:00Z",
+    },
+    approval_id: "approval_remote_test",
+    preflight_id: "validation_remote_test",
+    approved_at: "2026-07-14T12:00:00Z",
+    workflows: [{
+      workflow_index: 1,
+      workflow_alias: "read_widget_a",
+      source_account_alias: "account_a",
+      source_role_alias: "member",
+      origin: activeOrigin,
+      route_template: "/v1/widgets/{object}",
+      method: overrides.method ?? "GET",
+      action: overrides.action ?? "read_only_replay",
+      object_alias: "widget_a",
+      object_owner_alias: "account_a",
+      object_state: "active",
+      object_reversible: overrides.object_reversible ?? true,
+      rollback_ready: overrides.rollback_ready ?? true,
+      allowed_trial_classes: overrides.allowed_trial_classes ?? ["cross_account_object_swap"],
+    }],
+    report_submission_allowed: overrides.report_submission_allowed ?? false,
+    human_confirmation_allowed: overrides.human_confirmation_allowed ?? false,
+  };
+  const leaseDigest = `sha256:${createHash("sha256")
+    .update(canonicalJson(authority))
+    .digest("hex")}`;
+  return {
+    remote_lease: { ...authority, lease_digest: leaseDigest },
+    sessions: [
+      { account_alias: "account_a", role_alias: "member", session_alias: "session_a" },
+      { account_alias: "account_b", role_alias: "member", session_alias: "session_b" },
+    ],
+  };
+}
+
+function remoteWorkflow(overrides = {}) {
+  return workflow({
+    aliases: {
+      account_alias: "account_a",
+      object_aliases: ["widget_a"],
+      role_alias: "member",
+      session_alias: "session_a",
+      workflow_alias: "read_widget_a",
+    },
+    origin: REMOTE_ORIGIN,
+    path_parameters: [
+      { location: "path", name: "widget_id", segment: 3, value_type: "object_alias" },
+    ],
+    query_parameters: [],
+    route_template: "/v1/widgets/{object}",
+    ...overrides,
+  });
+}
+
+function remoteTrialRequest() {
+  return {
+    session_alias: "session_b",
+    workflow_alias: "read_widget_a",
+    trial_class: "cross_account_object_swap",
+  };
+}
+
+function remoteAllowedDecision() {
+  return {
+    allowed: true,
+    reason: "remote_request_authorized",
+    request_grant_id: "remote_grant_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    stop: null,
+    report_submission_allowed: false,
+    human_confirmation_allowed: false,
+  };
+}
+
+function remoteCompletedDecision() {
+  return {
+    allowed: true,
+    reason: "remote_request_completed",
+    request_grant_id: null,
+    stop: null,
+    report_submission_allowed: false,
+    human_confirmation_allowed: false,
+  };
+}
+
+function remoteStoppedDecision(reason) {
+  return {
+    allowed: false,
+    reason,
+    request_grant_id: null,
+    stop: { reason, terminal: true },
+    report_submission_allowed: false,
+    human_confirmation_allowed: false,
+  };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function createFixture(options = {}) {
   const browser = options.browser ?? new FakeBrowser();
   const browserType = options.browserType ?? {
@@ -988,15 +1497,19 @@ function createFixture(options = {}) {
   const clock = createManualClock(Date.parse("2026-07-14T12:00:00Z"));
   const events = [];
   const runner = createBlackBoxRunner({
+    authorizeRemoteRequest: options.authorizeRemoteRequest,
     browserType,
     clearTimer: clock.clearTimer,
+    completeRemoteRequest: options.completeRemoteRequest,
+    createId: () => "test",
     emit(event) {
       events.push(event);
     },
     now: clock.now,
     setTimer: clock.setTimer,
+    stopRemoteLease: options.stopRemoteLease,
   });
-  return { browser, browserType, clock, events, runner };
+  return { browser, browserType, clock, events, remoteLeaseDigest: null, runner };
 }
 
 function deferred() {
@@ -1038,6 +1551,7 @@ class FakeContext {
     this.lifecycle = [];
     this.page = new FakePage();
     this.routes = [];
+    this.webSocketRoutes = [];
     this.request = {
       fetch: async (url, options) => {
         this.fetchCalls.push({ options, url });
@@ -1060,6 +1574,11 @@ class FakeContext {
   async route(matcher, handler) {
     this.lifecycle.push("route");
     this.routes.push({ handler, matcher });
+  }
+
+  async routeWebSocket(matcher, handler) {
+    this.lifecycle.push("routeWebSocket");
+    this.webSocketRoutes.push({ handler, matcher });
   }
 
   async dispatchRoute(request) {
@@ -1092,6 +1611,22 @@ class FakeRoute {
 
   request() {
     return this._request;
+  }
+}
+
+class FakeWebSocketRoute {
+  constructor() {
+    this.closeCalls = 0;
+    this.connectCalls = 0;
+  }
+
+  async close() {
+    this.closeCalls += 1;
+  }
+
+  connectToServer() {
+    this.connectCalls += 1;
+    throw new Error("remote WebSocket must not connect");
   }
 }
 
@@ -1170,6 +1705,25 @@ async function prepareRecordedTrial(fixture) {
   await fixture.runner.createSessions(sessionRequest());
   await fixture.runner.startRecording({ sessions_ready: true, workflows: [workflow()] });
   const requestUrl = `${ACTIVE_ORIGIN}/widgets/${OBJECT_ID}?view=private-value`;
+  const request = new FakeRequest({ url: requestUrl });
+  emitExchange(fixture.browser.contexts[0].page, {
+    request,
+    response: new FakeResponse({ request, status: 200, url: requestUrl }),
+  });
+  await fixture.runner.flush();
+  await fixture.runner.stopRecording();
+  return requestUrl;
+}
+
+async function prepareRemoteRecordedTrial(fixture, leaseOverrides = {}) {
+  const requestPayload = remoteSessionRequest(leaseOverrides);
+  fixture.remoteLeaseDigest = requestPayload.remote_lease.lease_digest;
+  await fixture.runner.createSessions(requestPayload);
+  await fixture.runner.startRecording({
+    sessions_ready: true,
+    workflows: [remoteWorkflow()],
+  });
+  const requestUrl = `${REMOTE_ORIGIN}/v1/widgets/${OBJECT_ID}`;
   const request = new FakeRequest({ url: requestUrl });
   emitExchange(fixture.browser.contexts[0].page, {
     request,

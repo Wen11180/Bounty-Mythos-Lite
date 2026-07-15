@@ -1,7 +1,9 @@
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
+from threading import RLock
 from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -12,12 +14,21 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.artifact_ingestion import normalize_artifact
+from app.black_box_hunter import BlackBoxExecutionLease, BlackBoxStop, LeaseApproval
 from app.black_box_hunter.audit import (
     BlackBoxAuditError,
     BlackBoxAuditProjection,
     BlackBoxBoundedResultRequest,
     load_black_box_audit_projection,
     record_black_box_bounded_result,
+)
+from app.black_box_hunter.remote_profile import (
+    RemoteAuthorizationDecision,
+    RemoteHumanLease,
+    RemoteLeaseRuntime,
+    RemoteRequestAuthorization,
+    RemoteWorkflowLease,
+    issue_remote_human_lease,
 )
 from app.config import get_settings
 from app.db import get_session
@@ -504,6 +515,287 @@ def build_studio_black_box_lab_lease_preview(
             "automatic_report_submission",
         ],
     )
+
+
+class StudioBlackBoxRemoteLeaseIssueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    validation_run_id: str = Field(min_length=1, max_length=100)
+    active_origin: str = Field(min_length=1, max_length=255)
+    passive_origins: list[str] = Field(default_factory=list, max_length=10)
+    account_aliases: list[str] = Field(min_length=2, max_length=2)
+    role_aliases: list[str] = Field(min_length=1, max_length=10)
+    allowed_actions: list[str] = Field(min_length=1, max_length=3)
+    request_budget_per_workflow: int = Field(default=50, ge=1, le=50)
+    duration_seconds: int = Field(default=1800, ge=1, le=1800)
+    min_interval_seconds: int = Field(default=3, ge=3)
+    workflows: list[RemoteWorkflowLease] = Field(min_length=1, max_length=3)
+    operator_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def require_bounded_remote_authority(self):
+        self.active_origin = _studio_black_box_remote_exact_origin(self.active_origin)
+        self.passive_origins = [
+            _studio_black_box_remote_exact_origin(origin)
+            for origin in self.passive_origins
+        ]
+        if (
+            len(set(self.passive_origins)) != len(self.passive_origins)
+            or self.active_origin in self.passive_origins
+        ):
+            raise ValueError("unique_remote_origins_required")
+        for aliases in (self.account_aliases, self.role_aliases):
+            if len(set(aliases)) != len(aliases):
+                raise ValueError("unique_remote_aliases_required")
+            for alias in aliases:
+                _studio_black_box_safe_alias(alias)
+        if len(set(self.allowed_actions)) != len(self.allowed_actions):
+            raise ValueError("unique_remote_actions_required")
+        workflow_actions = {workflow.action for workflow in self.workflows}
+        if set(self.allowed_actions) != workflow_actions:
+            raise ValueError("recorded_remote_actions_required")
+        if any(
+            workflow.origin != self.active_origin
+            or workflow.source_account_alias not in self.account_aliases
+            or workflow.object_owner_alias not in self.account_aliases
+            or workflow.source_role_alias not in self.role_aliases
+            for workflow in self.workflows
+        ):
+            raise ValueError("remote_workflow_lease_mismatch")
+        return self
+
+
+class StudioBlackBoxRemoteLeaseIssueResponse(RemoteHumanLease):
+    remote_runner_dispatch_allowed: Literal[True] = True
+    relogin_required: Literal[False] = False
+
+
+class StudioBlackBoxRemoteStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: Literal["remote_human_lease"] = "remote_human_lease"
+    enabled: bool
+    state: Literal[
+        "disabled",
+        "awaiting_lease",
+        "active",
+        "stopped",
+        "expired",
+        "relogin_required",
+    ]
+    expires_at: str | None = None
+    relogin_required: bool
+    stop_reason: str | None = None
+    report_submission_allowed: Literal[False] = False
+    human_confirmation_allowed: Literal[False] = False
+
+
+class StudioBlackBoxRemoteCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_grant_id: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^remote_grant_[0-9a-f]{32}$",
+    )
+    outcome: Literal[
+        "success",
+        "rate_limited",
+        "captcha_or_waf_detected",
+        "off_origin_redirect",
+        "third_party_data_detected",
+        "test_owned_object_required",
+        "ambiguous_authority",
+        "rollback_failed",
+        "server_error",
+        "unstable_response",
+        "session_expired",
+        "request_failed",
+    ]
+
+
+class StudioBlackBoxRemoteStopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def require_known_terminal_stop(self):
+        BlackBoxStop(reason=self.reason)
+        return self
+
+
+@dataclass
+class _StudioBlackBoxRemoteRuntimeEntry:
+    runtime: RemoteLeaseRuntime
+    validation_run_id: str
+    approval_id: str
+
+
+@dataclass(frozen=True)
+class _StudioBlackBoxRemoteStoppedState:
+    reason: str
+    expires_at: str
+
+
+_STUDIO_BLACK_BOX_REMOTE_RUNTIMES: dict[
+    str,
+    _StudioBlackBoxRemoteRuntimeEntry,
+] = {}
+_STUDIO_BLACK_BOX_REMOTE_STOPS: dict[
+    str,
+    _StudioBlackBoxRemoteStoppedState,
+] = {}
+_STUDIO_BLACK_BOX_REMOTE_ISSUE_LOCK = RLock()
+
+
+def _studio_black_box_remote_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _studio_black_box_remote_reset_for_tests() -> None:
+    with _STUDIO_BLACK_BOX_REMOTE_ISSUE_LOCK:
+        _STUDIO_BLACK_BOX_REMOTE_RUNTIMES.clear()
+        _STUDIO_BLACK_BOX_REMOTE_STOPS.clear()
+
+
+def _studio_black_box_remote_exact_origin(value: str) -> str:
+    parsed = urlparse(value)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("exact_https_remote_origin_required") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or "*" in parsed.netloc
+        or value != f"{parsed.scheme}://{parsed.netloc}"
+    ):
+        raise ValueError("exact_https_remote_origin_required")
+    return value
+
+
+def _studio_black_box_remote_digest(payload: dict) -> str:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"sha256:{sha256(serialized.encode('utf-8')).hexdigest()}"
+
+
+def _studio_black_box_remote_policy_digest(campaign: CampaignRecord) -> str:
+    digest = campaign.policy_text_hash.removeprefix("sha256:").lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise ValueError("current_policy_digest_required")
+    return f"sha256:{digest}"
+
+
+def _studio_black_box_remote_scope_digest(campaign: CampaignRecord) -> str:
+    rule = _campaign_scope_guard_rule(campaign)
+    if rule is None:
+        raise ValueError("current_scope_digest_required")
+    return _studio_black_box_remote_digest(
+        {
+            "asset": campaign.default_asset,
+            "allowed_tools": sorted(campaign.allowed_tools),
+            "scope_guard_rule": rule.model_dump(mode="json"),
+            "target_classes": sorted(campaign.target_classes),
+        }
+    )
+
+
+def _studio_black_box_remote_plan_digest(
+    request: StudioBlackBoxRemoteLeaseIssueRequest,
+) -> str:
+    return _studio_black_box_remote_digest(
+        request.model_dump(
+            mode="json",
+            exclude={"validation_run_id", "operator_confirmed"},
+        )
+    )
+
+
+def _studio_black_box_remote_as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _studio_black_box_remote_payload_matches(
+    payload: object,
+    *,
+    request: StudioBlackBoxRemoteLeaseIssueRequest,
+    policy_digest: str,
+    scope_digest: str,
+    plan_digest: str,
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    allowed_accounts = payload.get("allowed_accounts")
+    allowed_actions = payload.get("allowed_actions")
+    return (
+        payload.get("remote_human_lease") is True
+        and payload.get("policy_digest") == policy_digest
+        and payload.get("scope_digest") == scope_digest
+        and payload.get("recorded_workflow_plan_digest") == plan_digest
+        and isinstance(allowed_accounts, list)
+        and all(isinstance(value, str) for value in allowed_accounts)
+        and set(request.account_aliases) <= set(allowed_accounts)
+        and isinstance(allowed_actions, list)
+        and all(isinstance(value, str) for value in allowed_actions)
+        and set(request.allowed_actions) <= set(allowed_actions)
+    )
+
+
+def _studio_black_box_remote_dedicated_approval(
+    approval: ApprovalRecord | None,
+    *,
+    validation_run: ValidationRunRecord,
+    request: StudioBlackBoxRemoteLeaseIssueRequest,
+    policy_digest: str,
+    scope_digest: str,
+    plan_digest: str,
+    now: datetime,
+) -> bool:
+    if approval is None:
+        return False
+    decided_at = _studio_black_box_remote_as_utc(approval.decided_at)
+    expires_at = _studio_black_box_remote_as_utc(approval.expires_at)
+    return (
+        approval.id == validation_run.approval_id
+        and approval.status == "approved"
+        and approval.approval_type == "black_box_remote_lease"
+        and approval.requested_action == "remote_black_box_differential"
+        and approval.validation_mode == "black_box_differential"
+        and approval.plan_digest == plan_digest
+        and decided_at is not None
+        and decided_at <= now
+        and now - decided_at <= timedelta(minutes=30)
+        and expires_at is not None
+        and expires_at > now
+        and _studio_black_box_remote_payload_matches(
+            approval.payload,
+            request=request,
+            policy_digest=policy_digest,
+            scope_digest=scope_digest,
+            plan_digest=plan_digest,
+        )
+    )
+
+
+def _studio_black_box_remote_origin_matches_asset(origin: str, asset: str) -> bool:
+    parsed = urlparse(origin)
+    return asset in {origin, parsed.netloc}
 
 
 class StudioWorkspaceRunRequest(BaseModel):
@@ -2995,6 +3287,497 @@ def approve_mythos_studio_black_box_lab_run(
         validation_run_id=validation_run.id,
         approval_id=approval.id,
         lease_digest=lease_digest,
+    )
+
+
+@app.get(
+    "/mythos/studio/black-box-remote/status",
+    response_model=StudioBlackBoxRemoteStatusResponse,
+)
+def get_mythos_studio_black_box_remote_status() -> StudioBlackBoxRemoteStatusResponse:
+    enabled = bool(get_settings().black_box_remote_profile_enabled)
+    if not enabled:
+        return StudioBlackBoxRemoteStatusResponse(
+            enabled=False,
+            state="disabled",
+            relogin_required=True,
+            stop_reason="remote_profile_disabled",
+        )
+    now = _studio_black_box_remote_now()
+    statuses = [
+        entry.runtime.safe_status(now=now)
+        for entry in reversed(list(_STUDIO_BLACK_BOX_REMOTE_RUNTIMES.values()))
+    ]
+    current = next(
+        (status for status in statuses if status["state"] == "active"),
+        None,
+    )
+    if current is None:
+        current = next(
+            (status for status in statuses if status["state"] == "expired"),
+            None,
+        )
+    if current is not None:
+        return StudioBlackBoxRemoteStatusResponse(
+            enabled=True,
+            state=current["state"],
+            expires_at=current["expires_at"],
+            relogin_required=current["relogin_required"],
+            stop_reason=current["stop_reason"],
+        )
+    if _STUDIO_BLACK_BOX_REMOTE_STOPS:
+        stopped = next(reversed(_STUDIO_BLACK_BOX_REMOTE_STOPS.values()))
+        return StudioBlackBoxRemoteStatusResponse(
+            enabled=True,
+            state="stopped",
+            expires_at=stopped.expires_at,
+            relogin_required=True,
+            stop_reason=stopped.reason,
+        )
+    return StudioBlackBoxRemoteStatusResponse(
+        enabled=True,
+        state="awaiting_lease",
+        relogin_required=False,
+    )
+
+
+@app.post(
+    "/mythos/studio/black-box-remote/leases",
+    response_model=StudioBlackBoxRemoteLeaseIssueResponse,
+)
+def issue_mythos_studio_black_box_remote_lease(
+    request: StudioBlackBoxRemoteLeaseIssueRequest,
+    session: Session = Depends(get_session),
+) -> StudioBlackBoxRemoteLeaseIssueResponse:
+    if not get_settings().black_box_remote_profile_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="remote_human_lease_profile_disabled",
+        )
+    if not request.operator_confirmed:
+        raise HTTPException(status_code=409, detail="operator_confirmation_required")
+
+    with _STUDIO_BLACK_BOX_REMOTE_ISSUE_LOCK:
+        return _issue_mythos_studio_black_box_remote_lease(request, session)
+
+
+def _issue_mythos_studio_black_box_remote_lease(
+    request: StudioBlackBoxRemoteLeaseIssueRequest,
+    session: Session,
+) -> StudioBlackBoxRemoteLeaseIssueResponse:
+
+    repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(request.validation_run_id)
+    if validation_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    rule = _campaign_scope_guard_rule(campaign)
+    if rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+    if (
+        validation_run.validation_mode != "black_box_differential"
+        or validation_run.status != "preflight_passed"
+        or not validation_run.allowed_to_execute
+        or not _validation_run_currently_allowed_to_execute(
+            validation_run,
+            repository=repository,
+        )
+    ):
+        raise HTTPException(status_code=409, detail="remote_preflight_required")
+    scope_decision = evaluate_validation_request(
+        rule,
+        ValidationRequest(
+            asset=campaign.default_asset,
+            validation_type="black_box_differential",
+            human_approved=True,
+            plan_digest=validation_run.plan_digest,
+        ),
+    )
+    if not scope_decision.allowed:
+        raise HTTPException(status_code=409, detail=scope_decision.reason)
+
+    now = _studio_black_box_remote_now()
+    try:
+        policy_digest = _studio_black_box_remote_policy_digest(campaign)
+        scope_digest = _studio_black_box_remote_scope_digest(campaign)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    plan_digest = _studio_black_box_remote_plan_digest(request)
+    if validation_run.plan_digest != plan_digest:
+        raise HTTPException(status_code=409, detail="recorded_remote_plan_required")
+    if not _studio_black_box_remote_payload_matches(
+        validation_run.payload,
+        request=request,
+        policy_digest=policy_digest,
+        scope_digest=scope_digest,
+        plan_digest=plan_digest,
+    ):
+        raise HTTPException(status_code=409, detail="current_remote_preflight_required")
+    if not _studio_black_box_remote_origin_matches_asset(
+        request.active_origin,
+        _validation_run_scope_asset(validation_run, campaign),
+    ):
+        raise HTTPException(status_code=409, detail="remote_origin_approval_mismatch")
+
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id
+        else None
+    )
+    if not _studio_black_box_remote_dedicated_approval(
+        approval,
+        validation_run=validation_run,
+        request=request,
+        policy_digest=policy_digest,
+        scope_digest=scope_digest,
+        plan_digest=plan_digest,
+        now=now,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_dedicated_remote_approval_required",
+        )
+    if (
+        isinstance(validation_run.payload, dict)
+        and "remote_human_lease_summary" in validation_run.payload
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="single_run_remote_lease_already_issued",
+        )
+
+    approval_expires_at = _studio_black_box_remote_as_utc(approval.expires_at)
+    approved_at = _studio_black_box_remote_as_utc(approval.decided_at)
+    if approval_expires_at is None or approved_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_dedicated_remote_approval_required",
+        )
+    expires_at = min(
+        now + timedelta(seconds=request.duration_seconds),
+        approval_expires_at,
+    )
+    execution_lease = BlackBoxExecutionLease(
+        lease_id=f"remote_lease_{uuid4().hex}",
+        asset=_validation_run_scope_asset(validation_run, campaign),
+        policy_digest=policy_digest,
+        scope_digest=scope_digest,
+        plan_digest=plan_digest,
+        active_origins=[request.active_origin],
+        passive_origins=request.passive_origins,
+        account_aliases=request.account_aliases,
+        role_aliases=request.role_aliases,
+        allowed_actions=request.allowed_actions,
+        rollback_required=True,
+        workflow_budget=len(request.workflows),
+        request_budget_per_workflow=request.request_budget_per_workflow,
+        duration_seconds=request.duration_seconds,
+        min_interval_seconds=request.min_interval_seconds,
+        issued_at=now,
+        expires_at=expires_at,
+    )
+    lease_approval = LeaseApproval(
+        approval_id=approval.id,
+        preflight_id=validation_run.id,
+        lease_id=execution_lease.lease_id,
+        asset=execution_lease.asset,
+        policy_digest=policy_digest,
+        scope_digest=scope_digest,
+        plan_digest=plan_digest,
+        validation_mode="black_box_differential",
+        approval_status="approved",
+        preflight_status="preflight_passed",
+        expires_at=approval_expires_at,
+    )
+    try:
+        remote_lease = issue_remote_human_lease(
+            lease=execution_lease,
+            approval=lease_approval,
+            approved_at=approved_at,
+            workflows=request.workflows,
+            now=now,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    lease_payload = remote_lease.lease.model_dump(mode="json")
+    validation_payload = dict(validation_run.payload)
+    validation_payload["remote_human_lease_summary"] = {
+        "profile": "remote_human_lease",
+        "lease_digest": remote_lease.lease_digest,
+        "approval_id": approval.id,
+        "issued_at": lease_payload["issued_at"],
+        "expires_at": lease_payload["expires_at"],
+    }
+    validation_run.payload = validation_payload
+    repository.session.add(validation_run)
+    repository.session.commit()
+    _STUDIO_BLACK_BOX_REMOTE_RUNTIMES[remote_lease.lease_digest] = (
+        _StudioBlackBoxRemoteRuntimeEntry(
+            runtime=RemoteLeaseRuntime(remote_lease),
+            validation_run_id=validation_run.id,
+            approval_id=approval.id,
+        )
+    )
+    return StudioBlackBoxRemoteLeaseIssueResponse(
+        **remote_lease.model_dump(mode="json")
+    )
+
+
+def _studio_black_box_remote_current_authority(
+    *,
+    entry: _StudioBlackBoxRemoteRuntimeEntry,
+    repository: DatabaseRepository,
+) -> tuple[ValidationRunRecord, CampaignRecord, ScopeGuardRule, LeaseApproval] | None:
+    validation_run = repository.get_validation_run(entry.validation_run_id)
+    if validation_run is None or validation_run.approval_id != entry.approval_id:
+        return None
+    if not _validation_run_currently_allowed_to_execute(
+        validation_run,
+        repository=repository,
+    ):
+        return None
+    campaign = repository.get_campaign(validation_run.campaign_id)
+    if campaign is None or campaign.scope_status != "in_scope":
+        return None
+    rule = _campaign_scope_guard_rule(campaign)
+    if rule is None:
+        return None
+    approval = repository.session.get(ApprovalRecord, entry.approval_id)
+    summary = (
+        validation_run.payload.get("remote_human_lease_summary")
+        if isinstance(validation_run.payload, dict)
+        else None
+    )
+    remote_lease = entry.runtime.remote_lease
+    if (
+        approval is None
+        or approval.status != "approved"
+        or approval.approval_type != "black_box_remote_lease"
+        or approval.requested_action != "remote_black_box_differential"
+        or not isinstance(summary, dict)
+        or summary.get("lease_digest") != remote_lease.lease_digest
+    ):
+        return None
+    approval_expires_at = _studio_black_box_remote_as_utc(approval.expires_at)
+    approval_payload = approval.payload if isinstance(approval.payload, dict) else {}
+    if approval_expires_at is None:
+        return None
+    try:
+        lease_approval = LeaseApproval(
+            approval_id=approval.id,
+            preflight_id=validation_run.id,
+            lease_id=remote_lease.lease.lease_id,
+            asset=remote_lease.lease.asset,
+            policy_digest=approval_payload.get("policy_digest"),
+            scope_digest=approval_payload.get("scope_digest"),
+            plan_digest=approval.plan_digest,
+            validation_mode="black_box_differential",
+            approval_status="approved",
+            preflight_status="preflight_passed",
+            expires_at=approval_expires_at,
+        )
+    except ValueError:
+        return None
+    return validation_run, campaign, rule, lease_approval
+
+
+def _studio_black_box_remote_stopped_decision(reason: str) -> RemoteAuthorizationDecision:
+    return RemoteAuthorizationDecision(
+        allowed=False,
+        reason=reason,
+        stop=BlackBoxStop(reason=reason),
+    )
+
+
+def _studio_black_box_remote_finalize_stop(
+    *,
+    lease_digest: str,
+    entry: _StudioBlackBoxRemoteRuntimeEntry,
+    decision: RemoteAuthorizationDecision,
+    repository: DatabaseRepository,
+) -> RemoteAuthorizationDecision:
+    if decision.stop is None:
+        return decision
+    now = _studio_black_box_remote_now()
+    validation_run = repository.get_validation_run(entry.validation_run_id)
+    if validation_run is not None:
+        validation_payload = (
+            dict(validation_run.payload)
+            if isinstance(validation_run.payload, dict)
+            else {}
+        )
+        validation_payload["remote_human_lease_stop_summary"] = {
+            "lease_digest": lease_digest,
+            "reason": decision.reason,
+            "stopped_at": now.isoformat(),
+        }
+        validation_run.payload = validation_payload
+        validation_run.allowed_to_execute = False
+        validation_run.status = "blocked"
+        validation_run.safety_gate_state = "black_box_remote_stopped"
+        validation_run.finished_at = now
+        repository.session.add(validation_run)
+        repository.session.commit()
+    _STUDIO_BLACK_BOX_REMOTE_STOPS[lease_digest] = (
+        _StudioBlackBoxRemoteStoppedState(
+            reason=decision.reason,
+            expires_at=entry.runtime.remote_lease.lease.expires_at.isoformat().replace(
+                "+00:00", "Z"
+            ),
+        )
+    )
+    _STUDIO_BLACK_BOX_REMOTE_RUNTIMES.pop(lease_digest, None)
+    return decision
+
+
+@app.post(
+    "/mythos/studio/black-box-remote/leases/{lease_digest}/authorize",
+    response_model=RemoteAuthorizationDecision,
+)
+def authorize_mythos_studio_black_box_remote_request(
+    lease_digest: str,
+    request: RemoteRequestAuthorization,
+    session: Session = Depends(get_session),
+) -> RemoteAuthorizationDecision:
+    stopped = _STUDIO_BLACK_BOX_REMOTE_STOPS.get(lease_digest)
+    if stopped is not None:
+        return _studio_black_box_remote_stopped_decision(stopped.reason)
+    entry = _STUDIO_BLACK_BOX_REMOTE_RUNTIMES.get(lease_digest)
+    if entry is None:
+        return _studio_black_box_remote_stopped_decision("relogin_required")
+    repository = DatabaseRepository(session)
+    if not get_settings().black_box_remote_profile_enabled:
+        return _studio_black_box_remote_finalize_stop(
+            lease_digest=lease_digest,
+            entry=entry,
+            decision=entry.runtime.stop("remote_profile_disabled"),
+            repository=repository,
+        )
+    authority = _studio_black_box_remote_current_authority(
+        entry=entry,
+        repository=repository,
+    )
+    if authority is None:
+        return _studio_black_box_remote_finalize_stop(
+            lease_digest=lease_digest,
+            entry=entry,
+            decision=entry.runtime.stop("approval_preflight_changed"),
+            repository=repository,
+        )
+    validation_run, campaign, rule, approval = authority
+    try:
+        current_policy_digest = _studio_black_box_remote_policy_digest(campaign)
+        current_scope_digest = _studio_black_box_remote_scope_digest(campaign)
+    except ValueError:
+        return _studio_black_box_remote_finalize_stop(
+            lease_digest=lease_digest,
+            entry=entry,
+            decision=entry.runtime.stop("policy_or_scope_changed"),
+            repository=repository,
+        )
+    decision = entry.runtime.authorize(
+        rule=rule,
+        approval=approval,
+        request=request,
+        current_policy_digest=current_policy_digest,
+        current_scope_digest=current_scope_digest,
+        current_plan_digest=validation_run.plan_digest or "",
+        lease_digest=lease_digest,
+        now=_studio_black_box_remote_now(),
+    )
+    return _studio_black_box_remote_finalize_stop(
+        lease_digest=lease_digest,
+        entry=entry,
+        decision=decision,
+        repository=repository,
+    )
+
+
+@app.post(
+    "/mythos/studio/black-box-remote/leases/{lease_digest}/complete",
+    response_model=RemoteAuthorizationDecision,
+)
+def complete_mythos_studio_black_box_remote_request(
+    lease_digest: str,
+    request: StudioBlackBoxRemoteCompletionRequest,
+    session: Session = Depends(get_session),
+) -> RemoteAuthorizationDecision:
+    stopped = _STUDIO_BLACK_BOX_REMOTE_STOPS.get(lease_digest)
+    if stopped is not None:
+        return _studio_black_box_remote_stopped_decision(stopped.reason)
+    entry = _STUDIO_BLACK_BOX_REMOTE_RUNTIMES.get(lease_digest)
+    if entry is None:
+        return _studio_black_box_remote_stopped_decision("relogin_required")
+    repository = DatabaseRepository(session)
+    decision = entry.runtime.complete(
+        request.request_grant_id,
+        outcome=request.outcome,
+        now=_studio_black_box_remote_now(),
+    )
+    return _studio_black_box_remote_finalize_stop(
+        lease_digest=lease_digest,
+        entry=entry,
+        decision=decision,
+        repository=repository,
+    )
+
+
+@app.post(
+    "/mythos/studio/black-box-remote/leases/{lease_digest}/stop",
+    response_model=RemoteAuthorizationDecision,
+)
+def stop_mythos_studio_black_box_remote_lease(
+    lease_digest: str,
+    request: StudioBlackBoxRemoteStopRequest,
+    session: Session = Depends(get_session),
+) -> RemoteAuthorizationDecision:
+    stopped = _STUDIO_BLACK_BOX_REMOTE_STOPS.get(lease_digest)
+    if stopped is not None:
+        return _studio_black_box_remote_stopped_decision(stopped.reason)
+    entry = _STUDIO_BLACK_BOX_REMOTE_RUNTIMES.get(lease_digest)
+    if entry is None:
+        return _studio_black_box_remote_stopped_decision("relogin_required")
+    return _studio_black_box_remote_finalize_stop(
+        lease_digest=lease_digest,
+        entry=entry,
+        decision=entry.runtime.stop(request.reason),
+        repository=DatabaseRepository(session),
+    )
+
+
+@app.get(
+    "/mythos/studio/black-box-remote/leases/{lease_digest}/status",
+    response_model=StudioBlackBoxRemoteStatusResponse,
+)
+def get_mythos_studio_black_box_remote_lease_status(
+    lease_digest: str,
+) -> StudioBlackBoxRemoteStatusResponse:
+    enabled = bool(get_settings().black_box_remote_profile_enabled)
+    stopped = _STUDIO_BLACK_BOX_REMOTE_STOPS.get(lease_digest)
+    if stopped is not None:
+        return StudioBlackBoxRemoteStatusResponse(
+            enabled=enabled,
+            state="stopped",
+            expires_at=stopped.expires_at,
+            relogin_required=True,
+            stop_reason=stopped.reason,
+        )
+    entry = _STUDIO_BLACK_BOX_REMOTE_RUNTIMES.get(lease_digest)
+    if entry is None:
+        return StudioBlackBoxRemoteStatusResponse(
+            enabled=enabled,
+            state="relogin_required",
+            relogin_required=True,
+            stop_reason="relogin_required",
+        )
+    status = entry.runtime.safe_status(now=_studio_black_box_remote_now())
+    return StudioBlackBoxRemoteStatusResponse(
+        enabled=enabled,
+        state=status["state"],
+        expires_at=status["expires_at"],
+        relogin_required=status["relogin_required"],
+        stop_reason=status["stop_reason"],
     )
 
 
