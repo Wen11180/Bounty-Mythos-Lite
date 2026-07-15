@@ -527,6 +527,68 @@ export type SourceAuditScanResponse = {
   safety_notes: string[];
 };
 
+export type StudioBlackBoxLabSessionRequest = {
+  account_alias: string;
+  ready: boolean;
+  role_alias: string;
+  session_alias: "session_a" | "session_b";
+};
+
+export type StudioBlackBoxLabWorkflowRequest = {
+  action: "read_only_replay" | "reversible_update" | "test_object_create";
+  method: "GET" | "HEAD" | "PATCH" | "POST" | "PUT";
+  object_aliases: readonly string[];
+  origin: string;
+  route_template: string;
+  session_alias: "session_a" | "session_b";
+  workflow_alias: string;
+};
+
+export type StudioBlackBoxLabLeasePreviewRequest = {
+  active_origin: string;
+  sessions: readonly StudioBlackBoxLabSessionRequest[];
+  workflows: readonly StudioBlackBoxLabWorkflowRequest[];
+};
+
+export type StudioBlackBoxLabLeasePreviewResponse = {
+  active_origin: string;
+  blocked_actions: string[];
+  execution_allowed: false;
+  human_approval_required: true;
+  persist_session_state: false;
+  profile: "local_lab";
+  session_aliases: string[];
+  sessions_ready: boolean;
+  trace_review_required: true;
+  workflow_aliases: string[];
+};
+
+export type StudioBlackBoxLabTraceReviewRequest = {
+  redacted: true;
+  response_schema_fingerprint: string;
+  route_template: string;
+  session_alias: "session_a" | "session_b";
+  workflow_alias: string;
+};
+
+export type StudioBlackBoxLabRunApprovalRequest = {
+  lease_preview: StudioBlackBoxLabLeasePreviewRequest;
+  operator_confirmed: boolean;
+  trace_review: readonly StudioBlackBoxLabTraceReviewRequest[];
+  validation_run_id: string;
+};
+
+export type StudioBlackBoxLabRunApprovalResponse = {
+  approval_id: string;
+  approval_status: "approved";
+  execution_allowed: false;
+  lease_digest: string;
+  local_runner_dispatch_allowed: true;
+  reason: "bounded_local_lab_run_approved";
+  report_submission_allowed: false;
+  validation_run_id: string;
+};
+
 export type StudioWorkspaceCreateRequest = {
   root_path: string;
   name: string;
@@ -1280,6 +1342,18 @@ export function createStudioWorkspace(
   request: StudioWorkspaceCreateRequest,
 ): Promise<StudioWorkspaceCreateResponse | null> {
   return apiPost("/mythos/studio/workspaces", request);
+}
+
+export function previewStudioBlackBoxLabLease(
+  request: StudioBlackBoxLabLeasePreviewRequest,
+): Promise<StudioBlackBoxLabLeasePreviewResponse | null> {
+  return apiPost("/mythos/studio/black-box-lab/leases/preview", request);
+}
+
+export function approveStudioBlackBoxLabRun(
+  request: StudioBlackBoxLabRunApprovalRequest,
+): Promise<StudioBlackBoxLabRunApprovalResponse | null> {
+  return apiPost("/mythos/studio/black-box-lab/runs/approve", request);
 }
 
 export function getStudioWorkspaceManifest(

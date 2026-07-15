@@ -1,0 +1,114 @@
+{
+  "version": "black_box_release_gold_v1",
+  "split": "held_out",
+  "cases": [
+    {
+      "case_id": "hold-a01",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-a02",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-a03",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-a04",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "hold-a05",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "reversible_out_of_order_state_transition"
+    },
+    {
+      "case_id": "hold-a06",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-a07",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-a08",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-a09",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "hold-a10",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "reversible_out_of_order_state_transition"
+    },
+    {
+      "case_id": "hold-b01",
+      "expected_status": "inconclusive",
+      "scenario_class": "correct_authorization",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-b02",
+      "expected_status": "refuted",
+      "scenario_class": "intended_sharing",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-b03",
+      "expected_status": "refuted",
+      "scenario_class": "public_test_data",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-b04",
+      "expected_status": "inconclusive",
+      "scenario_class": "cache_difference",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "hold-b05",
+      "expected_status": "inconclusive",
+      "scenario_class": "csrf_rotation",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-b06",
+      "expected_status": "inconclusive",
+      "scenario_class": "session_expiry",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-b07",
+      "expected_status": "inconclusive",
+      "scenario_class": "rate_limit",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-b08",
+      "expected_status": "inconclusive",
+      "scenario_class": "rollback_failure",
+      "trial_class": "reversible_out_of_order_state_transition"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   ApiRequestError,
+  approveStudioBlackBoxLabRun,
   createStudioWorkspace,
   createStudioWorkspaceBenchmarkTemplate,
   exportStudioWorkspaceCampaignHunterReport,
@@ -16,12 +17,17 @@ import {
   importStudioWorkspaceArtifact,
   launchStudioWorkspaceCampaignHunter,
   listStudioWorkspaceCandidates,
+  previewStudioBlackBoxLabLease,
   recordCandidateHunterLearningOutcome,
   runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
   type CandidateHunterLearningOutcome,
   type ProgramIntelligenceProfile,
   type StudioBenchmarkRunResponse,
+  type StudioBlackBoxLabLeasePreviewRequest,
+  type StudioBlackBoxLabLeasePreviewResponse,
+  type StudioBlackBoxLabRunApprovalResponse,
+  type StudioBlackBoxLabTraceReviewRequest,
   type StudioMissionDossierExportResponse,
   type StudioReportExportResponse,
   type StudioWorkspaceRunRequest,
@@ -41,6 +47,14 @@ type LogEntry = {
   message: string;
   tone: "info" | "safe" | "blocked";
 };
+
+type BlackBoxLabRunnerState =
+  | "idle"
+  | "awaiting_sessions_ready"
+  | "recording"
+  | "sessions_ready"
+  | "trial_complete"
+  | "stopped";
 
 type MythosStudioDesktopBridge = {
   closeBlackBoxSessions: () => Promise<string>;
@@ -67,6 +81,10 @@ const emptyManifest: StudioWorkspaceManifest = {
     blocked_actions: ["execute_live_validation", "touch_real_user_data", "submit_report"],
   },
 };
+
+function blackBoxLabLeaseExpiry() {
+  return new Date(Date.now() + 15 * 60 * 1000).toISOString();
+}
 
 export function StudioWorkbench() {
   const [workspaceRoot, setWorkspaceRoot] = useState("C:/mythos-workspaces");
@@ -100,6 +118,18 @@ export function StudioWorkbench() {
     useState<StudioMissionDossierExportResponse | null>(null);
   const [benchmarkResult, setBenchmarkResult] = useState<StudioBenchmarkRunResponse | null>(null);
   const [learningProfile, setLearningProfile] = useState<ProgramIntelligenceProfile | null>(null);
+  const [labOrigin, setLabOrigin] = useState("http://127.0.0.1:43110");
+  const [labValidationRunId, setLabValidationRunId] = useState("");
+  const [labSessionAReady, setLabSessionAReady] = useState(false);
+  const [labSessionBReady, setLabSessionBReady] = useState(false);
+  const [labLeaseRequestSnapshot, setLabLeaseRequestSnapshot] =
+    useState<StudioBlackBoxLabLeasePreviewRequest | null>(null);
+  const [labLeasePreview, setLabLeasePreview] =
+    useState<StudioBlackBoxLabLeasePreviewResponse | null>(null);
+  const [labTraceReview, setLabTraceReview] = useState<StudioBlackBoxLabTraceReviewRequest[]>([]);
+  const [labTraceReviewConfirmed, setLabTraceReviewConfirmed] = useState(false);
+  const [labApproval, setLabApproval] = useState<StudioBlackBoxLabRunApprovalResponse | null>(null);
+  const [labRunnerState, setLabRunnerState] = useState<BlackBoxLabRunnerState>("idle");
   const [busy, setBusy] = useState<string | null>(null);
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([
@@ -206,6 +236,378 @@ export function StudioWorkbench() {
       return await runStudioWorkspaceResearch(request);
     } finally {
       setCandidateModelEnabled(false);
+    }
+  }
+
+  function blackBoxLabLeaseRequest(): StudioBlackBoxLabLeasePreviewRequest {
+    const activeOrigin = labOrigin.trim();
+    return {
+      active_origin: activeOrigin,
+      sessions: [
+        {
+          account_alias: "account_a",
+          ready: labSessionAReady,
+          role_alias: "member",
+          session_alias: "session_a",
+        },
+        {
+          account_alias: "account_b",
+          ready: labSessionBReady,
+          role_alias: "member",
+          session_alias: "session_b",
+        },
+      ],
+      workflows: [
+        {
+          action: "read_only_replay",
+          method: "GET",
+          object_aliases: ["widget_a"],
+          origin: activeOrigin,
+          route_template: "/widgets/{object}",
+          session_alias: "session_a",
+          workflow_alias: "read_widget_a",
+        },
+      ],
+    };
+  }
+
+  function invalidateBlackBoxLabReview() {
+    setLabLeaseRequestSnapshot(null);
+    setLabLeasePreview(null);
+    setLabTraceReview([]);
+    setLabTraceReviewConfirmed(false);
+    setLabApproval(null);
+  }
+
+  function handleLabOriginChange(value: string) {
+    setLabOrigin(value);
+    invalidateBlackBoxLabReview();
+  }
+
+  function handleLabSessionReadiness(
+    sessionAlias: "session_a" | "session_b",
+    ready: boolean,
+  ) {
+    if (sessionAlias === "session_a") {
+      setLabSessionAReady(ready);
+    } else {
+      setLabSessionBReady(ready);
+    }
+    invalidateBlackBoxLabReview();
+  }
+
+  function handleLabValidationRunIdChange(value: string) {
+    setLabValidationRunId(value);
+    setLabApproval(null);
+  }
+
+  function parseBlackBoxRunnerEvent(line: string): Record<string, unknown> {
+    const serialized = line.trim();
+    if (!serialized || serialized.includes("\n")) {
+      throw new Error("invalid_black_box_runner_response");
+    }
+    const event = JSON.parse(serialized) as unknown;
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      throw new Error("invalid_black_box_runner_response");
+    }
+    const record = event as Record<string, unknown>;
+    if (typeof record.event !== "string") {
+      throw new Error("invalid_black_box_runner_response");
+    }
+    return record;
+  }
+
+  function reviewedTracesFromRunnerEvent(
+    event: Record<string, unknown>,
+  ): StudioBlackBoxLabTraceReviewRequest[] {
+    if (!Array.isArray(event.traces)) {
+      return [];
+    }
+    return event.traces.flatMap((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return [];
+      }
+      const trace = value as Record<string, unknown>;
+      const aliases = trace.aliases;
+      if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) {
+        return [];
+      }
+      const safeAliases = aliases as Record<string, unknown>;
+      const sessionAlias = safeAliases.session_alias;
+      if (
+        (sessionAlias !== "session_a" && sessionAlias !== "session_b") ||
+        typeof safeAliases.workflow_alias !== "string" ||
+        typeof trace.route_template !== "string" ||
+        typeof trace.response_schema_fingerprint !== "string"
+      ) {
+        return [];
+      }
+      return [
+        {
+          redacted: true as const,
+          response_schema_fingerprint: trace.response_schema_fingerprint,
+          route_template: trace.route_template,
+          session_alias: sessionAlias,
+          workflow_alias: safeAliases.workflow_alias,
+        },
+      ];
+    });
+  }
+
+  function resetBlackBoxLabState() {
+    setLabSessionAReady(false);
+    setLabSessionBReady(false);
+    invalidateBlackBoxLabReview();
+    setLabRunnerState("idle");
+  }
+
+  async function handlePreviewBlackBoxLabLease() {
+    setBusy("lab-preview");
+    try {
+      const request = blackBoxLabLeaseRequest();
+      const preview = await previewStudioBlackBoxLabLease(request);
+      if (!preview) {
+        pushLog("Local lab lease preview was not returned.", "blocked");
+        return;
+      }
+      setLabLeaseRequestSnapshot(request);
+      setLabLeasePreview(preview);
+      setLabApproval(null);
+      pushLog(
+        preview.sessions_ready
+          ? "Bounded loopback lease reviewed; both session aliases are marked ready."
+          : "Bounded loopback lease reviewed; create sessions and complete readiness checks.",
+        preview.sessions_ready ? "safe" : "info",
+      );
+    } catch (error) {
+      pushMutationFailure("Local lab lease preview", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleCreateBlackBoxSessions() {
+    const bridge = window.mythosStudio;
+    if (!bridge || !labLeaseRequestSnapshot || labRunnerState !== "idle") {
+      pushLog("Preview a bounded local lease in Mythos Studio before creating sessions.", "blocked");
+      return;
+    }
+    setBusy("lab-create-sessions");
+    try {
+      const line = await bridge.createBlackBoxSessions({
+        lease: {
+          active_origins: [labLeaseRequestSnapshot.active_origin],
+          expires_at: blackBoxLabLeaseExpiry(),
+          passive_origins: [],
+        },
+        sessions: labLeaseRequestSnapshot.sessions.map((session) => ({
+          account_alias: session.account_alias,
+          role_alias: session.role_alias,
+          session_alias: session.session_alias,
+        })),
+      });
+      const event = parseBlackBoxRunnerEvent(line);
+      if (event.event !== "sessions_created") {
+        throw new Error(String(event.reason ?? "sessions_not_created"));
+      }
+      setLabRunnerState("awaiting_sessions_ready");
+      pushLog("Two isolated local browser sessions created. Complete login manually.", "safe");
+    } catch (error) {
+      pushMutationFailure("Local lab session creation", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleStartBlackBoxRecording() {
+    const bridge = window.mythosStudio;
+    const workflow = labLeaseRequestSnapshot?.workflows[0];
+    const session = labLeaseRequestSnapshot?.sessions.find(
+      (item) => item.session_alias === workflow?.session_alias,
+    );
+    if (
+      !bridge ||
+      !workflow ||
+      !session ||
+      !labLeasePreview?.sessions_ready ||
+      labRunnerState !== "awaiting_sessions_ready"
+    ) {
+      pushLog("Both isolated sessions must be ready before recording.", "blocked");
+      return;
+    }
+    setBusy("lab-start-recording");
+    try {
+      const line = await bridge.startBlackBoxRecording({
+        sessions_ready: true,
+        workflows: [
+          {
+            action: workflow.action,
+            aliases: {
+              account_alias: session.account_alias,
+              object_aliases: workflow.object_aliases,
+              role_alias: session.role_alias,
+              session_alias: session.session_alias,
+              workflow_alias: workflow.workflow_alias,
+            },
+            capture_phase: "post_login",
+            method: workflow.method,
+            origin: workflow.origin,
+            path_parameters: [
+              { location: "path", name: "object", segment: 2, value_type: "object_alias" },
+            ],
+            query_parameters: [],
+            route_template: workflow.route_template,
+          },
+        ],
+      });
+      const event = parseBlackBoxRunnerEvent(line);
+      if (event.event !== "recording_started") {
+        throw new Error(String(event.reason ?? "recording_not_started"));
+      }
+      setLabTraceReview([]);
+      setLabTraceReviewConfirmed(false);
+      setLabApproval(null);
+      setLabRunnerState("recording");
+      pushLog("Recording alias-only normalized traces for the declared local workflow.", "safe");
+    } catch (error) {
+      pushMutationFailure("Local lab recording start", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleStopBlackBoxRecording() {
+    const bridge = window.mythosStudio;
+    if (!bridge || labRunnerState !== "recording") {
+      pushLog("No local lab recording is active.", "blocked");
+      return;
+    }
+    setBusy("lab-stop-recording");
+    try {
+      const event = parseBlackBoxRunnerEvent(await bridge.stopBlackBoxRecording());
+      if (event.event === "stop") {
+        setLabRunnerState("stopped");
+        pushLog(`Local lab stopped: ${String(event.reason ?? "safety_stop")}.`, "blocked");
+        return;
+      }
+      if (event.event !== "recording_stopped") {
+        throw new Error("recording_not_stopped");
+      }
+      const traces = reviewedTracesFromRunnerEvent(event);
+      setLabTraceReview(traces);
+      setLabTraceReviewConfirmed(false);
+      setLabRunnerState("sessions_ready");
+      pushLog(
+        traces.length > 0
+          ? `${traces.length} normalized trace(s) ready for human review.`
+          : "No matching normalized trace was captured. Stop the lab and retry.",
+        traces.length > 0 ? "safe" : "blocked",
+      );
+    } catch (error) {
+      setLabRunnerState("stopped");
+      pushMutationFailure("Local lab recording stop", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function handleReviewBlackBoxTraces() {
+    if (labTraceReview.length === 0 || labRunnerState !== "sessions_ready") {
+      pushLog("Capture a matching normalized trace before review.", "blocked");
+      return;
+    }
+    setLabTraceReviewConfirmed(true);
+    setLabApproval(null);
+    pushLog("Normalized alias-only traces reviewed; raw headers and bodies remain excluded.", "safe");
+  }
+
+  async function handleApproveBlackBoxLabRun() {
+    if (
+      !labLeaseRequestSnapshot ||
+      !labTraceReviewConfirmed ||
+      !labValidationRunId.trim() ||
+      labRunnerState !== "sessions_ready"
+    ) {
+      pushLog("A durable validation run and reviewed traces are required for confirmation.", "blocked");
+      return;
+    }
+    setBusy("lab-approve");
+    try {
+      const approval = await approveStudioBlackBoxLabRun({
+        lease_preview: labLeaseRequestSnapshot,
+        operator_confirmed: true,
+        trace_review: labTraceReview,
+        validation_run_id: labValidationRunId.trim(),
+      });
+      if (!approval) {
+        pushLog("Local lab approval was not returned.", "blocked");
+        return;
+      }
+      setLabApproval(approval);
+      pushLog("Bounded local trial approved for one explicit runner dispatch.", "safe");
+    } catch (error) {
+      pushMutationFailure("Local lab run confirmation", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRunApprovedBlackBoxTrial() {
+    const bridge = window.mythosStudio;
+    if (
+      !bridge ||
+      !labApproval?.local_runner_dispatch_allowed ||
+      labRunnerState !== "sessions_ready"
+    ) {
+      pushLog("The bounded local trial is not approved for dispatch.", "blocked");
+      return;
+    }
+    setBusy("lab-trial");
+    try {
+      const event = parseBlackBoxRunnerEvent(
+        await bridge.runBlackBoxTrial({
+          session_alias: "session_b",
+          workflow_alias: "read_widget_a",
+        }),
+      );
+      setLabApproval(null);
+      if (event.event === "stop") {
+        setLabRunnerState("stopped");
+        pushLog(`Local trial stopped: ${String(event.reason ?? "safety_stop")}.`, "blocked");
+        return;
+      }
+      if (event.event !== "trial_result") {
+        throw new Error("bounded_trial_result_required");
+      }
+      setLabRunnerState("trial_complete");
+      pushLog("One bounded local differential trial completed; result remains review-only.", "safe");
+    } catch (error) {
+      setLabApproval(null);
+      setLabRunnerState("stopped");
+      pushMutationFailure("Bounded local lab trial", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleCloseBlackBoxSessions() {
+    const bridge = window.mythosStudio;
+    if (!bridge || labRunnerState === "idle") {
+      pushLog("No local lab sessions are open.", "blocked");
+      return;
+    }
+    setBusy("lab-close");
+    try {
+      const event = parseBlackBoxRunnerEvent(await bridge.closeBlackBoxSessions());
+      if (event.event !== "sessions_closed" && event.event !== "stop") {
+        throw new Error("sessions_not_closed");
+      }
+      resetBlackBoxLabState();
+      pushLog("Local lab stopped; ephemeral session and review state cleared.", "safe");
+    } catch (error) {
+      pushMutationFailure("Local lab stop", error);
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -831,6 +1233,172 @@ export function StudioWorkbench() {
             </p>
           </div>
         </div>
+      </section>
+
+      <section className="mt-6 border border-[var(--line)] bg-white">
+        <SectionHeader title="Local black-box lab (explicit)" />
+        <details className="p-5 text-sm">
+          <summary className="cursor-pointer font-semibold">Enable explicit local black-box lab</summary>
+          <div className="mt-4 grid gap-4">
+            <p className="text-[var(--muted)]">
+              Loopback only, two isolated sessions, one declared read-only workflow, and one
+              approved replay. Ephemeral only - not written to workspace manifest.
+            </p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="grid gap-1 text-sm">
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">
+                  Active loopback origin
+                </span>
+                <input
+                  className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)] disabled:opacity-60"
+                  disabled={labRunnerState !== "idle"}
+                  onChange={(event) => handleLabOriginChange(event.target.value)}
+                  value={labOrigin}
+                />
+              </label>
+              <label className="grid gap-1 text-sm">
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">
+                  Durable validation run ID
+                </span>
+                <input
+                  className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)] disabled:opacity-60"
+                  disabled={Boolean(labApproval)}
+                  onChange={(event) => handleLabValidationRunIdChange(event.target.value)}
+                  value={labValidationRunId}
+                />
+              </label>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex items-center gap-3 border border-[var(--line)] p-3">
+                <input
+                  checked={labSessionAReady}
+                  disabled={labRunnerState !== "awaiting_sessions_ready"}
+                  onChange={(event) =>
+                    handleLabSessionReadiness("session_a", event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span>Session A ready</span>
+              </label>
+              <label className="flex items-center gap-3 border border-[var(--line)] p-3">
+                <input
+                  checked={labSessionBReady}
+                  disabled={labRunnerState !== "awaiting_sessions_ready"}
+                  onChange={(event) =>
+                    handleLabSessionReadiness("session_b", event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span>Session B ready</span>
+              </label>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <ActionButton
+                busy={busy === "lab-preview"}
+                disabled={
+                  Boolean(busy) ||
+                  !["idle", "awaiting_sessions_ready"].includes(labRunnerState)
+                }
+                icon={<ShieldCheck size={16} aria-hidden="true" />}
+                label="Preview bounded lease"
+                onClick={handlePreviewBlackBoxLabLease}
+              />
+              <ActionButton
+                busy={busy === "lab-create-sessions"}
+                disabled={
+                  Boolean(busy) ||
+                  !desktopPickerAvailable ||
+                  !labLeaseRequestSnapshot ||
+                  labRunnerState !== "idle"
+                }
+                icon={<FolderPlus size={16} aria-hidden="true" />}
+                label="Create two sessions"
+                onClick={handleCreateBlackBoxSessions}
+              />
+              <ActionButton
+                busy={busy === "lab-start-recording"}
+                disabled={
+                  Boolean(busy) ||
+                  !labLeasePreview?.sessions_ready ||
+                  labRunnerState !== "awaiting_sessions_ready"
+                }
+                icon={<Play size={16} aria-hidden="true" />}
+                label="Start recording"
+                onClick={handleStartBlackBoxRecording}
+              />
+              <ActionButton
+                busy={busy === "lab-stop-recording"}
+                disabled={Boolean(busy) || labRunnerState !== "recording"}
+                icon={<ShieldCheck size={16} aria-hidden="true" />}
+                label="Stop recording"
+                onClick={handleStopBlackBoxRecording}
+              />
+              <ActionButton
+                busy={false}
+                disabled={
+                  Boolean(busy) ||
+                  labTraceReview.length === 0 ||
+                  labRunnerState !== "sessions_ready"
+                }
+                icon={<ShieldCheck size={16} aria-hidden="true" />}
+                label="Review normalized traces"
+                onClick={handleReviewBlackBoxTraces}
+              />
+              <ActionButton
+                busy={busy === "lab-approve"}
+                disabled={
+                  Boolean(busy) ||
+                  !labTraceReviewConfirmed ||
+                  !labValidationRunId.trim() ||
+                  labRunnerState !== "sessions_ready"
+                }
+                icon={<ShieldCheck size={16} aria-hidden="true" />}
+                label="Confirm bounded lab run"
+                onClick={handleApproveBlackBoxLabRun}
+              />
+              <ActionButton
+                busy={busy === "lab-trial"}
+                disabled={!labApproval?.local_runner_dispatch_allowed}
+                icon={<Play size={16} aria-hidden="true" />}
+                label="Run approved trial"
+                onClick={handleRunApprovedBlackBoxTrial}
+              />
+              <ActionButton
+                busy={busy === "lab-close"}
+                disabled={Boolean(busy) || labRunnerState === "idle"}
+                icon={<ShieldCheck size={16} aria-hidden="true" />}
+                label="Stop local lab"
+                onClick={handleCloseBlackBoxSessions}
+              />
+            </div>
+            <dl className="grid gap-3 sm:grid-cols-3">
+              <StatusRow label="Runner state" value={labRunnerState} />
+              <StatusRow
+                label="Lease review"
+                value={labLeasePreview ? "reviewed" : "required"}
+                warning={!labLeasePreview}
+              />
+              <StatusRow
+                label="Human trace review"
+                value={labTraceReviewConfirmed ? "confirmed" : "required"}
+                warning={!labTraceReviewConfirmed}
+              />
+            </dl>
+            {labTraceReview.length > 0 ? (
+              <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+                <p className="font-semibold">Normalized traces</p>
+                <ul className="mt-2 grid gap-2 text-xs text-[var(--muted)]">
+                  {labTraceReview.map((trace) => (
+                    <li key={`${trace.session_alias}-${trace.workflow_alias}`}>
+                      {trace.session_alias} / {trace.workflow_alias} / {trace.route_template} /{" "}
+                      {trace.response_schema_fingerprint}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </details>
       </section>
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_360px]">

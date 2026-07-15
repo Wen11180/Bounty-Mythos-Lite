@@ -1,0 +1,344 @@
+{
+  "version": "black_box_release_inputs_v1",
+  "split": "held_out",
+  "evidence_sets": {
+    "set_a1": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "baseline_a": {
+          "schema_ref": "sig_a1",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "baseline_b": {
+          "schema_ref": "sig_a1",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "trial": {
+          "canary_match": true,
+          "schema_ref": "sig_b2",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "owner_control": {
+          "schema_ref": "sig_c3",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "session_control": {
+          "schema_ref": "sig_c3",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "repeat": {
+          "canary_match": true,
+          "schema_ref": "sig_b2",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        }
+      }
+    },
+    "set_b2": {
+      "independent_repeat": true,
+      "rollback_required": true,
+      "observations": {
+        "baseline_a": {
+          "schema_ref": "sig_d4",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "baseline_b": {
+          "schema_ref": "sig_d4",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "trial": {
+          "schema_ref": "sig_e5",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "owner_control": {
+          "schema_ref": "sig_f6",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "session_control": {
+          "schema_ref": "sig_f6",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "repeat": {
+          "schema_ref": "sig_e5",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "rollback": {
+          "schema_ref": "sig_g7",
+          "state_effect": true,
+          "status_class": "2xx"
+        }
+      }
+    },
+    "set_c3": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "trial": {
+          "schema_ref": "sig_h8",
+          "status_class": "4xx"
+        }
+      }
+    },
+    "set_d4": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "trial": {
+          "canary_match": true,
+          "intended_sharing": true,
+          "schema_ref": "sig_i9",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        }
+      }
+    },
+    "set_e5": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "trial": {
+          "canary_match": true,
+          "intended_sharing": true,
+          "schema_ref": "sig_j0",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        }
+      }
+    },
+    "set_f6": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "trial": {
+          "schema_ref": "sig_k1",
+          "status_class": "2xx"
+        }
+      }
+    },
+    "set_g7": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "baseline_a": {
+          "schema_ref": "sig_l2",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "baseline_b": {
+          "schema_ref": "sig_m3",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "trial": {
+          "canary_match": true,
+          "schema_ref": "sig_n4",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        }
+      }
+    },
+    "set_h8": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "trial": {
+          "schema_ref": "sig_o5",
+          "status_class": "4xx",
+          "stop_reason": "expired_session"
+        }
+      }
+    },
+    "set_i9": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "trial": {
+          "schema_ref": "sig_p6",
+          "status_class": "4xx",
+          "stop_reason": "rate_limited"
+        }
+      }
+    },
+    "set_j0": {
+      "independent_repeat": true,
+      "rollback_required": true,
+      "observations": {
+        "baseline_a": {
+          "schema_ref": "sig_q7",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "baseline_b": {
+          "schema_ref": "sig_q7",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "trial": {
+          "schema_ref": "sig_r8",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "owner_control": {
+          "schema_ref": "sig_s9",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "session_control": {
+          "schema_ref": "sig_s9",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "repeat": {
+          "schema_ref": "sig_r8",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "rollback": {
+          "schema_ref": "sig_t0",
+          "status_class": "4xx",
+          "stop_reason": "rollback_failed"
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "case_id": "hold-a01",
+      "evidence_set": "set_a1",
+      "priority_score": 100,
+      "route_template": "/records/{object}",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-a02",
+      "evidence_set": "set_a1",
+      "priority_score": 99,
+      "route_template": "/entries/{object}",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-a03",
+      "evidence_set": "set_a1",
+      "priority_score": 98,
+      "route_template": "/items/{object}",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-a04",
+      "evidence_set": "set_a1",
+      "priority_score": 97,
+      "route_template": "/documents/{object}",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "hold-a05",
+      "evidence_set": "set_b2",
+      "priority_score": 96,
+      "route_template": "/transitions/{object}/state",
+      "trial_class": "reversible_out_of_order_state_transition"
+    },
+    {
+      "case_id": "hold-a06",
+      "evidence_set": "set_a1",
+      "priority_score": 95,
+      "route_template": "/notes/{object}",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-a07",
+      "evidence_set": "set_a1",
+      "priority_score": 94,
+      "route_template": "/folders/{object}",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-a08",
+      "evidence_set": "set_a1",
+      "priority_score": 93,
+      "route_template": "/packets/{object}",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-a09",
+      "evidence_set": "set_a1",
+      "priority_score": 92,
+      "route_template": "/forms/{object}",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "hold-a10",
+      "evidence_set": "set_b2",
+      "priority_score": 91,
+      "route_template": "/phases/{object}/state",
+      "trial_class": "reversible_out_of_order_state_transition"
+    },
+    {
+      "case_id": "hold-b01",
+      "evidence_set": "set_c3",
+      "priority_score": 90,
+      "route_template": "/collections/{object}",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-b02",
+      "evidence_set": "set_d4",
+      "priority_score": 89,
+      "route_template": "/ledgers/{object}",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-b03",
+      "evidence_set": "set_e5",
+      "priority_score": 88,
+      "route_template": "/archives/{object}",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-b04",
+      "evidence_set": "set_f6",
+      "priority_score": 87,
+      "route_template": "/boards/{object}",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "hold-b05",
+      "evidence_set": "set_g7",
+      "priority_score": 86,
+      "route_template": "/cards/{object}",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "hold-b06",
+      "evidence_set": "set_h8",
+      "priority_score": 85,
+      "route_template": "/pages/{object}",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "hold-b07",
+      "evidence_set": "set_i9",
+      "priority_score": 84,
+      "route_template": "/rows/{object}",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "hold-b08",
+      "evidence_set": "set_j0",
+      "priority_score": 83,
+      "route_template": "/stages/{object}/state",
+      "trial_class": "reversible_out_of_order_state_transition"
+    }
+  ]
+}

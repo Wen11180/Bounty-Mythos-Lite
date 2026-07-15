@@ -2783,6 +2783,40 @@ test("studio workbench can use the desktop path picker bridge", async () => {
   assert.doesNotMatch(workbench, /useEffect\(\(\) => \{\s*setDesktopPickerAvailable/s);
 });
 
+test("studio workbench exposes explicit non-persistent local black-box lab controls", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /previewStudioBlackBoxLabLease/);
+  assert.match(workbench, /approveStudioBlackBoxLabRun/);
+  assert.match(workbench, /function blackBoxLabLeaseRequest/);
+  assert.match(workbench, /createBlackBoxSessions/);
+  assert.match(workbench, /startBlackBoxRecording/);
+  assert.match(workbench, /stopBlackBoxRecording/);
+  assert.match(workbench, /runBlackBoxTrial/);
+  assert.match(workbench, /closeBlackBoxSessions/);
+  assert.match(workbench, /<details[^>]*>\s*<summary[^>]*>Enable explicit local black-box lab/s);
+  assert.match(workbench, /Ephemeral only - not written to workspace manifest/);
+  assert.match(workbench, /Session A ready/);
+  assert.match(workbench, /Session B ready/);
+  assert.match(workbench, /Preview bounded lease/);
+  assert.match(workbench, /Create two sessions/);
+  assert.match(workbench, /Start recording/);
+  assert.match(workbench, /Stop recording/);
+  assert.match(workbench, /Review normalized traces/);
+  assert.match(workbench, /Confirm bounded lab run/);
+  assert.match(workbench, /Run approved trial/);
+  assert.match(workbench, /Stop local lab/);
+  assert.match(workbench, /disabled=\{!labApproval\?\.local_runner_dispatch_allowed\}/);
+
+  const labStart = workbench.indexOf("function blackBoxLabLeaseRequest");
+  const labEnd = workbench.indexOf("async function handleOpenWorkspace");
+  assert.ok(labStart >= 0 && labEnd > labStart);
+  assert.doesNotMatch(workbench.slice(labStart, labEnd), /setManifest|localStorage|sessionStorage/);
+});
+
 test("studio workbench surfaces exported markdown report drafts", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ApiRequestError,
+  approveStudioBlackBoxLabRun,
   completeCampaignCycleReview,
   createResearchReviewPlan,
   createResearchRefutationDecision,
@@ -24,6 +25,7 @@ import {
   runStudioWorkspaceResearch,
   reviewValidationFeedbackForFindingPromotion,
   runSourceAuditScan,
+  previewStudioBlackBoxLabLease,
   SourceAuditScanError,
   type Finding,
   type ProgramIntelligenceProfile,
@@ -503,6 +505,126 @@ test("studio workspace API helpers pass only local paths and manifest metadata",
     assert.doesNotMatch(
       JSON.stringify(calls),
       /Authorization\s*[:=]|Bearer|secret-token|cookie|raw_policy/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio black-box lab helpers send only alias-only local review contracts", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+  const leasePreview = {
+    active_origin: "http://127.0.0.1:43110",
+    sessions: [
+      {
+        account_alias: "account_a",
+        ready: true,
+        role_alias: "member",
+        session_alias: "session_a",
+      },
+      {
+        account_alias: "account_b",
+        ready: true,
+        role_alias: "member",
+        session_alias: "session_b",
+      },
+    ],
+    workflows: [
+      {
+        action: "read_only_replay",
+        method: "GET",
+        object_aliases: ["widget_a"],
+        origin: "http://127.0.0.1:43110",
+        route_template: "/widgets/{object}",
+        session_alias: "session_a",
+        workflow_alias: "read_widget_a",
+      },
+    ],
+  } as const;
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ body, url });
+    if (url.endsWith("/mythos/studio/black-box-lab/leases/preview")) {
+      return new Response(
+        JSON.stringify({
+          active_origin: leasePreview.active_origin,
+          blocked_actions: ["remote_origin", "credential_input"],
+          execution_allowed: false,
+          human_approval_required: true,
+          persist_session_state: false,
+          profile: "local_lab",
+          session_aliases: ["session_a", "session_b"],
+          sessions_ready: true,
+          trace_review_required: true,
+          workflow_aliases: ["read_widget_a"],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        approval_id: "approval_local_lab",
+        approval_status: "approved",
+        execution_allowed: false,
+        lease_digest: `sha256:${"b".repeat(64)}`,
+        local_runner_dispatch_allowed: true,
+        reason: "bounded_local_lab_run_approved",
+        report_submission_allowed: false,
+        validation_run_id: "validation_local_lab",
+      }),
+      { status: 200 },
+    );
+  };
+
+  try {
+    const preview = await previewStudioBlackBoxLabLease(leasePreview);
+    const approval = await approveStudioBlackBoxLabRun({
+      lease_preview: leasePreview,
+      operator_confirmed: true,
+      trace_review: [
+        {
+          redacted: true,
+          response_schema_fingerprint: `sha256:${"a".repeat(64)}`,
+          route_template: "/widgets/{object}",
+          session_alias: "session_a",
+          workflow_alias: "read_widget_a",
+        },
+      ],
+      validation_run_id: "validation_local_lab",
+    });
+
+    assert.equal(preview?.execution_allowed, false);
+    assert.equal(preview?.persist_session_state, false);
+    assert.equal(approval?.local_runner_dispatch_allowed, true);
+    assert.equal(approval?.execution_allowed, false);
+    assert.deepEqual(
+      calls.map((call) => new URL(call.url).pathname),
+      [
+        "/mythos/studio/black-box-lab/leases/preview",
+        "/mythos/studio/black-box-lab/runs/approve",
+      ],
+    );
+    assert.deepEqual(calls[0]?.body, leasePreview);
+    assert.deepEqual(calls[1]?.body, {
+      lease_preview: leasePreview,
+      operator_confirmed: true,
+      trace_review: [
+        {
+          redacted: true,
+          response_schema_fingerprint: `sha256:${"a".repeat(64)}`,
+          route_template: "/widgets/{object}",
+          session_alias: "session_a",
+          workflow_alias: "read_widget_a",
+        },
+      ],
+      validation_run_id: "validation_local_lab",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(calls),
+      /cookie|credential|password|authorization|session_storage|workspace_manifest/i,
     );
   } finally {
     globalThis.fetch = originalFetch;

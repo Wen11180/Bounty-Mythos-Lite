@@ -1,0 +1,122 @@
+{
+  "version": "black_box_release_inputs_v1",
+  "split": "development",
+  "evidence_sets": {
+    "set_a1": {
+      "independent_repeat": true,
+      "rollback_required": false,
+      "observations": {
+        "baseline_a": {
+          "schema_ref": "sig_a1",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "baseline_b": {
+          "schema_ref": "sig_a1",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "trial": {
+          "canary_match": true,
+          "schema_ref": "sig_b2",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "owner_control": {
+          "schema_ref": "sig_c3",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "session_control": {
+          "schema_ref": "sig_c3",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        },
+        "repeat": {
+          "canary_match": true,
+          "schema_ref": "sig_b2",
+          "status_class": "2xx",
+          "structural_identity_match": true
+        }
+      }
+    },
+    "set_b2": {
+      "independent_repeat": true,
+      "rollback_required": true,
+      "observations": {
+        "baseline_a": {
+          "schema_ref": "sig_d4",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "baseline_b": {
+          "schema_ref": "sig_d4",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "trial": {
+          "schema_ref": "sig_e5",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "owner_control": {
+          "schema_ref": "sig_f6",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "session_control": {
+          "schema_ref": "sig_f6",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "repeat": {
+          "schema_ref": "sig_e5",
+          "state_effect": true,
+          "status_class": "2xx"
+        },
+        "rollback": {
+          "schema_ref": "sig_g7",
+          "state_effect": true,
+          "status_class": "2xx"
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "case_id": "dev-a01",
+      "evidence_set": "set_a1",
+      "priority_score": 95,
+      "route_template": "/records/{object}",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "dev-a02",
+      "evidence_set": "set_a1",
+      "priority_score": 94,
+      "route_template": "/entries/{object}",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "dev-a03",
+      "evidence_set": "set_a1",
+      "priority_score": 93,
+      "route_template": "/items/{object}",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "dev-a04",
+      "evidence_set": "set_a1",
+      "priority_score": 92,
+      "route_template": "/documents/{object}",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "dev-a05",
+      "evidence_set": "set_b2",
+      "priority_score": 91,
+      "route_template": "/transitions/{object}/state",
+      "trial_class": "reversible_out_of_order_state_transition"
+    }
+  ]
+}

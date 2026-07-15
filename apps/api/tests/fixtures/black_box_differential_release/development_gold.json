@@ -1,0 +1,36 @@
+{
+  "version": "black_box_release_gold_v1",
+  "split": "development",
+  "cases": [
+    {
+      "case_id": "dev-a01",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "cross_account_object_swap"
+    },
+    {
+      "case_id": "dev-a02",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "lower_role_replay"
+    },
+    {
+      "case_id": "dev-a03",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "unauthenticated_read_only_replay"
+    },
+    {
+      "case_id": "dev-a04",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "owned_parent_child_swap"
+    },
+    {
+      "case_id": "dev-a05",
+      "expected_status": "review_ready",
+      "scenario_class": "retain",
+      "trial_class": "reversible_out_of_order_state_transition"
+    }
+  ]
+}

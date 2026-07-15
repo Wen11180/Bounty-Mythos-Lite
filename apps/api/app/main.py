@@ -266,6 +266,246 @@ class StudioCandidateModelRequest(BaseModel):
         return self
 
 
+_STUDIO_BLACK_BOX_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+_STUDIO_BLACK_BOX_SENSITIVE_MARKERS = {
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "secret",
+    "token",
+}
+_STUDIO_BLACK_BOX_METHODS_BY_ACTION = {
+    "read_only_replay": {"GET", "HEAD"},
+    "reversible_update": {"PATCH", "PUT"},
+    "test_object_create": {"POST"},
+}
+
+
+def _studio_black_box_safe_alias(value: str) -> str:
+    normalized = value.strip()
+    if (
+        value != normalized
+        or not 1 <= len(value) <= 64
+        or not value[0].isalpha()
+        or any(not (character.isalnum() or character in {"_", "-"}) for character in value)
+        or any(marker in value.lower() for marker in _STUDIO_BLACK_BOX_SENSITIVE_MARKERS)
+    ):
+        raise ValueError("safe_lab_alias_required")
+    return value
+
+
+def _studio_black_box_loopback_origin(value: str) -> str:
+    parsed = urlparse(value)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("loopback_origin_required") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in _STUDIO_BLACK_BOX_LOOPBACK_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or value != f"{parsed.scheme}://{parsed.netloc}"
+    ):
+        raise ValueError("loopback_origin_required")
+    return value
+
+
+def _studio_black_box_route_template(value: str) -> str:
+    segments = value.split("/")[1:] if value.startswith("/") else []
+    if (
+        not segments
+        or value != f"/{'/'.join(segments)}"
+        or value.count("{object}") != 1
+        or any(marker in value for marker in {"?", "#", "\\", "%"})
+        or any(
+            segment != "{object}"
+            and (
+                not segment
+                or not segment[0].isalpha()
+                or len(segment) > 64
+                or any(
+                    not (character.isalnum() or character in {"_", "-"})
+                    for character in segment
+                )
+                or any(
+                    marker in segment.lower()
+                    for marker in _STUDIO_BLACK_BOX_SENSITIVE_MARKERS
+                )
+            )
+            for segment in segments
+        )
+    ):
+        raise ValueError("normalized_route_template_required")
+    return value
+
+
+class StudioBlackBoxLabSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_alias: str = Field(min_length=1, max_length=64)
+    account_alias: str = Field(min_length=1, max_length=64)
+    role_alias: str = Field(min_length=1, max_length=64)
+    ready: bool = False
+
+    @model_validator(mode="after")
+    def validate_safe_aliases(self):
+        self.session_alias = _studio_black_box_safe_alias(self.session_alias)
+        self.account_alias = _studio_black_box_safe_alias(self.account_alias)
+        self.role_alias = _studio_black_box_safe_alias(self.role_alias)
+        return self
+
+
+class StudioBlackBoxLabWorkflowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_alias: str = Field(min_length=1, max_length=64)
+    session_alias: str = Field(min_length=1, max_length=64)
+    origin: str = Field(min_length=1, max_length=255)
+    route_template: str = Field(min_length=1, max_length=1024)
+    method: str = Field(min_length=1, max_length=16)
+    action: str = Field(min_length=1, max_length=64)
+    object_aliases: list[str]
+
+    @model_validator(mode="after")
+    def validate_safe_workflow(self):
+        self.workflow_alias = _studio_black_box_safe_alias(self.workflow_alias)
+        self.session_alias = _studio_black_box_safe_alias(self.session_alias)
+        self.origin = _studio_black_box_loopback_origin(self.origin)
+        self.route_template = _studio_black_box_route_template(self.route_template)
+        self.method = self.method.upper()
+        if self.method not in _STUDIO_BLACK_BOX_METHODS_BY_ACTION.get(self.action, set()):
+            raise ValueError("safe_lab_workflow_action_required")
+        if (
+            not 1 <= len(self.object_aliases) <= 20
+            or len(set(self.object_aliases)) != len(self.object_aliases)
+        ):
+            raise ValueError("safe_lab_object_aliases_required")
+        self.object_aliases = [
+            _studio_black_box_safe_alias(alias) for alias in self.object_aliases
+        ]
+        return self
+
+
+class StudioBlackBoxLabLeasePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active_origin: str = Field(min_length=1, max_length=255)
+    sessions: list[StudioBlackBoxLabSessionRequest]
+    workflows: list[StudioBlackBoxLabWorkflowRequest]
+
+    @model_validator(mode="after")
+    def validate_bounded_local_lab(self):
+        self.active_origin = _studio_black_box_loopback_origin(self.active_origin)
+        if len(self.sessions) != 2:
+            raise ValueError("exactly_two_lab_sessions_required")
+        if not 1 <= len(self.workflows) <= 3:
+            raise ValueError("one_to_three_lab_workflows_required")
+        session_aliases = [session.session_alias for session in self.sessions]
+        if set(session_aliases) != {"session_a", "session_b"}:
+            raise ValueError("independent_lab_session_aliases_required")
+        if len({session.account_alias for session in self.sessions}) != 2:
+            raise ValueError("independent_lab_accounts_required")
+        workflow_aliases = [workflow.workflow_alias for workflow in self.workflows]
+        if len(set(workflow_aliases)) != len(workflow_aliases):
+            raise ValueError("unique_lab_workflow_aliases_required")
+        if any(
+            workflow.origin != self.active_origin
+            or workflow.session_alias not in session_aliases
+            for workflow in self.workflows
+        ):
+            raise ValueError("lab_workflow_lease_mismatch")
+        return self
+
+
+class StudioBlackBoxLabLeasePreviewResponse(BaseModel):
+    profile: Literal["local_lab"] = "local_lab"
+    active_origin: str
+    session_aliases: list[str]
+    workflow_aliases: list[str]
+    sessions_ready: bool
+    trace_review_required: bool = True
+    human_approval_required: bool = True
+    execution_allowed: bool = False
+    persist_session_state: bool = False
+    blocked_actions: list[str]
+
+
+class StudioBlackBoxLabTraceReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_alias: str = Field(min_length=1, max_length=64)
+    session_alias: str = Field(min_length=1, max_length=64)
+    route_template: str = Field(min_length=1, max_length=1024)
+    response_schema_fingerprint: str = Field(min_length=71, max_length=71)
+    redacted: bool
+
+    @model_validator(mode="after")
+    def validate_safe_trace(self):
+        self.workflow_alias = _studio_black_box_safe_alias(self.workflow_alias)
+        self.session_alias = _studio_black_box_safe_alias(self.session_alias)
+        self.route_template = _studio_black_box_route_template(self.route_template)
+        digest = self.response_schema_fingerprint.removeprefix("sha256:")
+        if (
+            not self.response_schema_fingerprint.startswith("sha256:")
+            or len(digest) != 64
+            or digest != digest.lower()
+            or any(character not in "0123456789abcdef" for character in digest.lower())
+        ):
+            raise ValueError("safe_trace_fingerprint_required")
+        if not self.redacted:
+            raise ValueError("redacted_trace_required")
+        return self
+
+
+class StudioBlackBoxLabRunApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    validation_run_id: str = Field(min_length=1, max_length=100)
+    lease_preview: StudioBlackBoxLabLeasePreviewRequest
+    trace_review: list[StudioBlackBoxLabTraceReviewRequest]
+    operator_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_trace_review_bound(self):
+        if not 1 <= len(self.trace_review) <= 3:
+            raise ValueError("one_to_three_reviewed_traces_required")
+        return self
+
+
+class StudioBlackBoxLabRunApprovalResponse(BaseModel):
+    approval_status: Literal["approved"] = "approved"
+    validation_run_id: str
+    approval_id: str
+    lease_digest: str
+    local_runner_dispatch_allowed: bool = True
+    execution_allowed: bool = False
+    report_submission_allowed: bool = False
+    reason: Literal["bounded_local_lab_run_approved"] = "bounded_local_lab_run_approved"
+
+
+def build_studio_black_box_lab_lease_preview(
+    request: StudioBlackBoxLabLeasePreviewRequest,
+) -> StudioBlackBoxLabLeasePreviewResponse:
+    return StudioBlackBoxLabLeasePreviewResponse(
+        active_origin=request.active_origin,
+        session_aliases=[session.session_alias for session in request.sessions],
+        workflow_aliases=[workflow.workflow_alias for workflow in request.workflows],
+        sessions_ready=all(session.ready for session in request.sessions),
+        blocked_actions=[
+            "remote_origin",
+            "credential_input",
+            "session_persistence",
+            "automatic_report_submission",
+        ],
+    )
+
+
 class StudioWorkspaceRunRequest(BaseModel):
     workspace_path: str = Field(min_length=1)
     candidate_model: StudioCandidateModelRequest | None = None
@@ -2671,6 +2911,91 @@ def evaluate_scope_guard(
         )
 
     return evaluate_validation_request(rule, request.request)
+
+
+@app.post(
+    "/mythos/studio/black-box-lab/leases/preview",
+    response_model=StudioBlackBoxLabLeasePreviewResponse,
+)
+def preview_mythos_studio_black_box_lab_lease(
+    request: StudioBlackBoxLabLeasePreviewRequest,
+) -> StudioBlackBoxLabLeasePreviewResponse:
+    return build_studio_black_box_lab_lease_preview(request)
+
+
+@app.post(
+    "/mythos/studio/black-box-lab/runs/approve",
+    response_model=StudioBlackBoxLabRunApprovalResponse,
+)
+def approve_mythos_studio_black_box_lab_run(
+    request: StudioBlackBoxLabRunApprovalRequest,
+    session: Session = Depends(get_session),
+) -> StudioBlackBoxLabRunApprovalResponse:
+    if not request.operator_confirmed:
+        raise HTTPException(status_code=409, detail="operator_confirmation_required")
+    if not all(session.ready for session in request.lease_preview.sessions):
+        raise HTTPException(status_code=409, detail="two_ready_lab_sessions_required")
+    expected_traces = {
+        (
+            workflow.workflow_alias,
+            workflow.session_alias,
+            workflow.route_template,
+        )
+        for workflow in request.lease_preview.workflows
+    }
+    reviewed_traces = {
+        (trace.workflow_alias, trace.session_alias, trace.route_template)
+        for trace in request.trace_review
+    }
+    if (
+        len(request.trace_review) != len(reviewed_traces)
+        or reviewed_traces != expected_traces
+    ):
+        raise HTTPException(status_code=409, detail="reviewed_trace_set_required")
+
+    repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(request.validation_run_id)
+    if validation_run is None:
+        raise HTTPException(status_code=404, detail="Validation run not found")
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    if (
+        validation_run.validation_mode != "black_box_differential"
+        or validation_run.status != "preflight_passed"
+        or not validation_run.allowed_to_execute
+    ):
+        raise HTTPException(status_code=409, detail="local_lab_preflight_required")
+    _raise_if_validation_run_approval_not_active(
+        repository=repository,
+        validation_run=validation_run,
+        campaign=campaign,
+    )
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id
+        else None
+    )
+    if approval is None:
+        raise HTTPException(status_code=409, detail="active_lab_approval_required")
+
+    approved_asset = _validation_run_scope_asset(validation_run, campaign)
+    active_origin = request.lease_preview.active_origin
+    origin_netloc = urlparse(active_origin).netloc
+    if approved_asset not in {active_origin, origin_netloc}:
+        raise HTTPException(status_code=409, detail="lab_origin_approval_mismatch")
+
+    lease_payload = request.lease_preview.model_dump(mode="json")
+    serialized_lease = json.dumps(
+        lease_payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    lease_digest = f"sha256:{sha256(serialized_lease.encode('utf-8')).hexdigest()}"
+    return StudioBlackBoxLabRunApprovalResponse(
+        validation_run_id=validation_run.id,
+        approval_id=approval.id,
+        lease_digest=lease_digest,
+    )
 
 
 @app.post("/mythos/studio/workspaces")
