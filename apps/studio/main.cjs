@@ -3,11 +3,13 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 
 const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./launcher.cjs");
+const { createAppExitHandler, createBlackBoxRunner } = require("./black-box-runner.cjs");
 const { installStudioNavigationGuard } = require("./navigation-guard.cjs");
 const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
+const blackBoxRunner = createBlackBoxRunner();
 
 function spawnChild(command, args, cwd, env = {}) {
   const child = spawn(command, args, {
@@ -66,6 +68,12 @@ function killChildren() {
   }
 }
 
+const handleBeforeQuit = createAppExitHandler({
+  closeSessions: (reason) => blackBoxRunner.closeSessions(reason),
+  exit: (code) => app.exit(code),
+  killChildren,
+});
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1440,
@@ -90,6 +98,10 @@ ipcMain.handle("mythos:select-directory", (event, options) => {
   return selectStudioDirectory(dialog, BrowserWindow.fromWebContents(event.sender), options);
 });
 
+ipcMain.handle("mythos:black-box-runner", (_event, line) => {
+  return blackBoxRunner.handleLine(line);
+});
+
 app.whenReady().then(async () => {
   const window = createWindow();
   try {
@@ -106,6 +118,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  killChildren();
   app.quit();
 });
+
+app.on("before-quit", handleBeforeQuit);

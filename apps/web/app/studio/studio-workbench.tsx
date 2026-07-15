@@ -43,8 +43,13 @@ type LogEntry = {
 };
 
 type MythosStudioDesktopBridge = {
+  closeBlackBoxSessions: () => Promise<string>;
+  createBlackBoxSessions: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
+  runBlackBoxTrial: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
   selectDirectory: () => Promise<string | null>;
   selectFile: (options?: { title?: string }) => Promise<string | null>;
+  startBlackBoxRecording: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
+  stopBlackBoxRecording: () => Promise<string>;
 };
 
 declare global {
