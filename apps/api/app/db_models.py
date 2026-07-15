@@ -409,6 +409,7 @@ class LearningSignalRecord(Base):
     evidence_quality: Mapped[str | None] = mapped_column(String(50), nullable=True)
     triager_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_relationships: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    field_pilot_feedback: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

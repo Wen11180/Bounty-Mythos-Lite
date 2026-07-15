@@ -1479,6 +1479,7 @@ class DatabaseRepository:
         evidence_quality: str | None = None,
         triager_feedback: str | None = None,
         target_relationships: list[str] | None = None,
+        field_pilot_feedback: dict | None = None,
         reuse_identical: bool = True,
     ) -> LearningSignalRecord:
         identity_hash = (
@@ -1493,6 +1494,7 @@ class DatabaseRepository:
                 evidence_quality=evidence_quality,
                 triager_feedback=triager_feedback,
                 target_relationships=target_relationships or [],
+                field_pilot_feedback=field_pilot_feedback,
             )
             if reuse_identical
             else None
@@ -1518,6 +1520,7 @@ class DatabaseRepository:
             evidence_quality=_safe_display_value(evidence_quality),
             triager_feedback=_safe_display_value(triager_feedback),
             target_relationships=_safe_display_value(target_relationships or []),
+            field_pilot_feedback=_safe_display_value(field_pilot_feedback),
         )
         self.session.add(record)
         try:
@@ -2114,6 +2117,7 @@ def _learning_signal_identity_hash(
     evidence_quality: str | None,
     triager_feedback: str | None,
     target_relationships: list[str],
+    field_pilot_feedback: dict | None,
 ) -> str | None:
     safe_values = {
         "program_id": program_id,
@@ -2139,8 +2143,27 @@ def _learning_signal_identity_hash(
         "triager_feedback": triager_feedback,
         "target_relationships": target_relationships,
     }
+    if field_pilot_feedback is not None:
+        safe_values["field_pilot_feedback"] = _safe_display_value(field_pilot_feedback)
+        original_values["field_pilot_feedback"] = field_pilot_feedback
     if safe_values != original_values:
         return None
+    if field_pilot_feedback is not None:
+        engagement_alias = field_pilot_feedback.get("engagement_alias")
+        candidate_alias = field_pilot_feedback.get("candidate_alias")
+        if (
+            field_pilot_feedback.get("schema_version")
+            != "black_box_field_pilot_v1"
+            or not isinstance(engagement_alias, str)
+            or not isinstance(candidate_alias, str)
+        ):
+            return None
+        safe_values = {
+            "identity_kind": "black_box_field_pilot_candidate_v1",
+            "program_id": program_id,
+            "engagement_alias": engagement_alias,
+            "candidate_alias": candidate_alias,
+        }
     encoded = json.dumps(safe_values, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode("utf-8")).hexdigest()
 
