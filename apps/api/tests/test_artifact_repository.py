@@ -493,7 +493,7 @@ def test_artifact_program_scope_migration_upgrades_legacy_unnamed_unique_constra
     config = Config(str(api_root / "alembic.ini"))
     config.set_main_option("script_location", str(api_root / "migrations"))
     command.stamp(config, "0010_learning_signal_identity_hash")
-    command.upgrade(config, "head")
+    command.upgrade(config, "0011_artifact_program_scope")
 
     inspector = inspect(create_engine(database_url))
     unique_constraints = inspector.get_unique_constraints("artifacts")

@@ -22,6 +22,15 @@ from app.black_box_hunter.audit import (
     load_black_box_audit_projection,
     record_black_box_bounded_result,
 )
+from app.black_box_hunter.field_pilot import (
+    FieldPilotFeedbackError,
+    FieldPilotFeedbackRequest,
+    FieldPilotFeedbackResponse,
+    FieldPilotStatus,
+    evaluate_field_pilot_status,
+    field_pilot_entries,
+    record_field_pilot_feedback,
+)
 from app.black_box_hunter.remote_profile import (
     RemoteAuthorizationDecision,
     RemoteHumanLease,
@@ -2418,6 +2427,38 @@ def get_black_box_review_packet(
         return build_black_box_report_review_packet(projection.candidate)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
+    "/mythos/black-box/field-pilot/feedback",
+    response_model=FieldPilotFeedbackResponse,
+)
+def create_black_box_field_pilot_feedback(
+    request: FieldPilotFeedbackRequest,
+    session: Session = Depends(get_session),
+) -> FieldPilotFeedbackResponse:
+    repository = DatabaseRepository(session)
+    _program_or_404_in_scope(repository, request.program_id)
+    try:
+        return record_field_pilot_feedback(
+            repository=repository,
+            request=request,
+        )
+    except FieldPilotFeedbackError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get(
+    "/mythos/black-box/field-pilot/status",
+    response_model=FieldPilotStatus,
+)
+def get_black_box_field_pilot_status(
+    session: Session = Depends(get_session),
+) -> FieldPilotStatus:
+    repository = DatabaseRepository(session)
+    return evaluate_field_pilot_status(
+        field_pilot_entries(repository.list_all_learning_signals())
+    )
 
 
 @app.get(

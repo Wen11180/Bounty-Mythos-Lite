@@ -104,7 +104,12 @@ def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
 
     unique_constraints = inspector.get_unique_constraints("artifacts")
     unique_columns = {tuple(constraint["column_names"]) for constraint in unique_constraints}
-    if ("program_id", "source_hash") in unique_columns:
+    if (
+        ("program_id", "source_hash") in unique_columns
+        and "field_pilot_feedback" in learning_columns
+    ):
+        revision = "0012_field_pilot_feedback"
+    elif ("program_id", "source_hash") in unique_columns:
         revision = "0011_artifact_program_scope"
     elif ("source_hash",) in unique_columns:
         revision = "0010_learning_signal_identity_hash"
