@@ -151,6 +151,29 @@ class BrowserRuleDocumentEnvelope(RuleDocumentEnvelope):
     anchors: list[BrowserAnchorInput]
 
 
+RuleDocumentEnvelopeInput = Annotated[
+    StaticRuleDocumentEnvelope | BrowserRuleDocumentEnvelope,
+    Field(discriminator="mode"),
+]
+
+
+class ProgramRuleRegistrationRequest(StrictContract):
+    program_alias: SafeAlias
+    public_rule_url: str = Field(min_length=1, max_length=MAX_PUBLIC_URL_LENGTH)
+
+
+class ProgramRuleClaimNormalizeRequest(StrictContract):
+    source_id: str = Field(min_length=1, max_length=128)
+    claim_token: str = Field(min_length=1, max_length=512)
+    document: RuleDocumentEnvelopeInput
+
+
+class ProgramRuleClaimFailRequest(StrictContract):
+    source_id: str = Field(min_length=1, max_length=128)
+    claim_token: str = Field(min_length=1, max_length=512)
+    failure_code: FetchFailureCode
+
+
 class NormalizedDocumentLink(StrictContract):
     state: Literal[LinkState.ELIGIBLE] = LinkState.ELIGIBLE
     url: str = Field(min_length=1, max_length=MAX_PUBLIC_URL_LENGTH)
@@ -172,6 +195,12 @@ class NormalizedRuleDocument(StrictContract):
     list_items: list[BoundedProjectionText]
     eligible_links: list[NormalizedDocumentLink]
     openapi_like: dict[str, Any] | None = None
+
+
+class ProgramRuleClaimCompleteRequest(StrictContract):
+    source_id: str = Field(min_length=1, max_length=128)
+    claim_token: str = Field(min_length=1, max_length=512)
+    documents: list[dict[str, Any]] = Field(min_length=1, max_length=8)
 
 
 class StructuredRateLimit(StrictContract):
@@ -215,6 +244,8 @@ class DeterministicExtractionResult(StrictContract):
     review_state: ExtractionReviewState
     review_issues: list[str]
     ai_status: AIStatus = AIStatus.NOT_REQUESTED
+    ai_prompt_sha256: Sha256 | None = None
+    ai_error_category: Literal["provider_unavailable", "invalid_output"] | None = None
 
 
 class AdvisoryEvidenceClaim(StrictContract):
@@ -262,6 +293,68 @@ class ProgramRuleSourceProjection(StrictContract):
     next_check_at: datetime
     approved_snapshot_id: str | None = Field(default=None, max_length=128)
     pending_snapshot_id: str | None = Field(default=None, max_length=128)
+
+
+class ProgramRuleClaimLimits(StrictContract):
+    max_documents: Literal[8] = 8
+    max_document_bytes: Literal[2_097_152] = 2_097_152
+    max_total_bytes: Literal[8_388_608] = 8_388_608
+    max_normalized_corpus_bytes: Literal[2_097_152] = 2_097_152
+    document_timeout_seconds: Literal[10] = 10
+    max_depth: Literal[1] = 1
+
+
+class ProgramRuleFetchClaim(StrictContract):
+    claim_id: str = Field(min_length=1, max_length=100)
+    source_id: str = Field(min_length=1, max_length=128)
+    claim_token: str = Field(min_length=1, max_length=512)
+    source_url: str = Field(min_length=1, max_length=MAX_PUBLIC_URL_LENGTH)
+    expires_at: datetime
+    limits: ProgramRuleClaimLimits = Field(default_factory=ProgramRuleClaimLimits)
+
+
+class ProgramRuleClaimNextResult(StrictContract):
+    claim: ProgramRuleFetchClaim | None
+    next_due_at: datetime | None
+
+
+class ProgramRuleSnapshotProjection(ResponsePermissions):
+    snapshot_id: str = Field(min_length=1, max_length=128)
+    source_id: str = Field(min_length=1, max_length=128)
+    raw_aggregate_sha256: Sha256
+    normalized_sha256: Sha256
+    fetched_at: datetime
+    fetch_mode: str = Field(min_length=1, max_length=50)
+    content_types: list[str]
+    detected_language: str = Field(min_length=1, max_length=50)
+    extraction: dict[str, Any]
+    evidence: list[dict[str, Any]]
+    linked_documents: list[dict[str, Any]]
+    openapi_candidates: list[dict[str, Any]]
+    ai_status: AIStatus
+    review_status: SnapshotReviewStatus
+    reviewer_alias: str | None = Field(default=None, max_length=100)
+    reviewed_at: datetime | None
+    review_digest: Sha256
+
+
+class ProgramScopeRuleProjection(ResponsePermissions):
+    rule_id: str = Field(min_length=1, max_length=128)
+    program_id: str = Field(min_length=1, max_length=128)
+    source_id: str = Field(min_length=1, max_length=128)
+    approved_snapshot_id: str = Field(min_length=1, max_length=128)
+    canonical_asset: str = Field(min_length=1, max_length=MAX_PUBLIC_URL_LENGTH)
+    asset_kind: AssetKind
+    source_evidence_refs: list[Sha256]
+    scope_status: CandidateScopeStatus
+    automation: AutomationStatus
+    allowed_validation: list[str]
+    prohibited: list[str]
+    rate_limit: dict[str, Any] | None
+    approval_digest: Sha256
+    effective_at: datetime
+    effective_scope_status: EffectiveScopeStatus
+    warning: str | None = Field(default=None, max_length=500)
 
 
 class CandidateRuleModification(StrictContract):
