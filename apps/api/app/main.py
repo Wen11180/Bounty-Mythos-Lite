@@ -55,6 +55,7 @@ from app.campaign_orchestrator import (
 )
 from app.candidate_hunter_loop import (
     build_candidate_hunter_observations,
+    load_candidate_hunter_projection,
     run_candidate_hunter_loop,
 )
 from app.cross_source_candidate_generator import (
@@ -3861,7 +3862,7 @@ async def _run_mythos_studio_workspace_research_service(
         result=result,
         policy_text=policy_text,
     )
-    candidates = _studio_candidates_for_run(record, manifest)
+    candidates = _studio_candidates_for_run(record, manifest, repository=repository)
     surface_facts = _studio_imported_surface_facts(manifest)
     for kind in ("api", "har"):
         if not any(
@@ -4163,10 +4164,11 @@ def _studio_workspace_mission(
     selected_run_id = run_id or _latest_studio_run_id(manifest)
     if selected_run_id is None:
         return _studio_mission_summary(manifest, None, [])
-    record = DatabaseRepository(session).get_pipeline_run(selected_run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(selected_run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    candidates = _studio_candidates_for_run(record, manifest)
+    candidates = _studio_candidates_for_run(record, manifest, repository=repository)
     return _studio_mission_summary(manifest, selected_run_id, candidates)
 
 
@@ -4179,10 +4181,11 @@ def export_mythos_studio_workspace_mission(
     selected_run_id = request.run_id or _latest_studio_run_id(manifest)
     candidates: list[dict] = []
     if selected_run_id is not None:
-        record = DatabaseRepository(session).get_pipeline_run(selected_run_id)
+        repository = DatabaseRepository(session)
+        record = repository.get_pipeline_run(selected_run_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
-        candidates = _studio_candidates_for_run(record, manifest)
+        candidates = _studio_candidates_for_run(record, manifest, repository=repository)
     mission = _studio_mission_summary(manifest, selected_run_id, candidates)
     updated_manifest = record_workspace_mission_dossier(
         request.workspace_path,
@@ -4228,10 +4231,11 @@ def list_mythos_studio_workspace_candidates(
     selected_run_id = run_id or _latest_studio_run_id(manifest)
     if selected_run_id is None:
         return {"run_id": None, "candidates": []}
-    record = DatabaseRepository(session).get_pipeline_run(selected_run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(selected_run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    candidates = _studio_candidates_for_run(record, manifest)
+    candidates = _studio_candidates_for_run(record, manifest, repository=repository)
     return {"run_id": selected_run_id, "candidates": candidates}
 
 
@@ -4257,11 +4261,12 @@ def run_mythos_studio_workspace_benchmark(
         expectations = json.loads(expectations_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail="invalid_benchmark_expectations") from exc
-    record = DatabaseRepository(session).get_pipeline_run(request.run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(request.run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     result = evaluate_studio_candidates(
-        {"candidates": _studio_candidates_for_run(record, manifest)},
+        {"candidates": _studio_candidates_for_run(record, manifest, repository=repository)},
         expectations,
     )
     updated_manifest = record_workspace_benchmark_result(
@@ -4291,11 +4296,12 @@ def create_mythos_studio_workspace_benchmark_template(
         run.get("run_id") for run in manifest.get("runs", []) if isinstance(run, dict)
     }:
         raise HTTPException(status_code=404, detail="workspace_run_not_found")
-    record = DatabaseRepository(session).get_pipeline_run(request.run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(request.run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     template = build_studio_expectations_template(
-        {"candidates": _studio_candidates_for_run(record, manifest)}
+        {"candidates": _studio_candidates_for_run(record, manifest, repository=repository)}
     )
     updated_manifest = record_workspace_benchmark_template(
         request.workspace_path,
@@ -4324,12 +4330,15 @@ def export_mythos_studio_workspace_report(
         run.get("run_id") for run in manifest.get("runs", []) if isinstance(run, dict)
     }:
         raise HTTPException(status_code=404, detail="workspace_run_not_found")
-    record = DatabaseRepository(session).get_pipeline_run(request.run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(request.run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     preview = _build_report_preview_response_or_404(record)
     report = preview.model_dump(mode="json")
-    report.update(_studio_report_candidate_guidance(record, manifest))
+    report.update(
+        _studio_report_candidate_guidance(record, manifest, repository=repository)
+    )
     report["studio_context"] = _studio_report_context(manifest)
     updated_manifest = record_workspace_report_export(
         request.workspace_path,
@@ -7940,8 +7949,9 @@ def _studio_campaign_hunter_candidate_readiness(
 def _studio_report_candidate_guidance(
     record: PipelineRunRecord,
     manifest: dict,
+    repository=None,
 ) -> dict[str, object]:
-    candidates = _studio_candidates_for_run(record, manifest)
+    candidates = _studio_candidates_for_run(record, manifest, repository=repository)
     top_candidate_reviews = [
         _studio_mission_candidate_summary(candidate)
         for candidate in candidates[:5]
@@ -8403,10 +8413,29 @@ def _studio_mission_dossier_field(
     return None
 
 
-def _studio_candidates_for_run(record: PipelineRunRecord, manifest: dict) -> list[dict]:
+def _studio_candidates_for_run(
+    record: PipelineRunRecord,
+    manifest: dict,
+    repository=None,
+) -> list[dict]:
     payload = record.payload if isinstance(record.payload, dict) else {}
     imported_surface_facts = _studio_imported_surface_facts(manifest)
     authorization_context_facts = _studio_authorization_context_facts(manifest)
+    if repository is not None:
+        projection = load_candidate_hunter_projection(
+            repository=repository,
+            pipeline_run_id=record.id,
+        )
+        if projection.get("status") == "ready":
+            finals = projection.get("final_candidates")
+            if isinstance(finals, list) and finals:
+                hunter_candidates = _studio_candidates_from_hunter_projection(
+                    projection,
+                    imported_surface_facts,
+                    authorization_context_facts,
+                )
+                if hunter_candidates:
+                    return hunter_candidates
     hypotheses = payload.get("hypotheses", [])
     if not isinstance(hypotheses, list):
         return []
@@ -8436,6 +8465,149 @@ def _studio_candidates_for_run(record: PipelineRunRecord, manifest: dict) -> lis
             safe_preview_text(candidate.get("hypothesis_id", "")),
         ),
     )[:5]
+
+
+def _studio_candidates_from_hunter_projection(
+    projection: dict,
+    imported_surface_facts: list[dict[str, str]] | None = None,
+    authorization_context_facts: list[dict[str, str]] | None = None,
+) -> list[dict] | None:
+    finals = projection.get("final_candidates")
+    if not isinstance(finals, list):
+        return None
+    candidates = []
+    for item in finals:
+        if not isinstance(item, dict):
+            continue
+        candidates.append(
+            _studio_candidate_from_hunter_final(
+                item,
+                imported_surface_facts,
+                authorization_context_facts,
+            )
+        )
+    return candidates[:5]
+
+
+def _studio_candidate_from_hunter_final(
+    candidate: dict,
+    imported_surface_facts: list[dict[str, str]] | None = None,
+    authorization_context_facts: list[dict[str, str]] | None = None,
+) -> dict:
+    route = candidate.get("route") if isinstance(candidate.get("route"), dict) else {}
+    method = safe_preview_text(route.get("method", "")).upper()
+    path = safe_preview_text(route.get("path", ""))
+    location = f"{method} {path}".strip()
+    card = (
+        candidate.get("falsification_card")
+        if isinstance(candidate.get("falsification_card"), dict)
+        else {}
+    )
+    summary = (
+        candidate.get("falsification_summary")
+        if isinstance(candidate.get("falsification_summary"), dict)
+        else {}
+    )
+    broken_invariant = safe_preview_text(
+        candidate.get(
+            "broken_invariant",
+            card.get("broken_invariant", summary.get("broken_invariant", "")),
+        )
+    )
+    why_still_alive = safe_preview_lines(
+        candidate.get(
+            "why_still_alive",
+            summary.get("why_still_alive", []),
+        )
+    )
+    if not why_still_alive and isinstance(card.get("decision"), dict):
+        why_still_alive = safe_preview_lines(card["decision"].get("why_still_alive", []))
+    refutation_questions = safe_preview_lines(candidate.get("refutation_questions", []))
+    source_fact_refs = safe_preview_lines(candidate.get("source_fact_refs", []))
+    source_facts: list[dict[str, object]] = []
+    if method and path:
+        source_facts.append(
+            {
+                "fact_type": "candidate_route",
+                "artifact_kind": "code",
+                "route_method": method,
+                "route_path": path,
+            }
+        )
+    code_path = safe_preview_text(candidate.get("affected_code_path", ""))
+    if code_path:
+        source_facts.append(
+            {
+                "fact_type": "authorization_gap_candidate",
+                "artifact_kind": "code",
+                "source_path": code_path,
+                "root_cause": safe_preview_text(candidate.get("root_cause_id", "")),
+                "security_invariant": broken_invariant,
+            }
+        )
+    ranking_reasons = []
+    if candidate.get("rank") is not None:
+        ranking_reasons.append(f"hunter_rank:{candidate.get('rank')}")
+    if isinstance(summary, dict) and summary.get("survived_kill_score") is not None:
+        ranking_reasons.append(
+            f"survived_kill_score:{summary.get('survived_kill_score')}"
+        )
+    ranking_reasons.append("falsification_first_retained")
+    priority = _safe_priority_score(candidate.get("priority_score"))
+    if priority <= 0:
+        priority = max(10, 100 - (_safe_priority_score(candidate.get("rank")) - 1) * 10)
+    hypothesis = {
+        "hypothesis_id": safe_preview_text(candidate.get("candidate_id", "")),
+        "vuln_type": safe_preview_text(candidate.get("vuln_type", "candidate")),
+        "risk": "medium",
+        "location": location,
+        "hypothesis": (
+            f"Hunter retained candidate on {location or 'unknown route'} "
+            f"(root={safe_preview_text(candidate.get('root_cause_id', 'unknown'))}). "
+            "Unverified; local review only."
+        ),
+        "broken_invariant": broken_invariant,
+        "why_still_alive": why_still_alive,
+        "falsification_summary": summary,
+        "false_positive_checks": refutation_questions,
+        "evidence_needed": source_fact_refs[:12],
+        "safe_validation_plan": safe_preview_lines(
+            candidate.get("safe_validation_plan", [])
+        ),
+        "validation_mode": "manual_review",
+        "priority_score": priority,
+        "ranking_reasons": ranking_reasons,
+        "source_facts": source_facts,
+        "hunter_assessment": {
+            "evidence_focus": [
+                "falsification_card_review",
+                "why_still_alive_review",
+                *why_still_alive[:3],
+            ]
+        },
+    }
+    studio_candidate = _studio_candidate_from_hypothesis(
+        hypothesis,
+        imported_surface_facts,
+        authorization_context_facts,
+    )
+    studio_candidate["broken_invariant"] = broken_invariant or studio_candidate.get(
+        "broken_invariant", ""
+    )
+    studio_candidate["why_still_alive"] = why_still_alive
+    studio_candidate["falsification_summary"] = {
+        "decision_status": safe_preview_text(summary.get("decision_status", "retained")),
+        "why_still_alive": why_still_alive,
+        "why_dead": safe_preview_lines(summary.get("why_dead", [])),
+        "broken_invariant": broken_invariant,
+        "open_dimensions": safe_preview_lines(summary.get("open_dimensions", [])),
+        "survived_kill_score": _safe_priority_score(summary.get("survived_kill_score")),
+    }
+    studio_candidate["false_positive_checks"] = (
+        refutation_questions
+        or studio_candidate.get("false_positive_checks", [])
+    )
+    return studio_candidate
 
 
 def _studio_assessment_candidate_ids_by_index(value: object) -> dict[int, str]:
@@ -8534,6 +8706,12 @@ def _studio_candidate_from_hypothesis(
         "location": safe_preview_text(hypothesis.get("location", "")),
         "reason": safe_preview_text(hypothesis.get("hypothesis", "")),
         "broken_invariant": _studio_broken_invariant(hypothesis),
+        "why_still_alive": safe_preview_lines(hypothesis.get("why_still_alive", [])),
+        "falsification_summary": (
+            hypothesis.get("falsification_summary")
+            if isinstance(hypothesis.get("falsification_summary"), dict)
+            else {}
+        ),
         "repair_guidance": _studio_repair_guidance(hypothesis),
         "evidence_needed": safe_preview_lines(hypothesis.get("evidence_needed", [])),
         "false_positive_checks": safe_preview_lines(

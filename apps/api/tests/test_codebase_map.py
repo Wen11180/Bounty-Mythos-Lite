@@ -4340,3 +4340,198 @@ def search_campaigns(q: str):
     )
     assert gap.authz_hint == "missing_handler_injection_check"
     assert gap.payload["root_cause"] == "missing_injection_validation"
+
+
+def test_map_static_multilang_java_go_rails_ownership_and_role_facts():
+    java = """
+@RestController
+public class RecordsController {
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId, User user) {
+    Record record = loadRecord(recordId);
+    if (!record.getOwnerId().equals(user.getId())) {
+      return deny();
+    }
+    return sendFile(record.getPath());
+  }
+}
+"""
+    go = """
+package handlers
+func mount(r Router) { r.GET("/records/{recordId}", readRecord) }
+func readRecord(w http.ResponseWriter, r *http.Request) {
+  record := loadRecord(recordId)
+  if record.OwnerID != user.ID { return }
+  sendFile(w, record.Path)
+}
+"""
+    rails = """
+get "/records/:record_id", to: "records#read_record"
+def read_record
+  record = load_record(params[:record_id])
+  if record.owner_id != current_user.id
+    deny
+  end
+  send_file record.path
+end
+"""
+    for path, content, handler in [
+        ("RecordsController.java", java, "readRecord"),
+        ("handlers.go", go, "readRecord"),
+        ("records.rb", rails, "read_record"),
+    ]:
+        result = map_authorized_code_files(
+            {"authorized_code_files": [{"path": path, "content": content}]}
+        )
+        types = {f.fact_type for f in result.facts}
+        assert "route_handler" in types
+        assert "authz_check" in types
+        assert "sensitive_sink" in types
+        authz = [f for f in result.facts if f.fact_type == "authz_check"]
+        assert any(
+            f.authz_hint in {"owner_or_admin_check", "ownership_boundary_check"}
+            and isinstance(f.payload, dict)
+            and f.payload.get("handler") == handler
+            for f in authz
+        )
+
+
+def test_map_static_multilang_csharp_php_ownership_and_role_facts():
+    csharp = """
+public class RecordsController {
+  [HttpGet("/records/{id}")]
+  public IActionResult GetRecord(int id) {
+    if (record.OwnerId != user.Id) { return Forbid(); }
+    return File(record.Path);
+  }
+}
+"""
+    php = """
+<?php
+Route::get('/records/{id}', function ($id) {
+  if ($record->owner_id != $user->id) { abort(403); }
+  return response()->download($record->path);
+});
+"""
+    csharp_role = """
+public class RecordsController {
+  [HttpGet("/records/{id}")]
+  public IActionResult GetRecord(int id) {
+    if (user.Role != "admin") { return Forbid(); }
+    return File(record.Path);
+  }
+}
+"""
+    for path, content, expect_hint in [
+        ("RecordsController.cs", csharp, {"owner_or_admin_check", "ownership_boundary_check"}),
+        ("routes.php", php, {"owner_or_admin_check", "ownership_boundary_check"}),
+        ("RecordsController.cs", csharp_role, {"role_check", "permission_check"}),
+    ]:
+        result = map_authorized_code_files(
+            {"authorized_code_files": [{"path": path, "content": content}]}
+        )
+        types = {f.fact_type for f in result.facts}
+        assert "route_handler" in types
+        assert "authz_check" in types
+        authz = [f for f in result.facts if f.fact_type == "authz_check"]
+        assert any(f.authz_hint in expect_hint for f in authz)
+
+def test_map_static_multilang_kotlin_ownership_and_role_facts():
+    kotlin = """
+@RestController
+class RecordsController {
+  @GetMapping("/records/{recordId}")
+  fun readRecord(recordId: String, user: User): Any {
+    val record = loadRecord(recordId)
+    if (record.ownerId != user.id) {
+      return deny()
+    }
+    return sendFile(record.path)
+  }
+}
+"""
+    kotlin_role = """
+@RestController
+class RecordsController {
+  @GetMapping("/records/{recordId}")
+  fun readRecord(recordId: String, user: User): Any {
+    if (user.role != "admin") {
+      return deny()
+    }
+    return sendFile(record.path)
+  }
+}
+"""
+    for path, content, expect_hint in [
+        ("RecordsController.kt", kotlin, {"owner_or_admin_check", "ownership_boundary_check"}),
+        ("RecordsController.kt", kotlin_role, {"role_check", "permission_check"}),
+    ]:
+        result = map_authorized_code_files(
+            {"authorized_code_files": [{"path": path, "content": content}]}
+        )
+        types = {f.fact_type for f in result.facts}
+        assert "route_handler" in types
+        assert "authz_check" in types
+        authz = [f for f in result.facts if f.fact_type == "authz_check"]
+        assert any(f.authz_hint in expect_hint for f in authz)
+
+
+def test_map_static_multilang_rust_scala_ownership_and_role_facts():
+    rust = """
+#[get("/records/{record_id}")]
+async fn read_record(record_id: String, user: User) -> impl IntoResponse {
+    let record = load_record(&record_id);
+    if record.owner_id != user.id {
+        return deny();
+    }
+    send_file(record.path)
+}
+"""
+    rust_role = """
+#[get("/records/{record_id}")]
+async fn read_record(record_id: String, user: User) -> impl IntoResponse {
+    if user.role != "admin" {
+        return deny();
+    }
+    send_file(record.path)
+}
+"""
+    scala = """
+@RestController
+class RecordsController {
+  @GetMapping("/records/{recordId}")
+  def readRecord(recordId: String, user: User) = {
+    val record = loadRecord(recordId)
+    if (record.ownerId != user.id) {
+      return deny()
+    }
+    sendFile(record.path)
+  }
+}
+"""
+    scala_role = """
+@RestController
+class RecordsController {
+  @GetMapping("/records/{recordId}")
+  def readRecord(recordId: String, user: User) = {
+    if (user.role != "admin") {
+      return deny()
+    }
+    sendFile(record.path)
+  }
+}
+"""
+    for path, content, expect_hint in [
+        ("handlers.rs", rust, {"owner_or_admin_check", "ownership_boundary_check"}),
+        ("handlers.rs", rust_role, {"role_check", "permission_check"}),
+        ("RecordsController.scala", scala, {"owner_or_admin_check", "ownership_boundary_check"}),
+        ("RecordsController.scala", scala_role, {"role_check", "permission_check"}),
+    ]:
+        result = map_authorized_code_files(
+            {"authorized_code_files": [{"path": path, "content": content}]}
+        )
+        types = {f.fact_type for f in result.facts}
+        assert "route_handler" in types
+        assert "authz_check" in types
+        authz = [f for f in result.facts if f.fact_type == "authz_check"]
+        assert any(f.authz_hint in expect_hint for f in authz)

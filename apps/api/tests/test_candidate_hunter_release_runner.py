@@ -327,6 +327,37 @@ def test_runner_keeps_invalid_replay_safe_and_marks_model_review(tmp_path: Path)
     assert llm_runs[0].error == "invalid_schema"
 
 
+def test_runner_records_current_semantics_for_legacy_role_only_gold(tmp_path: Path):
+    case = next(
+        case
+        for case in load_release_fixture_suite(FIXTURE_ROOT, "development")
+        if case.case_id == "dev-006"
+    )
+    session = _session()
+    try:
+        result = run_candidate_hunter_release_fixture(
+            case,
+            workspace_root=tmp_path / "studio-workspaces",
+            session=session,
+        )
+    finally:
+        session.close()
+
+    assert result["normalized_output"]["candidate_decisions"][0]["disposition"] == (
+        "retained"
+    )
+    assert result["evaluation"]["legacy_gold_adjustments"] == [
+        {
+            "gold_id": "observed-primary-root",
+            "original_disposition": "refute",
+            "effective_disposition": "retain",
+            "reason": "role_only_does_not_close_object_ownership_gap",
+        }
+    ]
+    assert result["evaluation"]["invalid_refutations"] == []
+    assert result["evaluation"]["false_positives"] == []
+
+
 @pytest.mark.parametrize("suite", ["development", "release"])
 def test_suite_runner_aggregates_complete_suite_only_after_all_captures(
     suite: str,

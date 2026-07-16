@@ -2048,6 +2048,11 @@ export function StudioWorkbench() {
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">Broken invariant</p>
                   <p className="mt-2 text-[var(--muted)]">{candidate.brokenInvariant}</p>
                 </div>
+                <ListBlock title="Why still alive" items={candidate.whyStillAlive} />
+                <ListBlock
+                  title="Falsification open dimensions"
+                  items={candidate.falsificationSummary.openDimensions}
+                />
                 <ListBlock
                   title="Semantic evidence"
                   items={[semanticEvidenceLine(candidate.semanticEvidence)]}

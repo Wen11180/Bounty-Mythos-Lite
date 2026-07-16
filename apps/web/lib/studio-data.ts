@@ -1324,6 +1324,15 @@ export type StudioCandidateInput = {
   location?: string;
   reason?: string;
   broken_invariant?: string;
+  why_still_alive?: string[];
+  falsification_summary?: {
+    broken_invariant?: string;
+    decision_status?: string;
+    open_dimensions?: string[];
+    survived_kill_score?: number;
+    why_dead?: string[];
+    why_still_alive?: string[];
+  };
   repair_guidance?: string;
   evidence_needed?: string[];
   false_positive_checks?: string[];
@@ -1431,6 +1440,15 @@ export type StudioCandidateCard = {
   evidenceFocus: string[];
   rankingReasons: string[];
   brokenInvariant: string;
+  whyStillAlive: string[];
+  falsificationSummary: {
+    brokenInvariant: string;
+    decisionStatus: string;
+    openDimensions: string[];
+    survivedKillScore: number;
+    whyDead: string[];
+    whyStillAlive: string[];
+  };
   repairGuidance: string;
   regressionTest: string;
   reason: string;
@@ -2240,6 +2258,50 @@ export function toStudioResearchReadiness(
   };
 }
 
+function whyStillAliveFromCandidate(candidate: StudioCandidateInput): string[] {
+  const direct = Array.isArray(candidate.why_still_alive)
+    ? candidate.why_still_alive.filter((item): item is string => Boolean(safeText(item, "")))
+    : [];
+  if (direct.length > 0) {
+    return direct.map((item) => safeText(item, ""));
+  }
+  const summary = candidate.falsification_summary?.why_still_alive;
+  if (Array.isArray(summary)) {
+    return summary
+      .filter((item): item is string => Boolean(safeText(item, "")))
+      .map((item) => safeText(item, ""));
+  }
+  return [];
+}
+
+function falsificationSummaryFromCandidate(
+  candidate: StudioCandidateInput,
+): StudioCandidateCard["falsificationSummary"] {
+  const summary = candidate.falsification_summary;
+  const whyStillAlive = whyStillAliveFromCandidate(candidate);
+  return {
+    brokenInvariant: safeText(
+      summary?.broken_invariant || candidate.broken_invariant,
+      "Security invariant needs review.",
+    ),
+    decisionStatus: safeText(summary?.decision_status, "needs_review"),
+    openDimensions: Array.isArray(summary?.open_dimensions)
+      ? summary.open_dimensions
+          .filter((item): item is string => Boolean(safeText(item, "")))
+          .map((item) => safeText(item, ""))
+      : [],
+    survivedKillScore: Number.isFinite(summary?.survived_kill_score)
+      ? Number(summary?.survived_kill_score)
+      : 0,
+    whyDead: Array.isArray(summary?.why_dead)
+      ? summary.why_dead
+          .filter((item): item is string => Boolean(safeText(item, "")))
+          .map((item) => safeText(item, ""))
+      : [],
+    whyStillAlive,
+  };
+}
+
 export function toStudioCandidateCards(candidates: StudioCandidateInput[]): StudioCandidateCard[] {
   return candidates.slice(0, 5).map((candidate, index) => {
     const endpoint = endpointFromCandidate(candidate);
@@ -2263,7 +2325,13 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       refutationQuestions: candidate.false_positive_checks ?? [],
       evidenceFocus: candidate.hunter_assessment?.evidence_focus ?? [],
       rankingReasons: candidate.ranking_reasons ?? [],
-      brokenInvariant: safeText(candidate.broken_invariant, "Security invariant needs review."),
+      brokenInvariant: safeText(
+        candidate.broken_invariant
+          || candidate.falsification_summary?.broken_invariant,
+        "Security invariant needs review.",
+      ),
+      whyStillAlive: whyStillAliveFromCandidate(candidate),
+      falsificationSummary: falsificationSummaryFromCandidate(candidate),
       repairGuidance: safeText(
         candidate.repair_guidance,
         safeText(candidate.suggested_fix, "Repair guidance needs review."),
@@ -2340,6 +2408,19 @@ export function toStudioCampaignHunterCandidateCards(
         ...satisfiedEvidence.map((item) => `satisfied_evidence:${item}`),
       ],
       brokenInvariant: "Candidate invariant needs human review before promotion.",
+      whyStillAlive: [
+        "Campaign hunter suggestion has not completed falsification kill attempts.",
+      ],
+      falsificationSummary: {
+        brokenInvariant: "Candidate invariant needs human review before promotion.",
+        decisionStatus: "needs_evidence",
+        openDimensions: ["control_presence", "public_by_design"],
+        survivedKillScore: 0,
+        whyDead: [],
+        whyStillAlive: [
+          "Campaign hunter suggestion has not completed falsification kill attempts.",
+        ],
+      },
       repairGuidance: "Confirm the code path and authorization invariant before drafting remediation.",
       regressionTest: "Draft a local regression test only after evidence review confirms the candidate.",
       reason: safeText(suggestion.title, "Campaign hunter candidate requires review."),

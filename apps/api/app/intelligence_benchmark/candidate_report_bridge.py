@@ -64,15 +64,37 @@ def candidate_to_hypothesis(candidate: dict[str, Any]) -> dict[str, Any]:
     root = str(candidate.get("root_cause_id") or "unknown_root")
     vuln_type = str(candidate.get("vuln_type") or "authorization")
     code_path = str(candidate.get("affected_code_path") or "")
+    card = (
+        candidate.get("falsification_card")
+        if isinstance(candidate.get("falsification_card"), dict)
+        else {}
+    )
+    summary = (
+        candidate.get("falsification_summary")
+        if isinstance(candidate.get("falsification_summary"), dict)
+        else {}
+    )
+    broken_invariant = (
+        str(candidate.get("broken_invariant") or "").strip()
+        or str(card.get("broken_invariant") or "").strip()
+        or str(summary.get("broken_invariant") or "").strip()
+        or "Object access must enforce ownership/authorization before sensitive sinks."
+    )
+    why_still_alive = candidate.get("why_still_alive")
+    if not isinstance(why_still_alive, list):
+        why_still_alive = summary.get("why_still_alive")
+    if not isinstance(why_still_alive, list) and isinstance(card.get("decision"), dict):
+        why_still_alive = card["decision"].get("why_still_alive")
+    if not isinstance(why_still_alive, list):
+        why_still_alive = []
     return {
         "hypothesis": (
             f"Possible {vuln_type} issue on {route_label} "
             f"(root={root}). Unverified hunter candidate; local review only."
         ),
         "vuln_type": vuln_type,
-        "broken_invariant": (
-            "Object access must enforce ownership/authorization before sensitive sinks."
-        ),
+        "broken_invariant": broken_invariant,
+        "why_still_alive": [str(item) for item in why_still_alive if str(item).strip()],
         "risk_level": "medium",
         "validation_mode": "non_destructive_request_review",
         "self_impact_only": False,

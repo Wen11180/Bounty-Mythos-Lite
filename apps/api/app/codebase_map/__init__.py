@@ -98,6 +98,8 @@ IDENTIFIER_LINE_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,?\s*$")
 MEMBERSHIP_WRAPPER_LINE_PATTERN = re.compile(r"^\s*[\[({]\s*$")
 AUTHZ_BOUNDARY_FIELDS = {
     "created_by_id",
+    "creator_id",
+    "author_id",
     "owner_id",
     "user_id",
     "tenant_id",
@@ -125,7 +127,18 @@ AUTHZ_NAME_MARKERS = (
     "permission",
     "require_role",
     "require_user",
+    "require_owner",
+    "ensure_owner",
+    "check_ownership",
+    "verify_ownership",
+    "assert_owner",
+    "owner_check",
+    "ownership",
     "owner_or_admin",
+    "owner_guard",
+    "can_access",
+    "verify_access",
+    "assert_access",
     "login_required",
 )
 SENSITIVE_SINK_NAMES = {
@@ -267,6 +280,16 @@ TYPESCRIPT_COMPARISON_PATTERN = re.compile(
     r"\s*(?:===|!==|==|!=)\s*"
     r"(?P<right>[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+)"
 )
+# Prisma/query object filters: ownerId: req.user.id
+TYPESCRIPT_BOUNDARY_OBJECT_PROP_PATTERN = re.compile(
+    r"\b(?P<field>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*"
+    r"(?P<value>[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+)"
+)
+TYPESCRIPT_MEMBERSHIP_INCLUDES_PATTERN = re.compile(
+    r"(?P<field>[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+)"
+    r"\.includes\s*\(\s*"
+    r"(?P<principal>[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+)\s*\)"
+)
 TYPESCRIPT_PUBLIC_FILTER_PATTERN = re.compile(
     r"\b(?:visibility|access|audience)\s*:\s*[\"']public[\"']",
     re.IGNORECASE,
@@ -344,6 +367,15 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
         if source_path.lower().endswith(TYPESCRIPT_SOURCE_SUFFIXES):
             facts.extend(
                 _map_typescript_express_file(
+                    source_path=source_path,
+                    content=content,
+                )
+            )
+        elif source_path.lower().endswith((".java", ".go", ".rb", ".cs", ".php", ".kt", ".rs", ".scala")):
+            from app.codebase_map.static_multilang import map_static_multilang_file
+
+            facts.extend(
+                map_static_multilang_file(
                     source_path=source_path,
                     content=content,
                 )
@@ -1175,10 +1207,35 @@ def _map_typescript_express_file(
 ) -> list[CodebaseFactCandidate]:
     source = _strip_typescript_comments(content)
     express_objects = _typescript_express_objects(source)
-    if not express_objects:
-        return []
-
     facts: list[CodebaseFactCandidate] = []
+    # Modules without Express routers still contribute helper authz/service facts
+    # so cross-file ownership helpers remain reachable from route handlers.
+    if not express_objects:
+        function_spans = _typescript_function_spans(source)
+        for function_name, declaration_start, body_start, body_end in function_spans:
+            nested_ranges = [
+                (nested_start, nested_end + 1)
+                for _, nested_start, _, nested_end in function_spans
+                if declaration_start < nested_start and nested_end <= body_end
+            ]
+            facts.extend(
+                _typescript_function_facts(
+                    source_path=source_path,
+                    source=source,
+                    function_name=function_name,
+                    body_start=body_start,
+                    body_end=body_end,
+                    nested_ranges=nested_ranges,
+                )
+            )
+        facts.extend(
+            _map_typescript_nestjs_decorators(
+                source_path=source_path,
+                source=source,
+            )
+        )
+        return facts
+
     searchable_source = _mask_typescript_strings(source)
     router_authz_refs = _typescript_router_authz_refs(source, express_objects)
     for match in TYPESCRIPT_ROUTE_CALL_PATTERN.finditer(searchable_source):
@@ -1216,8 +1273,9 @@ def _map_typescript_express_file(
 
         authz_refs = [
             (name, line)
-            for position, name, line in router_authz_refs.get(receiver, [])
+            for position, name, line, mount_path in router_authz_refs.get(receiver, [])
             if position < match.start()
+            and _typescript_route_matches_use_mount(route_path, mount_path)
         ]
         for argument in arguments[1:-1]:
             middleware_name = _typescript_callable_name(argument)
@@ -1339,11 +1397,170 @@ def _typescript_code_matches(
     ]
 
 
+
+TYPESCRIPT_NEST_CONTROLLER_PATTERN = re.compile(
+    r"@Controller\s*\(\s*(?:(?P<q>[\'\"])(?P<path>[^\'\"]*)(?P=q))?\s*\)",
+    re.MULTILINE,
+)
+TYPESCRIPT_NEST_METHOD_PATTERN = re.compile(
+    r"@(?P<method>Get|Post|Put|Patch|Delete)\s*"
+    r"(?:\(\s*(?:(?P<q>[\'\"])(?P<path>[^\'\"]*)(?P=q))?\s*\))?\s*",
+    re.MULTILINE,
+)
+TYPESCRIPT_NEST_USE_GUARDS_PATTERN = re.compile(
+    r"@UseGuards\s*\((?P<guards>[^)]*)\)",
+    re.MULTILINE,
+)
+TYPESCRIPT_NEST_METHOD_NAME_PATTERN = re.compile(
+    r"(?:public|private|protected|async|readonly|static|\s)*"
+    r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+)
+
+
+def _map_typescript_nestjs_decorators(
+    *,
+    source_path: str,
+    source: str,
+) -> list[CodebaseFactCandidate]:
+    """Map NestJS @Controller/@Get/@UseGuards style ownership guards (static)."""
+    if "@Controller" not in source and "@UseGuards" not in source:
+        return []
+    # Match on raw source so decorator string paths survive string masking.
+    facts: list[CodebaseFactCandidate] = []
+    controller_paths: list[tuple[int, str]] = []
+    for match in TYPESCRIPT_NEST_CONTROLLER_PATTERN.finditer(source):
+        controller_paths.append((match.start(), match.group("path") or ""))
+
+    guard_events: list[tuple[int, int, list[str]]] = []
+    for match in TYPESCRIPT_NEST_USE_GUARDS_PATTERN.finditer(source):
+        raw = match.group("guards") or ""
+        names = [
+            part.strip().split(".")[-1]
+            for part in raw.split(",")
+            if part.strip() and part.strip()[0].isalpha()
+        ]
+        guard_events.append((match.start(), match.end(), names))
+
+    for method_match in TYPESCRIPT_NEST_METHOD_PATTERN.finditer(source):
+        method = method_match.group("method").upper()
+        method_path = method_match.group("path") or ""
+        after = source[method_match.end() : method_match.end() + 500]
+        cursor = 0
+        while cursor < len(after):
+            rest = after[cursor:]
+            stripped = rest.lstrip()
+            cursor += len(rest) - len(stripped)
+            if not stripped.startswith("@"):
+                break
+            # Skip nested decorators (e.g. @UseGuards(...), @Param wrappers are on args).
+            if "(" in stripped[:120]:
+                depth = 0
+                pos = 0
+                for pos, ch in enumerate(stripped):
+                    if ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            pos += 1
+                            break
+                cursor += pos
+            else:
+                nl = stripped.find("\n")
+                cursor += (nl + 1) if nl >= 0 else len(stripped)
+        name_match = TYPESCRIPT_NEST_METHOD_NAME_PATTERN.match(after[cursor:])
+        if name_match is None:
+            continue
+        handler_name = name_match.group("name")
+        method_start = method_match.start()
+        name_abs = method_match.end() + cursor + name_match.start()
+        controller_path = ""
+        for pos, path in controller_paths:
+            if pos < method_start:
+                controller_path = path
+            else:
+                break
+        route_path = _nest_join_path(controller_path, method_path)
+        route_line = _source_line_number(source, method_start)
+        facts.append(
+            CodebaseFactCandidate(
+                fact_type="route_handler",
+                source_path=source_path,
+                symbol_name=handler_name,
+                route_method=method,
+                route_path=route_path,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "handler": handler_name,
+                    "line": route_line,
+                    "mapping_mode": "static_code_snippet_analysis",
+                },
+            )
+        )
+        # Attach UseGuards that appear shortly before the method name
+        # (class-level or method-level, including after @Get).
+        for guard_start, guard_end, guard_names in guard_events:
+            if guard_end > name_abs:
+                continue
+            if method_start - guard_start > 2500 and not (
+                method_start <= guard_start <= name_abs
+            ):
+                continue
+            # Prefer guards between previous 40 lines and the method name.
+            if name_abs - guard_start > 1200 and guard_start < method_start:
+                continue
+            for guard_name in guard_names:
+                normalized = _normalized_typescript_name(guard_name)
+                is_authz = _is_typescript_authz_call(guard_name)
+                is_ownerish = "owner" in normalized or "ownership" in normalized
+                if not is_authz and not is_ownerish:
+                    continue
+                facts.append(
+                    CodebaseFactCandidate(
+                        fact_type="authz_check",
+                        source_path=source_path,
+                        symbol_name=guard_name,
+                        route_method=None,
+                        route_path=None,
+                        authz_hint=(
+                            _typescript_authz_hint(guard_name)
+                            if is_authz
+                            else "ownership_boundary_check"
+                        ),
+                        sensitivity_label="low",
+                        payload={
+                            "handler": handler_name,
+                            "line": _source_line_number(source, guard_start),
+                            "mapping_mode": "static_code_snippet_analysis",
+                        },
+                    )
+                )
+    return facts
+
+
+def _nest_join_path(controller_path: str, method_path: str) -> str:
+    left = (controller_path or "").strip("/")
+    right = (method_path or "").strip("/")
+    if left and right:
+        return f"/{left}/{right}"
+    if left:
+        return f"/{left}"
+    if right:
+        return f"/{right}"
+    return "/"
+
+
 def _typescript_router_authz_refs(
     source: str,
     express_objects: set[str],
-) -> dict[str, list[tuple[int, str, int]]]:
-    refs: dict[str, list[tuple[int, str, int]]] = {}
+) -> dict[str, list[tuple[int, str, int, str | None]]]:
+    """Collect router.use authz middleware.
+
+    Returns (position, name, line, mount_path). mount_path is None for global
+    middleware and a static path string for path-scoped router.use("/x", mw).
+    """
+    refs: dict[str, list[tuple[int, str, int, str | None]]] = {}
     for match in TYPESCRIPT_USE_CALL_PATTERN.finditer(_mask_typescript_strings(source)):
         receiver = match.group("receiver")
         if receiver not in express_objects:
@@ -1352,9 +1569,13 @@ def _typescript_router_authz_refs(
         if call is None:
             continue
         arguments, _ = call
+        # router.use(middleware) or router.use("/path", middleware, ...)
+        start_index = 0
+        mount_path: str | None = None
         if arguments and _typescript_static_string(arguments[0]) is not None:
-            continue
-        for argument in arguments:
+            mount_path = _typescript_static_string(arguments[0])
+            start_index = 1
+        for argument in arguments[start_index:]:
             authz_name = _typescript_callable_name(argument)
             if authz_name is None or not _is_typescript_authz_call(authz_name):
                 continue
@@ -1363,9 +1584,26 @@ def _typescript_router_authz_refs(
                     match.start(),
                     authz_name.rsplit(".", 1)[-1],
                     _source_line_number(source, match.start()),
+                    mount_path,
                 )
             )
     return refs
+
+
+def _typescript_route_matches_use_mount(route_path: str, mount_path: str | None) -> bool:
+    """True when a route is covered by a path-scoped router.use mount."""
+    if mount_path is None:
+        return True
+    route = "/" + (route_path or "").strip("/")
+    mount = "/" + (mount_path or "").strip("/")
+    if route == mount:
+        return True
+    # Prefix match on static segments only (Express mount semantics).
+    if mount != "/" and (route.startswith(mount + "/") or route.startswith(mount)):
+        # Avoid matching /adminish for mount /admin when next char is not / end
+        if route == mount or route.startswith(mount + "/"):
+            return True
+    return False
 
 
 def _typescript_function_spans(source: str) -> list[tuple[str, int, int, int]]:
@@ -1612,6 +1850,13 @@ def _typescript_callable_name(value: str) -> str | None:
     )
     if reference is not None:
         return value
+    # Named function expression: router.get(path, async function readRecord(...) { ... })
+    named_function = re.match(
+        r"(?:async\s+)?function\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+        value,
+    )
+    if named_function is not None:
+        return named_function.group("name")
     call = re.match(
         r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*"
         r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\(",
@@ -1660,6 +1905,30 @@ def _typescript_authz_hint(call_name: str) -> str:
         return "injection_validation_check"
     if "owner_or_admin" in normalized:
         return "owner_or_admin_check"
+    if any(
+        marker in normalized
+        for marker in (
+            "require_owner",
+            "ensure_owner",
+            "check_ownership",
+            "verify_ownership",
+            "assert_owner",
+            "owner_check",
+            "ownership",
+            "owner_id",
+            "owner_guard",
+            "can_access",
+            "verify_access",
+            "assert_access",
+        )
+    ) or (
+        "owner" in normalized
+        and any(
+            marker in normalized
+            for marker in ("require", "ensure", "check", "verify", "assert", "guard")
+        )
+    ):
+        return "ownership_boundary_check"
     if "permission" in normalized:
         return "permission_check"
     if "role" in normalized:
@@ -1713,6 +1982,44 @@ def _typescript_authz_boundary_field(line: str) -> str | None:
             )
         ):
             return left_field
+    for match in TYPESCRIPT_BOUNDARY_OBJECT_PROP_PATTERN.finditer(masked_line):
+        field = _typescript_boundary_field(match.group("field"))
+        value = match.group("value")
+        if field is None:
+            continue
+        if _is_typescript_principal_identifier(value) or _is_typescript_principal_context(
+            value
+        ):
+            return field
+    membership_field = _typescript_membership_boundary_field(masked_line)
+    if membership_field is not None:
+        return membership_field
+    return None
+
+
+_TYPESCRIPT_MEMBERSHIP_FIELDS = {
+    "member_ids",
+    "members",
+    "allowed_user_ids",
+    "collaborators",
+    "participant_ids",
+    "user_ids",
+    "shared_with",
+    "editors",
+    "viewers",
+}
+
+
+def _typescript_membership_boundary_field(line: str) -> str | None:
+    """Detect principal membership checks like record.memberIds.includes(req.user.id)."""
+    for match in TYPESCRIPT_MEMBERSHIP_INCLUDES_PATTERN.finditer(line):
+        field = match.group("field")
+        principal = match.group("principal")
+        field_name = _normalized_typescript_name(field.rsplit(".", 1)[-1])
+        if field_name not in _TYPESCRIPT_MEMBERSHIP_FIELDS:
+            continue
+        if _is_typescript_principal_identifier(principal):
+            return "user_id"
     return None
 
 
@@ -2621,6 +2928,30 @@ def _authz_hint(call_name: str) -> str:
         return "injection_validation_check"
     if "owner_or_admin" in normalized:
         return "owner_or_admin_check"
+    if any(
+        marker in normalized
+        for marker in (
+            "require_owner",
+            "ensure_owner",
+            "check_ownership",
+            "verify_ownership",
+            "assert_owner",
+            "owner_check",
+            "ownership",
+            "owner_id",
+            "owner_guard",
+            "can_access",
+            "verify_access",
+            "assert_access",
+        )
+    ) or (
+        "owner" in normalized
+        and any(
+            marker in normalized
+            for marker in ("require", "ensure", "check", "verify", "assert", "guard")
+        )
+    ):
+        return "ownership_boundary_check"
     if "permission" in normalized:
         return "permission_check"
     if "role" in normalized:

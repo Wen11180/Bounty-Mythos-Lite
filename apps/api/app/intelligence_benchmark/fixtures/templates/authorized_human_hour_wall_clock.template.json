@@ -1,0 +1,26 @@
+{
+  "schema_version": "human_hour_review_logs_v1",
+  "source_kind": "authorized_redacted_real",
+  "program_authorization_id": "REPLACE_WITH_AUTH_PROGRAM_REF",
+  "claim_scope": "authorized_human_hour_real_package",
+  "description": "Template for attaching redacted real authorized program review wall-clock logs. Never include secrets.",
+  "execution_allowed": false,
+  "report_submission_allowed": false,
+  "entries": [
+    {
+      "entry_id": "REPLACE_ID",
+      "outcome": "refuted_fp",
+      "review_minutes": 12.0,
+      "wall_clock_minutes": 45.0,
+      "program_authorization_id": "REPLACE_WITH_AUTH_PROGRAM_REF",
+      "package_label": "REPLACE_PACKAGE",
+      "language_family": "python",
+      "hypothesis_class": "authorization",
+      "refutation_path": "REPLACE_PATH",
+      "notes": "Redacted human review minutes only.",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "source_kind": "authorized_redacted_real"
+    }
+  ]
+}

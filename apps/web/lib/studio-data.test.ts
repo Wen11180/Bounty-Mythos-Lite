@@ -2922,3 +2922,49 @@ test("studio workbench surfaces candidate report readiness", async () => {
   assert.match(workbench, /Report readiness/);
   assert.match(workbench, /candidate\.reportReadiness/);
 });
+
+test("candidate cards project whyStillAlive and falsification summary", () => {
+  const [card] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-100",
+      vuln_type: "authorization",
+      risk: "high",
+      location: "GET /records/{record_id}",
+      broken_invariant: "Ownership must be enforced before sendFile.",
+      why_still_alive: [
+        "No ownership guard was observed before the sensitive sink.",
+      ],
+      falsification_summary: {
+        broken_invariant: "Ownership must be enforced before sendFile.",
+        decision_status: "retained",
+        open_dimensions: ["control_presence"],
+        survived_kill_score: 4,
+        why_dead: [],
+        why_still_alive: [
+          "No ownership guard was observed before the sensitive sink.",
+        ],
+      },
+      false_positive_checks: ["Is the route intentionally public?"],
+      safe_verification: true,
+      priority_score: 88,
+    },
+  ]);
+
+  assert.equal(card.brokenInvariant, "Ownership must be enforced before sendFile.");
+  assert.deepEqual(card.whyStillAlive, [
+    "No ownership guard was observed before the sensitive sink.",
+  ]);
+  assert.equal(card.falsificationSummary.decisionStatus, "retained");
+  assert.equal(card.falsificationSummary.survivedKillScore, 4);
+  assert.deepEqual(card.falsificationSummary.openDimensions, ["control_presence"]);
+});
+test("studio workbench surfaces falsification why still alive", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /Why still alive/);
+  assert.match(workbench, /candidate\.whyStillAlive/);
+  assert.match(workbench, /candidate\.falsificationSummary\.openDimensions/);
+});

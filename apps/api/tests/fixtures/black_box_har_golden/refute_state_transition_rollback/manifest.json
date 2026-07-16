@@ -1,0 +1,25 @@
+{
+  "top_n": 5,
+  "role_a_file": "role_a.har.json",
+  "role_b_file": "role_b.har.json",
+  "account_aliases": {
+    "role_a": "account_a",
+    "role_b": "account_b"
+  },
+  "role_aliases": {
+    "role_a": "member",
+    "role_b": "viewer"
+  },
+  "role_ranks": {
+    "role_a": 10,
+    "role_b": 1
+  },
+  "package_id": "refute_state_transition_rollback",
+  "scenario_class": "refute",
+  "expected_status": "suppressed",
+  "expected_trial_class": "reversible_out_of_order_state_transition",
+  "lab_mode": "rollback_failure",
+  "trial_classes": [
+    "reversible_out_of_order_state_transition"
+  ]
+}

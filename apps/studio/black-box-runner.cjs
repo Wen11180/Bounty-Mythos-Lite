@@ -349,7 +349,33 @@ class BlackBoxRunner {
     return this._safeEvent({
       event: "recording_stopped",
       traces: this.traces,
+      dual_intake: this._buildDualIntakeExport(),
     });
+  }
+
+  _buildDualIntakeExport() {
+    const origin = this.lease?.active_origins
+      ? [...this.lease.active_origins][0] ?? null
+      : null;
+    const role_ranks = {};
+    let nextRank = 10;
+    const seenAccounts = new Set();
+    for (const session of this.sessions.values()) {
+      const account = session.account_alias;
+      if (!account || seenAccounts.has(account)) {
+        continue;
+      }
+      seenAccounts.add(account);
+      role_ranks[account] = nextRank;
+      nextRank = Math.max(1, nextRank - 9);
+    }
+    return {
+      schema_version: "studio_recording_export_v1",
+      source: "studio_playwright",
+      origin,
+      traces: this.traces,
+      role_ranks,
+    };
   }
 
   async runTrial(payload) {

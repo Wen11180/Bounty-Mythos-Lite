@@ -1,0 +1,54 @@
+{
+  "log": {
+    "version": "1.2",
+    "creator": {
+      "name": "mythos-golden",
+      "version": "1"
+    },
+    "entries": [
+      {
+        "request": {
+          "method": "GET",
+          "url": "http://127.0.0.1/widgets/101",
+          "headers": [
+            {
+              "name": "Cookie",
+              "value": "session=SECRET"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer SECRET"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "queryString": [
+            {
+              "name": "access_token",
+              "value": "leak-me"
+            },
+            {
+              "name": "page",
+              "value": "1"
+            }
+          ]
+        },
+        "response": {
+          "status": 200,
+          "headers": [
+            {
+              "name": "Set-Cookie",
+              "value": "session=SECRET"
+            }
+          ],
+          "content": {
+            "mimeType": "application/json",
+            "text": "{\"password\":\"nope\",\"id\":1}"
+          }
+        }
+      }
+    ]
+  }
+}

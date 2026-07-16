@@ -24,7 +24,27 @@ LocalLabMode = Literal[
 ]
 SYNTHETIC_OBJECT_OWNERS = {
     "widget_a": "account_a",
+    "widget_a2": "account_a",
     "widget_b": "account_b",
+    "child_a": "account_a",
+    "child_b": "account_b",
+}
+# Nested parent/child binding for owned_parent_child_swap lab trials.
+SYNTHETIC_CHILD_PARENTS = {
+    "child_a": "widget_a",
+    "child_b": "widget_b",
+}
+SYNTHETIC_CHILD_ALTERNATE_PARENTS = {
+    "child_a": "widget_a2",
+    "child_b": "widget_b",
+}
+PRIMARY_OBJECT_BY_OWNER = {
+    "account_a": "widget_a",
+    "account_b": "widget_b",
+}
+CHILD_OBJECT_BY_OWNER = {
+    "account_a": "child_a",
+    "account_b": "child_b",
 }
 
 
@@ -41,6 +61,20 @@ def create_local_lab_app(mode: LocalLabMode) -> FastAPI:
             object_alias,
             x_lab_session,
             state_change=False,
+        )
+
+    @app.get("/widgets/{parent_alias}/{object_alias}")
+    def read_nested_widget(
+        parent_alias: str,
+        object_alias: str,
+        x_lab_session: str | None = Header(default=None),
+    ):
+        return _local_lab_response(
+            mode,
+            object_alias,
+            x_lab_session,
+            state_change=False,
+            parent_alias=parent_alias,
         )
 
     @app.patch("/widgets/{object_alias}/state")
@@ -64,9 +98,17 @@ def _local_lab_response(
     session_alias: str | None,
     *,
     state_change: bool,
+    parent_alias: str | None = None,
 ):
     if object_alias not in SYNTHETIC_OBJECT_OWNERS:
         return JSONResponse(status_code=404, content={"kind": "unknown"})
+    if parent_alias is not None:
+        expected_parent = SYNTHETIC_CHILD_PARENTS.get(object_alias)
+        if expected_parent is None or parent_alias not in SYNTHETIC_OBJECT_OWNERS:
+            return JSONResponse(status_code=404, content={"kind": "unknown"})
+        # Guarded/shared labs enforce parent binding; bola ignores it (TP).
+        if parent_alias != expected_parent and mode != "bola":
+            return JSONResponse(status_code=403, content={"kind": "denied"})
     if mode == "off_origin_redirect":
         return RedirectResponse(url="https://example.invalid/outside-lab", status_code=302)
     if mode == "third_party_data":
@@ -91,10 +133,24 @@ def _local_lab_response(
             content={"kind": "rollback"},
             headers={"X-Lab-Stop": "rollback_failed"},
         )
-    if session_alias is None:
-        return JSONResponse(status_code=401, content={"kind": "session"})
-
     owner_alias = SYNTHETIC_OBJECT_OWNERS[object_alias]
+
+    # Unauthenticated trials omit the lab session header. Only broken-auth (bola)
+    # labs return object content so unauthenticated_read_only_replay can retain.
+    if session_alias is None:
+        if mode != "bola":
+            return JSONResponse(status_code=401, content={"kind": "session"})
+        return JSONResponse(
+            status_code=200,
+            content={
+                "kind": "synthetic_widget",
+                "object_alias": object_alias,
+                "canary": _synthetic_canary(object_alias),
+                "state_effect": state_change,
+                "intended_sharing": False,
+            },
+        )
+
     intended_sharing = mode == "shared" and session_alias != owner_alias
     allowed = (
         mode == "bola"

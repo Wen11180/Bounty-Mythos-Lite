@@ -85,8 +85,10 @@ def _build_single_candidate_observations(
     *,
     access_mode: str | None = None,
     pipeline_run_id: str = "run-001",
+    route_path: str = "/records/{record_id}",
+    symbol_name: str = "read_record",
 ) -> dict:
-    route = "/records/{record_id}"
+    route = route_path
     api_fact = {
         "fact_type": "api_surface",
         "artifact_kind": "api",
@@ -108,7 +110,7 @@ def _build_single_candidate_observations(
                         "fact_type": "authorization_gap_candidate",
                         "artifact_kind": "code",
                         "source_path": "code.py",
-                        "symbol_name": "read_record",
+                        "symbol_name": symbol_name,
                         "route_method": "GET",
                         "route_path": route,
                         "root_cause": "missing_object_ownership_check",
@@ -218,14 +220,13 @@ def test_positive_observed_control_refutes_candidate():
         prior_decisions=[],
     )
 
-    assert result["candidate_decisions"] == [
-        {
-            "candidate_id": "H-001",
-            "root_cause_id": "missing_object_ownership_check:read_record",
-            "disposition": "refuted",
-            "evidence_refs": [control_ref],
-        }
-    ]
+    decision = result["candidate_decisions"][0]
+    assert decision["candidate_id"] == "H-001"
+    assert decision["root_cause_id"] == "missing_object_ownership_check:read_record"
+    assert decision["disposition"] == "refuted"
+    assert decision["evidence_refs"] == [control_ref]
+    assert decision["falsification_card"]["decision"]["status"] == "refuted"
+    assert decision["falsification_card"]["decision"]["why_dead"]
     assert result["final_candidates"] == []
 
 
@@ -243,14 +244,13 @@ def test_explicit_public_evidence_suppresses_candidate():
         prior_decisions=[],
     )
 
-    assert result["candidate_decisions"] == [
-        {
-            "candidate_id": "H-001",
-            "root_cause_id": "missing_object_ownership_check:read_record",
-            "disposition": "suppressed",
-            "evidence_refs": [public_ref],
-        }
-    ]
+    decision = result["candidate_decisions"][0]
+    assert decision["candidate_id"] == "H-001"
+    assert decision["root_cause_id"] == "missing_object_ownership_check:read_record"
+    assert decision["disposition"] == "suppressed"
+    assert decision["evidence_refs"] == [public_ref]
+    assert decision["falsification_card"]["decision"]["status"] == "suppressed"
+    assert decision["falsification_card"]["decision"]["why_dead"]
     assert result["final_candidates"] == []
 
 
@@ -284,13 +284,22 @@ def test_candidates_sharing_observed_service_root_are_deduplicated():
     assert [item["candidate_id"] for item in result["final_candidates"]] == ["H-001"]
     decisions = {item["candidate_id"]: item for item in result["candidate_decisions"]}
     assert decisions["H-001"]["disposition"] == "retained"
-    assert decisions["H-002"] == {
-        "candidate_id": "H-002",
-        "root_cause_id": "missing_object_ownership_check:read_record_summary",
-        "disposition": "deduplicated",
-        "evidence_refs": ["code:code.py:load_record"],
-        "duplicate_of": "missing_object_ownership_check:read_record",
-    }
+    assert decisions["H-001"]["falsification_card"]["broken_invariant"]
+    assert decisions["H-002"]["candidate_id"] == "H-002"
+    assert decisions["H-002"]["root_cause_id"] == (
+        "missing_object_ownership_check:read_record_summary"
+    )
+    assert decisions["H-002"]["disposition"] == "deduplicated"
+    assert decisions["H-002"]["evidence_refs"] == ["code:code.py:load_record"]
+    assert decisions["H-002"]["duplicate_of"] == (
+        "missing_object_ownership_check:read_record"
+    )
+    assert decisions["H-002"]["falsification_card"]["decision"]["status"] == (
+        "deduplicated"
+    )
+    assert decisions["H-002"]["falsification_card"]["decision"]["duplicate_of"] == (
+        "missing_object_ownership_check:read_record"
+    )
 
 
 def test_equal_priority_duplicates_use_model_priority_as_advisory_tiebreak():
@@ -724,8 +733,6 @@ def verify_record_access(record_id: str, current_user):
         prior_decisions=[],
     )
     assert result["candidate_decisions"][0]["disposition"] == "refuted"
-
-
 def test_reachable_public_filter_is_positive_suppression_evidence():
     observations = _build_single_candidate_observations(
         '''
@@ -1852,3 +1859,100 @@ def test_incomplete_candidate_never_emits_retained_decision():
     assert result["final_candidates"] == []
     assert result["evidence_requests"]
     assert all(item.get("disposition") != "retained" for item in result["candidate_decisions"])
+
+
+def test_python_deny_return_ownership_guard_refutes():
+    observations = _build_single_candidate_observations(
+        '''
+from flask import Blueprint
+
+bp = Blueprint("records", __name__)
+
+@bp.get("/records/<record_id>")
+def read_record(record_id):
+    verify_record_access(record_id, current_user)
+    return send_file(record_id)
+
+def verify_record_access(record_id, user):
+    record = load_record(record_id)
+    if record.owner_id != user.id:
+        return deny()
+    return record
+'''
+    )
+    state = observations["candidate_states"][0]
+    assert state["control_evidence_ref"] == (
+        "code:code.py:verify_record_access:ownership_guard"
+    )
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_python_tenant_boundary_guard_refutes():
+    observations = _build_single_candidate_observations(
+        '''
+from flask import Blueprint
+
+bp = Blueprint("docs", __name__)
+
+@bp.get("/orgs/<org_id>/docs/<doc_id>")
+def read_doc(org_id, doc_id):
+    verify_tenant_doc(org_id, doc_id, current_user)
+    return send_file(doc_id)
+
+def verify_tenant_doc(org_id, doc_id, user):
+    doc = load_doc(doc_id)
+    if doc.tenant_id != user.tenant_id:
+        return deny()
+    return doc
+''',
+        route_path="/orgs/{org_id}/docs/{doc_id}",
+        symbol_name="read_doc",
+    )
+    state = observations["candidate_states"][0]
+    assert state["control_evidence_ref"] == (
+        "code:code.py:verify_tenant_doc:ownership_guard"
+    )
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_python_inline_ownership_guard_refutes():
+    observations = _build_single_candidate_observations(
+        """
+from flask import Blueprint
+
+bp = Blueprint("records", __name__)
+
+@bp.get("/records/<record_id>")
+def read_record(record_id):
+    record = load_record(record_id)
+    if record.owner_id != current_user.id:
+        raise PermissionError()
+    return send_file(record_id)
+"""
+    )
+    state = observations["candidate_states"][0]
+    assert state["control_evidence_ref"] == (
+        "code:code.py:read_record:ownership_guard"
+    )
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"

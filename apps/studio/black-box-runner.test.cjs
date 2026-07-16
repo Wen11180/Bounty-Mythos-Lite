@@ -366,6 +366,69 @@ test("recording emits only normalized trace fields without raw values", async ()
   assert.doesNotMatch(JSON.stringify(traces), new RegExp(`${OBJECT_ID}|private-value|never-return`));
 });
 
+test("stopRecording dual_intake export is research-safe and dual-role ready", async () => {
+  const fixture = createFixture();
+  await fixture.runner.createSessions(sessionRequest());
+  await fixture.runner.startRecording({
+    sessions_ready: true,
+    workflows: [
+      workflow(),
+      workflow({
+        aliases: {
+          account_alias: "account_b",
+          object_aliases: ["widget_b"],
+          role_alias: "member",
+          session_alias: "session_b",
+          workflow_alias: "workflow_b",
+        },
+      }),
+    ],
+  });
+
+  const urlA = `${ACTIVE_ORIGIN}/widgets/${OBJECT_ID}?view=private-value`;
+  const requestA = new FakeRequest({ url: urlA });
+  emitExchange(fixture.browser.contexts[0].page, {
+    request: requestA,
+    response: new FakeResponse({ request: requestA, status: 200, url: urlA }),
+  });
+  const urlB = `${ACTIVE_ORIGIN}/widgets/${OBJECT_ID}?view=private-value`;
+  const requestB = new FakeRequest({ url: urlB });
+  emitExchange(fixture.browser.contexts[1].page, {
+    request: requestB,
+    response: new FakeResponse({ request: requestB, status: 200, url: urlB }),
+  });
+  await fixture.runner.flush();
+
+  const result = await fixture.runner.stopRecording();
+  assert.equal(result.event, "recording_stopped");
+  assert.equal(result.traces.length, 2);
+  assert.ok(result.dual_intake);
+  assert.deepEqual(Object.keys(result.dual_intake).sort(), [
+    "origin",
+    "role_ranks",
+    "schema_version",
+    "source",
+    "traces",
+  ]);
+  assert.equal(result.dual_intake.schema_version, "studio_recording_export_v1");
+  assert.equal(result.dual_intake.source, "studio_playwright");
+  assert.equal(result.dual_intake.origin, ACTIVE_ORIGIN);
+  assert.deepEqual(result.dual_intake.role_ranks, {
+    account_a: 10,
+    account_b: 1,
+  });
+  assert.equal(result.dual_intake.traces.length, 2);
+  const accounts = new Set(
+    result.dual_intake.traces.map((trace) => trace.aliases.account_alias),
+  );
+  assert.deepEqual([...accounts].sort(), ["account_a", "account_b"]);
+  assertSafeOutput(result.dual_intake);
+  assert.doesNotMatch(
+    JSON.stringify(result.dual_intake),
+    new RegExp(`${OBJECT_ID}|private-value|never-return|Authorization|Cookie`),
+  );
+});
+
 test("stop_recording drains matched response work queued before listener detach", async () => {
   const fixture = createFixture();
   await fixture.runner.createSessions(sessionRequest());

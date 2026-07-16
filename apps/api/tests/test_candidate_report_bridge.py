@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.intelligence_benchmark.candidate_report_bridge import (
+    candidate_to_hypothesis,
     CandidateReportBridgeError,
     bridge_operator_trial_result,
     build_submission_blocked_report_bundle,
@@ -179,3 +180,27 @@ def test_bridge_operator_trial_empty_finals_is_ok():
     assert result["report_submission_allowed"] is False
     assert result["confirmed_vulnerability"] is False
     assert result["multi_engine_verdicts"] == []
+
+
+def test_candidate_to_hypothesis_prefers_card_broken_invariant():
+    hypothesis = candidate_to_hypothesis(
+        {
+            "candidate_id": "H-001",
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:readRecord",
+            "route": {"method": "GET", "path": "/records/{record_id}"},
+            "affected_code_path": "code:routes.ts:readRecord",
+            "source_fact_refs": ["code:routes.ts:readRecord"],
+            "broken_invariant": "Explicit candidate invariant text.",
+            "why_still_alive": ["Control dimension survived local review."],
+            "falsification_card": {
+                "broken_invariant": "Card invariant should lose to explicit.",
+                "decision": {"why_still_alive": ["from card"]},
+            },
+            "execution_allowed": False,
+            "validation_allowed": False,
+            "report_submission_allowed": False,
+        }
+    )
+    assert hypothesis["broken_invariant"] == "Explicit candidate invariant text."
+    assert hypothesis["why_still_alive"] == ["Control dimension survived local review."]

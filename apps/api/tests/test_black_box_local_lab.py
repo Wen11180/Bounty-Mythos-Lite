@@ -446,3 +446,38 @@ def test_oracle_distinguishes_hypothesis_reproduced_refuted_and_safe_stop():
     assert black_box_hunter.evaluate_differential_evidence(with_rollback).status == "review_ready"
     assert black_box_hunter.evaluate_differential_evidence(intended_sharing).status == "refuted"
     assert black_box_hunter.evaluate_differential_evidence(terminal_stop).status == "inconclusive"
+
+def test_loopback_bola_allows_unauthenticated_strong_signal():
+    from app.black_box_hunter.local_lab import LocalLabTransport
+
+    trial = _local_trial().model_copy(
+        update={
+            "session": black_box_hunter.SessionAlias(
+                account_alias="unauthenticated",
+                role_alias="unauthenticated",
+                active=False,
+            )
+        }
+    )
+    observation = LocalLabTransport(mode="bola").execute(trial)
+    assert observation.status_class == "2xx"
+    assert observation.canary_match is True
+    assert observation.structural_identity_match is True
+    assert observation.stop is None
+
+
+def test_loopback_guarded_blocks_unauthenticated():
+    from app.black_box_hunter.local_lab import LocalLabTransport
+
+    trial = _local_trial().model_copy(
+        update={
+            "session": black_box_hunter.SessionAlias(
+                account_alias="unauthenticated",
+                role_alias="unauthenticated",
+                active=False,
+            )
+        }
+    )
+    observation = LocalLabTransport(mode="guarded").execute(trial)
+    assert observation.status_class == "4xx"
+    assert observation.canary_match is not True

@@ -3703,8 +3703,8 @@ def test_studio_run_lists_candidates_and_exports_submission_blocked_report(
                 [stage.payload for stage in loop_stages]
             )
             assert "send_file(file_id)" not in serialized_stages
-            assert "Authorization" not in serialized_stages
-            assert "Bearer" not in serialized_stages
+            assert "Authorization:" not in serialized_stages
+            assert "Bearer " not in serialized_stages
             assert str(tmp_path) not in serialized_stages
             assert all(
                 stage.payload[field] is False

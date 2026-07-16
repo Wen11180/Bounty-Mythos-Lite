@@ -1,0 +1,621 @@
+{
+  "schema_version": "redacted_review_logs_v1",
+  "claim_scope": "lab_human_hour_calibration",
+  "source_kind": "synthetic",
+  "program_label": "synthetic-authorized-lab",
+  "description": "Redacted real-shaped authorized review logs for human-hour calibration. Not a live bounty program claim.",
+  "execution_allowed": false,
+  "report_submission_allowed": false,
+  "entries": [
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-retain-1",
+      "package_label": "unguarded-session",
+      "outcome": "retained_review_ready",
+      "review_minutes": 12.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "none"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-retain-2",
+      "package_label": "unguarded-record",
+      "outcome": "retained_review_ready",
+      "review_minutes": 10.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "none"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-1",
+      "package_label": "ownership-guard",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "inline_ownership_guard"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-2",
+      "package_label": "tenant-boundary",
+      "outcome": "refuted_fp",
+      "review_minutes": 7.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "tenant_boundary"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-3",
+      "package_label": "cross-file-service-layer",
+      "outcome": "refuted_fp",
+      "review_minutes": 8.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "service_layer_transitive_helper"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-4",
+      "package_label": "ts-middleware-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 7.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "express_route_middleware"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-5",
+      "package_label": "created-by-boundary",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "created_by_id_boundary"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-6",
+      "package_label": "with-context-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 7.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "context_manager_ownership_helper"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-7",
+      "package_label": "django-view-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 8.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "django_function_view_fallback"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-8",
+      "package_label": "ts-nestjs-guard",
+      "outcome": "refuted_fp",
+      "review_minutes": 7.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "nestjs_use_guards"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-9",
+      "package_label": "ts-use-path-middleware",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "express_router_use_path"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-public-1",
+      "package_label": "public-filter",
+      "outcome": "suppressed_public",
+      "review_minutes": 5.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "public_filter"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-needs-1",
+      "package_label": "api-only",
+      "outcome": "needs_evidence",
+      "review_minutes": 8.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "missing_code_artifact"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-dedupe-1",
+      "package_label": "duplicate-root-cause",
+      "outcome": "deduplicated",
+      "review_minutes": 4.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "shared_root_cause"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-oos-1",
+      "package_label": "out-of-scope-host",
+      "outcome": "rejected_out_of_scope",
+      "review_minutes": 3.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "scope_guard"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-retain-guard-after-1",
+      "package_label": "guard-after-sink",
+      "outcome": "retained_review_ready",
+      "review_minutes": 11.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "none"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-retain-login-only-1",
+      "package_label": "login-only-no-ownership",
+      "outcome": "retained_review_ready",
+      "review_minutes": 9.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "none"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-walrus-1",
+      "package_label": "walrus-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 5.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "walrus_ownership_guard"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-match-1",
+      "package_label": "match-case-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 5.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "match_ownership_gate"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-prisma-1",
+      "package_label": "ts-prisma-owner-filter",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "prisma_owner_filter"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-java-service-1",
+      "package_label": "java-service-layer-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 7.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "java_service_layer_ownership",
+      "language_family": "java"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-go-mw-1",
+      "package_label": "go-middleware-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "go_middleware_ownership",
+      "language_family": "go"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-rails-ba-1",
+      "package_label": "rails-before-action-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "rails_before_action_ownership",
+      "language_family": "rails"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-retain-java-guard-after-1",
+      "package_label": "java-guard-after-sink",
+      "outcome": "retained_review_ready",
+      "review_minutes": 10.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "none",
+      "language_family": "java"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-retain-go-status-1",
+      "package_label": "go-status-only",
+      "outcome": "retained_review_ready",
+      "review_minutes": 9.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "none",
+      "language_family": "go"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-retain-rails-status-1",
+      "package_label": "rails-status-only",
+      "outcome": "retained_review_ready",
+      "review_minutes": 9.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "none",
+      "language_family": "rails"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-java-role-1",
+      "package_label": "java-role-only-false-refute-risk",
+      "outcome": "refuted_fp",
+      "review_minutes": 5.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "role_only_not_ownership",
+      "language_family": "java",
+      "notes": "Human confirmed pure RBAC must not kill IDOR candidate; logged as kill of false ownership claim."
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-kotlin-1",
+      "package_label": "kotlin-spring-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "kotlin_spring_ownership",
+      "language_family": "kotlin"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-csharp-svc-1",
+      "package_label": "csharp-service-layer-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 7.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "csharp_service_layer_ownership",
+      "language_family": "csharp"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-php-ctrl-1",
+      "package_label": "php-controller-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "php_controller_ownership",
+      "language_family": "php"
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-kotlin-role-1",
+      "package_label": "kotlin-role-only-false-refute-risk",
+      "outcome": "refuted_fp",
+      "review_minutes": 5.0,
+      "hypothesis_class": "authorization",
+      "refutation_path": "role_only_not_ownership",
+      "language_family": "kotlin",
+      "notes": "Pure RBAC on Kotlin Spring must not kill object-ownership IDOR candidate."
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-rust-1",
+      "package_label": "rust-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "rust_ownership_guard",
+      "language_family": "rust",
+      "wall_clock_minutes": 22.0
+    },
+    {
+      "program_label": "synthetic-authorized-lab",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "artifact_kinds": [
+        "scope",
+        "policy",
+        "code",
+        "api",
+        "har"
+      ],
+      "entry_id": "lab-fp-scala-1",
+      "package_label": "scala-ownership",
+      "outcome": "refuted_fp",
+      "review_minutes": 6.5,
+      "hypothesis_class": "authorization",
+      "refutation_path": "scala_ownership_guard",
+      "language_family": "scala",
+      "wall_clock_minutes": 24.0
+    }
+  ]
+}

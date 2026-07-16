@@ -653,85 +653,119 @@ class DifferentialPlan(BaseModel):
         return self
 
 
-def plan_differential_trials(model: ObservedWorkflowModel) -> list[DifferentialPlan]:
+def plan_differential_trials(
+    model: ObservedWorkflowModel,
+    *,
+    require_all_classes: bool = True,
+) -> list[DifferentialPlan]:
     _require_plannable_workflows(model)
     source_workflow = max(model.workflows, key=lambda workflow: workflow.role_rank)
     alternate_workflow = min(model.workflows, key=lambda workflow: workflow.role_rank)
     source_object = source_workflow.objects[0]
     alternate_object = alternate_workflow.objects[0]
     source_read = _workflow_step(source_workflow, "read_only_replay")
-    alternate_read = _workflow_step(alternate_workflow, "read_only_replay")
-    update_step = _workflow_step(source_workflow, "reversible_update")
+    try:
+        alternate_read = _workflow_step(alternate_workflow, "read_only_replay")
+    except ValueError:
+        alternate_read = None
+    try:
+        update_step = _workflow_step(source_workflow, "reversible_update")
+    except ValueError:
+        update_step = None
     child_object = next(
         (obj for obj in source_workflow.objects if obj.parent_alias is not None),
         None,
     )
-    alternate_parent = next(
-        (
-            obj
-            for obj in source_workflow.objects
-            if obj.parent_alias is None and obj.alias != child_object.parent_alias
-        ),
-        None,
-    ) if child_object is not None else None
-    if child_object is None or alternate_parent is None:
+    alternate_parent = (
+        next(
+            (
+                obj
+                for obj in source_workflow.objects
+                if obj.parent_alias is None and obj.alias != child_object.parent_alias
+            ),
+            None,
+        )
+        if child_object is not None
+        else None
+    )
+
+    plans: list[DifferentialPlan] = []
+    plans.append(
+        _build_read_only_plan(
+            trial_class="cross_account_object_swap",
+            changed_variable="object",
+            source_workflow=source_workflow,
+            alternate_workflow=alternate_workflow,
+            source_object=source_object,
+            alternate_object=alternate_object,
+            source_read=source_read,
+            trial_session=alternate_workflow.session,
+        )
+    )
+    plans.append(
+        _build_read_only_plan(
+            trial_class="lower_role_replay",
+            changed_variable="role",
+            source_workflow=source_workflow,
+            alternate_workflow=alternate_workflow,
+            source_object=source_object,
+            alternate_object=alternate_object,
+            source_read=source_read,
+            trial_session=alternate_workflow.session,
+        )
+    )
+    plans.append(
+        _build_read_only_plan(
+            trial_class="unauthenticated_read_only_replay",
+            changed_variable="session",
+            source_workflow=source_workflow,
+            alternate_workflow=alternate_workflow,
+            source_object=source_object,
+            alternate_object=alternate_object,
+            source_read=source_read,
+            trial_session=SessionAlias(
+                account_alias="unauthenticated",
+                role_alias="unauthenticated",
+                active=False,
+            ),
+        )
+    )
+
+    if child_object is not None and alternate_parent is not None:
+        plans.append(
+            _build_read_only_plan(
+                trial_class="owned_parent_child_swap",
+                changed_variable="parent",
+                source_workflow=source_workflow,
+                alternate_workflow=alternate_workflow,
+                source_object=child_object,
+                alternate_object=alternate_object,
+                source_read=source_read,
+                trial_session=source_workflow.session,
+                parent_object_alias=alternate_parent.alias,
+            )
+        )
+    elif require_all_classes:
         raise ValueError("owned_parent_child_relationship_required")
 
-    cross_account = _build_read_only_plan(
-        trial_class="cross_account_object_swap",
-        changed_variable="object",
-        source_workflow=source_workflow,
-        alternate_workflow=alternate_workflow,
-        source_object=source_object,
-        alternate_object=alternate_object,
-        source_read=source_read,
-        trial_session=alternate_workflow.session,
-    )
-    lower_role = _build_read_only_plan(
-        trial_class="lower_role_replay",
-        changed_variable="role",
-        source_workflow=source_workflow,
-        alternate_workflow=alternate_workflow,
-        source_object=source_object,
-        alternate_object=alternate_object,
-        source_read=source_read,
-        trial_session=alternate_workflow.session,
-    )
-    unauthenticated = _build_read_only_plan(
-        trial_class="unauthenticated_read_only_replay",
-        changed_variable="session",
-        source_workflow=source_workflow,
-        alternate_workflow=alternate_workflow,
-        source_object=source_object,
-        alternate_object=alternate_object,
-        source_read=source_read,
-        trial_session=SessionAlias(
-            account_alias="unauthenticated",
-            role_alias="unauthenticated",
-            active=False,
-        ),
-    )
-    parent_child = _build_read_only_plan(
-        trial_class="owned_parent_child_swap",
-        changed_variable="parent",
-        source_workflow=source_workflow,
-        alternate_workflow=alternate_workflow,
-        source_object=child_object,
-        alternate_object=alternate_object,
-        source_read=source_read,
-        trial_session=source_workflow.session,
-        parent_object_alias=alternate_parent.alias,
-    )
-    state_transition = _build_state_transition_plan(
-        source_workflow=source_workflow,
-        alternate_workflow=alternate_workflow,
-        source_object=source_object,
-        alternate_object=alternate_object,
-        source_read=source_read,
-        alternate_read=alternate_read,
-        update_step=update_step,
-    )
-    return [cross_account, lower_role, unauthenticated, parent_child, state_transition]
+    if update_step is not None and alternate_read is not None:
+        plans.append(
+            _build_state_transition_plan(
+                source_workflow=source_workflow,
+                alternate_workflow=alternate_workflow,
+                source_object=source_object,
+                alternate_object=alternate_object,
+                source_read=source_read,
+                alternate_read=alternate_read,
+                update_step=update_step,
+            )
+        )
+    elif require_all_classes:
+        if update_step is None:
+            raise ValueError("demonstrated_reversible_update_required")
+        raise ValueError("demonstrated_read_only_replay_required")
+
+    return plans
 
 
 def _require_plannable_workflows(model: ObservedWorkflowModel) -> None:

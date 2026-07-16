@@ -1,0 +1,31 @@
+{
+  "schema_version": "authorized_live_outcomes_v1",
+  "source_kind": "authorized_redacted_real",
+  "program_authorization_id": "REPLACE_WITH_AUTH_PROGRAM_REF",
+  "claim_scope": "authorized_live_calibration_real_package",
+  "description": "Template for attaching redacted real authorized program outcomes. Replace placeholders. Never include secrets/tokens/cookies.",
+  "execution_allowed": false,
+  "report_submission_allowed": false,
+  "auto_attack_allowed": false,
+  "entries": [
+    {
+      "entry_id": "REPLACE_ID",
+      "program_handle": "REPLACE_PROGRAM",
+      "program_authorization_id": "REPLACE_WITH_AUTH_PROGRAM_REF",
+      "authorized": true,
+      "human_confirmed": true,
+      "outcome": "human_confirmed_valid",
+      "wall_clock_minutes": 0,
+      "report_outcome_ref": "REPLACE_REPORT_REF",
+      "language_family": "python",
+      "hypothesis_class": "authorization",
+      "vuln_family": "idor",
+      "package_label": "REPLACE_PACKAGE",
+      "notes": "Redacted human-confirmed outcome only.",
+      "execution_allowed": false,
+      "report_submission_allowed": false,
+      "auto_submitted": false,
+      "source_kind": "authorized_redacted_real"
+    }
+  ]
+}

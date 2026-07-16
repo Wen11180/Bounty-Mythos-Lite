@@ -12,6 +12,11 @@ from app.codebase_map import (
     SENSITIVE_SINK_NAMES,
     map_authorized_code_files,
 )
+from app.falsification_engine import (
+    build_falsification_card,
+    project_falsification_summary,
+    survived_kill_score,
+)
 
 
 SAFETY_FIELDS = (
@@ -88,6 +93,24 @@ def build_candidate_hunter_observations(
                 if fact.fact_type == "route_handler"
                 and _code_fact_matches_route(fact, route)
             }
+            candidate_facts = _safe_candidate_source_facts(candidate.get("source_facts"))
+            # Frameworks without decorator routes (e.g. Django function views) still
+            # declare a candidate code path/symbol; use that to attach semantic guards.
+            if not handler:
+                for fact in candidate_facts:
+                    if fact.get("artifact_kind") != "code":
+                        continue
+                    symbol = _safe_text(fact.get("symbol_name"))
+                    if symbol:
+                        handler = symbol
+                        break
+            if not route_source_paths:
+                route_source_paths = {
+                    path
+                    for fact in candidate_facts
+                    if fact.get("artifact_kind") == "code"
+                    if (path := _safe_source_name(fact.get("source_path")))
+                }
             matching_semantic_facts = [
                 fact
                 for fact in semantic_code_facts
@@ -99,7 +122,6 @@ def build_candidate_hunter_observations(
                 for fact in safe_surface_facts
                 if _fact_matches_route(fact, route) or "route" not in fact
             ]
-            candidate_facts = _safe_candidate_source_facts(candidate.get("source_facts"))
             authorized_code_source_paths = {
                 _safe_source_name(item.get("path"))
                 for item in code_files
@@ -209,6 +231,7 @@ def build_candidate_hunter_observations(
                 control_fact = _typescript_control_fact(
                     matching_code_facts,
                     preferred_hints=preferred,
+                    root_cause=root_cause,
                 )
             public_fact = next(
                 (
@@ -277,6 +300,7 @@ def _typescript_control_fact(
     facts: list[CodebaseFactCandidate],
     *,
     preferred_hints: set[str] | None = None,
+    root_cause: str = "",
 ) -> dict[str, Any] | None:
     decisive_hints = {
         "owner_or_admin_check",
@@ -289,15 +313,54 @@ def _typescript_control_fact(
         "injection_validation_check",
     }
     preferred_hints = preferred_hints or set()
+    # Pure RBAC (role/permission) does not close object-level ownership gaps (IDOR).
+    root_l = (root_cause or "").lower()
+    if any(
+        marker in root_l
+        for marker in (
+            "missing_object_ownership",
+            "object_ownership",
+            "ownership_check",
+            "idor",
+        )
+    ):
+        decisive_hints = {
+            "owner_or_admin_check",
+            "ownership_boundary_check",
+        }
+    # Earliest sensitive sink line per handler — guards at/after sink are ineffective.
+    sink_line_by_handler: dict[str, int] = {}
+    for fact in facts:
+        if fact.fact_type != "sensitive_sink" or not isinstance(fact.payload, dict):
+            continue
+        handler = _safe_text(fact.payload.get("handler"))
+        line = fact.payload.get("line")
+        if not handler or not isinstance(line, int):
+            continue
+        prev = sink_line_by_handler.get(handler)
+        if prev is None or line < prev:
+            sink_line_by_handler[handler] = line
+
     candidates: list[CodebaseFactCandidate] = []
     for fact in facts:
         if (
             fact.fact_type == "authz_check"
             and fact.authz_hint in decisive_hints
             and fact.source_path.lower().endswith(
-                (".ts", ".tsx", ".mts", ".cts")
+                (".py", ".ts", ".tsx", ".mts", ".cts", ".java", ".go", ".rb", ".cs", ".php", ".kt", ".rs", ".scala")
             )
         ):
+            if isinstance(fact.payload, dict):
+                handler = _safe_text(fact.payload.get("handler"))
+                line = fact.payload.get("line")
+                sink_line = sink_line_by_handler.get(handler)
+                if (
+                    sink_line is not None
+                    and isinstance(line, int)
+                    and line >= sink_line
+                ):
+                    # Guard-after-sink does not close the authorization gap.
+                    continue
             candidates.append(fact)
     if not candidates:
         return None
@@ -315,7 +378,7 @@ def _typescript_public_filter_fact(
             fact.fact_type == "authz_check"
             and fact.authz_hint == "public_filter"
             and fact.source_path.lower().endswith(
-                (".ts", ".tsx", ".mts", ".cts")
+                (".py", ".ts", ".tsx", ".mts", ".cts", ".java", ".go", ".rb", ".cs", ".php", ".kt", ".rs", ".scala")
             )
         ):
             return _safe_code_fact(fact)
@@ -345,8 +408,70 @@ def _safe_code_fact(fact: CodebaseFactCandidate) -> dict[str, Any]:
     return projected
 
 
+def _collect_python_functions(
+    tree: ast.AST,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Collect top-level functions and class methods by leaf name."""
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in getattr(tree, "body", []) or []:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # Prefer first definition; leaf call names match method names.
+                    functions.setdefault(item.name, item)
+    return functions
+
+
+
+def _function_called_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call):
+            name = _ast_call_name(node)
+            if name:
+                names.add(name)
+    return names
+
+
+def _transitive_helper_names(
+    parsed: list[tuple[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]]],
+    seed: set[str],
+) -> set[str]:
+    """Expand helper names through wrappers that call known helpers."""
+    if not seed:
+        return set(seed)
+    callees_by_name: dict[str, set[str]] = {}
+    for _source_path, functions in parsed:
+        for name, function in functions.items():
+            callees_by_name.setdefault(name, set()).update(_function_called_names(function))
+    helpers = set(seed)
+    changed = True
+    while changed:
+        changed = False
+        for name, callees in callees_by_name.items():
+            if name in helpers:
+                continue
+            if callees & helpers:
+                helpers.add(name)
+                changed = True
+    return helpers
+
+
 def _python_semantic_facts(code_files: list[dict]) -> list[dict[str, Any]]:
-    facts = []
+    """Build ownership/public semantic facts across authorized Python files.
+
+    Ownership helpers are resolved globally so route handlers can call helpers
+    defined in other authorized files (or class methods) by leaf name.
+    """
+    parsed: list[tuple[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]]] = []
+    ownership_helpers: set[str] = set()
+    positive_ownership_helpers: set[str] = set()
+    public_helpers: set[str] = set()
+
     for item in code_files:
         if not isinstance(item, dict):
             continue
@@ -358,17 +483,24 @@ def _python_semantic_facts(code_files: list[dict]) -> list[dict[str, Any]]:
             tree = ast.parse(content)
         except SyntaxError:
             continue
-        functions = {
-            node.name: node
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        ownership_helpers = {
-            name for name, function in functions.items() if _function_has_ownership_guard(function)
-        }
-        public_helpers = {
-            name for name, function in functions.items() if _function_has_public_filter(function)
-        }
+        functions = _collect_python_functions(tree)
+        for name, function in functions.items():
+            if _function_has_ownership_guard(function):
+                ownership_helpers.add(name)
+            if _function_returns_ownership_predicate(function):
+                positive_ownership_helpers.add(name)
+            if _function_has_public_filter(function):
+                public_helpers.add(name)
+        parsed.append((source_path, functions))
+
+    # Propagate ownership through service-layer wrappers that call ownership helpers.
+    ownership_helpers = _transitive_helper_names(parsed, ownership_helpers)
+    positive_ownership_helpers = _transitive_helper_names(
+        parsed, positive_ownership_helpers
+    )
+
+    facts: list[dict[str, Any]] = []
+    for source_path, functions in parsed:
         for handler, function in functions.items():
             facts.extend(
                 _handler_semantic_facts(
@@ -377,6 +509,7 @@ def _python_semantic_facts(code_files: list[dict]) -> list[dict[str, Any]]:
                     function,
                     ownership_helpers,
                     public_helpers,
+                    positive_ownership_helpers,
                 )
             )
     return facts
@@ -388,6 +521,7 @@ def _handler_semantic_facts(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     ownership_helpers: set[str],
     public_helpers: set[str],
+    positive_ownership_helpers: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     sink_index = next(
         (
@@ -399,10 +533,63 @@ def _handler_semantic_facts(
     )
     if sink_index is None:
         return []
+    positive_helpers = positive_ownership_helpers or set()
+    linked = _function_resource_linked_names(function)
     facts = []
+    if _function_has_ownership_decorator(function):
+        facts.append(
+            _semantic_code_fact(
+                source_path,
+                handler,
+                "ownership_guard",
+                handler=handler,
+            )
+        )
+    for helper in sorted(ownership_helpers & _signature_dependency_helpers(function)):
+        facts.append(
+            _semantic_code_fact(
+                source_path,
+                helper,
+                "ownership_guard",
+                handler=handler,
+            )
+        )
     for index, statement in enumerate(function.body[:sink_index]):
+        # Inline ownership/tenant guard in the handler before the sink.
+        if _statement_has_ownership_guard(statement, linked):
+            facts.append(
+                _semantic_code_fact(
+                    source_path,
+                    handler,
+                    "ownership_guard",
+                    handler=handler,
+                )
+            )
+        positive_helper = _statement_has_positive_helper_guard(statement, positive_helpers)
+        if positive_helper:
+            facts.append(
+                _semantic_code_fact(
+                    source_path,
+                    positive_helper,
+                    "ownership_guard",
+                    handler=handler,
+                )
+            )
         called_names = _statement_called_names(statement)
         for helper in sorted(ownership_helpers & called_names):
+            facts.append(
+                _semantic_code_fact(
+                    source_path,
+                    helper,
+                    "ownership_guard",
+                    handler=handler,
+                )
+            )
+        for helper in sorted(
+            name
+            for name in called_names
+            if name not in ownership_helpers and _is_known_ownership_helper_name(name)
+        ):
             facts.append(
                 _semantic_code_fact(
                     source_path,
@@ -431,6 +618,51 @@ def _handler_semantic_facts(
                     handler=handler,
                 )
             )
+    # Ownership may gate the sink in the same statement (if eq: return send_file).
+    sink_statement = function.body[sink_index]
+    if _statement_has_ownership_guard(sink_statement, linked):
+        facts.append(
+            _semantic_code_fact(
+                source_path,
+                handler,
+                "ownership_guard",
+                handler=handler,
+            )
+        )
+    positive_helper = _statement_has_positive_helper_guard(sink_statement, positive_helpers)
+    if positive_helper:
+        facts.append(
+            _semantic_code_fact(
+                source_path,
+                positive_helper,
+                "ownership_guard",
+                handler=handler,
+            )
+        )
+    # Context-manager / same-statement helper calls (with ownership_context(...): sink).
+    sink_called = _statement_called_names(sink_statement)
+    for helper in sorted(ownership_helpers & sink_called):
+        facts.append(
+            _semantic_code_fact(
+                source_path,
+                helper,
+                "ownership_guard",
+                handler=handler,
+            )
+        )
+    for helper in sorted(
+        name
+        for name in sink_called
+        if name not in ownership_helpers and _is_known_ownership_helper_name(name)
+    ):
+        facts.append(
+            _semantic_code_fact(
+                source_path,
+                helper,
+                "ownership_guard",
+                handler=handler,
+            )
+        )
     return facts
 
 
@@ -452,10 +684,45 @@ def _semantic_code_fact(
 
 
 def _statement_called_names(statement: ast.stmt) -> set[str]:
-    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
-        if name := _ast_call_name(statement.value):
-            return {name}
-    return set()
+    """Leaf call names used by a statement (expr call or assigned call)."""
+    values: list[ast.AST] = []
+    if isinstance(statement, ast.Expr):
+        values.append(statement.value)
+    elif isinstance(statement, ast.Assign):
+        values.append(statement.value)
+    elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+        values.append(statement.value)
+    elif isinstance(statement, ast.Return) and statement.value is not None:
+        values.append(statement.value)
+    elif isinstance(statement, (ast.With, ast.AsyncWith)):
+        for item in statement.items:
+            values.append(item.context_expr)
+    elif isinstance(statement, ast.Try):
+        for nested in statement.body:
+            values.extend(_statement_call_values(nested))
+    names: set[str] = set()
+    for value in values:
+        if isinstance(value, ast.Await):
+            value = value.value
+        if isinstance(value, ast.Call):
+            if name := _ast_call_name(value):
+                names.add(name)
+    return names
+
+
+def _statement_call_values(statement: ast.stmt) -> list[ast.AST]:
+    """Expression nodes that may be direct calls in a statement."""
+    if isinstance(statement, ast.Expr):
+        return [statement.value]
+    if isinstance(statement, ast.Assign):
+        return [statement.value]
+    if isinstance(statement, ast.AnnAssign) and statement.value is not None:
+        return [statement.value]
+    if isinstance(statement, ast.Return) and statement.value is not None:
+        return [statement.value]
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        return [item.context_expr for item in statement.items]
+    return []
 
 
 def _statement_sensitive_sink_calls(statement: ast.stmt) -> list[ast.Call]:
@@ -492,29 +759,632 @@ def _ast_call_name(call: ast.Call) -> str:
     return _ast_identifier(call.func).split(".")[-1]
 
 
-def _function_has_ownership_guard(
+
+def _match_is_ownership_gate(node: ast.Match, linked: set[str] | None = None) -> bool:
+    """True for match ownership_eq with sink/deny cases (or boundary deny cases)."""
+    subject = node.subject
+    subject_eq = _expr_is_ownership_equality(subject, linked)
+    subject_boundary = _test_has_ownership_boundary(subject, linked)
+    if not subject_eq and not subject_boundary:
+        # match True: case _ if owner_eq: ...
+        for case in node.cases:
+            guard = case.guard
+            if guard is None:
+                continue
+            if _expr_is_ownership_equality(guard, linked) or _test_has_ownership_boundary(guard, linked):
+                if _denies_access_in_block(case.body) or _block_has_sensitive_sink(case.body):
+                    return True
+        return False
+    has_sink = any(_block_has_sensitive_sink(case.body) for case in node.cases)
+    has_deny = any(_denies_access_in_block(case.body) for case in node.cases)
+    return has_sink or has_deny
+
+
+def _ifexp_is_ownership_gate(node: ast.IfExp, linked: set[str] | None = None) -> bool:
+    """True for `sink if owner_eq else deny` or inverted deny-first forms."""
+    test_eq = _expr_is_ownership_equality(node.test, linked)
+    test_boundary = _test_has_ownership_boundary(node.test, linked)
+    body_is_sink = _expr_has_sensitive_sink(node.body)
+    orelse_is_sink = _expr_has_sensitive_sink(node.orelse)
+    body_is_deny = _expr_is_deny_value(node.body)
+    orelse_is_deny = _expr_is_deny_value(node.orelse)
+    if test_eq and body_is_sink:
+        return True
+    if test_boundary and body_is_deny:
+        return True
+    if test_boundary and orelse_is_sink and body_is_deny:
+        return True
+    if test_eq and body_is_sink and orelse_is_deny:
+        return True
+    return False
+
+
+def _expr_has_sensitive_sink(expr: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and _ast_call_name(node).lower() in SENSITIVE_SINK_NAMES
+        for node in ast.walk(expr)
+    )
+
+
+def _expr_is_deny_value(expr: ast.AST) -> bool:
+    if isinstance(expr, ast.Call):
+        if _ast_call_name(expr).lower() in _DENY_CALL_NAMES:
+            return True
+        if _call_is_forbidden_response(expr):
+            return True
+    if isinstance(expr, ast.Constant) and expr.value in (False, None, 403):
+        return True
+    return False
+
+
+
+def _function_param_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
+    names: set[str] = set()
+    for arg in (
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+    ):
+        if arg.arg not in {"self", "cls"}:
+            names.add(arg.arg)
+    return names
+
+
+def _iter_simple_assignments(
+    statement: ast.stmt,
+) -> list[tuple[str, ast.AST]]:
+    pairs: list[tuple[str, ast.AST]] = []
+    if isinstance(statement, ast.Assign):
+        for target in statement.targets:
+            if isinstance(target, ast.Name):
+                pairs.append((target.id, statement.value))
+    elif isinstance(statement, ast.AnnAssign):
+        if isinstance(statement.target, ast.Name) and statement.value is not None:
+            pairs.append((statement.target.id, statement.value))
+    elif isinstance(statement, ast.With):
+        for item in statement.items:
+            if isinstance(item.optional_vars, ast.Name):
+                pairs.append((item.optional_vars.id, item.context_expr))
+    elif isinstance(statement, ast.AsyncWith):
+        for item in statement.items:
+            if isinstance(item.optional_vars, ast.Name):
+                pairs.append((item.optional_vars.id, item.context_expr))
+    return pairs
+
+
+def _expr_depends_on_linked(expr: ast.AST, linked: set[str]) -> bool:
+    """True when expr transitively uses a resource-linked name (param/derived)."""
+    if isinstance(expr, ast.Constant):
+        return False
+    if isinstance(expr, ast.Name):
+        return expr.id in linked
+    if isinstance(expr, ast.Attribute):
+        return _expr_depends_on_linked(expr.value, linked)
+    if isinstance(expr, ast.Call):
+        for argument in expr.args:
+            if _expr_depends_on_linked(argument, linked):
+                return True
+        for keyword in expr.keywords:
+            if keyword.value is not None and _expr_depends_on_linked(keyword.value, linked):
+                return True
+        return False
+    if isinstance(expr, ast.Await):
+        return _expr_depends_on_linked(expr.value, linked)
+    if isinstance(expr, ast.NamedExpr):
+        return _expr_depends_on_linked(expr.value, linked)
+    if isinstance(expr, ast.UnaryOp):
+        return _expr_depends_on_linked(expr.operand, linked)
+    if isinstance(expr, ast.BinOp):
+        return _expr_depends_on_linked(expr.left, linked) or _expr_depends_on_linked(
+            expr.right, linked
+        )
+    if isinstance(expr, ast.BoolOp):
+        return any(_expr_depends_on_linked(value, linked) for value in expr.values)
+    if isinstance(expr, ast.Compare):
+        if _expr_depends_on_linked(expr.left, linked):
+            return True
+        return any(_expr_depends_on_linked(item, linked) for item in expr.comparators)
+    if isinstance(expr, ast.IfExp):
+        return (
+            _expr_depends_on_linked(expr.test, linked)
+            or _expr_depends_on_linked(expr.body, linked)
+            or _expr_depends_on_linked(expr.orelse, linked)
+        )
+    if isinstance(expr, ast.Subscript):
+        return _expr_depends_on_linked(expr.value, linked) or _expr_depends_on_linked(
+            expr.slice, linked
+        )
+    if isinstance(expr, ast.Starred):
+        return _expr_depends_on_linked(expr.value, linked)
+    if isinstance(expr, ast.List | ast.Tuple | ast.Set):
+        return any(_expr_depends_on_linked(item, linked) for item in expr.elts)
+    if isinstance(expr, ast.Dict):
+        for key, value in zip(expr.keys, expr.values):
+            if key is not None and _expr_depends_on_linked(key, linked):
+                return True
+            if value is not None and _expr_depends_on_linked(value, linked):
+                return True
+        return False
+    return False
+
+
+def _function_resource_linked_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
+    """Names bound to route/resource inputs or derived from them.
+
+    Ownership of an unrelated loaded object (constant id / non-param load) must
+    not refute object-level authorization gaps on the path resource.
+    """
+    linked = _function_param_names(function)
+    for _ in range(12):
+        grew = False
+        for statement in function.body:
+            for name, value in _iter_simple_assignments(statement):
+                if name in linked:
+                    continue
+                if _expr_depends_on_linked(value, linked):
+                    linked.add(name)
+                    grew = True
+            # Walrus in statement tests: if (record := load(record_id)):
+            for node in ast.walk(statement):
+                if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+                    if node.target.id in linked:
+                        continue
+                    if _expr_depends_on_linked(node.value, linked):
+                        linked.add(node.target.id)
+                        grew = True
+        if not grew:
+            break
+    return linked
+
+
+def _identifier_is_principal_side(identifier: str) -> bool:
+    if not identifier:
+        return False
+    if _is_principal_identifier(identifier):
+        return True
+    field = identifier.split(".")[-1]
+    return _is_principal_boundary_field(identifier, field)
+
+
+def _ownership_pair_is_resource_linked(
+    left: str,
+    right: str,
+    linked: set[str],
+) -> bool:
+    """Require at least one non-principal side to be resource-linked."""
+    subjects: list[str] = []
+    for side in (left, right):
+        if not side or _identifier_is_principal_side(side):
+            continue
+        subjects.append(side.split(".")[0])
+    if not subjects:
+        # No clear resource subject — do not claim object ownership control.
+        return False
+    return any(subject in linked for subject in subjects)
+
+
+def _statement_has_ownership_guard(
+    statement: ast.stmt,
+    linked: set[str] | None = None,
+) -> bool:
+    """True when a statement encodes ownership/tenant denial or gated access."""
+    if isinstance(statement, ast.Assert) and statement.test is not None:
+        if _expr_is_ownership_equality(statement.test, linked):
+            return True
+    # Ternary: return sink if owner_eq else deny()
+    if isinstance(statement, ast.Return) and isinstance(statement.value, ast.IfExp):
+        if _ifexp_is_ownership_gate(statement.value, linked):
+            return True
+    # match ownership_eq: case True: sink / case False: deny
+    if isinstance(statement, ast.Match) and _match_is_ownership_gate(statement, linked):
+        return True
+    for node in ast.walk(statement):
+        if isinstance(node, ast.Assert) and node.test is not None:
+            if _expr_is_ownership_equality(node.test, linked):
+                return True
+        if isinstance(node, ast.IfExp) and _ifexp_is_ownership_gate(node, linked):
+            return True
+        if not isinstance(node, ast.If):
+            continue
+        # if mismatch/membership: deny
+        if _denies_access_in_block(node.body) and _test_has_ownership_boundary(
+            node.test, linked
+        ):
+            return True
+        # if ownership_eq: allow-path/sink; else: deny  OR gated sink on eq
+        if _expr_is_ownership_equality(node.test, linked) or (
+            isinstance(node.test, ast.BoolOp)
+            and isinstance(node.test.op, (ast.And, ast.Or))
+            and any(
+                _expr_is_ownership_equality(value, linked) for value in node.test.values
+            )
+        ):
+            if _denies_access_in_block(node.orelse):
+                return True
+            if _block_has_sensitive_sink(node.body):
+                return True
+        if _statement_has_ownership_query_filter(node):
+            return True
+    if _statement_has_ownership_query_filter(statement):
+        return True
+    return False
+
+
+def _block_has_sensitive_sink(nodes: list[ast.stmt]) -> bool:
+    return any(_statement_sensitive_sink_calls(statement) for statement in nodes)
+
+
+_OWNERSHIP_DECORATOR_MARKERS = frozenset(
+    {
+        "require_ownership",
+        "require_owner",
+        "ownership_required",
+        "check_ownership",
+        "ensure_owner",
+        "ensure_ownership",
+        "verify_ownership",
+        "owner_required",
+        "requires_ownership",
+        "owns_object",
+        "object_owner_required",
+    }
+)
+
+# Call-site ownership helpers when definition is not in the authorized snippet
+# (imported ensure_owner / verify_record_access style).
+_OWNERSHIP_HELPER_NAME_MARKERS = frozenset(
+    {
+        *_OWNERSHIP_DECORATOR_MARKERS,
+        "verify_record_access",
+        "verify_owner",
+        "assert_owner",
+        "assert_ownership",
+        "check_owner",
+        "require_record_owner",
+        "ownership_context",
+    }
+)
+
+
+def _is_known_ownership_helper_name(name: str) -> bool:
+    leaf = name.split(".")[-1].lower()
+    if not leaf:
+        return False
+    if leaf in _OWNERSHIP_HELPER_NAME_MARKERS:
+        return True
+    if "ownership" in leaf:
+        return True
+    if leaf.startswith("ensure_owner") or leaf.startswith("verify_owner"):
+        return True
+    if leaf.startswith("require_owner") or leaf.startswith("assert_owner"):
+        return True
+    return False
+
+
+def _decorator_name(decorator: ast.AST) -> str:
+    if isinstance(decorator, ast.Call):
+        return _ast_call_name(decorator)
+    return _ast_identifier(decorator)
+
+
+def _function_has_ownership_decorator(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
-    for node in ast.walk(function):
-        if not isinstance(node, ast.If) or not _raises_in_block(node.body):
+    for decorator in function.decorator_list:
+        leaf = _decorator_name(decorator).split(".")[-1].lower()
+        if not leaf:
             continue
-        comparison = node.test
-        if (
-            not isinstance(comparison, ast.Compare)
-            or len(comparison.ops) != 1
-            or not isinstance(comparison.ops[0], ast.NotEq)
-            or len(comparison.comparators) != 1
-        ):
-            continue
-        left = _ast_identifier(comparison.left)
-        right = _ast_identifier(comparison.comparators[0])
-        if _is_ownership_boundary_pair(left, right):
+        if leaf in _OWNERSHIP_DECORATOR_MARKERS:
+            return True
+        if "ownership" in leaf or leaf.startswith("require_owner"):
             return True
     return False
 
 
+def _depends_helper_names(node: ast.AST | None) -> set[str]:
+    if node is None:
+        return set()
+    names: set[str] = set()
+    for nested in ast.walk(node):
+        if not isinstance(nested, ast.Call):
+            continue
+        if _ast_call_name(nested).split(".")[-1] != "Depends":
+            continue
+        for argument in nested.args:
+            if isinstance(argument, (ast.Name, ast.Attribute)):
+                leaf = _ast_identifier(argument).split(".")[-1]
+                if leaf:
+                    names.add(leaf)
+            elif isinstance(argument, ast.Call):
+                leaf = _ast_call_name(argument)
+                if leaf:
+                    names.add(leaf)
+    return names
+
+
+def _signature_dependency_helpers(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
+    helpers: set[str] = set()
+    args = function.args
+    for default in list(args.defaults) + [
+        item for item in (args.kw_defaults or []) if item is not None
+    ]:
+        helpers |= _depends_helper_names(default)
+    for annotation in [
+        *(arg.annotation for arg in args.args if arg.annotation is not None),
+        *(arg.annotation for arg in args.kwonlyargs if arg.annotation is not None),
+    ]:
+        helpers |= _depends_helper_names(annotation)
+    return helpers
+
+
+def _statement_has_ownership_query_filter(statement: ast.stmt | ast.AST) -> bool:
+    """True for ORM/query filters that pin owner/tenant to the principal."""
+    boundary_fields = {
+        "owner_id",
+        "user_id",
+        "tenant_id",
+        "account_id",
+        "org_id",
+        "organization_id",
+        "workspace_id",
+        "team_id",
+        "project_id",
+        "created_by_id",
+        "creator_id",
+        "author_id",
+        "agent_id",
+        "group_id",
+    }
+    for node in ast.walk(statement):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if not keyword.arg:
+                continue
+            field = keyword.arg.lower()
+            if field not in boundary_fields:
+                continue
+            value = _ast_identifier(keyword.value)
+            if _is_principal_identifier(value) or _is_principal_boundary_field(value, field):
+                return True
+        for argument in node.args:
+            if isinstance(argument, ast.Compare) and _expr_is_ownership_equality(argument):
+                return True
+    return False
+
+
+def _test_has_ownership_boundary(
+    test: ast.AST,
+    linked: set[str] | None = None,
+) -> bool:
+    """True when an if-test encodes ownership/tenant/membership denial."""
+    if isinstance(test, ast.Compare):
+        return _compare_has_ownership_boundary(test, linked)
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, (ast.And, ast.Or)):
+        return any(
+            _test_has_ownership_boundary(value, linked) for value in test.values
+        )
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        # if not (record.owner_id == user.id): deny
+        return _expr_is_ownership_equality(test.operand, linked)
+    return False
+
+
+def _compare_has_ownership_boundary(
+    comparison: ast.Compare,
+    linked: set[str] | None = None,
+) -> bool:
+    if len(comparison.ops) != 1 or len(comparison.comparators) != 1:
+        return False
+    op = comparison.ops[0]
+    left = _ast_identifier(comparison.left)
+    right = _ast_identifier(comparison.comparators[0])
+    if isinstance(op, ast.NotEq):
+        if not _is_ownership_boundary_pair(left, right):
+            return False
+        if linked is not None and not _ownership_pair_is_resource_linked(left, right, linked):
+            return False
+        return True
+    if isinstance(op, ast.NotIn):
+        if not _is_membership_boundary_pair(left, right):
+            return False
+        if linked is not None and not _ownership_pair_is_resource_linked(left, right, linked):
+            return False
+        return True
+    return False
+
+
+def _expr_is_ownership_equality(
+    expr: ast.AST,
+    linked: set[str] | None = None,
+) -> bool:
+    if (
+        not isinstance(expr, ast.Compare)
+        or len(expr.ops) != 1
+        or not isinstance(expr.ops[0], ast.Eq)
+        or len(expr.comparators) != 1
+    ):
+        return False
+    left = _ast_identifier(expr.left)
+    right = _ast_identifier(expr.comparators[0])
+    if not _is_ownership_boundary_pair(left, right):
+        return False
+    if linked is not None and not _ownership_pair_is_resource_linked(left, right, linked):
+        return False
+    return True
+
+
+def _function_has_ownership_guard(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    linked = _function_resource_linked_names(function)
+    return any(
+        _statement_has_ownership_guard(statement, linked) for statement in function.body
+    )
+
+
+def _function_returns_ownership_predicate(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    """True when a helper returns a positive ownership/tenant equality predicate."""
+    linked = _function_resource_linked_names(function)
+    for statement in function.body:
+        if not isinstance(statement, ast.Return) or statement.value is None:
+            continue
+        value = statement.value
+        if _expr_is_ownership_equality(value, linked):
+            return True
+        if isinstance(value, ast.BoolOp) and isinstance(value.op, ast.And):
+            if any(_expr_is_ownership_equality(item, linked) for item in value.values):
+                return True
+    return False
+
+
+def _negated_helper_call_name(test: ast.AST) -> str | None:
+    """Extract helper name from `if not helper(...):` style denial guards."""
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        call = test.operand
+        if isinstance(call, ast.Await):
+            call = call.value
+        if isinstance(call, ast.Call):
+            return _ast_call_name(call) or None
+        return None
+    if (
+        isinstance(test, ast.Compare)
+        and len(test.ops) == 1
+        and len(test.comparators) == 1
+        and isinstance(test.ops[0], (ast.Is, ast.Eq))
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value is False
+    ):
+        call = test.left
+        if isinstance(call, ast.Await):
+            call = call.value
+        if isinstance(call, ast.Call):
+            return _ast_call_name(call) or None
+    return None
+
+
+def _statement_has_positive_helper_guard(
+    statement: ast.stmt,
+    positive_helpers: set[str],
+) -> str | None:
+    """Return helper name when branch denies on a positive ownership helper result."""
+    if not positive_helpers:
+        return None
+    for node in ast.walk(statement):
+        if not isinstance(node, ast.If) or not _denies_access_in_block(node.body):
+            continue
+        helper = _negated_helper_call_name(node.test)
+        if helper and helper in positive_helpers:
+            return helper
+    return None
+
+
 def _raises_in_block(nodes: list[ast.stmt]) -> bool:
     return any(isinstance(nested, ast.Raise) for node in nodes for nested in ast.walk(node))
+
+
+_DENY_CALL_NAMES = frozenset(
+    {
+        "deny",
+        "abort",
+        "forbid",
+        "forbidden",
+        "unauthorized",
+        "permission_denied",
+        "access_denied",
+        "reject",
+    }
+)
+
+
+def _denies_access_in_block(nodes: list[ast.stmt]) -> bool:
+    """True when the branch rejects access via raise or common deny helpers."""
+    if _raises_in_block(nodes):
+        return True
+    for node in nodes:
+        for nested in ast.walk(node):
+            if isinstance(nested, ast.Call):
+                if _ast_call_name(nested).lower() in _DENY_CALL_NAMES:
+                    return True
+                if _call_is_forbidden_response(nested):
+                    return True
+            if isinstance(nested, ast.Return) and isinstance(nested.value, ast.Call):
+                if _ast_call_name(nested.value).lower() in _DENY_CALL_NAMES:
+                    return True
+                if _call_is_forbidden_response(nested.value):
+                    return True
+            if (
+                isinstance(nested, ast.Return)
+                and isinstance(nested.value, ast.Constant)
+                and nested.value.value in (False, None, 403)
+            ):
+                return True
+    return False
+
+
+def _call_is_forbidden_response(call: ast.Call) -> bool:
+    """True for Response(status=403) / JSONResponse(status_code=403) style denies."""
+    name = _ast_call_name(call).lower()
+    if name not in {
+        "response",
+        "jsonresponse",
+        "plaintextresponse",
+        "plain_text_response",
+        "httpresponse",
+        "http_response",
+    }:
+        # still allow any call with explicit forbidden status kwargs
+        pass
+    for keyword in call.keywords:
+        if not keyword.arg:
+            continue
+        key = keyword.arg.lower()
+        if key not in {"status", "status_code", "code"}:
+            continue
+        if isinstance(keyword.value, ast.Constant) and keyword.value.value in (401, 403, 404):
+            return True
+    return False
+
+
+def _is_principal_identifier(identifier: str) -> bool:
+    return identifier in {
+        "current_user.id",
+        "request.user.id",
+        "user.id",
+        "g.user.id",
+        "g.current_user.id",
+        "req.user.id",
+        "request.state.user.id",
+        "info.context.user.id",
+        "context.user.id",
+    }
+
+
+def _is_principal_boundary_field(identifier: str, field: str) -> bool:
+    parts = [part for part in identifier.split(".") if part]
+    if len(parts) < 2 or parts[-1] != field:
+        return False
+    root = ".".join(parts[:-1])
+    return root in {
+        "user",
+        "current_user",
+        "request.user",
+        "g.user",
+        "g.current_user",
+        "req.user",
+        "request.state.user",
+        "info.context.user",
+        "context.user",
+    }
 
 
 def _is_ownership_boundary_pair(left: str, right: str) -> bool:
@@ -524,17 +1394,51 @@ def _is_ownership_boundary_pair(left: str, right: str) -> bool:
         "tenant_id",
         "account_id",
         "org_id",
+        "organization_id",
         "workspace_id",
+        "team_id",
+        "project_id",
+        "created_by_id",
+        "creator_id",
+        "author_id",
+        "agent_id",
+        "group_id",
     }
-    principals = {
-        "current_user.id",
-        "request.user.id",
-        "user.id",
+    left_field = left.split(".")[-1]
+    right_field = right.split(".")[-1]
+    if left_field in boundary_fields and _is_principal_identifier(right):
+        return True
+    if right_field in boundary_fields and _is_principal_identifier(left):
+        return True
+    # Multi-tenant / org boundary: resource.tenant_id != user.tenant_id
+    if left_field in boundary_fields and left_field == right_field:
+        if _is_principal_boundary_field(right, left_field) or _is_principal_boundary_field(
+            left, left_field
+        ):
+            return True
+    return False
+
+
+def _is_membership_boundary_pair(left: str, right: str) -> bool:
+    """True for principal membership checks like user.id not in record.member_ids."""
+    membership_fields = {
+        "member_ids",
+        "members",
+        "allowed_user_ids",
+        "collaborators",
+        "participant_ids",
+        "user_ids",
+        "shared_with",
+        "editors",
+        "viewers",
     }
-    return (
-        left.split(".")[-1] in boundary_fields and right in principals
-        or right.split(".")[-1] in boundary_fields and left in principals
-    )
+    left_field = left.split(".")[-1]
+    right_field = right.split(".")[-1]
+    if _is_principal_identifier(left) and right_field in membership_fields:
+        return True
+    if _is_principal_identifier(right) and left_field in membership_fields:
+        return True
+    return False
 
 
 def _function_has_public_filter(
@@ -557,6 +1461,20 @@ def _ast_identifier(value: ast.AST) -> str:
     if isinstance(value, ast.Attribute):
         parent = _ast_identifier(value.value)
         return f"{parent}.{value.attr}" if parent else value.attr
+    # Walrus: (owner := record.owner_id) → record.owner_id
+    if isinstance(value, ast.NamedExpr):
+        return _ast_identifier(value.value)
+    # getattr(record, "owner_id") → record.owner_id
+    if (
+        isinstance(value, ast.Call)
+        and _ast_call_name(value) == "getattr"
+        and len(value.args) >= 2
+        and isinstance(value.args[1], ast.Constant)
+        and isinstance(value.args[1].value, str)
+    ):
+        parent = _ast_identifier(value.args[0])
+        field = value.args[1].value
+        return f"{parent}.{field}" if parent else field
     return ""
 
 
@@ -972,6 +1890,12 @@ def advance_candidate_hunter_round(
                 state,
                 missing_evidence,
             )
+            needs_card = build_falsification_card(
+                state,
+                disposition="needs_evidence",
+                evidence_refs=_string_list(state.get("source_fact_refs")),
+                missing_evidence=missing_evidence,
+            )
             evidence_requests.append(
                 {
                     "candidate_id": candidate_id,
@@ -988,6 +1912,8 @@ def advance_candidate_hunter_round(
                         "A cited local control may refute or suppress the candidate; "
                         "a complete unguarded trace may retain it for human review."
                     ),
+                    "falsification_card": needs_card,
+                    "falsification_summary": project_falsification_summary(needs_card),
                 }
             )
             unresolved_candidates.append(
@@ -1003,29 +1929,49 @@ def advance_candidate_hunter_round(
         evidence_refs = _string_list(state.get("source_fact_refs"))
         control_ref = _text(state.get("control_evidence_ref"))
         if control_ref and control_ref in evidence_refs:
+            refute_card = build_falsification_card(
+                state,
+                disposition="refuted",
+                evidence_refs=[control_ref],
+            )
             decisions.append(
                 {
                     "candidate_id": state["candidate_id"],
                     "root_cause_id": state["root_cause_id"],
                     "disposition": "refuted",
                     "evidence_refs": [control_ref],
+                    "falsification_card": refute_card,
+                    "falsification_summary": project_falsification_summary(refute_card),
                 }
             )
             continue
         public_ref = _text(state.get("public_evidence_ref"))
         if public_ref and public_ref in evidence_refs:
+            suppress_card = build_falsification_card(
+                state,
+                disposition="suppressed",
+                evidence_refs=[public_ref],
+            )
             decisions.append(
                 {
                     "candidate_id": state["candidate_id"],
                     "root_cause_id": state["root_cause_id"],
                     "disposition": "suppressed",
                     "evidence_refs": [public_ref],
+                    "falsification_card": suppress_card,
+                    "falsification_summary": project_falsification_summary(suppress_card),
                 }
             )
             continue
         duplicate_target = duplicate_targets.get(_text(state.get("candidate_id")))
         if duplicate_target is not None:
             canonical_root_id, shared_ref = duplicate_target
+            dedupe_card = build_falsification_card(
+                state,
+                disposition="deduplicated",
+                evidence_refs=[shared_ref],
+                duplicate_of=canonical_root_id,
+            )
             decisions.append(
                 {
                     "candidate_id": state["candidate_id"],
@@ -1033,6 +1979,8 @@ def advance_candidate_hunter_round(
                     "disposition": "deduplicated",
                     "evidence_refs": [shared_ref],
                     "duplicate_of": canonical_root_id,
+                    "falsification_card": dedupe_card,
+                    "falsification_summary": project_falsification_summary(dedupe_card),
                 }
             )
             continue
@@ -1047,6 +1995,12 @@ def advance_candidate_hunter_round(
         affected_code_path = code_refs[0] if code_refs else (
             f"code:{root_symbol}" if root_symbol else ""
         )
+        retain_card = build_falsification_card(
+            state,
+            disposition="retained",
+            evidence_refs=evidence_refs,
+        )
+        retain_summary = project_falsification_summary(retain_card)
         candidate_projection = {
             "candidate_id": state["candidate_id"],
             "rank": len(final_candidates) + 1,
@@ -1078,6 +2032,10 @@ def advance_candidate_hunter_round(
                 "touch_real_user_data",
                 "submit_report",
             ],
+            "broken_invariant": retain_card.get("broken_invariant") or "",
+            "why_still_alive": list(retain_summary.get("why_still_alive") or []),
+            "falsification_summary": retain_summary,
+            "falsification_card": retain_card,
         }
         decisions.append(
             {
@@ -1088,11 +2046,15 @@ def advance_candidate_hunter_round(
                 "candidate_projection": candidate_projection,
                 "priority_score": _priority_score(state.get("priority_score")),
                 "evidence_completeness_score": _evidence_completeness_score(state),
+                "survived_kill_score": survived_kill_score(retain_card),
+                "falsification_card": retain_card,
+                "falsification_summary": retain_summary,
             }
         )
         final_candidates.append(candidate_projection)
     ranking_by_id = {
         decision["candidate_id"]: (
+            _priority_score(decision.get("survived_kill_score")),
             _priority_score(decision.get("evidence_completeness_score")),
             _priority_score(decision.get("priority_score")),
         )
@@ -1101,14 +2063,21 @@ def advance_candidate_hunter_round(
     }
     final_candidates.sort(
         key=lambda candidate: (
-            -ranking_by_id.get(candidate["candidate_id"], (0, 0))[0],
-            -ranking_by_id.get(candidate["candidate_id"], (0, 0))[1],
+            -ranking_by_id.get(candidate["candidate_id"], (0, 0, 0))[0],
+            -ranking_by_id.get(candidate["candidate_id"], (0, 0, 0))[1],
+            -ranking_by_id.get(candidate["candidate_id"], (0, 0, 0))[2],
             candidate["candidate_id"],
         )
     )
     final_candidates = final_candidates[:5]
     for rank, candidate in enumerate(final_candidates, start=1):
         candidate["rank"] = rank
+        card = candidate.get("falsification_card")
+        if isinstance(card, dict) and isinstance(card.get("decision"), dict):
+            card["decision"]["rank"] = rank
+        summary = candidate.get("falsification_summary")
+        if isinstance(summary, dict):
+            summary["decision_status"] = "retained"
     decided_ids = {
         _text(decision.get("candidate_id"))
         for decision in decisions
@@ -1953,6 +2922,14 @@ def _safe_prior_decisions(value: object) -> list[dict[str, Any]]:
             decision["evidence_completeness_score"] = _priority_score(
                 item.get("evidence_completeness_score")
             )
+            decision["survived_kill_score"] = _priority_score(
+                item.get("survived_kill_score")
+            )
+        # Preserve audit falsification payloads across multi-round resume.
+        if isinstance(item.get("falsification_card"), dict):
+            decision["falsification_card"] = item["falsification_card"]
+        if isinstance(item.get("falsification_summary"), dict):
+            decision["falsification_summary"] = item["falsification_summary"]
         decisions.append(decision)
     return decisions
 
@@ -1996,7 +2973,7 @@ def _safe_prior_candidate_projection(
     if not affected_code_path:
         code_refs = [ref for ref in source_fact_refs if ref.startswith("code:")]
         affected_code_path = code_refs[0] if code_refs else ""
-    return {
+    projection = {
         "candidate_id": candidate_id,
         "rank": _priority_score(value.get("rank")) or 1,
         "vuln_type": _safe_text(value.get("vuln_type")),
@@ -2023,7 +3000,20 @@ def _safe_prior_candidate_projection(
             for item in value.get("safety_blockers", [])
             if (safe_text := _safe_text(item))
         ] if isinstance(value.get("safety_blockers"), list) else [],
+        "broken_invariant": _safe_text(value.get("broken_invariant")),
+        "why_still_alive": [
+            safe_text
+            for item in value.get("why_still_alive", [])
+            if (safe_text := _safe_text(item))
+        ]
+        if isinstance(value.get("why_still_alive"), list)
+        else [],
     }
+    if isinstance(value.get("falsification_summary"), dict):
+        projection["falsification_summary"] = value["falsification_summary"]
+    if isinstance(value.get("falsification_card"), dict):
+        projection["falsification_card"] = value["falsification_card"]
+    return projection
 
 
 def _initial_states_with_safe_context(
