@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 import re
@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,12 +24,16 @@ from app.db_models import (
     LLMRunRecord,
     PipelineStageRecord,
     PipelineRunRecord,
+    ProgramRuleSnapshotRecord,
+    ProgramRuleSourceRecord,
+    ProgramScopeRuleRecord,
     ProgramRecord,
     ReportRecord,
     ScannerRunRecord,
     ValidationRunRecord,
 )
 from app.models import Finding, Program, ReportDraft
+from app.program_rule_intake.contracts import canonicalize_public_https_url
 from app.sample_data import FINDINGS, PROGRAMS, REPORTS
 
 
@@ -77,6 +81,49 @@ _REQUEST_TRACE_EVIDENCE_REFS = {
     "sanitized_request_response",
 }
 _CORROBORATING_EVIDENCE_REFS = _REPORT_SAFE_REVIEW_EVIDENCE_REFS - _REQUEST_TRACE_EVIDENCE_REFS
+_PROGRAM_RULE_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_PROGRAM_RULE_RAW_HTML_PATTERN = re.compile(
+    r"<!doctype\s+html|</?html(?:\s|>)|</?body(?:\s|>)",
+    re.IGNORECASE,
+)
+_PROGRAM_RULE_FORBIDDEN_KEYS = {
+    "authorization",
+    "bodybase64",
+    "browserstate",
+    "components",
+    "cookie",
+    "cookies",
+    "customeremail",
+    "customerid",
+    "customername",
+    "customerphone",
+    "examples",
+    "har",
+    "headers",
+    "localstorage",
+    "openapi",
+    "parameters",
+    "pii",
+    "rawbody",
+    "rawhtml",
+    "rawopenapi",
+    "requestbody",
+    "requestheaders",
+    "responsebody",
+    "responseheaders",
+    "responses",
+    "schemas",
+    "securityschemes",
+    "sessionstorage",
+    "setcookie",
+    "storagestate",
+    "swagger",
+    "useremail",
+    "userid",
+    "username",
+    "userphone",
+}
 
 
 class DatabaseRepository:
@@ -95,6 +142,530 @@ class DatabaseRepository:
 
     def create_program(self, program: Program) -> Program:
         record = _program_to_record(program)
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return _program_from_record(record)
+
+    def create_program_rule_source(
+        self,
+        *,
+        program_alias: str,
+        registered_url: str,
+        now: datetime,
+    ) -> ProgramRuleSourceRecord:
+        safe_alias = _program_rule_safe_alias(program_alias)
+        safe_registered_url = _program_rule_safe_text(registered_url)
+        canonical_url = _program_rule_safe_text(
+            canonicalize_public_https_url(safe_registered_url)
+        )
+        existing = self.session.scalar(
+            select(ProgramRuleSourceRecord).where(
+                ProgramRuleSourceRecord.canonical_url == canonical_url
+            )
+        )
+        if existing is not None:
+            return existing
+
+        identity_digest = sha256(canonical_url.encode("utf-8")).hexdigest()
+        source_id = f"program_rule_source_{identity_digest[:32]}"
+        program_id = f"public_url_program_{identity_digest[:32]}"
+        timestamp = _as_utc(now)
+        program = self.session.get(ProgramRecord, program_id)
+        if program is None:
+            self.session.add(
+                ProgramRecord(
+                    id=program_id,
+                    name=safe_alias,
+                    platform="public_url",
+                    bounty_range="unknown",
+                    scope_status="needs_review",
+                    automation="needs_review",
+                    testing_accounts="not_provided",
+                    api_docs="not_provided",
+                    public_code="not_provided",
+                    duplicate_risk="unknown",
+                    priority="unranked",
+                )
+            )
+        record = ProgramRuleSourceRecord(
+            id=source_id,
+            program_id=program_id,
+            program_alias=safe_alias,
+            registered_url=safe_registered_url,
+            canonical_url=canonical_url,
+            refresh_interval_seconds=86_400,
+            fetch_status="scheduled",
+            next_check_at=timestamp,
+            failure_count=0,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        self.session.add(record)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(ProgramRuleSourceRecord).where(
+                    ProgramRuleSourceRecord.canonical_url == canonical_url
+                )
+            )
+            if existing is None:
+                raise
+            return existing
+        self.session.refresh(record)
+        return record
+
+    def list_program_rule_sources(self) -> list[ProgramRuleSourceRecord]:
+        return self.session.scalars(
+            select(ProgramRuleSourceRecord).order_by(ProgramRuleSourceRecord.id)
+        ).all()
+
+    def get_program_rule_source(
+        self,
+        source_id: str,
+    ) -> ProgramRuleSourceRecord | None:
+        return self.session.get(ProgramRuleSourceRecord, source_id)
+
+    def get_program_rule_source_by_canonical_url(
+        self,
+        canonical_url: str,
+    ) -> ProgramRuleSourceRecord | None:
+        canonical = canonicalize_public_https_url(canonical_url)
+        return self.session.scalar(
+            select(ProgramRuleSourceRecord).where(
+                ProgramRuleSourceRecord.canonical_url == canonical
+            )
+        )
+
+    def schedule_program_rule_source_refresh(
+        self,
+        *,
+        source_id: str,
+        now: datetime,
+        manual: bool,
+    ) -> ProgramRuleSourceRecord | None:
+        record = self.session.get(ProgramRuleSourceRecord, source_id)
+        if record is None:
+            return None
+        timestamp = _as_utc(now)
+        claim_is_live = (
+            record.claim_id is not None
+            and record.claim_token_digest is not None
+            and record.claim_expires_at is not None
+            and _as_utc(record.claim_expires_at) > timestamp
+        )
+        if not claim_is_live:
+            record.fetch_status = "scheduled"
+            record.next_check_at = timestamp
+        if manual:
+            record.last_manual_refresh_at = timestamp
+        record.updated_at = timestamp
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def claim_next_due_program_rule_source(
+        self,
+        *,
+        claim_id: str,
+        claim_token_digest: str,
+        now: datetime,
+    ) -> ProgramRuleSourceRecord | None:
+        if not isinstance(claim_id, str) or not claim_id or len(claim_id) > 100:
+            raise ValueError("program-rule claim identifier is invalid")
+        _program_rule_sha256(claim_token_digest)
+        timestamp = _as_utc(now)
+        expires_at = timestamp + timedelta(minutes=15)
+        claimable = or_(
+            and_(
+                ProgramRuleSourceRecord.claim_id.is_(None),
+                ProgramRuleSourceRecord.claim_token_digest.is_(None),
+            ),
+            and_(
+                ProgramRuleSourceRecord.claim_expires_at.is_not(None),
+                ProgramRuleSourceRecord.claim_expires_at <= timestamp,
+            ),
+        )
+        candidate_id = (
+            select(ProgramRuleSourceRecord.id)
+            .where(
+                ProgramRuleSourceRecord.next_check_at <= timestamp,
+                claimable,
+            )
+            .order_by(
+                ProgramRuleSourceRecord.next_check_at,
+                ProgramRuleSourceRecord.id,
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        statement = (
+            update(ProgramRuleSourceRecord)
+            .where(
+                ProgramRuleSourceRecord.id == candidate_id,
+                ProgramRuleSourceRecord.next_check_at <= timestamp,
+                claimable,
+            )
+            .values(
+                fetch_status="fetching",
+                claim_id=claim_id,
+                claim_token_digest=claim_token_digest,
+                claim_started_at=timestamp,
+                claim_expires_at=expires_at,
+                updated_at=timestamp,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        result = self.session.execute(statement)
+        self.session.commit()
+        if result.rowcount != 1:
+            return None
+        self.session.expire_all()
+        return self.session.scalar(
+            select(ProgramRuleSourceRecord).where(
+                ProgramRuleSourceRecord.claim_id == claim_id,
+                ProgramRuleSourceRecord.claim_token_digest == claim_token_digest,
+                ProgramRuleSourceRecord.claim_started_at == timestamp,
+            )
+        )
+
+    def get_active_program_rule_source_claim(
+        self,
+        *,
+        source_id: str,
+        claim_id: str,
+        claim_token_digest: str,
+        now: datetime,
+    ) -> ProgramRuleSourceRecord | None:
+        if _SHA256_PATTERN.fullmatch(claim_token_digest) is None:
+            return None
+        return self.session.scalar(
+            select(ProgramRuleSourceRecord).where(
+                ProgramRuleSourceRecord.id == source_id,
+                ProgramRuleSourceRecord.fetch_status == "fetching",
+                ProgramRuleSourceRecord.claim_id == claim_id,
+                ProgramRuleSourceRecord.claim_token_digest == claim_token_digest,
+                ProgramRuleSourceRecord.claim_expires_at.is_not(None),
+                ProgramRuleSourceRecord.claim_expires_at > _as_utc(now),
+            )
+        )
+
+    def finish_program_rule_source_claim(
+        self,
+        *,
+        source_id: str,
+        claim_id: str,
+        claim_token_digest: str,
+        now: datetime,
+        next_check_at: datetime,
+        succeeded: bool,
+        failure_code: str | None = None,
+    ) -> ProgramRuleSourceRecord | None:
+        if _SHA256_PATTERN.fullmatch(claim_token_digest) is None:
+            return None
+        timestamp = _as_utc(now)
+        values: dict[str, Any] = {
+            "fetch_status": "ok" if succeeded else "failed",
+            "last_check_at": timestamp,
+            "next_check_at": _as_utc(next_check_at),
+            "failure_code": None
+            if succeeded
+            else _program_rule_safe_text(failure_code or "fetch_failed"),
+            "claim_id": None,
+            "claim_token_digest": None,
+            "claim_started_at": None,
+            "claim_expires_at": None,
+            "updated_at": timestamp,
+        }
+        if succeeded:
+            values["last_success_at"] = timestamp
+            values["failure_count"] = 0
+        else:
+            values["failure_count"] = ProgramRuleSourceRecord.failure_count + 1
+        statement = (
+            update(ProgramRuleSourceRecord)
+            .where(
+                ProgramRuleSourceRecord.id == source_id,
+                ProgramRuleSourceRecord.fetch_status == "fetching",
+                ProgramRuleSourceRecord.claim_id == claim_id,
+                ProgramRuleSourceRecord.claim_token_digest == claim_token_digest,
+                ProgramRuleSourceRecord.claim_expires_at.is_not(None),
+                ProgramRuleSourceRecord.claim_expires_at > timestamp,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        result = self.session.execute(statement)
+        self.session.commit()
+        if result.rowcount != 1:
+            return None
+        self.session.expire_all()
+        return self.session.get(ProgramRuleSourceRecord, source_id)
+
+    def find_program_rule_snapshot(
+        self,
+        source_id: str,
+        normalized_sha256: str,
+    ) -> ProgramRuleSnapshotRecord | None:
+        _program_rule_sha256(normalized_sha256)
+        return self.session.scalar(
+            select(ProgramRuleSnapshotRecord).where(
+                ProgramRuleSnapshotRecord.source_id == source_id,
+                ProgramRuleSnapshotRecord.normalized_sha256 == normalized_sha256,
+            )
+        )
+
+    def get_program_rule_snapshot(
+        self,
+        snapshot_id: str,
+    ) -> ProgramRuleSnapshotRecord | None:
+        return self.session.get(ProgramRuleSnapshotRecord, snapshot_id)
+
+    def save_program_rule_snapshot(
+        self,
+        *,
+        source_id: str,
+        raw_aggregate_sha256: str,
+        normalized_sha256: str,
+        fetched_at: datetime,
+        fetch_mode: str,
+        content_types: list[str],
+        detected_language: str,
+        extraction: dict,
+        evidence: list[dict],
+        linked_documents: list[dict],
+        openapi_candidates: list[dict],
+        ai_status: str,
+        review_status: str,
+        review_digest: str,
+    ) -> ProgramRuleSnapshotRecord:
+        if self.session.get(ProgramRuleSourceRecord, source_id) is None:
+            raise ValueError("program-rule source does not exist")
+        _program_rule_sha256(raw_aggregate_sha256)
+        _program_rule_sha256(normalized_sha256)
+        _program_rule_sha256(review_digest)
+        existing = self.find_program_rule_snapshot(source_id, normalized_sha256)
+        if existing is not None:
+            return existing
+
+        safe_content_types = _program_rule_safe_json(content_types)
+        safe_extraction = _program_rule_safe_json(extraction)
+        safe_evidence = _program_rule_safe_json(evidence)
+        safe_linked_documents = _program_rule_safe_json(linked_documents)
+        safe_openapi_candidates = _program_rule_safe_json(openapi_candidates)
+        snapshot_digest = sha256(
+            f"{source_id}\0{normalized_sha256}".encode("utf-8")
+        ).hexdigest()
+        record = ProgramRuleSnapshotRecord(
+            id=f"program_rule_snapshot_{snapshot_digest[:32]}",
+            source_id=source_id,
+            raw_aggregate_sha256=raw_aggregate_sha256,
+            normalized_sha256=normalized_sha256,
+            fetched_at=_as_utc(fetched_at),
+            fetch_mode=_program_rule_safe_text(fetch_mode),
+            content_types=safe_content_types,
+            detected_language=_program_rule_safe_text(detected_language),
+            extraction=safe_extraction,
+            evidence=safe_evidence,
+            linked_documents=safe_linked_documents,
+            openapi_candidates=safe_openapi_candidates,
+            ai_status=_program_rule_safe_text(ai_status),
+            review_status=_program_rule_safe_text(review_status),
+            review_digest=review_digest,
+            execution_allowed=False,
+            lease_grant_allowed=False,
+            scope_change_allowed=False,
+            review_bypass_allowed=False,
+            report_submission_allowed=False,
+            created_at=_as_utc(fetched_at),
+        )
+        self.session.add(record)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.find_program_rule_snapshot(source_id, normalized_sha256)
+            if existing is None:
+                raise
+            return existing
+        self.session.refresh(record)
+        return record
+
+    def list_program_rule_snapshots(
+        self,
+        source_id: str,
+    ) -> list[ProgramRuleSnapshotRecord]:
+        return self.session.scalars(
+            select(ProgramRuleSnapshotRecord)
+            .where(ProgramRuleSnapshotRecord.source_id == source_id)
+            .order_by(
+                ProgramRuleSnapshotRecord.fetched_at.desc(),
+                ProgramRuleSnapshotRecord.id.desc(),
+            )
+        ).all()
+
+    def update_program_rule_snapshot_review(
+        self,
+        *,
+        source_id: str,
+        snapshot_id: str,
+        review_status: str,
+        reviewer_alias: str,
+        reviewed_at: datetime,
+    ) -> ProgramRuleSnapshotRecord | None:
+        record = self.session.get(ProgramRuleSnapshotRecord, snapshot_id)
+        if record is None or record.source_id != source_id:
+            return None
+        if review_status not in {"approved", "rejected"}:
+            raise ValueError("program-rule review status is invalid")
+        record.review_status = review_status
+        record.reviewer_alias = _program_rule_safe_alias(reviewer_alias)
+        record.reviewed_at = _as_utc(reviewed_at)
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def set_program_rule_source_snapshot_pointers(
+        self,
+        *,
+        source_id: str,
+        approved_snapshot_id: str | None,
+        pending_snapshot_id: str | None,
+        updated_at: datetime,
+    ) -> ProgramRuleSourceRecord | None:
+        source = self.session.get(ProgramRuleSourceRecord, source_id)
+        if source is None:
+            return None
+        for snapshot_id in (approved_snapshot_id, pending_snapshot_id):
+            if snapshot_id is None:
+                continue
+            snapshot = self.session.get(ProgramRuleSnapshotRecord, snapshot_id)
+            if snapshot is None or snapshot.source_id != source_id:
+                raise ValueError("snapshot pointer is invalid for program-rule source")
+        source.approved_snapshot_id = approved_snapshot_id
+        source.pending_snapshot_id = pending_snapshot_id
+        source.updated_at = _as_utc(updated_at)
+        self.session.add(source)
+        self.session.commit()
+        self.session.refresh(source)
+        return source
+
+    def replace_program_scope_rules(
+        self,
+        *,
+        program_id: str,
+        source_id: str,
+        approved_snapshot_id: str,
+        approval_digest: str,
+        effective_at: datetime,
+        rules: list[dict],
+    ) -> list[ProgramScopeRuleRecord]:
+        _program_rule_sha256(approval_digest)
+        source = self.session.get(ProgramRuleSourceRecord, source_id)
+        snapshot = self.session.get(ProgramRuleSnapshotRecord, approved_snapshot_id)
+        if (
+            source is None
+            or source.program_id != program_id
+            or snapshot is None
+            or snapshot.source_id != source_id
+            or self.session.get(ProgramRecord, program_id) is None
+        ):
+            raise ValueError("program-rule scope relationship is invalid")
+
+        desired = sorted(
+            (_program_scope_rule_values(rule) for rule in rules),
+            key=lambda value: value["canonical_asset"],
+        )
+        if len({value["canonical_asset"] for value in desired}) != len(desired):
+            raise ValueError("program-rule scope assets must be unique")
+        existing = self.list_program_scope_rules(
+            program_id,
+            approved_snapshot_id=approved_snapshot_id,
+        )
+        if existing:
+            if not _program_scope_rules_match(
+                existing,
+                desired,
+                approval_digest=approval_digest,
+            ):
+                raise ValueError("approved program scope rules are immutable")
+            return existing
+
+        timestamp = _as_utc(effective_at)
+        records = []
+        for values in desired:
+            rule_digest = sha256(
+                f"{approved_snapshot_id}\0{values['canonical_asset']}".encode("utf-8")
+            ).hexdigest()
+            records.append(
+                ProgramScopeRuleRecord(
+                    id=f"program_scope_rule_{rule_digest[:32]}",
+                    program_id=program_id,
+                    source_id=source_id,
+                    approved_snapshot_id=approved_snapshot_id,
+                    approval_digest=approval_digest,
+                    effective_at=timestamp,
+                    **values,
+                )
+            )
+        self.session.add_all(records)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.list_program_scope_rules(
+                program_id,
+                approved_snapshot_id=approved_snapshot_id,
+            )
+            if not _program_scope_rules_match(
+                existing,
+                desired,
+                approval_digest=approval_digest,
+            ):
+                raise
+            return existing
+        for record in records:
+            self.session.refresh(record)
+        return records
+
+    def list_program_scope_rules(
+        self,
+        program_id: str,
+        *,
+        approved_snapshot_id: str | None = None,
+    ) -> list[ProgramScopeRuleRecord]:
+        query = select(ProgramScopeRuleRecord).where(
+            ProgramScopeRuleRecord.program_id == program_id
+        )
+        if approved_snapshot_id is not None:
+            query = query.where(
+                ProgramScopeRuleRecord.approved_snapshot_id == approved_snapshot_id
+            )
+        return self.session.scalars(
+            query.order_by(
+                ProgramScopeRuleRecord.effective_at.desc(),
+                ProgramScopeRuleRecord.canonical_asset,
+            )
+        ).all()
+
+    def project_program_rule_program_summary(
+        self,
+        *,
+        program_id: str,
+        scope_status: str,
+        automation: str,
+    ) -> Program | None:
+        record = self.session.get(ProgramRecord, program_id)
+        if record is None:
+            return None
+        if scope_status not in {"in_scope", "out_of_scope", "needs_review"}:
+            raise ValueError("program scope status is invalid")
+        record.scope_status = scope_status
+        record.automation = _program_rule_safe_text(automation)
         self.session.add(record)
         self.session.commit()
         self.session.refresh(record)
@@ -2072,6 +2643,128 @@ def _approval_initial_status(status: str | None, *, campaign_id: str | None) -> 
     if status in APPROVAL_INITIAL_STATUSES:
         return status
     return "pending" if campaign_id is not None else "requested"
+
+
+def _program_rule_safe_alias(value: str) -> str:
+    if not isinstance(value, str) or _PROGRAM_RULE_ALIAS_PATTERN.fullmatch(value) is None:
+        raise ValueError("program-rule alias is invalid")
+    return value
+
+
+def _program_rule_sha256(value: str) -> str:
+    if not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None:
+        raise ValueError("program-rule digest is invalid")
+    return value
+
+
+def _program_rule_safe_text(value: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 2048:
+        raise ValueError("program-rule payload is not safe to persist")
+    safe = _program_rule_safe_json(value)
+    if not isinstance(safe, str):
+        raise ValueError("program-rule payload is not safe to persist")
+    return safe
+
+
+def _program_rule_safe_json(value: Any) -> Any:
+    safe = _program_rule_redacted_value(value)
+    if safe != value or _program_rule_contains_forbidden_material(value):
+        raise ValueError("program-rule payload is not safe to persist")
+    try:
+        json.dumps(safe, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        raise ValueError("program-rule payload is not safe to persist") from None
+    return safe
+
+
+def _program_rule_redacted_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return REDACTED if _is_secret_like(value) else value
+    if isinstance(value, list):
+        return [_program_rule_redacted_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_program_rule_redacted_value(item) for item in value)
+    if isinstance(value, dict):
+        structured_secret_value_keys = _structured_secret_pair_value_keys(value)
+        return {
+            key: REDACTED
+            if _is_secret_key(str(key))
+            or _is_structured_secret_value_key(key, structured_secret_value_keys)
+            else _program_rule_redacted_value(nested_value)
+            for key, nested_value in value.items()
+        }
+    return value
+
+
+def _program_rule_contains_forbidden_material(value: Any) -> bool:
+    if isinstance(value, str):
+        return _PROGRAM_RULE_RAW_HTML_PATTERN.search(value) is not None
+    if isinstance(value, (list, tuple)):
+        return any(_program_rule_contains_forbidden_material(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    for key, nested_value in value.items():
+        if not isinstance(key, str):
+            return True
+        normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
+        if normalized_key in _PROGRAM_RULE_FORBIDDEN_KEYS:
+            return True
+        if _program_rule_contains_forbidden_material(nested_value):
+            return True
+    return False
+
+
+def _program_scope_rule_values(rule: dict) -> dict:
+    expected_keys = {
+        "canonical_asset",
+        "asset_kind",
+        "source_evidence_refs",
+        "scope_status",
+        "automation",
+        "allowed_validation",
+        "prohibited",
+        "rate_limit",
+    }
+    if not isinstance(rule, dict) or set(rule) != expected_keys:
+        raise ValueError("program-rule scope payload is invalid")
+    return {
+        "canonical_asset": _program_rule_safe_text(rule["canonical_asset"]),
+        "asset_kind": _program_rule_safe_text(rule["asset_kind"]),
+        "source_evidence_refs": _program_rule_safe_json(
+            rule["source_evidence_refs"]
+        ),
+        "scope_status": _program_rule_safe_text(rule["scope_status"]),
+        "automation": _program_rule_safe_text(rule["automation"]),
+        "allowed_validation": _program_rule_safe_json(rule["allowed_validation"]),
+        "prohibited": _program_rule_safe_json(rule["prohibited"]),
+        "rate_limit": _program_rule_safe_json(rule["rate_limit"]),
+    }
+
+
+def _program_scope_rules_match(
+    records: list[ProgramScopeRuleRecord],
+    desired: list[dict],
+    *,
+    approval_digest: str,
+) -> bool:
+    if len(records) != len(desired):
+        return False
+    actual = [
+        {
+            "canonical_asset": record.canonical_asset,
+            "asset_kind": record.asset_kind,
+            "source_evidence_refs": record.source_evidence_refs,
+            "scope_status": record.scope_status,
+            "automation": record.automation,
+            "allowed_validation": record.allowed_validation,
+            "prohibited": record.prohibited,
+            "rate_limit": record.rate_limit,
+        }
+        for record in sorted(records, key=lambda item: item.canonical_asset)
+    ]
+    return actual == desired and all(
+        record.approval_digest == approval_digest for record in records
+    )
 
 
 def _safe_display_value(value: Any) -> Any:

@@ -104,7 +104,54 @@ def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
 
     unique_constraints = inspector.get_unique_constraints("artifacts")
     unique_columns = {tuple(constraint["column_names"]) for constraint in unique_constraints}
-    if (
+    program_rule_tables = {
+        "program_rule_sources",
+        "program_rule_snapshots",
+        "program_scope_rules",
+    }
+    present_program_rule_tables = program_rule_tables & tables
+    if program_rule_tables.issubset(tables):
+        source_columns = {
+            column["name"]
+            for column in inspector.get_columns("program_rule_sources")
+        }
+        snapshot_columns = {
+            column["name"]
+            for column in inspector.get_columns("program_rule_snapshots")
+        }
+        rule_columns = {
+            column["name"]
+            for column in inspector.get_columns("program_scope_rules")
+        }
+        source_unique = {
+            tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("program_rule_sources")
+        }
+        snapshot_unique = {
+            tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("program_rule_snapshots")
+        }
+        rule_unique = {
+            tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("program_scope_rules")
+        }
+        if (
+            {"canonical_url", "claim_token_digest"}.issubset(source_columns)
+            and {
+                "normalized_sha256",
+                "report_submission_allowed",
+            }.issubset(snapshot_columns)
+            and {"canonical_asset", "approval_digest"}.issubset(rule_columns)
+            and {("canonical_url",), ("program_id",)}.issubset(source_unique)
+            and ("source_id", "normalized_sha256") in snapshot_unique
+            and ("approved_snapshot_id", "canonical_asset") in rule_unique
+        ):
+            revision = "0013_program_rule_intake"
+        else:
+            raise RuntimeError("database_schema_unversioned")
+    elif present_program_rule_tables:
+        raise RuntimeError("database_schema_unversioned")
+    elif (
         ("program_id", "source_hash") in unique_columns
         and "field_pilot_feedback" in learning_columns
     ):

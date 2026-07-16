@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,6 +33,244 @@ class ProgramRecord(Base):
     public_code: Mapped[str] = mapped_column(String(100), nullable=False)
     duplicate_risk: Mapped[str] = mapped_column(String(100), nullable=False)
     priority: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
+class ProgramRuleSourceRecord(Base):
+    __tablename__ = "program_rule_sources"
+    __table_args__ = (
+        CheckConstraint(
+            "refresh_interval_seconds = 86400",
+            name="ck_program_rule_sources_refresh_interval_fixed",
+        ),
+        CheckConstraint(
+            "failure_count >= 0",
+            name="ck_program_rule_sources_failure_count_nonnegative",
+        ),
+        UniqueConstraint(
+            "canonical_url",
+            name="uq_program_rule_sources_canonical_url",
+        ),
+        UniqueConstraint(
+            "program_id",
+            name="uq_program_rule_sources_program_id",
+        ),
+        Index(
+            "ix_program_rule_sources_due",
+            "fetch_status",
+            "next_check_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    program_id: Mapped[str | None] = mapped_column(
+        ForeignKey("programs.id"),
+        nullable=True,
+    )
+    program_alias: Mapped[str] = mapped_column(String(100), nullable=False)
+    registered_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    canonical_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    refresh_interval_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=86_400,
+        server_default="86400",
+    )
+    fetch_status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="scheduled",
+        server_default="scheduled",
+    )
+    last_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    next_check_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    failure_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_manual_refresh_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    claim_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    claim_token_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    approved_snapshot_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    pending_snapshot_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    program: Mapped[ProgramRecord | None] = relationship()
+
+
+class ProgramRuleSnapshotRecord(Base):
+    __tablename__ = "program_rule_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "execution_allowed = false",
+            name="ck_program_rule_snapshots_execution_allowed_false",
+        ),
+        CheckConstraint(
+            "lease_grant_allowed = false",
+            name="ck_program_rule_snapshots_lease_grant_allowed_false",
+        ),
+        CheckConstraint(
+            "scope_change_allowed = false",
+            name="ck_program_rule_snapshots_scope_change_allowed_false",
+        ),
+        CheckConstraint(
+            "review_bypass_allowed = false",
+            name="ck_program_rule_snapshots_review_bypass_allowed_false",
+        ),
+        CheckConstraint(
+            "report_submission_allowed = false",
+            name="ck_program_rule_snapshots_report_submission_allowed_false",
+        ),
+        UniqueConstraint(
+            "source_id",
+            "normalized_sha256",
+            name="uq_program_rule_snapshots_source_normalized_sha256",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("program_rule_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    raw_aggregate_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    fetch_mode: Mapped[str] = mapped_column(String(50), nullable=False)
+    content_types: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    detected_language: Mapped[str] = mapped_column(String(50), nullable=False)
+    extraction: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    linked_documents: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    openapi_candidates: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    ai_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    reviewer_alias: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    review_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    execution_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    lease_grant_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    scope_change_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    review_bypass_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    report_submission_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    source: Mapped[ProgramRuleSourceRecord] = relationship()
+
+
+class ProgramScopeRuleRecord(Base):
+    __tablename__ = "program_scope_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "approved_snapshot_id",
+            "canonical_asset",
+            name="uq_program_scope_rules_snapshot_asset",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    program_id: Mapped[str] = mapped_column(
+        ForeignKey("programs.id"),
+        nullable=False,
+    )
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("program_rule_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    approved_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("program_rule_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    canonical_asset: Mapped[str] = mapped_column(String(2048), nullable=False)
+    asset_kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_evidence_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    scope_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    automation: Mapped[str] = mapped_column(String(100), nullable=False)
+    allowed_validation: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    prohibited: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    rate_limit: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    approval_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    program: Mapped[ProgramRecord] = relationship()
+    source: Mapped[ProgramRuleSourceRecord] = relationship()
+    approved_snapshot: Mapped[ProgramRuleSnapshotRecord] = relationship()
 
 
 class ArtifactRecord(Base):
