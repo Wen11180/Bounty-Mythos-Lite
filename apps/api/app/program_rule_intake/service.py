@@ -360,10 +360,14 @@ class ProgramRuleIntakeService:
         return self._source_projection(failed)
 
     def list_snapshots(self, source_id: str) -> list[ProgramRuleSnapshotProjection]:
-        if self.repository.get_program_rule_source(source_id) is None:
+        source = self.repository.get_program_rule_source(source_id)
+        if source is None:
             raise ProgramRuleNotFound("program rule source not found")
         return [
-            _snapshot_projection(record)
+            _snapshot_projection(
+                record,
+                artifact_warning=self._artifact_warning(source, record),
+            )
             for record in self.repository.list_program_rule_snapshots(source_id)
         ]
 
@@ -424,7 +428,14 @@ class ProgramRuleIntakeService:
                 snapshot.review_status == decision
                 and snapshot.reviewer_alias == reviewer_alias
             ):
-                return _snapshot_projection(snapshot)
+                warning = None
+                if decision == "approved":
+                    warning = self._promote_openapi_candidates(
+                        source=source,
+                        snapshot=snapshot,
+                        extraction=_snapshot_extraction(snapshot),
+                    )
+                return _snapshot_projection(snapshot, artifact_warning=warning)
             raise ProgramRuleConflict("program rule snapshot was already reviewed")
         if source.pending_snapshot_id != snapshot_id:
             raise ProgramRuleConflict("program rule snapshot is not pending")
@@ -459,11 +470,6 @@ class ProgramRuleIntakeService:
                 effective_at=now,
                 rules=rules,
             )
-            self._promote_openapi_candidates(
-                source=source,
-                snapshot=snapshot,
-                extraction=extraction,
-            )
             reviewed = self.repository.update_program_rule_snapshot_review(
                 source_id=source_id,
                 snapshot_id=snapshot_id,
@@ -471,6 +477,8 @@ class ProgramRuleIntakeService:
                 reviewer_alias=reviewer_alias,
                 reviewed_at=now,
             )
+            if reviewed is None:
+                raise ProgramRuleNotFound("program rule snapshot not found")
             self.repository.set_program_rule_source_snapshot_pointers(
                 source_id=source_id,
                 approved_snapshot_id=snapshot_id,
@@ -489,7 +497,13 @@ class ProgramRuleIntakeService:
                     else "needs_review"
                 ),
             )
+            artifact_warning = self._promote_openapi_candidates(
+                source=source,
+                snapshot=reviewed,
+                extraction=extraction,
+            )
         else:
+            artifact_warning = None
             reviewed = self.repository.update_program_rule_snapshot_review(
                 source_id=source_id,
                 snapshot_id=snapshot_id,
@@ -497,15 +511,15 @@ class ProgramRuleIntakeService:
                 reviewer_alias=reviewer_alias,
                 reviewed_at=now,
             )
+            if reviewed is None:
+                raise ProgramRuleNotFound("program rule snapshot not found")
             if source.program_id is not None:
                 self.repository.project_program_rule_program_summary(
                     program_id=source.program_id,
                     scope_status="needs_review",
                     automation="needs_review",
                 )
-        if reviewed is None:
-            raise ProgramRuleNotFound("program rule snapshot not found")
-        return _snapshot_projection(reviewed)
+        return _snapshot_projection(reviewed, artifact_warning=artifact_warning)
 
     def list_scope_rules(self, program_id: str) -> list[ProgramScopeRuleProjection]:
         if self.repository.get_program(program_id) is None:
@@ -558,31 +572,89 @@ class ProgramRuleIntakeService:
         source: ProgramRuleSourceRecord,
         snapshot: ProgramRuleSnapshotRecord,
         extraction: DeterministicExtractionResult,
-    ) -> None:
+    ) -> str | None:
         if source.program_id is None:
-            return
+            return None
         evidence_ids = {item.evidence_id for item in extraction.evidence}
+        promotion_failed = False
         for candidate in extraction.linked_artifacts:
             if not set(candidate.evidence_ids).issubset(evidence_ids):
                 continue
-            self.repository.save_artifact(
-                program_id=source.program_id,
-                asset=candidate.url,
-                kind="openapi",
-                source_type="program_rule_url",
-                source_hash=candidate.normalized_sha256,
-                ingestion_status="approved",
-                provenance={
-                    "source_id": source.id,
-                    "snapshot_id": snapshot.id,
-                    "evidence_refs": candidate.evidence_ids,
-                },
-                payload_summary={
-                    "url_sha256": candidate.url_sha256,
-                    "normalized_sha256": candidate.normalized_sha256,
-                },
-                derived_facts=candidate.openapi_like,
+            try:
+                self.repository.save_artifact(
+                    program_id=source.program_id,
+                    asset=candidate.url,
+                    kind="openapi",
+                    source_type="program_rule_link",
+                    source_hash=candidate.normalized_sha256,
+                    ingestion_status="approved",
+                    provenance=_openapi_candidate_provenance(
+                        source=source,
+                        snapshot=snapshot,
+                        evidence_refs=candidate.evidence_ids,
+                    ),
+                    payload_summary={
+                        "url_sha256": candidate.url_sha256,
+                        "normalized_sha256": candidate.normalized_sha256,
+                    },
+                    derived_facts=candidate.openapi_like,
+                )
+            except Exception:
+                self._rollback_promotion_failure()
+                promotion_failed = True
+        if promotion_failed:
+            return "openapi_promotion_pending"
+        try:
+            return self._artifact_warning(source, snapshot)
+        except Exception:
+            self._rollback_promotion_failure()
+            return "openapi_promotion_pending"
+
+    def _rollback_promotion_failure(self) -> None:
+        try:
+            self.repository.session.rollback()
+        except Exception:
+            pass
+
+    def _artifact_warning(
+        self,
+        source: ProgramRuleSourceRecord,
+        snapshot: ProgramRuleSnapshotRecord,
+    ) -> str | None:
+        if snapshot.review_status != "approved" or source.program_id is None:
+            return None
+        try:
+            extraction = _snapshot_extraction(snapshot)
+        except ProgramRuleConflict:
+            return "openapi_promotion_pending"
+        evidence_ids = {item.evidence_id for item in extraction.evidence}
+        candidates = [
+            candidate
+            for candidate in extraction.linked_artifacts
+            if set(candidate.evidence_ids).issubset(evidence_ids)
+        ]
+        if not candidates:
+            return None
+        artifacts = self.repository.list_artifacts(
+            program_id=source.program_id,
+            source_type="program_rule_link",
+        )
+        for candidate in candidates:
+            expected_provenance = _openapi_candidate_provenance(
+                source=source,
+                snapshot=snapshot,
+                evidence_refs=candidate.evidence_ids,
             )
+            if not any(
+                artifact.source_hash == candidate.normalized_sha256
+                and _artifact_has_provenance(
+                    artifact.provenance,
+                    expected_provenance,
+                )
+                for artifact in artifacts
+            ):
+                return "openapi_promotion_pending"
+        return None
 
     def _validate_claim(
         self,
@@ -1056,8 +1128,46 @@ def _review_digest(
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _openapi_candidate_provenance(
+    *,
+    source: ProgramRuleSourceRecord,
+    snapshot: ProgramRuleSnapshotRecord,
+    evidence_refs: list[str],
+) -> dict[str, Any]:
+    return {
+        "program_id": source.program_id,
+        "source_id": source.id,
+        "snapshot_id": snapshot.id,
+        "approval_digest": snapshot.review_digest,
+        "evidence_refs": evidence_refs,
+        "authority": {
+            "execution_allowed": False,
+            "lease_grant_allowed": False,
+            "scope_change_allowed": False,
+            "review_bypass_allowed": False,
+            "report_submission_allowed": False,
+        },
+    }
+
+
+def _artifact_has_provenance(
+    provenance: dict[str, Any],
+    expected: dict[str, Any],
+) -> bool:
+    entries = [provenance]
+    duplicate_imports = provenance.get("duplicate_imports", [])
+    if isinstance(duplicate_imports, list):
+        entries.extend(item for item in duplicate_imports if isinstance(item, dict))
+    return any(
+        all(entry.get(key) == value for key, value in expected.items())
+        for entry in entries
+    )
+
+
 def _snapshot_projection(
     record: ProgramRuleSnapshotRecord,
+    *,
+    artifact_warning: str | None = None,
 ) -> ProgramRuleSnapshotProjection:
     return ProgramRuleSnapshotProjection(
         snapshot_id=record.id,
@@ -1077,6 +1187,7 @@ def _snapshot_projection(
         reviewer_alias=record.reviewer_alias,
         reviewed_at=record.reviewed_at,
         review_digest=record.review_digest,
+        artifact_warning=artifact_warning,
         execution_allowed=False,
         lease_grant_allowed=False,
         scope_change_allowed=False,

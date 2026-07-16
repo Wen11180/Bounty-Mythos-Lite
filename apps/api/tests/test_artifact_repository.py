@@ -206,6 +206,17 @@ def test_save_artifact_returns_existing_record_for_duplicate_source_hash():
             payload_summary={"endpoint_count": 1},
             derived_facts={"paths": ["/v1/files"]},
         )
+        repeated_first = repository.save_artifact(
+            program_id=None,
+            asset="api.example.com",
+            kind="openapi",
+            source_type="manual_upload",
+            source_hash=source_hash,
+            ingestion_status="normalized",
+            provenance={"source_name": "first-openapi.json"},
+            payload_summary={"endpoint_count": 1},
+            derived_facts={"paths": ["/v1/files"]},
+        )
         duplicate = repository.save_artifact(
             program_id=None,
             asset="api.example.com",
@@ -234,6 +245,7 @@ def test_save_artifact_returns_existing_record_for_duplicate_source_hash():
         artifacts = repository.list_artifacts()
 
         assert duplicate.id == first.id
+        assert repeated_first.id == first.id
         assert repeated_duplicate.id == first.id
         assert fetched is not None
         assert fetched.provenance == {

@@ -143,6 +143,10 @@ from app.program_rule_intake.service import (
     ProgramRuleNotFound,
     ProgramRuleValidationError,
 )
+from app.program_rule_intake.scope_resolver import (
+    intersect_scope_guard_rules,
+    resolve_effective_program_rule,
+)
 from app.mythos_report import (
     ClaimLedgerEntry,
     ClaimReviewDecisionValue,
@@ -1478,8 +1482,29 @@ def create_mythos_campaign(
     if request.program_id is None or repository.get_program(request.program_id) is None:
         raise HTTPException(status_code=404, detail="Program not found")
     scope_guard_rule = parse_policy_text(request.policy_text, request.default_asset)
+    resolution = resolve_effective_program_rule(
+        repository,
+        request.program_id,
+        request.default_asset,
+        datetime.now(UTC),
+    )
+    if resolution.source_backed:
+        if resolution.reason is not None or resolution.rule is None:
+            raise HTTPException(
+                status_code=409,
+                detail=resolution.reason or "program_rule_not_authorizing",
+            )
+        scope_guard_rule = intersect_scope_guard_rules(
+            scope_guard_rule,
+            resolution.rule,
+            asset=request.default_asset,
+        )
     payload = _campaign_create_payload(request)
     payload["scope_guard_rule"] = scope_guard_rule.model_dump(mode="json")
+    if resolution.provenance is not None:
+        payload["program_rule_provenance"] = resolution.provenance.model_dump(
+            mode="json"
+        )
     campaign = repository.create_campaign(
         program_id=request.program_id,
         name=request.name,
@@ -1534,6 +1559,32 @@ def _campaign_scope_guard_rule(campaign: CampaignRecord) -> ScopeGuardRule | Non
         return ScopeGuardRule.model_validate(stored_rule)
     except ValueError:
         return None
+
+
+def _current_campaign_scope_guard_rule(
+    repository: DatabaseRepository,
+    campaign: CampaignRecord,
+    asset: str,
+) -> tuple[ScopeGuardRule | None, str | None]:
+    stored = _campaign_scope_guard_rule(campaign)
+    if campaign.program_id is None:
+        return stored, None
+    resolution = resolve_effective_program_rule(
+        repository,
+        campaign.program_id,
+        asset,
+        datetime.now(UTC),
+    )
+    if not resolution.source_backed:
+        return stored, None
+    if resolution.reason is not None or resolution.rule is None:
+        return None, resolution.reason or "program_rule_not_authorizing"
+    if stored is None:
+        return None, "scope_guard_rule_missing"
+    return (
+        intersect_scope_guard_rules(stored, resolution.rule, asset=asset),
+        None,
+    )
 
 
 @app.get("/mythos/campaigns", response_model=list[CampaignResponse])
@@ -2264,8 +2315,17 @@ def preflight_mythos_validation_run(
         )
     else:
         asset = _validation_run_scope_asset(validation_run, campaign)
-        rule = _campaign_scope_guard_rule(campaign)
-        if rule is None:
+        rule, program_rule_reason = _current_campaign_scope_guard_rule(
+            repository,
+            campaign,
+            asset,
+        )
+        if program_rule_reason is not None:
+            decision = ScopeGuardDecision(
+                allowed=False,
+                reason=program_rule_reason,
+            )
+        elif rule is None:
             decision = ScopeGuardDecision(
                 allowed=False,
                 reason="scope_guard_rule_missing",
@@ -2919,7 +2979,13 @@ def create_approval_record(
 ) -> ApprovalRecordResponse:
     repository = DatabaseRepository(session)
     if request.program_id is not None:
-        _program_or_404_in_scope(repository, request.program_id)
+        _program_or_404_in_scope(
+            repository,
+            request.program_id,
+            asset=request.asset,
+            validation_type=request.validation_mode,
+            enforce_current_rule=True,
+        )
     if request.run_id is not None:
         if repository.get_pipeline_run(request.run_id) is None:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
@@ -3086,7 +3152,13 @@ def _decide_approval_record_response(
     if request.decision == "approved" and not approval_record_is_active(current_record):
         raise HTTPException(status_code=409, detail="Approval record expired")
     if request.decision == "approved" and current_record.program_id is not None:
-        _program_or_404_in_scope(repository, current_record.program_id)
+        _program_or_404_in_scope(
+            repository,
+            current_record.program_id,
+            asset=current_record.asset,
+            validation_type=current_record.validation_mode,
+            enforce_current_rule=True,
+        )
     if request.decision == "approved" and current_record.campaign_id is not None:
         campaign = repository.get_campaign(current_record.campaign_id)
         if campaign is None:
@@ -3490,7 +3562,16 @@ def evaluate_scope_guard(
                 allowed=False,
                 reason="scope_not_in_scope",
             )
-        rule = _campaign_scope_guard_rule(campaign)
+        rule, program_rule_reason = _current_campaign_scope_guard_rule(
+            repository,
+            campaign,
+            request.request.asset,
+        )
+        if program_rule_reason is not None:
+            return ScopeGuardDecision(
+                allowed=False,
+                reason=program_rule_reason,
+            )
         if rule is None:
             return ScopeGuardDecision(
                 allowed=False,
@@ -3546,6 +3627,31 @@ def evaluate_scope_guard(
                     allowed=False,
                     reason="scope_not_in_scope",
                 )
+            resolution = resolve_effective_program_rule(
+                repository,
+                approval.program_id,
+                request.request.asset,
+                datetime.now(UTC),
+            )
+            if resolution.source_backed:
+                if resolution.reason is not None or resolution.rule is None:
+                    return ScopeGuardDecision(
+                        allowed=False,
+                        reason=(
+                            resolution.reason or "program_rule_not_authorizing"
+                        ),
+                    )
+                current_rule = intersect_scope_guard_rules(
+                    rule,
+                    resolution.rule,
+                    asset=request.request.asset,
+                )
+                current_decision = evaluate_validation_request(
+                    current_rule,
+                    preflight_request,
+                )
+                if not current_decision.allowed:
+                    return current_decision
         return ScopeGuardDecision(
             allowed=True,
             reason="approved_validation_record",
@@ -3603,6 +3709,10 @@ def approve_mythos_studio_black_box_lab_run(
         validation_run.validation_mode != "black_box_differential"
         or validation_run.status != "preflight_passed"
         or not validation_run.allowed_to_execute
+        or not _validation_run_currently_allowed_to_execute(
+            validation_run,
+            repository=repository,
+        )
     ):
         raise HTTPException(status_code=409, detail="local_lab_preflight_required")
     _raise_if_validation_run_approval_not_active(
@@ -3720,7 +3830,14 @@ def _issue_mythos_studio_black_box_remote_lease(
     if validation_run is None:
         raise HTTPException(status_code=404, detail="Validation run not found")
     campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
-    rule = _campaign_scope_guard_rule(campaign)
+    asset = _validation_run_scope_asset(validation_run, campaign)
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
     if rule is None:
         raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
     if (
@@ -3736,7 +3853,7 @@ def _issue_mythos_studio_black_box_remote_lease(
     scope_decision = evaluate_validation_request(
         rule,
         ValidationRequest(
-            asset=campaign.default_asset,
+            asset=asset,
             validation_type="black_box_differential",
             human_approved=True,
             plan_digest=validation_run.plan_digest,
@@ -3889,8 +4006,12 @@ def _studio_black_box_remote_current_authority(
     campaign = repository.get_campaign(validation_run.campaign_id)
     if campaign is None or campaign.scope_status != "in_scope":
         return None
-    rule = _campaign_scope_guard_rule(campaign)
-    if rule is None:
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        _validation_run_scope_asset(validation_run, campaign),
+    )
+    if program_rule_reason is not None or rule is None:
         return None
     approval = repository.session.get(ApprovalRecord, entry.approval_id)
     summary = (
@@ -11976,6 +12097,26 @@ def _validation_run_currently_allowed_to_execute(
     campaign = repository.get_campaign(record.campaign_id)
     if campaign is None or campaign.scope_status != "in_scope":
         return False
+    asset = _validation_run_scope_asset(record, campaign)
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        asset,
+    )
+    if program_rule_reason is not None:
+        return False
+    if rule is not None:
+        scope_decision = evaluate_validation_request(
+            rule,
+            ValidationRequest(
+                asset=asset,
+                validation_type=record.validation_mode,
+                human_approved=True,
+                plan_digest=record.plan_digest,
+            ),
+        )
+        if not scope_decision.allowed:
+            return False
     if not record.approval_required:
         return True
     if record.approval_id is None:
@@ -11989,7 +12130,7 @@ def _validation_run_currently_allowed_to_execute(
         approval=approval,
         validation_run=record,
         campaign=campaign,
-        asset=_validation_run_scope_asset(record, campaign),
+        asset=asset,
     )
 
 
@@ -14413,12 +14554,49 @@ def _campaign_scoped_run_has_out_of_scope_campaign(
 def _program_or_404_in_scope(
     repository: DatabaseRepository,
     program_id: str,
+    *,
+    asset: str | None = None,
+    validation_type: str | None = None,
+    enforce_current_rule: bool = False,
 ):
     program = repository.get_program(program_id)
     if program is None:
         raise HTTPException(status_code=404, detail="Program not found")
     if program.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    if enforce_current_rule and asset is None and any(
+        source.program_id == program_id
+        for source in repository.list_program_rule_sources()
+    ):
+        raise HTTPException(status_code=409, detail="program_rule_asset_required")
+    if asset is not None:
+        resolution = resolve_effective_program_rule(
+            repository,
+            program_id,
+            asset,
+            datetime.now(UTC),
+        )
+        if resolution.source_backed:
+            if resolution.reason is not None or resolution.rule is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=resolution.reason or "program_rule_not_authorizing",
+                )
+            if validation_type is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="program_rule_validation_type_required",
+                )
+            decision = evaluate_validation_request(
+                resolution.rule,
+                ValidationRequest(
+                    asset=asset,
+                    validation_type=validation_type,
+                    human_approved=True,
+                ),
+            )
+            if not decision.allowed:
+                raise HTTPException(status_code=409, detail=decision.reason)
     return program
 
 

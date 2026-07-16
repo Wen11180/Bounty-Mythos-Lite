@@ -336,6 +336,7 @@ class ProgramRuleSnapshotProjection(ResponsePermissions):
     reviewer_alias: str | None = Field(default=None, max_length=100)
     reviewed_at: datetime | None
     review_digest: Sha256
+    artifact_warning: Literal["openapi_promotion_pending"] | None = None
 
 
 class ProgramScopeRuleProjection(ResponsePermissions):

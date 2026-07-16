@@ -524,7 +524,7 @@ def test_service_diff_review_materializes_only_evidence_backed_rules_and_artifac
         assert repository.list_program_scope_rules(source.program_id) == []
         assert repository.list_artifacts(
             program_id=source.program_id,
-            source_type="program_rule_url",
+            source_type="program_rule_link",
         ) == []
 
         approved = service.review_snapshot(
@@ -556,9 +556,25 @@ def test_service_diff_review_materializes_only_evidence_backed_rules_and_artifac
         assert rules[0].report_submission_allowed is False
         artifacts = repository.list_artifacts(
             program_id=source.program_id,
-            source_type="program_rule_url",
+            source_type="program_rule_link",
         )
         assert len(artifacts) == 1
+        assert artifacts[0].provenance["program_id"] == source.program_id
+        assert artifacts[0].provenance["source_id"] == source.source_id
+        assert artifacts[0].provenance["snapshot_id"] == pending.snapshot_id
+        assert artifacts[0].provenance["approval_digest"] == pending.review_digest
+        assert artifacts[0].provenance["evidence_refs"]
+        assert artifacts[0].provenance["authority"] == {
+            "execution_allowed": False,
+            "lease_grant_allowed": False,
+            "scope_change_allowed": False,
+            "review_bypass_allowed": False,
+            "report_submission_allowed": False,
+        }
+        assert artifacts[0].payload_summary == {
+            "url_sha256": artifacts[0].payload_summary["url_sha256"],
+            "normalized_sha256": artifacts[0].source_hash,
+        }
         assert artifacts[0].derived_facts == {
             "paths": {
                 "/v1/teams/{team_id}/invite": {"post": {}},
@@ -575,6 +591,12 @@ def test_service_diff_review_materializes_only_evidence_backed_rules_and_artifac
             operator_confirmed=True,
         )
         assert identical.reviewed_at == approved.reviewed_at
+        retried_artifacts = repository.list_artifacts(
+            program_id=source.program_id,
+            source_type="program_rule_link",
+        )
+        assert len(retried_artifacts) == 1
+        assert "duplicate_imports" not in retried_artifacts[0].provenance
         with pytest.raises(ProgramRuleConflict):
             service.review_snapshot(
                 source_id=source.source_id,
@@ -681,6 +703,97 @@ def test_service_diff_review_materializes_only_evidence_backed_rules_and_artifac
         assert len(historical_diff.modified_rules) == 1
         assert historical_diff.modified_rules[0].before.rate_limit.requests == 5
         assert historical_diff.modified_rules[0].after.rate_limit.requests == 2
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_openapi_promotion_failure_keeps_review_valid_and_retries_idempotently(
+    monkeypatch,
+):
+    service, repository, session, engine, clock = build_service()
+    try:
+        source = service.register_source(
+            program_alias="promotion_retry_program",
+            public_rule_url="https://example.com/rules",
+        )
+        claim = service.claim_next().claim
+        policy = service.normalize_claim_document(
+            claim_id=claim.claim_id,
+            source_id=source.source_id,
+            claim_token=claim.claim_token,
+            envelope=fixture_envelope(
+                "policy.html",
+                "text/html",
+                source_url=source.canonical_url,
+                depth=0,
+            ),
+        )
+        openapi = service.normalize_claim_document(
+            claim_id=claim.claim_id,
+            source_id=source.source_id,
+            claim_token=claim.claim_token,
+            envelope=fixture_envelope(
+                "openapi.yaml",
+                "application/yaml",
+                source_url="https://example.com/openapi.yaml",
+                depth=1,
+            ),
+        )
+        pending = asyncio.run(
+            service.complete_claim(
+                claim_id=claim.claim_id,
+                source_id=source.source_id,
+                claim_token=claim.claim_token,
+                documents=[policy, openapi],
+            )
+        )
+        save_artifact = repository.save_artifact
+
+        def fail_promotion(**_):
+            raise RuntimeError("database-detail-must-not-surface")
+
+        monkeypatch.setattr(repository, "save_artifact", fail_promotion)
+        approved = service.review_snapshot(
+            source_id=source.source_id,
+            snapshot_id=pending.snapshot_id,
+            decision="approved",
+            reviewer_alias="reviewer_1",
+            expected_review_digest=pending.review_digest,
+            operator_confirmed=True,
+        )
+
+        assert approved.review_status == "approved"
+        assert approved.artifact_warning == "openapi_promotion_pending"
+        assert service.get_source(source.source_id).effective_scope_status == "active"
+        assert len(service.list_scope_rules(source.program_id)) == 1
+        assert repository.list_artifacts(
+            program_id=source.program_id,
+            source_type="program_rule_link",
+        ) == []
+        assert service.list_snapshots(source.source_id)[0].artifact_warning == (
+            "openapi_promotion_pending"
+        )
+        assert "database-detail-must-not-surface" not in approved.model_dump_json()
+
+        monkeypatch.setattr(repository, "save_artifact", save_artifact)
+        retried = service.review_snapshot(
+            source_id=source.source_id,
+            snapshot_id=pending.snapshot_id,
+            decision="approved",
+            reviewer_alias="reviewer_1",
+            expected_review_digest=pending.review_digest,
+            operator_confirmed=True,
+        )
+
+        assert retried.reviewed_at == approved.reviewed_at
+        assert retried.artifact_warning is None
+        assert len(
+            repository.list_artifacts(
+                program_id=source.program_id,
+                source_type="program_rule_link",
+            )
+        ) == 1
     finally:
         session.close()
         engine.dispose()

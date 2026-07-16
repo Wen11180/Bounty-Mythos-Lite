@@ -2325,6 +2325,8 @@ def _append_duplicate_import_provenance(
     if not isinstance(duplicate_imports, list):
         duplicate_imports = []
     safe_duplicate = _safe_display_value(duplicate)
+    if all(updated.get(key) == value for key, value in safe_duplicate.items()):
+        return updated
     if safe_duplicate in duplicate_imports:
         return updated
     updated["duplicate_imports"] = [
