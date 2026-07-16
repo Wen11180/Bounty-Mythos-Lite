@@ -1,0 +1,10 @@
+program: Example Security Program
+in_scope:
+  - https://api.example.com/v1/
+out_of_scope:
+  - '*.staging.example.com'
+automation: Limited to 20 requests per hour
+api_key: yaml-secret
+prohibited:
+  - credential stuffing
+  - social engineering

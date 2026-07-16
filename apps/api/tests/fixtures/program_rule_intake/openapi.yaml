@@ -1,0 +1,17 @@
+openapi: 3.0.0
+info:
+  title: Example API
+  version: 1.0.0
+paths:
+  /v1/users/{user_id}:
+    get:
+      operationId: getUser
+      description: This raw description must not enter the reduced candidate.
+  /v1/teams/{team_id}/invite:
+    post:
+      operationId: inviteUser
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
