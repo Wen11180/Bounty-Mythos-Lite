@@ -9,6 +9,7 @@ import {
   createStudioWorkspaceBenchmarkTemplate,
   createStudioWorkspace,
   createFindingCandidate,
+  getControlCenterOverview,
   getStudioBlackBoxRemoteStatus,
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
@@ -92,6 +93,88 @@ const fallbackProgramProfile: ProgramIntelligenceProfile = {
   safety_notes: [],
   skipped_lessons: [],
 };
+
+test("getControlCenterOverview is strict and forwards an optional campaign filter", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  const overview = {
+    agent_stages: [],
+    authorized_assets: [],
+    campaigns: [],
+    candidates: [],
+    data_mode: "live" as const,
+    empty_state: true,
+    generated_at: "2026-07-18T04:00:00Z",
+    metrics: {
+      approval_pressure_count: 0,
+      retained_high_value_candidate_count: 0,
+      running_task_count: 0,
+      safety_block_count: 0,
+    },
+    recent_events: [],
+    report_readiness: {
+      available: false,
+      human_review_required: true,
+      report_submission_allowed: false as const,
+      status: "unavailable",
+      submission_blocked: true,
+    },
+    research_quality: {
+      evidence_completeness: null,
+      median_human_review_seconds: null,
+      refutation_kill_rate: null,
+      retention_rate: null,
+    },
+    snapshot_version: "a".repeat(64),
+  };
+
+  globalThis.fetch = async (input, init) => {
+    urls.push(String(input));
+    assert.equal(init?.cache, "no-store");
+    return new Response(JSON.stringify(overview), {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    assert.deepEqual(await getControlCenterOverview(), overview);
+    assert.deepEqual(await getControlCenterOverview("campaign / one"), overview);
+    assert.match(urls[0] ?? "", /\/mythos\/control-center\/overview$/);
+    assert.match(urls[1] ?? "", /campaign_id=campaign(?:%20|\+)%2F(?:%20|\+)one$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getControlCenterOverview never falls back on HTTP or network failures", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ detail: "overview_unavailable" }), {
+        headers: { "Content-Type": "application/json" },
+        status: 503,
+      });
+    await assert.rejects(
+      () => getControlCenterOverview(),
+      (error) =>
+        error instanceof ApiRequestError &&
+        error.status === 503 &&
+        error.detail === "overview_unavailable",
+    );
+
+    globalThis.fetch = async () => {
+      throw new TypeError("offline");
+    };
+    await assert.rejects(
+      () => getControlCenterOverview(),
+      (error) =>
+        error instanceof ApiRequestError && error.status === 0 && error.detail === "network_error",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("runSourceAuditScan posts only the local source audit request", async () => {
   const originalFetch = globalThis.fetch;

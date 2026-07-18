@@ -59,6 +59,74 @@ export type CampaignListItem = CampaignControlCenter["campaign"] & {
   policy_text_hash?: string;
 };
 
+export type ControlCenterOverviewResponse = {
+  data_mode: "live";
+  generated_at: string;
+  snapshot_version: string;
+  empty_state: boolean;
+  metrics: {
+    running_task_count: number;
+    retained_high_value_candidate_count: number;
+    approval_pressure_count: number;
+    safety_block_count: number;
+  };
+  agent_stages: Array<{
+    stage: string;
+    status: string;
+    record_count: number;
+  }>;
+  authorized_assets: Array<{
+    campaign_id: string;
+    asset: string;
+    scope_status: string;
+    campaign_status: string;
+  }>;
+  campaigns: Array<{
+    id: string;
+    name: string;
+    status: string;
+    scope_status: string;
+    safe_next_action: string;
+    blocked_reasons: string[];
+  }>;
+  candidates: Array<{
+    candidate_id: string;
+    campaign_id: string;
+    pipeline_run_id: string;
+    rank: number;
+    vuln_type: string;
+    affected_endpoint: string;
+    affected_code_path: string | null;
+    evidence_trace_status: string;
+    human_validation_readiness: string;
+    report_submission_allowed: false;
+  }>;
+  research_quality: {
+    retention_rate: number | null;
+    refutation_kill_rate: number | null;
+    evidence_completeness: number | null;
+    median_human_review_seconds: number | null;
+  };
+  report_readiness: {
+    available: boolean;
+    status: string;
+    pipeline_run_id?: string | null;
+    title?: string | null;
+    claim_count?: number | null;
+    evidence_ref_count?: number | null;
+    human_review_required: boolean;
+    submission_blocked: boolean;
+    report_submission_allowed: false;
+  };
+  recent_events: Array<{
+    event_id: string;
+    campaign_id: string;
+    event_type: string;
+    status: string;
+    occurred_at: string;
+  }>;
+};
+
 export type AuthorizedCampaignLaunchInput = {
   allowed_tools: string[];
   autonomy_level: string;
@@ -1212,6 +1280,36 @@ export function getPrograms(fallback: Program[]): Promise<Program[]> {
 
 export function getCampaigns(fallback: CampaignListItem[]): Promise<CampaignListItem[]> {
   return apiGet("/mythos/campaigns", fallback);
+}
+
+export async function getControlCenterOverview(
+  campaignId?: string,
+): Promise<ControlCenterOverviewResponse> {
+  const url = new URL("/mythos/control-center/overview", API_BASE_URL);
+  if (campaignId) {
+    url.searchParams.set("campaign_id", campaignId);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, { cache: "no-store" });
+  } catch {
+    throw apiNetworkError("GET /mythos/control-center/overview failed");
+  }
+
+  if (!response.ok) {
+    throw await apiResponseError(response, "GET /mythos/control-center/overview failed");
+  }
+
+  try {
+    return (await response.json()) as ControlCenterOverviewResponse;
+  } catch {
+    throw new ApiRequestError(
+      "GET /mythos/control-center/overview returned an invalid response",
+      response.status,
+      "invalid_response",
+    );
+  }
 }
 
 export async function launchAuthorizedCampaign(
