@@ -1284,6 +1284,7 @@ export function getCampaigns(fallback: CampaignListItem[]): Promise<CampaignList
 
 export async function getControlCenterOverview(
   campaignId?: string,
+  signal?: AbortSignal,
 ): Promise<ControlCenterOverviewResponse> {
   const url = new URL("/mythos/control-center/overview", API_BASE_URL);
   if (campaignId) {
@@ -1292,7 +1293,7 @@ export async function getControlCenterOverview(
 
   let response: Response;
   try {
-    response = await fetch(url, { cache: "no-store" });
+    response = await fetch(url, { cache: "no-store", signal });
   } catch {
     throw apiNetworkError("GET /mythos/control-center/overview failed");
   }

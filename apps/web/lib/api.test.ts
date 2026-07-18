@@ -176,6 +176,38 @@ test("getControlCenterOverview never falls back on HTTP or network failures", as
   }
 });
 
+test("getControlCenterOverview forwards AbortSignal and aborts its strict fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let receivedSignal: AbortSignal | null | undefined;
+  globalThis.fetch = async (_input, init) => {
+    receivedSignal = init?.signal;
+    return await new Promise<Response>((_resolve, reject) => {
+      if (!init?.signal) {
+        reject(new TypeError("missing abort signal"));
+        return;
+      }
+      init.signal.addEventListener("abort", () => {
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      });
+    });
+  };
+
+  try {
+    const request = getControlCenterOverview("campaign_1", controller.signal);
+    controller.abort();
+
+    await assert.rejects(
+      request,
+      (error) => error instanceof ApiRequestError && error.detail === "network_error",
+    );
+    assert.equal(receivedSignal, controller.signal);
+    assert.equal(receivedSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("runSourceAuditScan posts only the local source audit request", async () => {
   const originalFetch = globalThis.fetch;
   let requestedUrl = "";

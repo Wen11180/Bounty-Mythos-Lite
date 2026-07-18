@@ -9,12 +9,13 @@ import {
   FileSearch,
   Gauge,
   Home,
+  RadioTower,
   RefreshCw,
   ShieldCheck,
   Target,
 } from "lucide-react";
 import dynamic from "next/dynamic";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { AgentPipeline } from "@/components/control-center/agent-pipeline";
 import { AppShell, type AppShellNavigationItem } from "@/components/control-center/app-shell";
@@ -24,9 +25,12 @@ import { CandidateQueue } from "@/components/control-center/candidate-queue";
 import { CommandBar } from "@/components/control-center/command-bar";
 import { DataModeBadge } from "@/components/control-center/data-mode-badge";
 import { Metric } from "@/components/control-center/metric";
+import { LiveControlCenter } from "@/components/control-center/live-control-center";
 import { PanelState } from "@/components/control-center/panel-state";
 import { ReportReadiness } from "@/components/control-center/report-readiness";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import type { ControlCenterLiveState } from "@/lib/control-center-live";
 import {
   CONTROL_CENTER_STALE_AFTER_MS,
   isControlCenterSnapshotStale,
@@ -44,7 +48,15 @@ const QualityCharts = dynamic(
 
 interface ControlCenterOverviewProps {
   initialSnapshot: ControlCenterSnapshot;
+  campaignId?: string;
 }
+
+const connectionLabels: Record<ControlCenterLiveState, string> = {
+  connecting: "SSE 连接中",
+  live: "SSE 实时",
+  degraded: "连接降级 · 5 秒轮询",
+  paused: "页面隐藏 · 已暂停",
+};
 
 function navigationFor(snapshot: ControlCenterSnapshot): AppShellNavigationItem[] {
   const navigation: AppShellNavigationItem[] = [
@@ -85,28 +97,47 @@ function formatSnapshotTime(value: string): string {
   }).format(date);
 }
 
-export function ControlCenterOverview({ initialSnapshot }: ControlCenterOverviewProps) {
+export function ControlCenterOverview({ initialSnapshot, campaignId }: ControlCenterOverviewProps) {
+  const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
+  const [connectionState, setConnectionState] =
+    useState<ControlCenterLiveState>("connecting");
   const [isStale, setIsStale] = useState(initialSnapshot.stale);
+  const handleRefreshError = useCallback((message: string) => {
+    setCurrentSnapshot((snapshot) => ({
+      ...snapshot,
+      dataMode: "offline",
+      error: message,
+      stale: true,
+    }));
+  }, []);
   useEffect(() => {
-    if (initialSnapshot.dataMode !== "live") {
+    if (currentSnapshot.dataMode !== "live") {
       return;
     }
     const updateStaleState = () =>
-      setIsStale(isControlCenterSnapshotStale(initialSnapshot.generatedAt));
+      setIsStale(isControlCenterSnapshotStale(currentSnapshot.generatedAt));
     updateStaleState();
-    const generatedAtMs = Date.parse(initialSnapshot.generatedAt);
+    const generatedAtMs = Date.parse(currentSnapshot.generatedAt);
     const delay = Number.isFinite(generatedAtMs)
       ? Math.max(generatedAtMs + CONTROL_CENTER_STALE_AFTER_MS + 1 - Date.now(), 0)
       : 0;
     const timer = window.setTimeout(updateStaleState, delay);
     return () => window.clearTimeout(timer);
-  }, [initialSnapshot.dataMode, initialSnapshot.generatedAt]);
+  }, [currentSnapshot.dataMode, currentSnapshot.generatedAt]);
 
-  const snapshot = { ...initialSnapshot, stale: isStale };
+  const snapshot = { ...currentSnapshot, stale: isStale };
   const activeCampaign = snapshot.campaigns[0];
 
   return (
-    <AppShell
+    <>
+      <LiveControlCenter
+        campaignId={campaignId}
+        searchQuery={snapshot.searchQuery}
+        onConnectionState={setConnectionState}
+        onRefreshError={handleRefreshError}
+        onSnapshot={setCurrentSnapshot}
+      />
+      <AppShell
       navigation={navigationFor(snapshot)}
       productName="Bounty Mythos-Lite"
       productDescription="授权漏洞研究控制中心"
@@ -129,6 +160,15 @@ export function ControlCenterOverview({ initialSnapshot }: ControlCenterOverview
           actions={
             <>
               <DataModeBadge mode={resolveControlCenterDataMode(snapshot.dataMode, isStale)} />
+              <Badge
+                data-testid="control-center-live-state"
+                data-state={connectionState}
+                variant="outline"
+                className="gap-1.5 whitespace-nowrap"
+              >
+                <RadioTower aria-hidden="true" className="size-3" />
+                {connectionLabels[connectionState]}
+              </Badge>
               <Button
                 type="button"
                 variant="outline"
@@ -239,6 +279,7 @@ export function ControlCenterOverview({ initialSnapshot }: ControlCenterOverview
           </div>
         </div>
       </div>
-    </AppShell>
+      </AppShell>
+    </>
   );
 }

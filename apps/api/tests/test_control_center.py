@@ -1,4 +1,8 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
+import importlib
+import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +17,7 @@ from app.control_center.contracts import (
     SanitizedEventSummary,
 )
 from app.control_center.service import build_control_center_overview
+from app.control_center.events import stream_control_center_events
 from app.db import Base, get_session
 from app.main import _campaign_control_center_response, app
 from app.repository import DatabaseRepository
@@ -523,3 +528,199 @@ def test_overview_route_returns_explicit_empty_live_state():
         "evidence_completeness": None,
         "median_human_review_seconds": None,
     }
+
+
+def test_control_center_event_stream_emits_safe_digest_changes_and_keepalives():
+    versions = ["a" * 64, "a" * 64, "a" * 64, "b" * 64]
+    secrets = ["first-secret", "changed-secret", "changed-secret", "final-secret"]
+    opened = []
+    closed = []
+
+    class TrackingSession:
+        def __init__(self, index):
+            self.index = index
+            opened.append(index)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            closed.append(self.index)
+
+    def session_factory():
+        return TrackingSession(len(opened))
+
+    def overview_builder(_repository, *, campaign_id, now, campaign_response_builder=None):
+        index = len(opened) - 1
+        assert campaign_id == "campaign_1"
+        assert now == NOW + timedelta(seconds=index)
+        assert campaign_response_builder is None
+        return SimpleNamespace(
+            snapshot_version=versions[index],
+            secret=secrets[index],
+        )
+
+    ticks = iter(NOW + timedelta(seconds=index) for index in range(4))
+
+    async def collect_events():
+        stream = stream_control_center_events(
+            campaign_id="campaign_1",
+            scope="campaign",
+            session_factory=session_factory,
+            now=lambda: next(ticks),
+            sleep=lambda _seconds: asyncio.sleep(0),
+            overview_builder=overview_builder,
+        )
+        chunks = [await anext(stream) for _ in range(4)]
+        await stream.aclose()
+        return chunks
+
+    chunks = asyncio.run(collect_events())
+
+    assert chunks[0].startswith(
+        f"event: control-center-invalidated\nid: {'a' * 64}\nretry: 5000\n"
+    )
+    assert json.loads(chunks[0].split("data: ", 1)[1]) == {
+        "snapshot_version": "a" * 64,
+        "scope": "campaign",
+        "changed": ["overview"],
+    }
+    assert chunks[1] == ": keepalive\n\n"
+    assert chunks[2] == ": keepalive\n\n"
+    assert f"id: {'b' * 64}" in chunks[3]
+    assert "secret" not in "".join(chunks).lower()
+    assert opened == [0, 1, 2, 3]
+    assert closed == opened
+
+
+def test_control_center_event_stream_uses_cursor_and_closes_before_cancellation():
+    closed = []
+    sleeping = asyncio.Event()
+
+    class TrackingSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            closed.append(True)
+
+    async def blocking_sleep(_seconds):
+        sleeping.set()
+        await asyncio.Future()
+
+    def overview_builder(_repository, **_kwargs):
+        return SimpleNamespace(snapshot_version="c" * 64)
+
+    async def cancel_stream():
+        stream = stream_control_center_events(
+            cursor="c" * 64,
+            session_factory=TrackingSession,
+            now=lambda: NOW,
+            sleep=blocking_sleep,
+            overview_builder=overview_builder,
+        )
+        assert await anext(stream) == ": keepalive\n\n"
+        pending = asyncio.create_task(anext(stream))
+        await sleeping.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        await stream.aclose()
+
+    asyncio.run(cancel_stream())
+    assert closed == [True]
+
+
+def test_control_center_events_route_is_bounded_filtered_and_unbuffered(monkeypatch):
+    main_module = importlib.import_module("app.main")
+    testing_session = build_testing_session()
+    calls = []
+    preflight_session_closed = False
+
+    def override_get_session():
+        nonlocal preflight_session_closed
+        try:
+            with testing_session() as session:
+                yield session
+        finally:
+            preflight_session_closed = True
+
+    with testing_session() as session:
+        campaign_id, _ = _seed_live_overview(DatabaseRepository(session))
+
+    async def finite_stream(**kwargs):
+        assert preflight_session_closed is True
+        calls.append(kwargs)
+        yield ": keepalive\n\n"
+
+    monkeypatch.setattr(main_module, "stream_control_center_events", finite_stream)
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        response = client.get(
+            "/mythos/control-center/events",
+            params={"campaign_id": campaign_id, "cursor": "d" * 64},
+        )
+        invalid = client.get(
+            "/mythos/control-center/events",
+            params={"campaign_id": ""},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert response.text == ": keepalive\n\n"
+    assert calls == [
+        {
+            "campaign_id": campaign_id,
+            "cursor": "d" * 64,
+            "scope": "campaign",
+        }
+    ]
+    assert invalid.status_code == 422
+
+
+def test_control_center_events_route_rejects_unknown_campaign_before_streaming(monkeypatch):
+    main_module = importlib.import_module("app.main")
+    testing_session = build_testing_session()
+    stream_started = False
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    async def finite_stream(**_kwargs):
+        nonlocal stream_started
+        stream_started = True
+        yield ": keepalive\n\n"
+
+    monkeypatch.setattr(main_module, "stream_control_center_events", finite_stream)
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        response = client.get(
+            "/mythos/control-center/events",
+            params={"campaign_id": "campaign_missing"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Campaign not found"}
+    assert stream_started is False
+
+
+def test_control_center_events_cors_preflight_allows_last_event_id_header():
+    response = client.options(
+        "/mythos/control-center/events",
+        headers={
+            "Origin": "http://127.0.0.1:3000",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "Last-Event-ID",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
+    assert "last-event-id" in response.headers["access-control-allow-headers"].lower()

@@ -8,11 +8,11 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.artifact_ingestion import normalize_artifact
@@ -47,6 +47,7 @@ from app.control_center import (
     ControlCenterOverviewResponse,
     build_control_center_overview,
 )
+from app.control_center.events import stream_control_center_events
 from app.db import get_session
 from app.db_models import (
     AgentRunRecord,
@@ -230,7 +231,7 @@ app.add_middleware(
     allow_origins=[origin] if (origin := _studio_web_origin()) is not None else [],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Last-Event-ID"],
 )
 
 
@@ -2678,6 +2679,40 @@ def get_mythos_control_center_overview(
         )
     except ControlCenterCampaignNotFound as exc:
         raise HTTPException(status_code=404, detail="Campaign not found") from exc
+
+
+@app.get("/mythos/control-center/events")
+def get_mythos_control_center_events(
+    campaign_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_.:-]+$",
+    ),
+    cursor: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
+    last_event_id: str | None = Header(
+        default=None,
+        alias="Last-Event-ID",
+        pattern=r"^[0-9a-f]{64}$",
+    ),
+    session: Session = Depends(get_session, scope="function"),
+) -> StreamingResponse:
+    if campaign_id and DatabaseRepository(session).get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    resolved_cursor = cursor or last_event_id
+    scope = "campaign" if campaign_id else "global"
+    return StreamingResponse(
+        stream_control_center_events(
+            campaign_id=campaign_id,
+            cursor=resolved_cursor,
+            scope=scope,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _program_rule_intake_service(session: Session) -> ProgramRuleIntakeService:
