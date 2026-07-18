@@ -42,6 +42,11 @@ from app.black_box_hunter.remote_profile import (
     issue_remote_human_lease,
 )
 from app.config import get_settings
+from app.control_center import (
+    ControlCenterCampaignNotFound,
+    ControlCenterOverviewResponse,
+    build_control_center_overview,
+)
 from app.db import get_session
 from app.db_models import (
     AgentRunRecord,
@@ -2655,6 +2660,24 @@ def _campaign_control_center_response(
             repository,
         ),
     )
+
+
+@app.get(
+    "/mythos/control-center/overview",
+    response_model=ControlCenterOverviewResponse,
+)
+def get_mythos_control_center_overview(
+    campaign_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> ControlCenterOverviewResponse:
+    try:
+        return build_control_center_overview(
+            DatabaseRepository(session),
+            campaign_id=campaign_id,
+            campaign_response_builder=_campaign_control_center_response,
+        )
+    except ControlCenterCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail="Campaign not found") from exc
 
 
 def _program_rule_intake_service(session: Session) -> ProgramRuleIntakeService:
