@@ -6,6 +6,9 @@ const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./la
 const { createAppExitHandler, createBlackBoxRunner } = require("./black-box-runner.cjs");
 const { installStudioNavigationGuard } = require("./navigation-guard.cjs");
 const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
+const { createProgramRuleApiClient } = require("./program-rule-api-client.cjs");
+const { createProgramRuleRefreshPump } = require("./program-rule-refresh-pump.cjs");
+const { createProgramRuleRunner } = require("./program-rule-runner.cjs");
 const { createRemoteLeaseApiClient } = require("./remote-api-client.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
@@ -14,6 +17,11 @@ let studioApiBaseUrl = null;
 const remoteLeaseApi = createRemoteLeaseApiClient({
   getBaseUrl: () => studioApiBaseUrl,
 });
+const programRuleApi = createProgramRuleApiClient({
+  getBaseUrl: () => studioApiBaseUrl,
+});
+const programRuleRunner = createProgramRuleRunner({ apiClient: programRuleApi });
+const programRulePump = createProgramRuleRefreshPump({ runner: programRuleRunner });
 const blackBoxRunner = createBlackBoxRunner({
   authorizeRemoteRequest: remoteLeaseApi.authorize,
   completeRemoteRequest: remoteLeaseApi.complete,
@@ -78,7 +86,10 @@ function killChildren() {
 }
 
 const handleBeforeQuit = createAppExitHandler({
-  closeSessions: (reason) => blackBoxRunner.closeSessions(reason),
+  closeSessions: async (reason) => {
+    await programRulePump.close(reason);
+    await blackBoxRunner.closeSessions(reason);
+  },
   exit: (code) => app.exit(code),
   killChildren,
 });
@@ -111,6 +122,10 @@ ipcMain.handle("mythos:black-box-runner", (_event, line) => {
   return blackBoxRunner.handleLine(line);
 });
 
+ipcMain.handle("mythos:refresh-program-rules", () => {
+  return programRulePump.kick();
+});
+
 app.whenReady().then(async () => {
   const window = createWindow();
   try {
@@ -119,7 +134,9 @@ app.whenReady().then(async () => {
     const config = await createStudioLaunchConfig();
     studioApiBaseUrl = config.apiBaseUrl;
     startServices(config, workspaceRoot);
+    await waitForUrl(config.apiBaseUrl);
     await waitForUrl(config.studioUrl);
+    programRulePump.start();
     installStudioNavigationGuard(window, config.studioUrl);
     window.loadURL(config.studioUrl);
   } catch (error) {

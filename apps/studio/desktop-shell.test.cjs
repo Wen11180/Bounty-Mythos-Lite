@@ -86,6 +86,29 @@ test("desktop runner binds remote lease decisions only to the derived loopback A
   assert.match(main, /stopRemoteLease:\s*remoteLeaseApi\.stop/);
 });
 
+test("desktop shell starts the bounded program-rule pump only after local services are ready", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+  const preload = await fs.readFile(path.join(__dirname, "preload.cjs"), "utf8");
+
+  assert.match(main, /createProgramRuleApiClient/);
+  assert.match(main, /createProgramRuleRunner\(\{ apiClient: programRuleApi \}\)/);
+  assert.match(main, /createProgramRuleRefreshPump\(\{ runner: programRuleRunner \}\)/);
+  assert.match(
+    main,
+    /await waitForUrl\(config\.apiBaseUrl\);\s*await waitForUrl\(config\.studioUrl\);[\s\S]*programRulePump\.start\(\);/,
+  );
+  assert.match(
+    main,
+    /ipcMain\.handle\("mythos:refresh-program-rules",\s*\(\) => \{\s*return programRulePump\.kick\(\);\s*\}\);/s,
+  );
+  assert.match(
+    preload,
+    /refreshProgramRules\(\) \{\s*return ipcRenderer\.invoke\("mythos:refresh-program-rules"\);\s*\}/s,
+  );
+  assert.equal(main.match(/app\.on\("before-quit"/gu)?.length, 1);
+  assert.doesNotMatch(preload, /refreshProgramRules\([^)]*\w[^)]*\)/u);
+});
+
 test("Compose keeps infrastructure private and binds Studio HTTP services to loopback", async () => {
   const compose = await fs.readFile(
     path.join(__dirname, "..", "..", "infra", "docker-compose.yml"),

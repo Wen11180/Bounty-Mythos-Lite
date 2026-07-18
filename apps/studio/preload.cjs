@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld("mythosStudio", {
   closeBlackBoxSessions() {
     return invokeBlackBoxRunner("close_sessions");
   },
+  refreshProgramRules() {
+    return ipcRenderer.invoke("mythos:refresh-program-rules");
+  },
   selectDirectory(options) {
     return ipcRenderer.invoke("mythos:select-directory", options);
   },
