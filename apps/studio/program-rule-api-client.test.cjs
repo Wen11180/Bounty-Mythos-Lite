@@ -189,6 +189,28 @@ test("program-rule API client bounds hung local calls and never leaks transport 
   );
 });
 
+test("program-rule API client sanitizes response stream failures", async () => {
+  const secret = `Authorization: Bearer ${CLAIM_TOKEN}`;
+  const client = createProgramRuleApiClient({
+    fetchImpl: async () => ({
+      body: {
+        async *[Symbol.asyncIterator]() {
+          throw new Error(secret);
+        },
+      },
+      headers: { get: () => "application/json" },
+      ok: true,
+      status: 200,
+    }),
+    getBaseUrl: () => "http://127.0.0.1:48123",
+  });
+
+  await assert.rejects(
+    client.claimNext(),
+    safeApiError("program_rule_api_response_invalid", ["Authorization", CLAIM_TOKEN]),
+  );
+});
+
 function claimNextResponse() {
   return {
     claim: {

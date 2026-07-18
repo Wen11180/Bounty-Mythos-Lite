@@ -67,8 +67,16 @@ function createProgramRuleApiClient({
     } catch {
       throw apiError("program_rule_api_request_failed");
     }
-    if (!response?.ok) {
-      if (responseKind === "normalized" && response?.status === 422) {
+    let responseOk;
+    let responseStatus;
+    try {
+      responseOk = response?.ok === true;
+      responseStatus = response?.status;
+    } catch {
+      throw apiError("program_rule_api_request_failed");
+    }
+    if (!responseOk) {
+      if (responseKind === "normalized" && responseStatus === 422) {
         try {
           const detail = await readJsonResponse(response);
           if (
@@ -161,14 +169,25 @@ function exactLoopbackApiOrigin(value) {
 }
 
 async function readJsonResponse(response) {
-  const contentType = response?.headers?.get?.("content-type");
+  let contentType;
+  try {
+    contentType = response?.headers?.get?.("content-type");
+  } catch {
+    throw apiError("program_rule_api_response_invalid");
+  }
   if (
     typeof contentType !== "string"
     || !/^application\/json(?:\s*;\s*charset=[A-Za-z0-9._-]+)?$/iu.test(contentType.trim())
   ) {
     throw apiError("program_rule_api_response_invalid");
   }
-  const bytes = await readBoundedBody(response);
+  let bytes;
+  try {
+    bytes = await readBoundedBody(response);
+  } catch (error) {
+    if (error instanceof ProgramRuleApiError) throw error;
+    throw apiError("program_rule_api_response_invalid");
+  }
   try {
     return JSON.parse(bytes.toString("utf8"));
   } catch {
