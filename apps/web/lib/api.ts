@@ -18,6 +18,23 @@ import type {
   StudioMissionSummary,
   StudioWorkspaceManifest,
 } from "./studio-data";
+import type {
+  ProgramRuleRegistrationInput,
+  ProgramRuleReviewInput,
+  ProgramRuleSnapshot,
+  ProgramRuleSnapshotDiff,
+  ProgramRuleSource,
+  ProgramScopeRule,
+} from "./program-rule-data";
+
+export type {
+  ProgramRuleRegistrationInput,
+  ProgramRuleReviewInput,
+  ProgramRuleSnapshot,
+  ProgramRuleSnapshotDiff,
+  ProgramRuleSource,
+  ProgramScopeRule,
+} from "./program-rule-data";
 
 const API_BASE_URL =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -1185,6 +1202,27 @@ async function apiGet<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+async function apiGetRequired<T>(path: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store" });
+  } catch {
+    throw apiNetworkError(`GET ${path} failed`);
+  }
+  if (!response.ok) {
+    throw await apiResponseError(response, `GET ${path} failed`);
+  }
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiRequestError(
+      `GET ${path} returned an invalid response`,
+      response.status,
+      "invalid_response",
+    );
+  }
+}
+
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
   let response: Response;
   try {
@@ -1276,6 +1314,65 @@ export class SourceAuditScanError extends Error {
 
 export function getPrograms(fallback: Program[]): Promise<Program[]> {
   return apiGet("/programs", fallback);
+}
+
+export function listProgramRuleSources(): Promise<ProgramRuleSource[]> {
+  return apiGetRequired("/program-rule-sources");
+}
+
+export function registerProgramRuleSource(
+  input: ProgramRuleRegistrationInput,
+): Promise<ProgramRuleSource> {
+  return apiPost("/program-rule-sources", input);
+}
+
+export function getProgramRuleSource(sourceId: string): Promise<ProgramRuleSource> {
+  return apiGetRequired(`/program-rule-sources/${encodeURIComponent(sourceId)}`);
+}
+
+export function refreshProgramRuleSource(sourceId: string): Promise<ProgramRuleSource> {
+  return apiPost(`/program-rule-sources/${encodeURIComponent(sourceId)}/refresh`, {});
+}
+
+export function listProgramRuleSnapshots(sourceId: string): Promise<ProgramRuleSnapshot[]> {
+  return apiGetRequired(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots`,
+  );
+}
+
+export function getProgramRuleSnapshotDiff(
+  sourceId: string,
+  snapshotId: string,
+): Promise<ProgramRuleSnapshotDiff> {
+  return apiGetRequired(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots/${encodeURIComponent(snapshotId)}/diff`,
+  );
+}
+
+export function approveProgramRuleSnapshot(
+  sourceId: string,
+  snapshotId: string,
+  input: ProgramRuleReviewInput,
+): Promise<ProgramRuleSnapshot> {
+  return apiPost(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots/${encodeURIComponent(snapshotId)}/approve`,
+    input,
+  );
+}
+
+export function rejectProgramRuleSnapshot(
+  sourceId: string,
+  snapshotId: string,
+  input: ProgramRuleReviewInput,
+): Promise<ProgramRuleSnapshot> {
+  return apiPost(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots/${encodeURIComponent(snapshotId)}/reject`,
+    input,
+  );
+}
+
+export function listProgramScopeRules(programId: string): Promise<ProgramScopeRule[]> {
+  return apiGetRequired(`/programs/${encodeURIComponent(programId)}/scope-rules`);
 }
 
 export function getCampaigns(fallback: CampaignListItem[]): Promise<CampaignListItem[]> {

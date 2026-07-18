@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ApiRequestError,
+  approveProgramRuleSnapshot,
   approveStudioBlackBoxLabRun,
   completeCampaignCycleReview,
   createResearchReviewPlan,
@@ -10,6 +11,8 @@ import {
   createStudioWorkspace,
   createFindingCandidate,
   getControlCenterOverview,
+  getProgramRuleSnapshotDiff,
+  getProgramRuleSource,
   getStudioBlackBoxRemoteStatus,
   getStudioWorkspaceManifest,
   importStudioWorkspaceArtifact,
@@ -17,12 +20,18 @@ import {
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   listStudioWorkspaceCandidates,
+  listProgramRuleSnapshots,
+  listProgramRuleSources,
+  listProgramScopeRules,
   getStudioWorkspaceMission,
   getStudioWorkspaceMissionHandoff,
   materializeResearchQueueTask,
   recordCandidateHunterLearningOutcome,
   recordClaimReviewDecision,
   recordManualObservation,
+  refreshProgramRuleSource,
+  registerProgramRuleSource,
+  rejectProgramRuleSnapshot,
   runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
   reviewValidationFeedbackForFindingPromotion,
@@ -93,6 +102,97 @@ const fallbackProgramProfile: ProgramIntelligenceProfile = {
   safety_notes: [],
   skipped_lessons: [],
 };
+
+test("program-rule operator helpers use only documented non-claim endpoints", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; method: string; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    const method = init?.method ?? "GET";
+    calls.push({
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+      method,
+      path,
+    });
+    if (path.endsWith("/diff")) return jsonResponse({ review_digest: "a".repeat(64) });
+    if (path.endsWith("/scope-rules")) return jsonResponse([]);
+    if (path.endsWith("/snapshots")) return jsonResponse([]);
+    if (path.endsWith("/approve") || path.endsWith("/reject")) {
+      return jsonResponse({ review_status: path.endsWith("/approve") ? "approved" : "rejected" });
+    }
+    if (path === "/program-rule-sources" && method === "GET") return jsonResponse([]);
+    return jsonResponse({ source_id: "source_synthetic" }, method === "POST" ? 202 : 200);
+  };
+
+  const review = {
+    expected_review_digest: "a".repeat(64),
+    operator_confirmed: true as const,
+    reviewer_alias: "reviewer_one",
+  };
+  try {
+    await listProgramRuleSources();
+    await registerProgramRuleSource({
+      program_alias: "synthetic_program",
+      public_rule_url: "https://rules.example.test/program",
+    });
+    await getProgramRuleSource("source_synthetic");
+    await refreshProgramRuleSource("source_synthetic");
+    await listProgramRuleSnapshots("source_synthetic");
+    await getProgramRuleSnapshotDiff("source_synthetic", "snapshot_pending");
+    await approveProgramRuleSnapshot("source_synthetic", "snapshot_pending", review);
+    await rejectProgramRuleSnapshot("source_synthetic", "snapshot_pending", review);
+    await listProgramScopeRules("program_synthetic");
+
+    assert.deepEqual(calls.map(({ method, path }) => ({ method, path })), [
+      { method: "GET", path: "/program-rule-sources" },
+      { method: "POST", path: "/program-rule-sources" },
+      { method: "GET", path: "/program-rule-sources/source_synthetic" },
+      { method: "POST", path: "/program-rule-sources/source_synthetic/refresh" },
+      { method: "GET", path: "/program-rule-sources/source_synthetic/snapshots" },
+      { method: "GET", path: "/program-rule-sources/source_synthetic/snapshots/snapshot_pending/diff" },
+      { method: "POST", path: "/program-rule-sources/source_synthetic/snapshots/snapshot_pending/approve" },
+      { method: "POST", path: "/program-rule-sources/source_synthetic/snapshots/snapshot_pending/reject" },
+      { method: "GET", path: "/programs/program_synthetic/scope-rules" },
+    ]);
+    assert.deepEqual(calls[1]?.body, {
+      program_alias: "synthetic_program",
+      public_rule_url: "https://rules.example.test/program",
+    });
+    assert.deepEqual(calls[3]?.body, {});
+    assert.deepEqual(calls[6]?.body, review);
+    assert.deepEqual(calls[7]?.body, review);
+    assert.doesNotMatch(JSON.stringify(calls), /program-rule-fetch|claims\/next/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("program-rule mutations propagate conflict and cooldown errors without fallback success", async () => {
+  const originalFetch = globalThis.fetch;
+  for (const [status, detail, operation] of [
+    [409, "Program rule state conflict", () => registerProgramRuleSource({
+      program_alias: "synthetic_program",
+      public_rule_url: "https://rules.example.test/program",
+    })],
+    [429, "Program rule manual refresh is cooling down", () => refreshProgramRuleSource("source_synthetic")],
+  ] as const) {
+    globalThis.fetch = async () => jsonResponse({ detail }, status);
+    await assert.rejects(operation, (error) => {
+      assert.equal(error instanceof ApiRequestError, true);
+      assert.equal((error as ApiRequestError).status, status);
+      assert.equal((error as ApiRequestError).detail, detail);
+      return true;
+    });
+  }
+  globalThis.fetch = originalFetch;
+});
+
+function jsonResponse(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), {
+    headers: { "Content-Type": "application/json" },
+    status,
+  });
+}
 
 test("getControlCenterOverview is strict and forwards an optional campaign filter", async () => {
   const originalFetch = globalThis.fetch;
