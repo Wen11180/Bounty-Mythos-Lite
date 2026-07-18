@@ -188,7 +188,7 @@ Expected RED: missing module/config/tokens.
 
 ```powershell
 cd apps/web
-npx --yes shadcn@4.13.1 init --template next --base radix --preset base-nova --css-variables --no-monorepo -y
+npx --yes shadcn@4.13.1 init --template next --base radix --preset nova --css-variables --no-monorepo -y
 npx --yes shadcn@4.13.1 add --yes button badge dialog sheet tabs tooltip input scroll-area separator skeleton select dropdown-menu
 npm install --save-exact echarts@6.1.0
 ```
