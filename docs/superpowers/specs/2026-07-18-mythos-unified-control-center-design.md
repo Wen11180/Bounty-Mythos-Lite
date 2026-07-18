@@ -2,7 +2,7 @@
 
 Date: 2026-07-18
 
-Status: Approved design, pending written-spec review
+Status: Approved
 
 ## Summary
 
@@ -239,14 +239,14 @@ Studio continues to use its existing workspace mission, candidates, validation, 
 
 The first version does not add an in-memory event broker or a second event database.
 
-- The SSE endpoint checks durable repository update cursors every two seconds.
-- When the cursor changes, it emits a small invalidation event containing stable IDs, event type, safe status, and timestamp.
+- The SSE endpoint opens a short-lived database session every two seconds and computes a deterministic digest from the canonical, display-safe projection of durable state.
+- When that digest changes, it becomes the next event ID and the endpoint emits a small invalidation event containing stable IDs, event type, safe status, and timestamp.
 - The client then refetches the relevant overview or Studio projection.
 - SSE uses event IDs for reconnect behavior.
 - A keepalive does not trigger data refresh.
 - If SSE cannot connect, the client falls back to five-second polling and shows a degraded-connection state.
 
-This design works across API processes because durable repository state, not process memory, drives invalidation.
+This design works across API processes because a deterministic digest of durable repository state, not process memory or mutable timestamps, drives invalidation.
 
 ## Data Honesty
 
