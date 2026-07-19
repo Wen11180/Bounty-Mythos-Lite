@@ -62,7 +62,7 @@ test.beforeAll(async () => {
         lease.sessions?.length === 2 &&
         lease.workflows?.length === 1 &&
         lease.workflows[0]?.origin === activeOrigin;
-      if (!valid) {
+      if (!valid || !lease.sessions || !lease.workflows) {
         response.writeHead(422, responseHeaders);
         response.end(JSON.stringify({ detail: "bounded_loopback_lease_required" }));
         return;
@@ -273,20 +273,7 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
         };
       }
 
-      const testWindow = window as Window & {
-        __recordMythosLabRequest: () => Promise<void>;
-        mythosStudio: {
-          closeBlackBoxSessions: () => Promise<string>;
-          createBlackBoxSessions: (payload: Record<string, unknown>) => Promise<string>;
-          runBlackBoxTrial: (payload: Record<string, unknown>) => Promise<string>;
-          selectDirectory: () => Promise<null>;
-          selectFile: () => Promise<null>;
-          startBlackBoxRecording: (payload: Record<string, unknown>) => Promise<string>;
-          stopBlackBoxRecording: () => Promise<string>;
-        };
-      };
-
-      testWindow.__recordMythosLabRequest = async () => {
+      window.__recordMythosLabRequest = async () => {
         if (!recording) {
           throw new Error("recording_required");
         }
@@ -295,7 +282,7 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
         });
         recordedTrace = await buildTrace(response, "session_a", "account_a");
       };
-      testWindow.mythosStudio = {
+      const bridge = {
         async createBlackBoxSessions(payload) {
           const request = payload as {
             lease?: { active_origins?: unknown[] };
@@ -314,6 +301,9 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
             session_aliases: ["session_a", "session_b"],
             state: "awaiting_sessions_ready",
           })}\n`;
+        },
+        async refreshProgramRules() {
+          return { next_due_at: null, processed: false, status: "idle" };
         },
         async startBlackBoxRecording(payload) {
           const request = payload as { sessions_ready?: unknown; workflows?: Workflow[] };
@@ -358,7 +348,8 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
         async selectFile() {
           return null;
         },
-      };
+      } satisfies NonNullable<Window["mythosStudio"]>;
+      window.mythosStudio = bridge;
     },
     { origin: labOrigin },
   );
@@ -377,9 +368,7 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
   await page.getByRole("button", { name: "Preview bounded lease" }).click();
   await page.getByRole("button", { name: "Start recording" }).click();
   await page.evaluate(async () => {
-    await (
-      window as Window & { __recordMythosLabRequest: () => Promise<void> }
-    ).__recordMythosLabRequest();
+    await window.__recordMythosLabRequest();
   });
   await page.getByRole("button", { name: "Stop recording" }).click();
 
@@ -389,11 +378,15 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
   await page.getByRole("button", { name: "Confirm bounded lab run" }).click();
   await page.getByRole("button", { name: "Run approved trial" }).click();
   await expect(
-    page.getByText("One bounded local differential trial completed; result remains review-only."),
+    page
+      .getByTestId("studio-conversation")
+      .getByText("One bounded local differential trial completed; result remains review-only."),
   ).toBeVisible();
   await page.getByRole("button", { name: "Stop local lab" }).click();
   await expect(
-    page.getByText("Local lab stopped; ephemeral session and review state cleared."),
+    page
+      .getByTestId("studio-conversation")
+      .getByText("Local lab stopped; ephemeral session and review state cleared."),
   ).toBeVisible();
 
   expect(labHttpRequests).toEqual(["/widgets/object-a", "/widgets/object-a"]);

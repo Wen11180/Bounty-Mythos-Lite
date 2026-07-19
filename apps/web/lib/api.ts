@@ -1188,9 +1188,9 @@ export type ReasoningMemoryPlaybook = {
   candidate_context_count: number;
 };
 
-async function apiGet<T>(path: string, fallback: T): Promise<T> {
+async function apiGet<T>(path: string, fallback: T, signal?: AbortSignal): Promise<T> {
   try {
-    const response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store" });
+    const response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store", signal });
 
     if (!response.ok) {
       return fallback;
@@ -1428,10 +1428,12 @@ export async function launchAuthorizedCampaign(
 export function getCampaignControlCenter(
   campaignId: string,
   fallback: CampaignControlCenter | null,
+  signal?: AbortSignal,
 ): Promise<CampaignControlCenter | null> {
   return apiGet(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/control-center`,
     fallback,
+    signal,
   );
 }
 
@@ -1585,9 +1587,10 @@ export function getStudioBlackBoxRemoteStatus(): Promise<StudioBlackBoxRemoteSta
 export function getStudioWorkspaceManifest(
   workspacePath: string,
   fallback: StudioWorkspaceManifest | null,
+  signal?: AbortSignal,
 ): Promise<StudioWorkspaceManifest | null> {
   const query = new URLSearchParams({ workspace_path: workspacePath });
-  return apiGet(`/mythos/studio/workspaces/manifest?${query}`, fallback);
+  return apiGet(`/mythos/studio/workspaces/manifest?${query}`, fallback, signal);
 }
 
 export function importStudioWorkspaceArtifact(
@@ -1612,24 +1615,26 @@ export function listStudioWorkspaceCandidates(
   workspacePath: string,
   runId: string | null,
   fallback: StudioWorkspaceCandidatesResponse,
+  signal?: AbortSignal,
 ): Promise<StudioWorkspaceCandidatesResponse> {
   const query = new URLSearchParams({ workspace_path: workspacePath });
   if (runId) {
     query.set("run_id", runId);
   }
-  return apiGet(`/mythos/studio/workspaces/candidates?${query}`, fallback);
+  return apiGet(`/mythos/studio/workspaces/candidates?${query}`, fallback, signal);
 }
 
 export function getStudioWorkspaceMission(
   workspacePath: string,
   runId: string | null,
   fallback: StudioWorkspaceMissionResponse | null,
+  signal?: AbortSignal,
 ): Promise<StudioWorkspaceMissionResponse | null> {
   const query = new URLSearchParams({ workspace_path: workspacePath });
   if (runId) {
     query.set("run_id", runId);
   }
-  return apiGet(`/mythos/studio/workspaces/mission?${query}`, fallback);
+  return apiGet(`/mythos/studio/workspaces/mission?${query}`, fallback, signal);
 }
 
 export function getStudioWorkspaceMissionHandoff(

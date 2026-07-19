@@ -3,6 +3,14 @@
 import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { CandidateInspector } from "@/components/studio/candidate-inspector";
+import { EvidenceInspector } from "@/components/studio/evidence-inspector";
+import { MissionStageStrip } from "@/components/studio/mission-stage-strip";
+import { ReportInspector } from "@/components/studio/report-inspector";
+import { ResearchConversation } from "@/components/studio/research-conversation";
+import { StudioShell } from "@/components/studio/studio-shell";
+import { ValidationPlanInspector } from "@/components/studio/validation-plan-inspector";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProgramRuleIntake } from "./program-rule-intake";
 import {
   ApiRequestError,
@@ -36,10 +44,21 @@ import {
   type StudioWorkspaceRunRequest,
 } from "@/lib/api";
 import {
+  createControlCenterLiveController,
+  type ControlCenterLiveState,
+} from "@/lib/control-center-live";
+import {
+  buildStudioEventsUrl,
+  latestStudioSession,
+  refreshStudioProjection,
+  reportExportFromStudioSession,
+} from "@/lib/studio-live";
+import {
   toStudioArtifactChecklist,
   toStudioBlackBoxRemoteStatus,
   toStudioCampaignHunterCandidateCards,
   toStudioCandidateCards,
+  toStudioControlCenterView,
   toStudioMissionHandoffBrief,
   toStudioMissionPanel,
   toStudioResearchReadiness,
@@ -49,6 +68,7 @@ import {
 import type { SafeRefreshStatus } from "@/lib/program-rule-data";
 
 type LogEntry = {
+  actor?: "operator" | "system";
   message: string;
   tone: "info" | "safe" | "blocked";
 };
@@ -150,7 +170,10 @@ export function StudioWorkbench() {
   const [remoteStatus, setRemoteStatus] =
     useState<StudioBlackBoxRemoteStatusResponse>(remoteStatusFallback);
   const [busy, setBusy] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<ControlCenterLiveState>("connecting");
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<"candidate" | "evidence" | "report" | "validation">("candidate");
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([
     {
       message: "Studio ready.",
@@ -225,6 +248,10 @@ export function StudioWorkbench() {
     [remoteStatus],
   );
   const remoteReloginRequired = remoteStatusView.warning || remoteStatus.relogin_required;
+  const studioView = useMemo(
+    () => toStudioControlCenterView(candidates, selectedCandidateId),
+    [candidates, selectedCandidateId],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -232,6 +259,65 @@ export function StudioWorkbench() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!workspacePath) {
+      return;
+    }
+    const controller = createControlCenterLiveController({
+      eventsUrl: buildStudioEventsUrl(
+        process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000",
+        latestCampaignHunterId,
+      ),
+      eventSourceFactory: (url) => new EventSource(url),
+      onStateChange: setConnectionState,
+      async refetch(signal) {
+        const projection = await refreshStudioProjection({
+          dependencies: {
+            getCampaign: (campaignId, signal) => getCampaignControlCenter(campaignId, null, signal),
+            getManifest: (path, signal) => getStudioWorkspaceManifest(path, null, signal),
+            getMission: (path, runId, signal) => getStudioWorkspaceMission(path, runId, null, signal),
+            listCandidates: (path, runId, signal) => listStudioWorkspaceCandidates(
+              path,
+              runId,
+              {
+                candidates: [],
+                run_id: runId,
+              },
+              signal,
+            ),
+            mapCampaignCandidates: toStudioCampaignHunterCandidateCards,
+            mapMission: toStudioMissionPanel,
+            mapResearchCandidates: toStudioCandidateCards,
+          },
+          signal,
+          workspacePath,
+        });
+        if (!projection || signal.aborted) {
+          return;
+        }
+        setManifest(projection.manifest);
+        setLatestRunId(projection.latestRunId);
+        setLatestCampaignHunterId(projection.latestCampaignHunterId);
+        setCandidates(projection.candidates);
+        setMissionPanel(projection.missionPanel);
+        setReportExport(projection.reportExport);
+      },
+      scheduler: {
+        clearInterval: (id) => window.clearInterval(id),
+        setInterval: (callback, delay) => window.setInterval(callback, delay),
+      },
+      visibility: {
+        addEventListener: (_type, listener) => document.addEventListener("visibilitychange", listener),
+        get state() {
+          return document.visibilityState === "hidden" ? "hidden" : "visible";
+        },
+        removeEventListener: (_type, listener) => document.removeEventListener("visibilitychange", listener),
+      },
+    });
+    controller.start();
+    return () => controller.stop();
+  }, [latestCampaignHunterId, latestRunId, workspacePath]);
 
   useEffect(() => {
     let mounted = true;
@@ -669,10 +755,10 @@ export function StudioWorkbench() {
         return;
       }
       setManifest(opened);
-      const latest = latestSessionFromManifest(opened);
+      const latest = latestStudioSession(opened);
       setLatestRunId(latest.kind === "research" ? latest.id : null);
       setLatestCampaignHunterId(latest.kind === "campaign_hunter" ? latest.id : null);
-      setReportExport(reportExportFromLatestSession(opened, latest));
+      setReportExport(reportExportFromStudioSession(opened, latest));
       setMissionDossierExport(null);
       setBenchmarkResult(null);
       if (latest.kind === "research" && latest.id) {
@@ -1166,21 +1252,210 @@ export function StudioWorkbench() {
               onClick: handleExportReport,
             };
 
+  const studioCandidateList = (
+    <div className="grid gap-1" data-testid="studio-candidate-list">
+      {studioView.candidates.length === 0 ? (
+        <p className="py-3 text-xs text-[var(--muted)]">暂无候选。导入授权材料后开始本地研究。</p>
+      ) : (
+        studioView.candidates.map((candidate) => (
+          <button
+            className={`grid min-h-14 gap-1 rounded-sm border-l-2 px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+              studioView.selectedCandidate?.id === candidate.id
+                ? "border-[var(--accent)] bg-[var(--accent-surface)]"
+                : "border-transparent hover:bg-[var(--surface-raised)]"
+            }`}
+            key={candidate.id}
+            onClick={() => setSelectedCandidateId(candidate.id)}
+            type="button"
+          >
+            <span className="flex items-center justify-between gap-2">
+              <span className="truncate font-mono text-xs">{candidate.id}</span>
+              <span className="text-[10px] text-[var(--warning)]">{candidate.status}</span>
+            </span>
+            <span className="truncate text-xs text-[var(--muted)]">{candidate.title}</span>
+          </button>
+        ))
+      )}
+    </div>
+  );
+
+  const studioNavigation = (
+    <div className="grid gap-4 text-sm">
+      <nav aria-label="Studio 工作区分区" className="grid gap-1">
+        {[
+          ["#studio-mission", "研究任务"],
+          ["#studio-artifacts", "授权材料"],
+          ["#studio-lab", "安全验证"],
+          ["#studio-candidates", "候选审查"],
+        ].map(([href, label], index) => (
+          <a
+            className={`rounded-sm border-l-2 px-3 py-2 transition-colors hover:bg-[var(--surface-raised)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${index === 0 ? "border-[var(--accent)] bg-[var(--accent-surface)]" : "border-transparent text-[var(--muted)]"}`}
+            href={href}
+            key={href}
+          >
+            {label}
+          </a>
+        ))}
+      </nav>
+      <div className="border-t border-[var(--line)] pt-4">
+        <TextField
+          browseEnabled={desktopPickerAvailable}
+          label="Workspace path"
+          onBrowse={() =>
+            handleSelectPath({
+              mode: "directory",
+              setter: setWorkspacePath,
+              title: "Select Mythos workspace",
+            })
+          }
+          onChange={setWorkspacePath}
+          value={workspacePath}
+        />
+        <ActionButton
+          busy={busy === "open"}
+          icon={<FolderOpen size={16} aria-hidden="true" />}
+          label="Open workspace"
+          onClick={handleOpenWorkspace}
+        />
+      </div>
+      <dl className="grid gap-2 border-t border-[var(--line)] pt-4 text-xs">
+        <StatusRow label="Scope Guard" value={workspace.scopeGuardLabel} warning />
+        <StatusRow label="授权材料" value={String(workspace.artifactCount)} />
+        <StatusRow label="研究运行" value={String(workspace.runCount)} />
+      </dl>
+      <div className="border-t border-[var(--line)] pt-4">
+        <p className="mb-2 text-xs font-semibold text-[var(--muted)]">候选队列</p>
+        {studioCandidateList}
+      </div>
+    </div>
+  );
+
+  const inspectorTabs = [
+    { id: "candidate", label: "候选详情" },
+    { id: "evidence", label: "证据" },
+    { id: "validation", label: "验证计划" },
+    { id: "report", label: "报告草稿" },
+  ] as const;
+  const studioInspector = (
+    <Tabs
+      className="gap-0"
+      data-testid="studio-inspector"
+      onValueChange={(value) =>
+        setInspectorTab(value as "candidate" | "evidence" | "report" | "validation")
+      }
+      value={inspectorTab}
+    >
+      <TabsList
+        aria-label="候选检查器"
+        className="grid h-10 w-full grid-cols-4 rounded-none border-b border-[var(--line)] bg-transparent p-0"
+        variant="line"
+      >
+        {inspectorTabs.map((tab) => (
+          <TabsTrigger
+            className="rounded-none px-1 text-xs"
+            key={tab.id}
+            tabIndex={tab.id === inspectorTab ? 0 : -1}
+            value={tab.id}
+          >
+            {tab.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <TabsContent className="pt-4" tabIndex={-1} value="candidate">
+          <CandidateInspector
+            actions={studioView.selectedCandidate ? (
+              <>
+                <ActionButton
+                  busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:needs_more_evidence`}
+                  icon={<ShieldCheck size={16} aria-hidden="true" />}
+                  label="Record needs-evidence learning"
+                  onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "needs_more_evidence")}
+                />
+                <ActionButton
+                  busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:refuted`}
+                  icon={<ShieldCheck size={16} aria-hidden="true" />}
+                  label="Record refuted learning"
+                  onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "refuted")}
+                />
+                <ActionButton
+                  busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:duplicate`}
+                  icon={<ShieldCheck size={16} aria-hidden="true" />}
+                  label="Record duplicate learning"
+                  onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "duplicate")}
+                />
+              </>
+            ) : null}
+            candidate={studioView.selectedCandidate}
+            candidates={studioView.candidates}
+            onSelect={setSelectedCandidateId}
+          />
+      </TabsContent>
+      <TabsContent className="pt-4" tabIndex={-1} value="evidence">
+        <EvidenceInspector candidate={studioView.selectedCandidate} />
+      </TabsContent>
+      <TabsContent className="pt-4" tabIndex={-1} value="validation">
+        <ValidationPlanInspector candidate={studioView.selectedCandidate} />
+      </TabsContent>
+      <TabsContent className="pt-4" tabIndex={-1} value="report">
+          <ReportInspector
+            candidate={studioView.selectedCandidate}
+            markdownPath={reportExport?.report_markdown_path}
+          />
+      </TabsContent>
+    </Tabs>
+  );
+
   return (
-    <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
-      <header className="border-b border-[var(--line)] pb-5">
+    <StudioShell
+      candidates={studioCandidateList}
+      connectionLabel={`实时连接：${connectionState}`}
+      inspector={studioInspector}
+      navigation={studioNavigation}
+      safetyLabel="submission-blocked"
+      workspaceName={workspace.name}
+    >
+      <div className="min-w-0 [&_.bg-white]:!bg-[var(--surface)]">
+      <header className="border-b border-[var(--line)] pb-5" id="studio-mission">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ShieldCheck size={17} aria-hidden="true" />
           Mythos Studio
         </p>
         <h1 className="mt-3 max-w-4xl text-3xl font-semibold leading-tight text-balance">
-          Authorized research workspace
+          授权研究工作台
         </h1>
       </header>
 
+      <MissionStageStrip
+        activeStage={missionPanel.researchLoopStages.find((stage) => !/complete|done|passed/i.test(stage.status))?.key ?? ""}
+        stages={missionPanel.researchLoopStages}
+      />
+
+      <ResearchConversation
+        actions={(
+          <div className="flex flex-wrap items-center gap-2">
+            <ActionButton
+              busy={busy === "candidate-hunt"}
+              disabled={!localCandidateHuntInputReady}
+              icon={<Play size={16} aria-hidden="true" />}
+              label="Run local candidate hunt"
+              onClick={handleRunLocalCandidateHunt}
+            />
+            <ActionButton
+              busy={wizardPrimaryAction.busy}
+              disabled={wizardPrimaryAction.disabled}
+              icon={wizardPrimaryAction.icon}
+              label={wizardPrimaryAction.label}
+              onClick={wizardPrimaryAction.onClick}
+            />
+          </div>
+        )}
+        messages={log}
+        runId={missionPanel.runId}
+      />
+
       <ProgramRuleIntake />
 
-      <section className="mt-6 border border-[var(--line)] bg-white">
+      <section className="mt-6 border border-[var(--line)] bg-white" id="studio-artifacts">
         <SectionHeader title="Local research setup" />
         <div className="grid gap-3 p-5 text-sm md:grid-cols-4">
           {wizardSteps.map((step, index) => (
@@ -1199,13 +1474,6 @@ export function StudioWorkbench() {
         </div>
         <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] p-5 text-sm">
           <p className="font-semibold">Next safe action</p>
-          <ActionButton
-            busy={busy === "candidate-hunt"}
-            disabled={!localCandidateHuntInputReady}
-            icon={<Play size={16} aria-hidden="true" />}
-            label="Run local candidate hunt"
-            onClick={handleRunLocalCandidateHunt}
-          />
           <ActionButton
             busy={wizardPrimaryAction.busy}
             disabled={wizardPrimaryAction.disabled}
@@ -1316,7 +1584,7 @@ export function StudioWorkbench() {
         </div>
       </section>
 
-      <section className="mt-6 border border-[var(--line)] bg-white">
+      <section className="mt-6 border border-[var(--line)] bg-white" id="studio-lab">
         <SectionHeader title="Local black-box lab (explicit)" />
         <details className="p-5 text-sm">
           <summary className="cursor-pointer font-semibold">Enable explicit local black-box lab</summary>
@@ -1482,7 +1750,7 @@ export function StudioWorkbench() {
         </details>
       </section>
 
-      <div className="mt-6 grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_360px]">
+      <div className="mt-6 grid gap-5">
         <section className="border border-[var(--line)] bg-white">
           <SectionHeader title="Workspaces" />
           <div className="grid gap-4 p-5 text-sm">
@@ -1702,13 +1970,6 @@ export function StudioWorkbench() {
                 onClick={handleStartResearch}
               />
               <ActionButton
-                busy={busy === "candidate-hunt"}
-                disabled={!localCandidateHuntInputReady}
-                icon={<Play size={16} aria-hidden="true" />}
-                label="Run local candidate hunt"
-                onClick={handleRunLocalCandidateHunt}
-              />
-              <ActionButton
                 busy={busy === "export"}
                 disabled={!latestRunId && !latestCampaignHunterId}
                 icon={<FileDown size={16} aria-hidden="true" />}
@@ -1802,8 +2063,8 @@ export function StudioWorkbench() {
           </div>
         </section>
 
-        <section className="border border-[var(--line)] bg-white">
-          <SectionHeader title="Safety and Run Log" />
+        <section className="border-b border-[var(--line)] pb-5" data-testid="studio-mission-details">
+          <SectionHeader title="Mission details" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="border border-[var(--line)] bg-[var(--background)] p-4">
               <p className="font-semibold">Mission control</p>
@@ -2007,110 +2268,11 @@ export function StudioWorkbench() {
                 </span>
               ))}
             </div>
-            <div className="grid gap-2 border-t border-[var(--line)] pt-4">
-              {log.map((entry, index) => (
-                <p key={`${entry.message}-${index}`} className={logTone(entry.tone)}>
-                  {entry.message}
-                </p>
-              ))}
-            </div>
           </div>
         </section>
       </div>
 
-      <section className="mt-5 border border-[var(--line)] bg-white">
-        <SectionHeader title="Candidate Board" />
-        <div className="grid gap-4 p-5 lg:grid-cols-2">
-          {candidates.length === 0 ? (
-            <p className="text-sm text-[var(--muted)]">
-              No candidates yet.
-            </p>
-          ) : (
-            candidates.map((candidate) => (
-              <article key={candidate.id} className="border border-[var(--line)] p-4 text-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold">{candidate.id}</p>
-                    <h2 className="mt-1 text-lg font-semibold">{candidate.title}</h2>
-                  </div>
-                  <span className="border border-[var(--line)] px-2 py-1 text-xs uppercase">
-                    {candidate.status}
-                  </span>
-                </div>
-                <dl className="mt-4 grid gap-3">
-                  <StatusRow label="Severity" value={candidate.severity} />
-                  <StatusRow label="Endpoint" value={candidate.affectedEndpoint} />
-                  <StatusRow label="Code path" value={candidate.affectedCodePath} />
-                  <StatusRow label="Priority" value={String(candidate.priorityScore)} />
-                  <StatusRow label="Validation mode" value={candidate.validationMode} />
-                  <StatusRow label="Report readiness" value={candidate.reportReadiness.status} warning />
-                </dl>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Reason</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.reason}</p>
-                </div>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Broken invariant</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.brokenInvariant}</p>
-                </div>
-                <ListBlock title="Why still alive" items={candidate.whyStillAlive} />
-                <ListBlock
-                  title="Falsification open dimensions"
-                  items={candidate.falsificationSummary.openDimensions}
-                />
-                <ListBlock
-                  title="Semantic evidence"
-                  items={[semanticEvidenceLine(candidate.semanticEvidence)]}
-                />
-                <ListBlock
-                  title="Candidate evidence review packet"
-                  items={candidateEvidenceReviewPacketLines(candidate)}
-                />
-                <ListBlock title="Evidence focus" items={candidate.evidenceFocus} />
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Repair guidance</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.repairGuidance}</p>
-                </div>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Regression test</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.regressionTest}</p>
-                </div>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Next report action</p>
-                  <p className="mt-2 text-[var(--muted)]">
-                    {candidate.reportReadiness.nextAllowedAction}
-                  </p>
-                </div>
-                <ListBlock title="Ranking reasons" items={candidate.rankingReasons} />
-                <ListBlock title="Safe validation plan" items={candidate.safeValidationPlan} />
-                <ListBlock title="Safety blockers" items={candidate.safetyBlockers} />
-                <ListBlock title="Candidate evidence gaps" items={candidate.evidenceGaps} />
-                <ListBlock title="Evidence needed" items={candidate.evidenceNeeds} />
-                <ListBlock title="False-positive checks" items={candidate.refutationQuestions} />
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <ActionButton
-                    busy={busy === `candidate-learning:${candidate.id}:needs_more_evidence`}
-                    icon={<ShieldCheck size={16} aria-hidden="true" />}
-                    label="Record needs-evidence learning"
-                    onClick={() => handleRecordCandidateCardLearning(candidate, "needs_more_evidence")}
-                  />
-                  <ActionButton
-                    busy={busy === `candidate-learning:${candidate.id}:refuted`}
-                    icon={<ShieldCheck size={16} aria-hidden="true" />}
-                    label="Record refuted learning"
-                    onClick={() => handleRecordCandidateCardLearning(candidate, "refuted")}
-                  />
-                  <ActionButton
-                    busy={busy === `candidate-learning:${candidate.id}:duplicate`}
-                    icon={<ShieldCheck size={16} aria-hidden="true" />}
-                    label="Record duplicate learning"
-                    onClick={() => handleRecordCandidateCardLearning(candidate, "duplicate")}
-                  />
-                </div>
-              </article>
-            ))
-          )}
-        </div>
+      <section className="mt-5 border-t border-[var(--line)] pt-5" id="studio-candidates">
         {reportExport ? (
           <div className="border-t border-[var(--line)] p-5 text-sm">
             <p className="font-semibold">{reportExport.title}</p>
@@ -2145,7 +2307,8 @@ export function StudioWorkbench() {
           </div>
         ) : null}
       </section>
-    </main>
+      </div>
+    </StudioShell>
   );
 }
 
@@ -2307,43 +2470,6 @@ function missionCandidateLine(
     `independent challenge ${crossChecks}`,
     `report ${candidate.reportStatus}`,
   ].join("; ");
-}
-
-function semanticEvidenceLine(
-  evidence: ReturnType<typeof toStudioCandidateCards>[number]["semanticEvidence"],
-): string {
-  const sinks = evidence.sinkSymbols.length > 0 ? evidence.sinkSymbols.join(", ") : "none";
-  const gates = [
-    evidence.executionAllowed ? "execution allowed" : "execution blocked",
-    evidence.validationAllowed ? "validation allowed" : "validation blocked",
-    evidence.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
-  ].join(", ");
-  return `root ${evidence.rootCause}; invariant ${evidence.securityInvariant}; authz ${evidence.authzHint}; sinks ${evidence.sinkCount} (${sinks}); review ${evidence.reviewState}; ${gates}`;
-}
-
-function candidateEvidenceReviewPacketLines(
-  candidate: ReturnType<typeof toStudioCandidateCards>[number],
-): string[] {
-  const trace = candidate.evidenceTraceSummary;
-  const missingArtifacts =
-    trace.missingRequiredArtifactKinds.length > 0
-      ? trace.missingRequiredArtifactKinds.join(", ")
-      : "none";
-  const evidenceNeeds =
-    candidate.evidenceNeeds.length > 0 ? candidate.evidenceNeeds.join(", ") : "review";
-  const evidenceGaps =
-    candidate.evidenceGaps.length > 0 ? candidate.evidenceGaps.join(", ") : "none";
-  const focus =
-    candidate.evidenceFocus.length > 0 ? candidate.evidenceFocus.join(", ") : "review";
-  const readiness = candidate.reportReadiness;
-  return [
-    `Trace ${trace.status}; endpoint traced ${trace.endpointTraced ? "true" : "false"}; code traced ${trace.codePathTraced ? "true" : "false"}; source facts ${trace.sourceFactCount}.`,
-    `Report readiness ${readiness.status}; trace ${readiness.traceStatus}; required evidence ${readiness.requiredEvidenceCount}; safe validation steps ${readiness.safeValidationStepCount}; submission blocked ${readiness.submissionBlocked ? "true" : "false"}.`,
-    `Required artifacts ${trace.requiredArtifactKinds.join(", ")}; present ${trace.presentRequiredArtifactKinds.join(", ") || "none"}; missing ${missingArtifacts}.`,
-    `Evidence needs ${evidenceNeeds}; evidence gaps ${evidenceGaps}; focus ${focus}.`,
-    "Redaction review required before sharing evidence; raw secrets, tokens, cookies, authorization headers, and user data stay excluded.",
-    "Evidence review remains read-only: execution blocked, validation blocked, report submission blocked.",
-  ];
 }
 
 function agentQueueLine(
@@ -2777,16 +2903,6 @@ function toCandidateHunterLearningOutcome(value: string): CandidateHunterLearnin
   return "needs_more_evidence";
 }
 
-function logTone(tone: LogEntry["tone"]): string {
-  if (tone === "safe") {
-    return "text-[var(--success)]";
-  }
-  if (tone === "blocked") {
-    return "text-[var(--warning)]";
-  }
-  return "text-[var(--muted)]";
-}
-
 function checklistTone(status: "ready" | "missing" | "optional"): string {
   if (status === "ready") {
     return "text-[var(--success)]";
@@ -2795,75 +2911,4 @@ function checklistTone(status: "ready" | "missing" | "optional"): string {
     return "text-[var(--warning)]";
   }
   return "text-[var(--muted)]";
-}
-
-function latestSessionFromManifest(
-  manifest: StudioWorkspaceManifest,
-): { id: string | null; kind: "campaign_hunter" | "none" | "research" } {
-  let latest: { id: string | null; kind: "campaign_hunter" | "none" | "research"; recordedAt: string } = {
-    id: null,
-    kind: "none",
-    recordedAt: "",
-  };
-  for (const run of [...(manifest.runs ?? [])].reverse()) {
-    if (run.run_id && (!latest.id || safeDateValue(run.recorded_at) >= safeDateValue(latest.recordedAt))) {
-      latest = {
-        id: run.run_id,
-        kind: "research",
-        recordedAt: run.recorded_at ?? "",
-      };
-    }
-  }
-  for (const run of [...(manifest.campaign_hunter_runs ?? [])].reverse()) {
-    if (
-      run.campaign_id &&
-      (!latest.id || safeDateValue(run.recorded_at) >= safeDateValue(latest.recordedAt))
-    ) {
-      latest = {
-        id: run.campaign_id,
-        kind: "campaign_hunter",
-        recordedAt: run.recorded_at ?? "",
-      };
-    }
-  }
-  return { id: latest.id, kind: latest.kind };
-}
-
-function reportExportFromLatestSession(
-  manifest: StudioWorkspaceManifest,
-  latest: { id: string | null; kind: "campaign_hunter" | "none" | "research" },
-): StudioReportExportResponse | null {
-  if (!latest.id || latest.kind === "none") {
-    return null;
-  }
-  const run =
-    latest.kind === "research"
-      ? (manifest.runs ?? []).find((item) => item.run_id === latest.id)
-      : (manifest.campaign_hunter_runs ?? []).find((item) => item.campaign_id === latest.id);
-  if (!run?.report_markdown_path) {
-    return null;
-  }
-  return {
-    manifest,
-    report: {
-      restored_from_manifest: true,
-      submission_blocked: true,
-    },
-    report_markdown_path: run.report_markdown_path,
-    report_submission_allowed: false,
-    run_id: latest.id,
-    submission_blocked: true,
-    title:
-      latest.kind === "campaign_hunter"
-        ? "Submission-blocked campaign hunter draft"
-        : "Submission-blocked report draft",
-  };
-}
-
-function safeDateValue(value: string | undefined): number {
-  if (!value) {
-    return 0;
-  }
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? 0 : timestamp;
 }

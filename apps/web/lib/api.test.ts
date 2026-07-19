@@ -10,6 +10,7 @@ import {
   createStudioWorkspaceBenchmarkTemplate,
   createStudioWorkspace,
   createFindingCandidate,
+  getCampaignControlCenter,
   getControlCenterOverview,
   getProgramRuleSnapshotDiff,
   getProgramRuleSource,
@@ -303,6 +304,50 @@ test("getControlCenterOverview forwards AbortSignal and aborts its strict fetch"
     );
     assert.equal(receivedSignal, controller.signal);
     assert.equal(receivedSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio live-refresh helpers forward AbortSignal to their GET requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const receivedSignals: Array<AbortSignal | null | undefined> = [];
+  globalThis.fetch = async (_input, init) => {
+    receivedSignals.push(init?.signal);
+    return await new Promise<Response>((_resolve, reject) => {
+      if (!init?.signal) {
+        reject(new TypeError("missing abort signal"));
+        return;
+      }
+      init.signal.addEventListener("abort", () => {
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      });
+    });
+  };
+
+  try {
+    const fallbackCandidates = { candidates: [], run_id: "run_1" };
+    const requests = [
+      getCampaignControlCenter("campaign_1", null, controller.signal),
+      getStudioWorkspaceManifest("C:/authorized/studio", null, controller.signal),
+      listStudioWorkspaceCandidates(
+        "C:/authorized/studio",
+        "run_1",
+        fallbackCandidates,
+        controller.signal,
+      ),
+      getStudioWorkspaceMission("C:/authorized/studio", "run_1", null, controller.signal),
+    ] as const;
+    controller.abort();
+
+    const [campaign, manifest, candidates, mission] = await Promise.all(requests);
+    assert.equal(campaign, null);
+    assert.equal(manifest, null);
+    assert.equal(candidates, fallbackCandidates);
+    assert.equal(mission, null);
+    assert.deepEqual(receivedSignals, Array.from({ length: 4 }, () => controller.signal));
+    assert.equal(controller.signal.aborted, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -6,6 +6,8 @@ import {
   toStudioBlackBoxRemoteStatus,
   toStudioCampaignHunterCandidateCards,
   toStudioCandidateCards,
+  toStudioConversationActorLabel,
+  toStudioControlCenterView,
   toStudioMissionHandoffBrief,
   toStudioMissionPanel,
   toStudioResearchReadiness,
@@ -2369,12 +2371,20 @@ test("studio page exposes the four studio regions", async () => {
   const workbench = await fs
     .readFile(new URL("../app/studio/studio-workbench.tsx", import.meta.url), "utf8")
     .catch(() => "");
-  const studioSource = `${page}\n${workbench}`;
+  const components = await Promise.all([
+    "research-conversation",
+    "candidate-inspector",
+    "studio-shell",
+  ].map((name) => fs.readFile(
+    new URL(`../components/studio/${name}.tsx`, import.meta.url),
+    "utf8",
+  )));
+  const studioSource = `${page}\n${workbench}\n${components.join("\n")}`;
 
   assert.match(studioSource, /Workspaces/);
-  assert.match(studioSource, /Conversation/);
-  assert.match(studioSource, /Candidate Board/);
-  assert.match(studioSource, /Safety and Run Log/);
+  assert.match(studioSource, /ResearchConversation/);
+  assert.match(studioSource, /CandidateInspector/);
+  assert.match(studioSource, /Mission details/);
   assert.match(studioSource, /submission-blocked/);
 });
 
@@ -2437,8 +2447,8 @@ test("studio workbench can open an existing local workspace", async () => {
   assert.match(workbench, /getCampaignControlCenter/);
   assert.match(workbench, /handleOpenWorkspace/);
   assert.match(workbench, /Open workspace/);
-  assert.match(workbench, /latestSessionFromManifest/);
-  assert.match(workbench, /reportExportFromLatestSession/);
+  assert.match(workbench, /latestStudioSession/);
+  assert.match(workbench, /reportExportFromStudioSession/);
   assert.match(workbench, /campaign_hunter/);
   assert.match(workbench, /toStudioCampaignHunterCandidateCards\(controlCenter\)/);
   assert.match(workbench, /latestCampaignHunterId/);
@@ -2446,19 +2456,19 @@ test("studio workbench can open an existing local workspace", async () => {
 });
 
 test("studio workbench restores exported report drafts from workspace manifest", async () => {
-  const workbench = await fs.readFile(
-    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+  const live = await fs.readFile(
+    new URL("./studio-live.ts", import.meta.url),
     "utf8",
   );
 
-  assert.match(workbench, /reportExportFromLatestSession\(opened, latest\)/);
-  assert.match(workbench, /manifest\.runs \?\? \[\]/);
-  assert.match(workbench, /manifest\.campaign_hunter_runs \?\? \[\]/);
-  assert.match(workbench, /run\.report_markdown_path/);
-  assert.match(workbench, /Submission-blocked campaign hunter draft/);
-  assert.match(workbench, /Submission-blocked report draft/);
-  assert.match(workbench, /report_submission_allowed: false/);
-  assert.match(workbench, /restored_from_manifest: true/);
+  assert.match(live, /reportExportFromStudioSession/);
+  assert.match(live, /manifest\.runs \?\? \[\]/);
+  assert.match(live, /manifest\.campaign_hunter_runs \?\? \[\]/);
+  assert.match(live, /run\?\.report_markdown_path/);
+  assert.match(live, /Submission-blocked campaign hunter draft/);
+  assert.match(live, /Submission-blocked report draft/);
+  assert.match(live, /report_submission_allowed: false/);
+  assert.match(live, /restored_from_manifest: true/);
 });
 
 test("studio workbench reads mission summary for desktop workbench state", async () => {
@@ -2725,22 +2735,23 @@ test("studio workbench exposes a redacted evidence review queue", async () => {
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),
     "utf8",
   );
+  const evidenceInspector = await fs.readFile(
+    new URL("../components/studio/evidence-inspector.tsx", import.meta.url),
+    "utf8",
+  );
+  const source = `${workbench}\n${evidenceInspector}`;
 
-  assert.match(workbench, /Redacted evidence review queue/);
-  assert.match(workbench, /Candidate evidence review packet/);
-  assert.match(workbench, /candidateEvidenceReviewPacketLines/);
+  assert.match(source, /Redacted evidence review queue/);
   assert.match(workbench, /missionPanel\.candidateReviewPackets\.map\(redactedEvidenceReviewLine\)/);
   assert.match(workbench, /function redactedEvidenceReviewLine/);
-  assert.match(workbench, /Redaction review required before sharing evidence/);
-  assert.match(workbench, /raw secrets, tokens, cookies, authorization headers, and user data stay excluded/);
-  assert.match(workbench, /Evidence review remains read-only/);
-  assert.match(workbench, /redaction review/);
-  assert.match(workbench, /evidence needs/);
-  assert.match(workbench, /execution blocked/);
-  assert.match(workbench, /validation blocked/);
-  assert.match(workbench, /submission blocked/);
-  assert.doesNotMatch(workbench, /Authorization\s*[:=]|secret-token|raw_cookie|raw_token/i);
-  assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
+  assert.match(source, /原始 secrets、tokens、cookies、authorization headers 与用户数据保持排除/);
+  assert.match(source, /脱敏审查/);
+  assert.match(source, /evidence needs/);
+  assert.match(source, /execution blocked/);
+  assert.match(source, /validation blocked/);
+  assert.match(source, /submission blocked/);
+  assert.doesNotMatch(source, /Authorization\s*[:=]|secret-token|raw_cookie|raw_token/i);
+  assert.doesNotMatch(source, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
 });
 
 test("studio workbench records candidate hunter learning only after human review", async () => {
@@ -2773,9 +2784,9 @@ test("studio workbench records candidate hunter learning only after human review
   assert.match(workbench, /Record needs-evidence learning/);
   assert.match(workbench, /Record refuted learning/);
   assert.match(workbench, /Record duplicate learning/);
-  assert.match(workbench, /handleRecordCandidateCardLearning\(candidate, "needs_more_evidence"\)/);
-  assert.match(workbench, /handleRecordCandidateCardLearning\(candidate, "refuted"\)/);
-  assert.match(workbench, /handleRecordCandidateCardLearning\(candidate, "duplicate"\)/);
+  assert.match(workbench, /handleRecordCandidateCardLearning\(studioView\.selectedCandidate!, "needs_more_evidence"\)/);
+  assert.match(workbench, /handleRecordCandidateCardLearning\(studioView\.selectedCandidate!, "refuted"\)/);
+  assert.match(workbench, /handleRecordCandidateCardLearning\(studioView\.selectedCandidate!, "duplicate"\)/);
   assert.match(workbench, /human outcome \$\{outcome\}/);
   assert.match(workbench, /candidate\.evidenceTraceSummary\.missingRequiredArtifactKinds/);
   assert.match(workbench, /candidate\.reportReadiness\.nextAllowedAction/);
@@ -2886,41 +2897,37 @@ test("studio workbench surfaces exported markdown report drafts", async () => {
 });
 
 test("studio workbench surfaces candidate rationale and ranking reasons", async () => {
-  const workbench = await fs.readFile(
-    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+  const source = await fs.readFile(
+    new URL("../components/studio/candidate-inspector.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(workbench, /candidate\.reason/);
-  assert.match(workbench, /Ranking reasons/);
-  assert.match(workbench, /Evidence focus/);
-  assert.match(workbench, /candidate\.evidenceFocus/);
-  assert.match(workbench, /Semantic evidence/);
-  assert.match(workbench, /candidate\.semanticEvidence/);
-  assert.match(workbench, /semanticEvidenceLine/);
+  assert.match(source, /candidate\?\.reason/);
+  assert.match(source, /Ranking reasons/);
+  assert.match(source, /candidate\?\.rankingReasons/);
 });
 
 test("studio workbench surfaces validation plan and safety blockers", async () => {
-  const workbench = await fs.readFile(
-    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+  const source = await fs.readFile(
+    new URL("../components/studio/validation-plan-inspector.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(workbench, /Safe validation plan/);
-  assert.match(workbench, /Safety blockers/);
-  assert.match(workbench, /Candidate evidence gaps/);
-  assert.match(workbench, /candidate\.evidenceGaps/);
-  assert.match(workbench, /candidate\.validationMode/);
+  assert.match(source, /安全验证计划/);
+  assert.match(source, /Safety blockers/);
+  assert.match(source, /Candidate evidence gaps/);
+  assert.match(source, /candidate\?\.evidenceGaps/);
+  assert.match(source, /candidate\?\.validationMode/);
 });
 
 test("studio workbench surfaces candidate report readiness", async () => {
-  const workbench = await fs.readFile(
-    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+  const inspector = await fs.readFile(
+    new URL("../components/studio/report-inspector.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(workbench, /Report readiness/);
-  assert.match(workbench, /candidate\.reportReadiness/);
+  assert.match(inspector, /就绪状态/);
+  assert.match(inspector, /candidate\?\.reportReadiness/);
 });
 
 test("candidate cards project whyStillAlive and falsification summary", () => {
@@ -2958,13 +2965,131 @@ test("candidate cards project whyStillAlive and falsification summary", () => {
   assert.equal(card.falsificationSummary.survivedKillScore, 4);
   assert.deepEqual(card.falsificationSummary.openDimensions, ["control_presence"]);
 });
-test("studio workbench surfaces falsification why still alive", async () => {
+
+test("studio control center uses Chinese labels and keeps the selected candidate", () => {
+  const candidates = toStudioCandidateCards([
+    { hypothesis_id: "H-001", vuln_type: "IDOR", location: "GET /records/{id}" },
+    { hypothesis_id: "H-002", vuln_type: "SSRF", location: "POST /preview" },
+  ]);
+
+  const view = toStudioControlCenterView(candidates, "H-002");
+
+  assert.deepEqual(view.mobileTabs, ["总览", "候选", "详情"]);
+  assert.deepEqual(view.inspectorTabs, ["候选详情", "证据", "验证计划", "报告草稿"]);
+  assert.equal(view.selectedCandidate?.id, "H-002");
+  assert.equal(view.selectedCandidate?.title, "SSRF");
+});
+
+test("studio control center localizes missing traces and fails hostile permissions closed", () => {
+  const [candidate] = toStudioCandidateCards([
+    {
+      hypothesis_id: "H-hostile",
+      vuln_type: "authorization",
+      safe_verification: false,
+      evidence_trace_summary: {
+        execution_allowed: true,
+        validation_allowed: true,
+        report_submission_allowed: true,
+      },
+      report_readiness: {
+        report_submission_allowed: true,
+        submission_blocked: false,
+        status: "ready",
+      },
+    },
+  ]);
+
+  const view = toStudioControlCenterView([candidate], "H-hostile");
+
+  assert.equal(view.selectedCandidate?.affectedEndpoint, "待补充受影响端点");
+  assert.equal(view.selectedCandidate?.affectedCodePath, "待补充代码路径");
+  assert.equal(view.permissions.executionAllowed, false);
+  assert.equal(view.permissions.validationAllowed, false);
+  assert.equal(view.permissions.reportSubmissionAllowed, false);
+  assert.equal(view.reportState.label, "submission-blocked");
+  assert.equal(view.reportState.submissionBlocked, true);
+  assert.equal(view.reportState.humanReviewRequired, true);
+});
+
+test("studio conversation labels only explicit operator messages as researcher", () => {
+  assert.equal(toStudioConversationActorLabel(), "Mythos Agent");
+  assert.equal(toStudioConversationActorLabel("system"), "Mythos Agent");
+  assert.equal(toStudioConversationActorLabel("operator"), "研究员");
+});
+
+test("studio presentation files stay free of API mutations and desktop bridge calls", async () => {
+  const componentNames = [
+    "studio-shell",
+    "mission-stage-strip",
+    "research-conversation",
+    "candidate-inspector",
+    "evidence-inspector",
+    "validation-plan-inspector",
+    "report-inspector",
+  ];
+  const sources = await Promise.all(
+    componentNames.map((name) =>
+      fs.readFile(new URL(`../components/studio/${name}.tsx`, import.meta.url), "utf8"),
+    ),
+  );
+
+  for (const source of sources) {
+    assert.doesNotMatch(source, /from ["']@\/lib\/api["']/);
+    assert.doesNotMatch(source, /window\.mythosStudio/);
+    assert.doesNotMatch(source, /fetch\s*\(/);
+  }
+
+  const controller = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(controller, /window\.mythosStudio/);
+  assert.match(controller, /createStudioWorkspace/);
+  assert.match(controller, /StudioShell/);
+  assert.match(
+    controller,
+    /getCampaign:\s*\(campaignId, signal\)\s*=>\s*getCampaignControlCenter\(campaignId, null, signal\)/u,
+  );
+  assert.match(
+    controller,
+    /getManifest:\s*\(path, signal\)\s*=>\s*getStudioWorkspaceManifest\(path, null, signal\)/u,
+  );
+  assert.match(
+    controller,
+    /getMission:\s*\(path, runId, signal\)\s*=>\s*getStudioWorkspaceMission\(path, runId, null, signal\)/u,
+  );
+  assert.match(controller, /listCandidates:\s*\(path, runId, signal\)/u);
+  assert.match(controller, /run_id:\s*runId,\s*\},\s*signal,\s*\)/u);
+});
+
+test("studio shell uses Radix tabs and sheet without duplicated mobile inspector", async () => {
+  const shell = await fs.readFile(
+    new URL("../components/studio/studio-shell.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(shell, /from ["']@\/components\/ui\/sheet["']/);
+  assert.match(shell, /from ["']@\/components\/ui\/tabs["']/);
+  assert.match(shell, /hidden sm:inline-flex min-\[1100px\]:hidden/);
+  assert.doesNotMatch(shell, /document\.addEventListener\("keydown"/);
+  assert.doesNotMatch(shell, /role="tab"/);
+});
+
+test("studio workbench renders one candidate hunt entry and no legacy board or run log", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),
     "utf8",
   );
+  assert.equal(workbench.match(/label="Run local candidate hunt"/g)?.length, 1);
+  assert.doesNotMatch(workbench, /SectionHeader title="Candidate Board"/);
+  assert.doesNotMatch(workbench, /SectionHeader title="Safety and Run Log"/);
+});
+test("studio workbench surfaces falsification why still alive", async () => {
+  const source = await fs.readFile(
+    new URL("../components/studio/candidate-inspector.tsx", import.meta.url),
+    "utf8",
+  );
 
-  assert.match(workbench, /Why still alive/);
-  assert.match(workbench, /candidate\.whyStillAlive/);
-  assert.match(workbench, /candidate\.falsificationSummary\.openDimensions/);
+  assert.match(source, /Why still alive/);
+  assert.match(source, /candidate\?\.whyStillAlive/);
+  assert.match(source, /candidate\?\.falsificationSummary\.openDimensions/);
 });
