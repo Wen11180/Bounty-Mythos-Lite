@@ -14,6 +14,12 @@ Current implementation is not yet that final autonomous discovery engine. It is 
 
 Preferred local software entrypoint: Mythos Studio. During development, run it from `apps/studio` after installing API and web dependencies. The Studio launcher opens the local `/studio` workspace without making the browser dashboard the primary experience. It defaults to inline safe read-only worker dispatch, so Redis/Celery is not required for the local desktop campaign loop.
 
+### Public program rule intake
+
+The Studio `/studio` workspace can register one public HTTPS bounty-policy URL and turn it into review-gated scope rules. Studio performs bounded, DNS-pinned acquisition; the browser UI never fetches the policy URL. First, changed, rejected, ambiguous, unsupported-language, missing-evidence, and stale snapshots remain non-authorizing until a human reviews the current digest. The feature never grants execution, validation, lease, scope-change, review-bypass, or report-submission authority.
+
+Server-only Compose can review existing snapshots but has no network worker and must report `studio_required`. Authenticated/private pages, local rule-file import, credentials, HAR discovery, target scanning, validation execution, and automatic submission are outside this version. See [Public Program Rule Intake](docs/PROGRAM_RULE_INTAKE.md) for the operator runbook, release checklist, and verification commands.
+
 ## Structure
 
 ```text

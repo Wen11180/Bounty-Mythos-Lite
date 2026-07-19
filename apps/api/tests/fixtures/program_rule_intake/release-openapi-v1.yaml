@@ -1,0 +1,17 @@
+openapi: 3.0.0
+info:
+  title: Synthetic API
+  version: 1.0.0
+paths:
+  /v1/widgets/{widget_id}:
+    get:
+      operationId: getWidget
+      description: raw_openapi_example must not enter the reduced candidate
+  /v1/widgets/{widget_id}/notes:
+    post:
+      operationId: addWidgetNote
+components:
+  securitySchemes:
+    syntheticBearer:
+      type: http
+      scheme: bearer

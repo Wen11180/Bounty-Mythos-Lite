@@ -1,0 +1,129 @@
+{
+  "added_linked_artifacts": [],
+  "added_prohibitions": [
+    "credential_stuffing"
+  ],
+  "added_rules": [
+    {
+      "allowed_validation": [],
+      "asset": "admin.example.test",
+      "asset_kind": "exact_host",
+      "automation": "limited",
+      "automation_evidence_ids": [
+        "3d7a339a15a88f526a6fea910b214354bf58b32a9da66fabf17facb81933b1cd",
+        "875d79908d7e9a5f59d9d9ba9a142de9e33a8b2475db2546287c7b9be841f83a"
+      ],
+      "human_approval_required": true,
+      "prohibited": [
+        "credential_stuffing"
+      ],
+      "prohibited_evidence_ids": {
+        "credential_stuffing": [
+          "570148fa6cea8a1805ac7226e86a460e3a599ba6ec272fb7bdfedc6261b61e88",
+          "a552256a6fef35bde84fb669ff9baa452c9b1133ea45bfc60aa2460db9bf2cc4"
+        ]
+      },
+      "rate_limit": {
+        "evidence_ids": [
+          "3d7a339a15a88f526a6fea910b214354bf58b32a9da66fabf17facb81933b1cd",
+          "875d79908d7e9a5f59d9d9ba9a142de9e33a8b2475db2546287c7b9be841f83a"
+        ],
+        "period": 1,
+        "requests": 2,
+        "unit": "minute"
+      },
+      "review_issues": [],
+      "review_state": "ready",
+      "scope_evidence_ids": [
+        "2fa0f1c4b9ba429e6d7776ce283eec5f91cc909405f15115055b3e08c5ef5ec0",
+        "b496261f7e6bfea7fa18984a1417a7fcf3f0be70ae83196d7ecc8ab464038246"
+      ],
+      "scope_status": "out_of_scope",
+      "specificity": 2
+    }
+  ],
+  "modified_rules": [
+    {
+      "after": {
+        "allowed_validation": [],
+        "asset": "api.example.test",
+        "asset_kind": "exact_host",
+        "automation": "limited",
+        "automation_evidence_ids": [
+          "3d7a339a15a88f526a6fea910b214354bf58b32a9da66fabf17facb81933b1cd",
+          "875d79908d7e9a5f59d9d9ba9a142de9e33a8b2475db2546287c7b9be841f83a"
+        ],
+        "human_approval_required": true,
+        "prohibited": [
+          "credential_stuffing"
+        ],
+        "prohibited_evidence_ids": {
+          "credential_stuffing": [
+            "570148fa6cea8a1805ac7226e86a460e3a599ba6ec272fb7bdfedc6261b61e88",
+            "a552256a6fef35bde84fb669ff9baa452c9b1133ea45bfc60aa2460db9bf2cc4"
+          ]
+        },
+        "rate_limit": {
+          "evidence_ids": [
+            "3d7a339a15a88f526a6fea910b214354bf58b32a9da66fabf17facb81933b1cd",
+            "875d79908d7e9a5f59d9d9ba9a142de9e33a8b2475db2546287c7b9be841f83a"
+          ],
+          "period": 1,
+          "requests": 2,
+          "unit": "minute"
+        },
+        "review_issues": [],
+        "review_state": "ready",
+        "scope_evidence_ids": [
+          "6a17231d8e84c11306871e200ea78ef287b1811b94b4f69cbb25e6abdf2942da",
+          "872869f286bfc554aac251902851a58a255b3e03332bd0fddd626fb0ddf1d623"
+        ],
+        "scope_status": "in_scope",
+        "specificity": 2
+      },
+      "asset": "api.example.test",
+      "before": {
+        "allowed_validation": [],
+        "asset": "api.example.test",
+        "asset_kind": "exact_host",
+        "automation": "limited",
+        "automation_evidence_ids": [
+          "06797ca94c5894aa0a686bebf7db73dd3a72e3e87954d9366c636bb80e67eefa",
+          "b2977a78feb21151be49a4e5334e133b7a39317d0bb190d4d31b0e978628d0a7"
+        ],
+        "human_approval_required": true,
+        "prohibited": [
+          "DoS"
+        ],
+        "prohibited_evidence_ids": {
+          "DoS": [
+            "1f741a26bdfa366cbf3f19448958ae2e259b8ba7bf91436c8e5679db9ed180c4",
+            "35312c1818b5c50fa8cdd9270f80d4456891661e200072f9db657c6d6bda1f1c"
+          ]
+        },
+        "rate_limit": {
+          "evidence_ids": [
+            "06797ca94c5894aa0a686bebf7db73dd3a72e3e87954d9366c636bb80e67eefa",
+            "b2977a78feb21151be49a4e5334e133b7a39317d0bb190d4d31b0e978628d0a7"
+          ],
+          "period": 1,
+          "requests": 5,
+          "unit": "minute"
+        },
+        "review_issues": [],
+        "review_state": "ready",
+        "scope_evidence_ids": [
+          "25b4399a3879b1fe3f7ab50c1d17ff1699cc3a9b9b275aa7928ab1e365fa9a82",
+          "d433eed90b0eedd001238b6027d7b4d03d09d436479ba2bb6e3d2232b59d8616"
+        ],
+        "scope_status": "in_scope",
+        "specificity": 2
+      }
+    }
+  ],
+  "removed_linked_artifacts": [],
+  "removed_prohibitions": [
+    "DoS"
+  ],
+  "removed_rules": []
+}
