@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from threading import Event, Thread
 
 from app.db import Base
 from app.repository import DatabaseRepository, seed_sample_data
@@ -169,6 +170,98 @@ def test_run_agent_task_reconciles_existing_dispatched_agent_run():
         assert "secret-token" not in str(agent_runs[0].payload)
     finally:
         session.close()
+
+
+def test_run_agent_task_claims_work_before_a_concurrent_delivery_materializes_it(
+    tmp_path,
+    monkeypatch,
+):
+    engine = create_engine(
+        f"sqlite+pysqlite:///{(tmp_path / 'worker-claim.db').as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine)
+    with session_factory() as setup_session:
+        seed_sample_data(setup_session)
+        setup_repository = DatabaseRepository(setup_session)
+        campaign = setup_repository.create_campaign(
+            program_id="program_example",
+            name="Concurrent worker claim campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        campaign = setup_repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        task = setup_repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="campaign_observation",
+            agent_type="orchestrator_agent",
+            title="Observe authorized campaign state",
+        )
+        campaign_id = campaign.id
+        task_id = task.id
+        task_record_type = type(task)
+
+    first_materialization_started = Event()
+    release_first_materialization = Event()
+    materialization_calls: list[str] = []
+
+    def hold_first_materialization(*, task, **_kwargs):
+        materialization_calls.append(task.id)
+        if len(materialization_calls) == 1:
+            first_materialization_started.set()
+            assert release_first_materialization.wait(timeout=5)
+        return [], {"artifact_kind": "task_completion_marker"}
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_materialize_read_only_artifacts",
+        hold_first_materialization,
+    )
+    first_result: dict = {}
+
+    def run_first_delivery():
+        with session_factory() as first_session:
+            first_result.update(
+                run_agent_task(
+                    task_id,
+                    repository=DatabaseRepository(first_session),
+                )
+            )
+
+    first_delivery = Thread(target=run_first_delivery)
+    first_delivery.start()
+    assert first_materialization_started.wait(timeout=5)
+    try:
+        with session_factory() as duplicate_session:
+            duplicate_result = run_agent_task(
+                task_id,
+                repository=DatabaseRepository(duplicate_session),
+            )
+    finally:
+        release_first_materialization.set()
+    first_delivery.join(timeout=5)
+
+    with session_factory() as verification_session:
+        verification_repository = DatabaseRepository(verification_session)
+        persisted_task = verification_session.get(task_record_type, task_id)
+        agent_runs = verification_repository.list_campaign_agent_runs(campaign_id)
+
+    assert not first_delivery.is_alive()
+    assert first_result["status"] == "completed"
+    assert duplicate_result == {
+        "status": "running",
+        "task_id": task_id,
+        "stop_reason": "task_already_running",
+    }
+    assert materialization_calls == [task_id]
+    assert persisted_task is not None
+    assert persisted_task.status == "completed"
+    assert len(agent_runs) == 1
 
 
 def test_run_agent_task_extracts_authorized_codebase_facts_without_secret_payloads():

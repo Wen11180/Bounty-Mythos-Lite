@@ -41,6 +41,7 @@ def build_candidate_hunter_observations(
     pipeline_run_id: str,
     candidates: list[dict],
     code_files: list[dict],
+    supplemental_code_facts: list[CodebaseFactCandidate] | None = None,
     surface_facts: list[dict],
     context_facts: list[dict],
 ) -> dict[str, Any]:
@@ -56,6 +57,14 @@ def build_candidate_hunter_observations(
             ]
         }
     )
+    mapped_code_facts = [
+        *mapped_code.facts,
+        *(
+            fact
+            for fact in (supplemental_code_facts or [])
+            if isinstance(fact, CodebaseFactCandidate)
+        ),
+    ]
     semantic_code_facts = _python_semantic_facts(code_files)
     safe_surface_facts = [
         fact
@@ -70,7 +79,7 @@ def build_candidate_hunter_observations(
         if (fact := _safe_external_fact(item)) is not None
     ]
     projected_facts = [
-        *(_safe_code_fact(fact) for fact in mapped_code.facts),
+        *(_safe_code_fact(fact) for fact in mapped_code_facts),
         *semantic_code_facts,
         *safe_surface_facts,
         *safe_context_facts,
@@ -85,7 +94,7 @@ def build_candidate_hunter_observations(
             if not candidate_id:
                 continue
             route = _candidate_route(candidate)
-            matching_code_facts = _matching_code_facts(mapped_code.facts, route)
+            matching_code_facts = _matching_code_facts(mapped_code_facts, route)
             handler = _route_handler(matching_code_facts, route)
             route_source_paths = {
                 _safe_source_name(fact.source_path)
@@ -94,6 +103,18 @@ def build_candidate_hunter_observations(
                 and _code_fact_matches_route(fact, route)
             }
             candidate_facts = _safe_candidate_source_facts(candidate.get("source_facts"))
+            hypothesis_code_fact = next(
+                (
+                    fact
+                    for fact in candidate_facts
+                    if fact.get("artifact_kind") == "code"
+                    and (
+                        _fact_matches_route(fact, route)
+                        or "route" not in fact
+                    )
+                ),
+                {},
+            )
             # Frameworks without decorator routes (e.g. Django function views) still
             # declare a candidate code path/symbol; use that to attach semantic guards.
             if not handler:
@@ -128,6 +149,12 @@ def build_candidate_hunter_observations(
                 if isinstance(item, dict)
                 and _safe_source_name(item.get("path"))
             }
+            if not authorized_code_source_paths:
+                authorized_code_source_paths = {
+                    _safe_source_name(fact.source_path)
+                    for fact in mapped_code_facts
+                    if _safe_source_name(fact.source_path)
+                }
             matching_candidate_facts = [
                 fact
                 for fact in candidate_facts
@@ -180,11 +207,19 @@ def build_candidate_hunter_observations(
                 matching_code_facts,
             )
             shared_root, shared_ref = _shared_root(
-                mapped_code.facts,
+                mapped_code_facts,
                 handler,
             )
-            root_cause = _text(gap_fact.get("root_cause")) if gap_fact else ""
-            root_symbol = _text(gap_fact.get("symbol_name")) if gap_fact else handler
+            root_cause = (
+                _text(gap_fact.get("root_cause"))
+                if gap_fact
+                else _text(hypothesis_code_fact.get("root_cause"))
+            )
+            root_symbol = (
+                _text(gap_fact.get("symbol_name"))
+                if gap_fact
+                else _text(hypothesis_code_fact.get("symbol_name")) or handler
+            )
             root_cause_id = _normalized_root_id(root_cause, root_symbol)
             state = {
                 "candidate_id": candidate_id,
@@ -210,6 +245,10 @@ def build_candidate_hunter_observations(
                 "refutation_questions": _refutation_questions(candidate),
                 "reanalysis_status": "completed",
             }
+            if hypothesis_source_path := _text(hypothesis_code_fact.get("source_path")):
+                state["hypothesis_source_path"] = hypothesis_source_path
+            if hypothesis_symbol_name := _text(hypothesis_code_fact.get("symbol_name")):
+                state["hypothesis_symbol_name"] = hypothesis_symbol_name
             control_fact = next(
                 (
                     fact
@@ -250,12 +289,12 @@ def build_candidate_hunter_observations(
             initial_root_cause = (
                 _text(initial_gap_fact.get("root_cause"))
                 if initial_gap_fact
-                else ""
+                else root_cause
             )
             initial_root_symbol = (
                 _text(initial_gap_fact.get("symbol_name"))
                 if initial_gap_fact
-                else handler
+                else root_symbol
             )
             initial_state = {
                 **state,
@@ -2781,17 +2820,37 @@ def _find_candidate_hunter_owners(repository: Any, run_id: str) -> list[tuple[An
         (campaign, task)
         for campaign in repository.list_campaigns()
         for task in repository.list_campaign_tasks(campaign.id)
-        if task.task_type == "candidate_hunter_loop"
-        and input_ref in task.input_refs
-        and isinstance(campaign.payload, dict)
-        and campaign.payload.get("pipeline_run_id") == run_id
+        if _candidate_hunter_owner_matches(campaign, task, input_ref, run_id)
     ]
+
+
+def _candidate_hunter_owner_matches(
+    campaign: Any,
+    task: Any,
+    input_ref: str,
+    run_id: str,
+) -> bool:
+    if task.task_type == "candidate_hunter_loop":
+        return (
+            input_ref in task.input_refs
+            and isinstance(campaign.payload, dict)
+            and campaign.payload.get("pipeline_run_id") == run_id
+        )
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    return (
+        task.task_type == "candidate_refutation"
+        and input_ref in task.input_refs
+        and task_payload.get("runtime_schema") == "autonomous_research_v1"
+        and task_payload.get("pipeline_run_id") == run_id
+    )
 
 
 def _safe_evidence_context(value: object, *, asset: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    source_snapshot_digest = _safe_text(value.get("source_snapshot_digest"))
+    source_snapshot_digest = _bare_source_snapshot_digest(
+        value.get("source_snapshot_digest")
+    )
     source_manifest = value.get("source_manifest")
     saved_scope_guard = value.get("saved_scope_guard")
     if (
@@ -2854,7 +2913,7 @@ def _safe_evidence_context(value: object, *, asset: object) -> dict[str, Any] | 
 def _campaign_has_evidence_specialist(campaign: Any) -> bool:
     payload = campaign.payload if isinstance(campaign.payload, dict) else {}
     return (
-        _safe_text(payload.get("source_snapshot_digest"))
+        _bare_source_snapshot_digest(payload.get("source_snapshot_digest"))
         and isinstance(payload.get("source_manifest"), list)
         and isinstance(payload.get("saved_scope_guard"), dict)
         and "candidate_hunter_local_evidence_inspector"
@@ -2862,6 +2921,15 @@ def _campaign_has_evidence_specialist(campaign: Any) -> bool:
         and "candidate_hunter_local_evidence_inspector"
         in getattr(campaign, "allowed_tools", [])
     )
+
+
+def _bare_source_snapshot_digest(value: object) -> str:
+    digest = _safe_text(value).lower()
+    if digest.startswith("sha256:"):
+        digest = digest.removeprefix("sha256:")
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        return ""
+    return digest
 
 
 def _stage_idempotency_key(
@@ -3079,6 +3147,8 @@ def _snapshot_candidate(value: object) -> dict[str, Any]:
         "shared_root",
         "shared_root_evidence_ref",
         "reanalysis_status",
+        "hypothesis_source_path",
+        "hypothesis_symbol_name",
     ):
         if safe_value := _safe_text(value.get(field)):
             snapshot[field] = safe_value

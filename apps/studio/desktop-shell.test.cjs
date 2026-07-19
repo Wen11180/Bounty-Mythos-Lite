@@ -86,6 +86,26 @@ test("desktop runner binds remote lease decisions only to the derived loopback A
   assert.match(main, /stopRemoteLease:\s*remoteLeaseApi\.stop/);
 });
 
+test("desktop shell wakes only the local read-only research runtime after startup", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+  const wakeup = await fs.readFile(path.join(__dirname, "local-research-wakeup.cjs"), "utf8");
+
+  assert.match(main, /createLocalResearchWakeup/);
+  assert.match(
+    main,
+    /const localResearchWakeup = createLocalResearchWakeup\(\{\s*getBaseUrl:\s*\(\) => studioApiBaseUrl,\s*\}\);/s,
+  );
+  assert.match(
+    main,
+    /await waitForUrl\(config\.studioUrl\);\s*localResearchWakeup\.start\(\);/s,
+  );
+  assert.match(
+    main,
+    /closeSessions:\s*async \(reason\) => \{\s*await programRulePump\.close\(reason\);\s*await localResearchWakeup\.stop\(\);\s*await blackBoxRunner\.closeSessions\(reason\);\s*\}/s,
+  );
+  assert.doesNotMatch(wakeup, /blackBoxRunner|BrowserWindow|createRemoteLeaseApiClient/);
+});
+
 test("desktop shell starts the bounded program-rule pump only after local services are ready", async () => {
   const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
   const preload = await fs.readFile(path.join(__dirname, "preload.cjs"), "utf8");

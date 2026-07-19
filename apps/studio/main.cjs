@@ -4,6 +4,7 @@ const path = require("node:path");
 
 const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./launcher.cjs");
 const { createAppExitHandler, createBlackBoxRunner } = require("./black-box-runner.cjs");
+const { createLocalResearchWakeup } = require("./local-research-wakeup.cjs");
 const { installStudioNavigationGuard } = require("./navigation-guard.cjs");
 const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
 const { createProgramRuleApiClient } = require("./program-rule-api-client.cjs");
@@ -14,6 +15,9 @@ const { createRemoteLeaseApiClient } = require("./remote-api-client.cjs");
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
 let studioApiBaseUrl = null;
+const localResearchWakeup = createLocalResearchWakeup({
+  getBaseUrl: () => studioApiBaseUrl,
+});
 const remoteLeaseApi = createRemoteLeaseApiClient({
   getBaseUrl: () => studioApiBaseUrl,
 });
@@ -88,6 +92,7 @@ function killChildren() {
 const handleBeforeQuit = createAppExitHandler({
   closeSessions: async (reason) => {
     await programRulePump.close(reason);
+    await localResearchWakeup.stop();
     await blackBoxRunner.closeSessions(reason);
   },
   exit: (code) => app.exit(code),
@@ -136,6 +141,7 @@ app.whenReady().then(async () => {
     startServices(config, workspaceRoot);
     await waitForUrl(config.apiBaseUrl);
     await waitForUrl(config.studioUrl);
+    localResearchWakeup.start();
     programRulePump.start();
     installStudioNavigationGuard(window, config.studioUrl);
     window.loadURL(config.studioUrl);

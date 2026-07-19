@@ -24,6 +24,24 @@ WORKSPACE_DIRS = (
     "reports",
     "runs",
 )
+CAMPAIGN_SNAPSHOT_SCHEMA_VERSION = "authorized_workspace_campaign_snapshot_v1"
+CAMPAIGN_REQUIRED_ARTIFACT_KINDS = ("scope", "policy", "code", "api", "har")
+CAMPAIGN_READY_REDACTION_STATUSES = frozenset({"not_required", "redacted"})
+CAMPAIGN_CODE_SUFFIXES = {
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".java",
+    ".kt",
+    ".rb",
+    ".php",
+}
+MAX_CAMPAIGN_CODE_FILES = 20
+MAX_CAMPAIGN_CODE_BYTES = 20_000
+MAX_CAMPAIGN_JSON_BYTES = 256 * 1024
 IMPORTABLE_WORKSPACE_DIRS = (
     "policy",
     "scope",
@@ -116,6 +134,109 @@ def load_workspace_manifest(workspace_path: str | Path) -> dict[str, Any]:
         raise StudioWorkspaceAccessError("studio_workspace_not_authorized")
     _validate_workspace_artifacts(path, manifest)
     return manifest
+
+
+def build_authorized_campaign_snapshot(workspace_path: str | Path) -> dict[str, Any]:
+    """Capture only stable references and digests for a local research campaign."""
+    workspace = _workspace_directory(workspace_path)
+    manifest = load_workspace_manifest(workspace)
+    selected = _campaign_artifact_sources(workspace, manifest)
+    artifact_refs: list[dict[str, str]] = []
+    source_manifest: list[dict[str, str]] = []
+
+    for kind in CAMPAIGN_REQUIRED_ARTIFACT_KINDS:
+        source = selected[kind]
+        relative_path = source.relative_to(workspace).as_posix()
+        if kind == "code":
+            _, source_manifest = _campaign_code_files(source)
+            content_digest = _campaign_code_manifest_digest(source_manifest)
+        else:
+            content_digest = _campaign_file_digest(
+                source,
+                max_bytes=MAX_CAMPAIGN_JSON_BYTES,
+            )
+        artifact_refs.append(
+            {
+                "kind": kind,
+                "relative_path": relative_path,
+                "content_digest": content_digest,
+            }
+        )
+
+    snapshot = {
+        "schema_version": CAMPAIGN_SNAPSHOT_SCHEMA_VERSION,
+        "workspace_name": workspace.name,
+        "artifact_refs": artifact_refs,
+        "source_manifest": source_manifest,
+    }
+    snapshot["source_snapshot_digest"] = _campaign_snapshot_digest(snapshot)
+    return snapshot
+
+
+def load_authorized_campaign_inputs(snapshot: object) -> dict[str, Any]:
+    """Load a previously captured local snapshot only when every digest still matches."""
+    validated = _validated_campaign_snapshot(snapshot)
+    workspace = _workspace_directory(
+        _configured_workspace_root() / validated["workspace_name"]
+    )
+    manifest = load_workspace_manifest(workspace)
+    selected = _campaign_artifact_sources(workspace, manifest)
+    artifact_refs = {item["kind"]: item for item in validated["artifact_refs"]}
+    code_root = selected["code"]
+    code_files, source_manifest = _campaign_code_files(code_root)
+
+    if source_manifest != validated["source_manifest"]:
+        raise ValueError("workspace_snapshot_changed")
+
+    for kind in CAMPAIGN_REQUIRED_ARTIFACT_KINDS:
+        source = selected[kind]
+        expected = artifact_refs[kind]
+        if source.relative_to(workspace).as_posix() != expected["relative_path"]:
+            raise ValueError("workspace_snapshot_changed")
+        content_digest = (
+            _campaign_code_manifest_digest(source_manifest)
+            if kind == "code"
+            else _campaign_file_digest(source, max_bytes=MAX_CAMPAIGN_JSON_BYTES)
+        )
+        if content_digest != expected["content_digest"]:
+            raise ValueError("workspace_snapshot_changed")
+
+    if _campaign_snapshot_digest(
+        {
+            "schema_version": CAMPAIGN_SNAPSHOT_SCHEMA_VERSION,
+            "workspace_name": workspace.name,
+            "artifact_refs": validated["artifact_refs"],
+            "source_manifest": source_manifest,
+        }
+    ) != validated["source_snapshot_digest"]:
+        raise ValueError("workspace_snapshot_changed")
+
+    api_artifacts = []
+    for kind, normalized_kind in (("api", "openapi"), ("har", "har")):
+        source = selected[kind]
+        try:
+            payload = json.loads(
+                _read_campaign_text(source, max_bytes=MAX_CAMPAIGN_JSON_BYTES)
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError("workspace_snapshot_invalid") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("workspace_snapshot_invalid")
+        api_artifacts.append(
+            {
+                "kind": normalized_kind,
+                "source_name": artifact_refs[kind]["relative_path"],
+                "payload": payload,
+            }
+        )
+
+    return {
+        "source_snapshot_digest": validated["source_snapshot_digest"],
+        "source_manifest": source_manifest,
+        "authorized_local_root": str(code_root),
+        "code_files": code_files,
+        "api_artifacts": api_artifacts,
+    }
 
 
 def import_workspace_artifact(
@@ -273,6 +394,179 @@ def _validate_workspace_artifacts(workspace_path: Path, manifest: dict[str, Any]
             workspace_path,
             StudioArtifactImport(kind=kind, source_path=source_path),
         )
+
+
+def _campaign_artifact_sources(workspace: Path, manifest: dict[str, Any]) -> dict[str, Path]:
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("workspace_snapshot_invalid")
+    selected: dict[str, Path] = {}
+    for kind in CAMPAIGN_REQUIRED_ARTIFACT_KINDS:
+        for artifact in reversed(artifacts):
+            if not isinstance(artifact, dict) or artifact.get("kind") != kind:
+                continue
+            if artifact.get("redaction_status") not in CAMPAIGN_READY_REDACTION_STATUSES:
+                raise ValueError("workspace_snapshot_redaction_review_required")
+            source_path = artifact.get("source_path")
+            if not isinstance(source_path, str):
+                raise ValueError("workspace_snapshot_invalid")
+            source = _authorized_artifact_source(
+                workspace,
+                StudioArtifactImport(kind=kind, source_path=source_path),
+            )
+            if artifact.get("source_hash") != _sha256(source):
+                raise ValueError("workspace_snapshot_changed")
+            selected[kind] = source
+            break
+        if kind not in selected:
+            raise ValueError("workspace_snapshot_artifacts_required")
+    if not selected["code"].is_dir() or any(
+        not selected[kind].is_file()
+        for kind in ("scope", "policy", "api", "har")
+    ):
+        raise ValueError("workspace_snapshot_invalid")
+    return selected
+
+
+def _campaign_code_files(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    resolved_root = root.resolve(strict=True)
+    code_files: list[dict[str, str]] = []
+    source_manifest: list[dict[str, str]] = []
+    for candidate in sorted(resolved_root.rglob("*")):
+        if len(code_files) >= MAX_CAMPAIGN_CODE_FILES:
+            break
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved_candidate.is_relative_to(resolved_root):
+            raise ValueError("workspace_snapshot_invalid")
+        if (
+            not resolved_candidate.is_file()
+            or resolved_candidate.suffix.lower() not in CAMPAIGN_CODE_SUFFIXES
+        ):
+            continue
+        content = _read_campaign_text(
+            resolved_candidate,
+            max_bytes=MAX_CAMPAIGN_CODE_BYTES,
+        )
+        if not content.strip():
+            continue
+        source_path = resolved_candidate.relative_to(resolved_root).as_posix()
+        content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        code_files.append({"path": source_path, "content": content})
+        source_manifest.append(
+            {"source_path": source_path, "content_digest": content_digest}
+        )
+    return code_files, source_manifest
+
+
+def _read_campaign_text(path: Path, *, max_bytes: int) -> str:
+    try:
+        if path.stat().st_size > max_bytes:
+            raise ValueError("workspace_snapshot_invalid")
+        return path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError("workspace_snapshot_invalid") from exc
+
+
+def _campaign_file_digest(path: Path, *, max_bytes: int) -> str:
+    content = _read_campaign_text(path, max_bytes=max_bytes)
+    return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _campaign_code_manifest_digest(source_manifest: list[dict[str, str]]) -> str:
+    serialized = json.dumps(source_manifest, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _campaign_snapshot_digest(snapshot: dict[str, object]) -> str:
+    serialized = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        raise ValueError("workspace_snapshot_invalid")
+    workspace_name = snapshot.get("workspace_name")
+    source_snapshot_digest = snapshot.get("source_snapshot_digest")
+    artifact_refs = snapshot.get("artifact_refs")
+    source_manifest = snapshot.get("source_manifest")
+    if (
+        snapshot.get("schema_version") != CAMPAIGN_SNAPSHOT_SCHEMA_VERSION
+        or not isinstance(workspace_name, str)
+        or workspace_name != _safe_name(workspace_name)
+        or _secret_like_text(workspace_name)
+        or not _sha256_digest(source_snapshot_digest, prefixed=True)
+        or not isinstance(artifact_refs, list)
+        or not isinstance(source_manifest, list)
+    ):
+        raise ValueError("workspace_snapshot_invalid")
+    if [item.get("kind") if isinstance(item, dict) else None for item in artifact_refs] != list(
+        CAMPAIGN_REQUIRED_ARTIFACT_KINDS
+    ):
+        raise ValueError("workspace_snapshot_invalid")
+    safe_artifact_refs = []
+    for item in artifact_refs:
+        assert isinstance(item, dict)
+        relative_path = _safe_campaign_relative_path(item.get("relative_path"))
+        content_digest = item.get("content_digest")
+        if not relative_path or not _sha256_digest(content_digest, prefixed=True):
+            raise ValueError("workspace_snapshot_invalid")
+        safe_artifact_refs.append(
+            {
+                "kind": item["kind"],
+                "relative_path": relative_path,
+                "content_digest": content_digest.lower(),
+            }
+        )
+    safe_source_manifest = []
+    seen_paths: set[str] = set()
+    for item in source_manifest:
+        if not isinstance(item, dict):
+            raise ValueError("workspace_snapshot_invalid")
+        source_path = _safe_campaign_relative_path(item.get("source_path"))
+        content_digest = item.get("content_digest")
+        if (
+            not source_path
+            or source_path in seen_paths
+            or not _sha256_digest(content_digest, prefixed=False)
+        ):
+            raise ValueError("workspace_snapshot_invalid")
+        seen_paths.add(source_path)
+        safe_source_manifest.append(
+            {"source_path": source_path, "content_digest": content_digest.lower()}
+        )
+    return {
+        "workspace_name": workspace_name,
+        "source_snapshot_digest": source_snapshot_digest.lower(),
+        "artifact_refs": safe_artifact_refs,
+        "source_manifest": safe_source_manifest,
+    }
+
+
+def _safe_campaign_relative_path(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    path = value.replace("\\", "/").strip()
+    if (
+        not path
+        or path.startswith("/")
+        or ":" in path
+        or ".." in path.split("/")
+        or _secret_like_text(path)
+    ):
+        return ""
+    return path
+
+
+def _sha256_digest(value: object, *, prefixed: bool) -> bool:
+    if not isinstance(value, str):
+        return False
+    digest = value.removeprefix("sha256:") if prefixed else value
+    if prefixed and not value.startswith("sha256:"):
+        return False
+    return len(digest) == 64 and all(character in "0123456789abcdef" for character in digest.lower())
 
 
 def record_workspace_run(
@@ -599,9 +893,8 @@ def _write_manifest(workspace_path: Path, manifest: dict[str, Any]) -> None:
 
 def _sha256(path: Path) -> str:
     if path.is_dir():
-        digest = hashlib.sha256()
-        digest.update(str(path.resolve()).encode("utf-8", errors="replace"))
-        return "sha256:" + digest.hexdigest()
+        _, source_manifest = _campaign_code_files(path)
+        return _campaign_code_manifest_digest(source_manifest)
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -4294,8 +4587,10 @@ __all__ = [
     "StudioArtifactImport",
     "StudioWorkspaceAccessError",
     "StudioWorkspace",
+    "build_authorized_campaign_snapshot",
     "create_workspace",
     "import_workspace_artifact",
+    "load_authorized_campaign_inputs",
     "load_workspace_manifest",
     "record_workspace_benchmark_result",
     "record_workspace_benchmark_template",

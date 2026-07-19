@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.candidate_hunter_evidence as candidate_hunter_evidence
 from app.candidate_hunter_evidence import (
     materialize_evidence_inspection_task,
     run_evidence_inspection_task,
@@ -354,6 +355,207 @@ def verify_record_access(record_id: str, current_user):
         agent_runs = repository.list_campaign_agent_runs(campaign.id)
         assert len(agent_runs) == 1
         assert agent_runs[0].status == "completed"
+    finally:
+        session.close()
+
+
+def test_failed_evidence_inspection_blocks_owner_once_instead_of_stranding_it(
+    monkeypatch,
+):
+    repository, session = _repository()
+    try:
+        pipeline_run = repository.save_pipeline_run(
+            asset="C:/authorized/project",
+            policy_text="Synthetic local policy.",
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"hypotheses": []},
+        )
+        campaign = repository.create_campaign(
+            program_id=None,
+            name="Fail-closed evidence inspection",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Synthetic local policy.",
+            default_asset=pipeline_run.asset,
+            created_by="candidate_hunter_loop",
+            payload=_safe_payload(),
+        )
+        owner_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="candidate_refutation",
+            agent_type="candidate_hunter",
+            title="Candidate Hunter owner",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload={
+                "runtime_schema": "autonomous_research_v1",
+                "source_snapshot_digest": "sha256:" + "a" * 64,
+                "raw_payload_in_dispatch": False,
+                **_safe_payload(),
+            },
+        )
+        owner_task = repository.update_campaign_task_status(
+            owner_task.id,
+            "awaiting_evidence",
+        )
+        assert owner_task is not None
+        evidence_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="candidate_hunter_evidence_inspection",
+            agent_type="candidate_hunter_evidence_specialist",
+            title="Inspect authorized local evidence",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload={
+                "pipeline_run_id": pipeline_run.id,
+                "evidence_request_stage_id": "pipeline_stage_request",
+                "owner_task_id": owner_task.id,
+                "round": 1,
+                "state_digest": "b" * 64,
+                **_safe_payload(),
+            },
+        )
+        context = {"pipeline_run": pipeline_run, "campaign": campaign}
+        monkeypatch.setattr(
+            candidate_hunter_evidence,
+            "_inspection_context",
+            lambda _repository, _task: (context, None),
+        )
+
+        def fail_local_inspection(**_kwargs):
+            raise OSError("synthetic local inspection failure")
+
+        monkeypatch.setattr(
+            candidate_hunter_evidence,
+            "_build_evidence_result_payload",
+            fail_local_inspection,
+        )
+
+        first = run_agent_task(evidence_task.id, repository=repository)
+        second = run_agent_task(evidence_task.id, repository=repository)
+
+        persisted_evidence = repository.session.get(type(evidence_task), evidence_task.id)
+        persisted_owner = repository.session.get(type(owner_task), owner_task.id)
+        attempts = [
+            stage
+            for stage in repository.list_pipeline_stages_for_run(pipeline_run.id)
+            if stage.stage_key == "candidate_hunter_evidence_attempt"
+        ]
+        assert first["status"] == "blocked"
+        assert first["stop_reason"] == "local_evidence_inspection_failed"
+        assert second["status"] == "blocked"
+        assert second["task_id"] == evidence_task.id
+        assert persisted_evidence is not None
+        assert persisted_evidence.status == "blocked"
+        assert persisted_owner is not None
+        assert persisted_owner.status == "blocked"
+        assert f"campaign_task:{evidence_task.id}" in persisted_owner.output_refs
+        assert len(attempts) == 1
+        assert attempts[0].status == "failed"
+        assert attempts[0].safety_gate_state == "blocked"
+        assert repository.get_campaign(campaign.id).status == "blocked"
+    finally:
+        session.close()
+
+
+def test_context_failure_blocks_evidence_and_owner_without_an_intermediate_commit_gap(
+    monkeypatch,
+):
+    repository, session = _repository()
+    try:
+        pipeline_run = repository.save_pipeline_run(
+            asset="C:/authorized/project",
+            policy_text="Synthetic local policy.",
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"hypotheses": []},
+        )
+        source_snapshot_digest = "a" * 64
+        campaign = repository.create_campaign(
+            program_id=None,
+            name="Atomic evidence context failure",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Synthetic local policy.",
+            default_asset=pipeline_run.asset,
+            created_by="candidate_hunter_loop",
+            payload={
+                "pipeline_run_id": pipeline_run.id,
+                "source_snapshot_digest": source_snapshot_digest,
+                **_safe_payload(),
+            },
+        )
+        campaign = repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        owner_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="candidate_refutation",
+            agent_type="candidate_hunter",
+            title="Candidate Hunter owner",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload={
+                "runtime_schema": "autonomous_research_v1",
+                "pipeline_run_id": pipeline_run.id,
+                "source_snapshot_digest": "sha256:" + source_snapshot_digest,
+                "raw_payload_in_dispatch": False,
+                **_safe_payload(),
+            },
+        )
+        owner_task = repository.update_campaign_task_status(
+            owner_task.id,
+            "awaiting_evidence",
+        )
+        assert owner_task is not None
+        evidence_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="candidate_hunter_evidence_inspection",
+            agent_type="candidate_hunter_evidence_specialist",
+            title="Inspect authorized local evidence",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload={
+                "schema_version": "candidate_hunter_evidence_task_v1",
+                "pipeline_run_id": pipeline_run.id,
+                "evidence_request_stage_id": "pipeline_stage_request",
+                "owner_task_id": owner_task.id,
+                "round": 1,
+                "state_digest": "b" * 64,
+                "source_snapshot_digest": source_snapshot_digest,
+                **_safe_payload(),
+            },
+        )
+        monkeypatch.setattr(
+            candidate_hunter_evidence,
+            "_inspection_context",
+            lambda _repository, _task: (None, "workspace_snapshot_changed"),
+        )
+        original_update = repository.update_campaign_task_status
+
+        def fail_old_owner_only_update(task_id, status, *, output_refs=None):
+            if task_id == owner_task.id and status == "blocked":
+                raise RuntimeError("synthetic intermediate owner update failure")
+            return original_update(task_id, status, output_refs=output_refs)
+
+        monkeypatch.setattr(
+            repository,
+            "update_campaign_task_status",
+            fail_old_owner_only_update,
+        )
+
+        result = run_agent_task(evidence_task.id, repository=repository)
+
+        persisted_evidence = repository.session.get(type(evidence_task), evidence_task.id)
+        persisted_owner = repository.session.get(type(owner_task), owner_task.id)
+        assert result["status"] == "blocked"
+        assert result["stop_reason"] == "workspace_snapshot_changed"
+        assert persisted_evidence is not None
+        assert persisted_evidence.status == "blocked"
+        assert persisted_owner is not None
+        assert persisted_owner.status == "blocked"
+        assert persisted_owner.payload["blocked_by_evidence_task_id"] == evidence_task.id
+        assert persisted_owner.payload["blocked_stop_reason"] == "workspace_snapshot_changed"
     finally:
         session.close()
 

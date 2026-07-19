@@ -948,17 +948,23 @@ class DatabaseRepository:
         program_id: str | None = None,
         asset: str,
         policy_text: str,
+        policy_text_is_hash: bool = False,
         scope_status: str,
         hypothesis_count: int,
         blocked_count: int,
         report_title: str | None,
         payload: dict,
     ) -> PipelineRunRecord:
+        policy_text_hash = (
+            _validated_policy_text_hash(policy_text)
+            if policy_text_is_hash
+            else sha256(policy_text.encode("utf-8")).hexdigest()
+        )
         record = PipelineRunRecord(
             id=f"pipeline_run_{uuid4().hex}",
             program_id=program_id,
             asset=asset,
-            policy_text_hash=sha256(policy_text.encode("utf-8")).hexdigest(),
+            policy_text_hash=policy_text_hash,
             scope_status=scope_status,
             hypothesis_count=hypothesis_count,
             blocked_count=blocked_count,
@@ -1117,6 +1123,38 @@ class DatabaseRepository:
             )
         ).all()
 
+    def list_autonomous_wakeup_campaigns(
+        self,
+        *,
+        after_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        statement = select(
+            CampaignRecord.id,
+            CampaignRecord.autonomy_level,
+            CampaignRecord.scope_status,
+            CampaignRecord.status,
+        ).where(
+            CampaignRecord.autonomy_level == "level_0_read_only",
+            CampaignRecord.scope_status == "in_scope",
+            CampaignRecord.status == "running",
+        )
+        if after_id is not None:
+            statement = statement.where(CampaignRecord.id > after_id)
+        rows = self.session.execute(
+            statement
+            .order_by(CampaignRecord.id.asc())
+            .limit(20)
+        ).all()
+        return [
+            {
+                "id": row.id,
+                "autonomy_level": row.autonomy_level,
+                "scope_status": row.scope_status,
+                "status": row.status,
+            }
+            for row in rows
+        ]
+
     def get_campaign(self, campaign_id: str) -> CampaignRecord | None:
         return self.session.get(CampaignRecord, campaign_id)
 
@@ -1141,7 +1179,7 @@ class DatabaseRepository:
                     paused_seconds + (now - paused_at).total_seconds(),
                 )
                 payload.pop("budget_paused_at", None)
-        elif safe_status == "paused" and record.status == "running":
+        elif safe_status in {"paused", "awaiting_review"} and record.status == "running":
             payload.setdefault("budget_paused_at", now.isoformat())
         record.status = safe_status
         record.payload = payload
@@ -1149,6 +1187,57 @@ class DatabaseRepository:
         self.session.commit()
         self.session.refresh(record)
         return record
+
+    def transition_campaign_status_if_currently(
+        self,
+        campaign_id: str,
+        status: str,
+        *,
+        allowed_current_statuses: set[str],
+    ) -> CampaignRecord | None:
+        record = self.get_campaign(campaign_id)
+        if record is None:
+            return None
+        safe_status = _safe_display_value(status)
+        safe_allowed_statuses = {
+            _safe_display_value(value) for value in allowed_current_statuses
+        }
+        payload = dict(record.payload) if isinstance(record.payload, dict) else {}
+        now = datetime.now(UTC)
+        if safe_status == "running":
+            payload.setdefault("budget_started_at", now.isoformat())
+            paused_at = _payload_datetime(payload.get("budget_paused_at"))
+            if paused_at is not None:
+                paused_seconds = payload.get("budget_paused_seconds", 0)
+                if not isinstance(paused_seconds, (int, float)) or isinstance(
+                    paused_seconds, bool
+                ):
+                    paused_seconds = 0
+                payload["budget_paused_seconds"] = max(
+                    0,
+                    paused_seconds + (now - paused_at).total_seconds(),
+                )
+                payload.pop("budget_paused_at", None)
+        elif safe_status == "paused" and record.status == "running":
+            payload.setdefault("budget_paused_at", now.isoformat())
+        result = self.session.execute(
+            update(CampaignRecord)
+            .where(
+                CampaignRecord.id == campaign_id,
+                CampaignRecord.status.in_(safe_allowed_statuses),
+            )
+            .values(
+                status=safe_status,
+                payload=_safe_display_value(payload),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        self.session.commit()
+        if result.rowcount != 1:
+            self.session.expire_all()
+            return None
+        self.session.expire_all()
+        return self.get_campaign(campaign_id)
 
     def get_campaign_budget(self, campaign_id: str) -> CampaignBudgetRecord | None:
         return self.session.scalars(
@@ -1208,6 +1297,44 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def claim_campaign_task(
+        self,
+        *,
+        task_id: str,
+        campaign_id: str,
+        task_type: str,
+        agent_type: str,
+        title: str,
+        input_refs: list[str] | None = None,
+        payload: dict | None = None,
+    ) -> tuple[CampaignTaskRecord, bool]:
+        existing = self.session.get(CampaignTaskRecord, task_id)
+        if existing is not None:
+            return existing, False
+
+        record = CampaignTaskRecord(
+            id=_safe_display_value(task_id),
+            campaign_id=campaign_id,
+            task_type=_safe_display_value(task_type),
+            agent_type=_safe_display_value(agent_type),
+            title=_safe_display_value(title),
+            status="queued",
+            input_refs=_safe_display_value(input_refs or []),
+            output_refs=[],
+            payload=_safe_display_value(payload or {}),
+        )
+        self.session.add(record)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.get(CampaignTaskRecord, task_id)
+            if existing is not None:
+                return existing, False
+            raise
+        self.session.refresh(record)
+        return record, True
+
     def list_campaign_tasks(self, campaign_id: str) -> list[CampaignTaskRecord]:
         return self.session.scalars(
             select(CampaignTaskRecord)
@@ -1232,6 +1359,245 @@ class DatabaseRepository:
         if output_refs is not None:
             record.output_refs = _safe_display_value(output_refs)
         self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def complete_autonomous_validation_handoff_review(
+        self,
+        *,
+        campaign_id: str,
+        task_id: str,
+        pipeline_run_id: str,
+        input_refs: list[str],
+        payload: dict,
+    ) -> tuple[CampaignTaskRecord, PipelineStageRecord] | None:
+        result = self._complete_autonomous_validation_handoff_review(
+            campaign_id=campaign_id,
+            task_id=task_id,
+            pipeline_run_id=pipeline_run_id,
+            input_refs=input_refs,
+            payload=payload,
+            manual_validation=None,
+        )
+        return result[:2] if result is not None else None
+
+    def complete_autonomous_validation_handoff_review_with_manual_validation(
+        self,
+        *,
+        campaign_id: str,
+        task_id: str,
+        pipeline_run_id: str,
+        input_refs: list[str],
+        payload: dict,
+        manual_validation: dict[str, Any],
+    ) -> tuple[
+        CampaignTaskRecord,
+        PipelineStageRecord,
+        ApprovalRecord,
+        ValidationRunRecord,
+    ] | None:
+        result = self._complete_autonomous_validation_handoff_review(
+            campaign_id=campaign_id,
+            task_id=task_id,
+            pipeline_run_id=pipeline_run_id,
+            input_refs=input_refs,
+            payload=payload,
+            manual_validation=manual_validation,
+        )
+        if result is None or result[2] is None or result[3] is None:
+            return None
+        return result[0], result[1], result[2], result[3]
+
+    def _complete_autonomous_validation_handoff_review(
+        self,
+        *,
+        campaign_id: str,
+        task_id: str,
+        pipeline_run_id: str,
+        input_refs: list[str],
+        payload: dict,
+        manual_validation: dict[str, Any] | None,
+    ) -> tuple[
+        CampaignTaskRecord,
+        PipelineStageRecord,
+        ApprovalRecord | None,
+        ValidationRunRecord | None,
+    ] | None:
+        campaign = self.session.get(CampaignRecord, campaign_id)
+        approval = None
+        validation_run = None
+        output_refs = [f"campaign_task:{_safe_display_value(task_id)}"]
+        if manual_validation is not None:
+            if campaign is None:
+                return None
+            approval = ApprovalRecord(
+                id=f"approval_{uuid4().hex}",
+                campaign_id=campaign_id,
+                task_id=task_id,
+                run_id=_safe_display_value(pipeline_run_id),
+                program_id=campaign.program_id,
+                approval_type="validation_batch",
+                actor=_safe_display_value(manual_validation["reviewer"]),
+                reason=_safe_display_value(manual_validation["approval_reason"]),
+                scope_reference=_safe_display_value(
+                    manual_validation["scope_reference"]
+                ),
+                requested_action="manual_validation_preflight",
+                asset=_safe_asset_value(manual_validation["asset"]),
+                validation_mode=_safe_display_value(manual_validation["validation_mode"]),
+                plan_digest=_safe_display_value(manual_validation["plan_digest"]),
+                autonomy_level=_safe_display_value(campaign.autonomy_level),
+                safety_gate_state="awaiting_approval",
+                status="requested",
+                payload=_safe_display_value(manual_validation["approval_payload"]),
+            )
+            validation_payload = dict(manual_validation["validation_payload"])
+            validation_payload["approval_record_id"] = approval.id
+            validation_run = ValidationRunRecord(
+                id=f"validation_run_{uuid4().hex}",
+                campaign_id=campaign_id,
+                task_id=task_id,
+                approval_id=approval.id,
+                validation_mode=_safe_display_value(manual_validation["validation_mode"]),
+                target_ref=_safe_source_path(manual_validation["target_ref"]),
+                status="awaiting_approval",
+                safety_gate_state="awaiting_approval",
+                plan_digest=_safe_display_value(manual_validation["plan_digest"]),
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=0,
+                summary=_safe_display_value(manual_validation["summary"]),
+                payload=_safe_display_value(validation_payload),
+            )
+            output_refs.extend(
+                [f"approval:{approval.id}", f"validation_run:{validation_run.id}"]
+            )
+        review_stage = PipelineStageRecord(
+            id=f"pipeline_stage_{uuid4().hex}",
+            pipeline_run_id=_safe_display_value(pipeline_run_id),
+            campaign_id=_safe_display_value(campaign_id),
+            task_id=_safe_display_value(task_id),
+            stage_key="autonomous_validation_handoff_review",
+            stage_order=41,
+            status="completed",
+            input_refs=_safe_display_value(input_refs),
+            output_refs=output_refs,
+            safety_gate_state="human_review_completed",
+            stop_reason=None,
+            payload=_safe_display_value(payload),
+        )
+        campaign_result = self.session.execute(
+            update(CampaignRecord)
+            .where(
+                CampaignRecord.id == campaign_id,
+                CampaignRecord.status.in_({"awaiting_review", "paused"}),
+            )
+            .values(status="reviewing")
+            .execution_options(synchronize_session=False)
+        )
+        if campaign_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+        task_result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(
+                CampaignTaskRecord.id == task_id,
+                CampaignTaskRecord.campaign_id == campaign_id,
+                CampaignTaskRecord.task_type == "validation_handoff",
+                CampaignTaskRecord.status == "awaiting_approval",
+            )
+            .values(
+                status="completed",
+                output_refs=_safe_display_value([f"pipeline_stage:{review_stage.id}"]),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if task_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+
+        self.session.add(review_stage)
+        if approval is not None and validation_run is not None:
+            self.session.add_all([approval, validation_run])
+        remaining_handoff = self.session.scalar(
+            select(CampaignTaskRecord.id)
+            .where(
+                CampaignTaskRecord.campaign_id == campaign_id,
+                CampaignTaskRecord.task_type == "validation_handoff",
+                CampaignTaskRecord.status == "awaiting_approval",
+            )
+            .limit(1)
+        )
+        if remaining_handoff is None:
+            final_campaign_status = "completed"
+        else:
+            final_campaign_status = "awaiting_review"
+        self.session.execute(
+            update(CampaignRecord)
+            .where(
+                CampaignRecord.id == campaign_id,
+                CampaignRecord.status == "reviewing",
+            )
+            .values(status=final_campaign_status)
+            .execution_options(synchronize_session=False)
+        )
+        try:
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+        self.session.expire_all()
+        reviewed_task = self.session.get(CampaignTaskRecord, task_id)
+        reviewed_stage = self.session.get(PipelineStageRecord, review_stage.id)
+        if reviewed_task is None or reviewed_stage is None:
+            return None
+        if approval is None or validation_run is None:
+            return reviewed_task, reviewed_stage, None, None
+        reviewed_approval = self.session.get(ApprovalRecord, approval.id)
+        reviewed_validation_run = self.session.get(ValidationRunRecord, validation_run.id)
+        if reviewed_approval is None or reviewed_validation_run is None:
+            return None
+        return reviewed_task, reviewed_stage, reviewed_approval, reviewed_validation_run
+
+    def claim_campaign_task_execution(self, task_id: str) -> CampaignTaskRecord | None:
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(
+                CampaignTaskRecord.id == task_id,
+                CampaignTaskRecord.status.in_({"queued", "ready", "dispatched"}),
+            )
+            .values(status="running")
+        )
+        if result.rowcount != 1:
+            self.session.commit()
+            self.session.expire_all()
+            return None
+        record = self.session.get(CampaignTaskRecord, task_id)
+        if record is None:
+            self.session.commit()
+            return None
+        if self.find_active_agent_run_for_task(task_id) is None:
+            self.session.add(
+                AgentRunRecord(
+                    id=f"agent_run_{uuid4().hex}",
+                    campaign_id=record.campaign_id,
+                    task_id=record.id,
+                    agent_type=record.agent_type,
+                    status="running",
+                    input_refs=[f"campaign_task:{record.id}"],
+                    output_refs=[],
+                    tool_calls=[],
+                    safety_gate_state="allowed",
+                    stop_reason=None,
+                    payload={
+                        "worker_execution_claim": True,
+                        "raw_payload_processed": False,
+                    },
+                )
+            )
         self.session.commit()
         self.session.refresh(record)
         return record
@@ -3074,6 +3440,15 @@ def _validation_result_status(outcome: str, *, safe_evidence_ref_count: int) -> 
     if outcome == "needs_more_evidence" or safe_evidence_ref_count == 0:
         return "needs_evidence"
     return "evidence_recorded"
+
+
+def _validated_policy_text_hash(value: str) -> str:
+    normalized = value.lower()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError("policy_text_hash_invalid")
+    return normalized
 
 
 def _validation_result_safety_gate(outcome: str, *, safe_evidence_ref_count: int) -> str:

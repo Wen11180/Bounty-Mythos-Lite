@@ -6,8 +6,10 @@ import pytest
 from app.config import get_settings
 from app.studio_workspace import (
     StudioArtifactImport,
+    build_authorized_campaign_snapshot,
     create_workspace,
     import_workspace_artifact,
+    load_authorized_campaign_inputs,
     load_workspace_manifest,
     record_workspace_mission_dossier,
     record_workspace_report_export,
@@ -189,6 +191,170 @@ def test_import_workspace_artifact_accepts_code_directory(tmp_path: Path):
     assert artifact["source_path"] == str(repo)
     assert artifact["source_hash"].startswith("sha256:")
     assert artifact["sensitivity_label"] == "low"
+
+
+def test_campaign_workspace_snapshot_keeps_raw_inputs_out_of_persistence(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+    code_root = workspace.path / "code" / "target"
+    code_root.mkdir()
+    raw_marker = "runtime-input-marker"
+    routes = code_root / "routes.py"
+    routes.write_text(
+        f'@router.get("/files/{{file_id}}/export")\ndef export_file(file_id):\n    return "{raw_marker}"\n',
+        encoding="utf-8",
+    )
+    scope = workspace.path / "scope" / "scope.yaml"
+    scope.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
+    policy = workspace.path / "policy" / "policy.md"
+    policy.write_text("api.example.com is in scope. No live validation.", encoding="utf-8")
+    api = workspace.path / "api" / "openapi.json"
+    api.write_text(
+        json.dumps(
+            {
+                "openapi": "3.0.0",
+                "paths": {"/files/{file_id}/export": {"get": {"operationId": "exportFile"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    har = workspace.path / "har" / "traffic.har"
+    har.write_text(
+        json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {"request": {"method": "GET", "url": "https://api.example.test/files/123/export"}}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    for kind, path in (
+        ("scope", scope),
+        ("policy", policy),
+        ("code", code_root),
+        ("api", api),
+        ("har", har),
+    ):
+        import_workspace_artifact(
+            workspace.path,
+            StudioArtifactImport(kind=kind, source_path=str(path)),
+        )
+
+    snapshot = build_authorized_campaign_snapshot(workspace.path)
+    inputs = load_authorized_campaign_inputs(snapshot)
+
+    assert snapshot["schema_version"] == "authorized_workspace_campaign_snapshot_v1"
+    assert snapshot["source_snapshot_digest"].startswith("sha256:")
+    assert snapshot["source_manifest"][0]["source_path"] == "routes.py"
+    assert raw_marker not in json.dumps(snapshot)
+    assert inputs["code_files"][0]["path"] == "routes.py"
+    assert inputs["code_files"][0]["content"].endswith(raw_marker + '"\n')
+    assert {artifact["kind"] for artifact in inputs["api_artifacts"]} == {"openapi", "har"}
+
+
+def test_campaign_workspace_snapshot_requires_redaction_review_to_be_resolved(
+    tmp_path: Path,
+):
+    workspace = create_workspace(tmp_path, name="redaction-gated")
+    code_root = workspace.path / "code" / "target"
+    code_root.mkdir()
+    (code_root / "routes.py").write_text(
+        "def read_record(record_id):\n    return record_id\n",
+        encoding="utf-8",
+    )
+    artifacts = {
+        "scope": workspace.path / "scope" / "scope.yaml",
+        "policy": workspace.path / "policy" / "policy.md",
+        "api": workspace.path / "api" / "openapi.json",
+        "har": workspace.path / "har" / "traffic.har",
+    }
+    artifacts["scope"].write_text(
+        "in_scope:\n  - api.example.com\n",
+        encoding="utf-8",
+    )
+    artifacts["policy"].write_text(
+        "api.example.com is in scope. No live validation.",
+        encoding="utf-8",
+    )
+    artifacts["api"].write_text(
+        '{"openapi":"3.0.0","paths":{}}',
+        encoding="utf-8",
+    )
+    artifacts["har"].write_text(
+        '{"log":{"entries":[]}}',
+        encoding="utf-8",
+    )
+    for kind, path in (
+        ("scope", artifacts["scope"]),
+        ("policy", artifacts["policy"]),
+        ("code", code_root),
+        ("api", artifacts["api"]),
+        ("har", artifacts["har"]),
+    ):
+        import_workspace_artifact(
+            workspace.path,
+            StudioArtifactImport(kind=kind, source_path=str(path)),
+        )
+
+    manifest_path = workspace.path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    policy_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "policy"
+    )
+    policy_artifact["redaction_status"] = "needs_review"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="workspace_snapshot_redaction_review_required"):
+        build_authorized_campaign_snapshot(workspace.path)
+
+    policy_artifact["redaction_status"] = "redacted"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert build_authorized_campaign_snapshot(workspace.path)[
+        "source_snapshot_digest"
+    ].startswith("sha256:")
+
+    artifacts["policy"].write_text(
+        "Authorization: Bearer newly-added-secret\napi.example.com is in scope.",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="workspace_snapshot_changed"):
+        build_authorized_campaign_snapshot(workspace.path)
+
+
+def test_campaign_workspace_inputs_reject_content_changed_after_snapshot(tmp_path: Path):
+    workspace = create_workspace(tmp_path, name="acme-api")
+    code_root = workspace.path / "code" / "target"
+    code_root.mkdir()
+    routes = code_root / "routes.py"
+    routes.write_text("def export_file(file_id):\n    return file_id\n", encoding="utf-8")
+    scope = workspace.path / "scope" / "scope.yaml"
+    scope.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
+    policy = workspace.path / "policy" / "policy.md"
+    policy.write_text("api.example.com is in scope.", encoding="utf-8")
+    api = workspace.path / "api" / "openapi.json"
+    api.write_text('{"openapi":"3.0.0","paths":{}}', encoding="utf-8")
+    har = workspace.path / "har" / "traffic.har"
+    har.write_text('{"log":{"entries":[]}}', encoding="utf-8")
+    for kind, path in (
+        ("scope", scope),
+        ("policy", policy),
+        ("code", code_root),
+        ("api", api),
+        ("har", har),
+    ):
+        import_workspace_artifact(
+            workspace.path,
+            StudioArtifactImport(kind=kind, source_path=str(path)),
+        )
+    snapshot = build_authorized_campaign_snapshot(workspace.path)
+    routes.write_text("def export_file(file_id):\n    return 'changed'\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="workspace_snapshot_changed"):
+        load_authorized_campaign_inputs(snapshot)
 
 
 def test_import_workspace_artifact_rejects_secret_like_path(tmp_path: Path):

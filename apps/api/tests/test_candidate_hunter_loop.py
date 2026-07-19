@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.codebase_map import CodebaseFactCandidate
 from app.candidate_hunter_loop import (
     advance_candidate_hunter_round,
     build_candidate_hunter_observations,
@@ -1637,6 +1638,108 @@ def verify_record_access(record_id: str, current_user):
         assert len(repository.list_pipeline_stages_for_run(record.id)) == 8
     finally:
         session.close()
+
+
+def test_persisted_java_ownership_guard_refutes_without_source_body():
+    route = "/records/{recordId}"
+    source_marker = "raw-java-source-must-not-reach-candidate-hunter"
+    persisted_code_facts = [
+        CodebaseFactCandidate(
+            fact_type="route_handler",
+            source_path="src/RecordsController.java",
+            symbol_name="readRecord",
+            route_method="GET",
+            route_path=route,
+            authz_hint=None,
+            sensitivity_label="authorized_local_code",
+            payload={
+                "handler": "readRecord",
+                "line": 4,
+                "raw_source": source_marker,
+            },
+        ),
+        CodebaseFactCandidate(
+            fact_type="service_call",
+            source_path="src/RecordsController.java",
+            symbol_name="verifyRecordAccess",
+            route_method=None,
+            route_path=None,
+            authz_hint=None,
+            sensitivity_label="authorized_local_code",
+            payload={"handler": "readRecord", "caller": "readRecord", "line": 5},
+        ),
+        CodebaseFactCandidate(
+            fact_type="authz_check",
+            source_path="src/RecordsController.java",
+            symbol_name="verifyRecordAccess",
+            route_method=None,
+            route_path=None,
+            authz_hint="ownership_boundary_check",
+            sensitivity_label="authorized_local_code",
+            payload={"handler": "verifyRecordAccess", "line": 8},
+        ),
+        CodebaseFactCandidate(
+            fact_type="sensitive_sink",
+            source_path="src/RecordsController.java",
+            symbol_name="sendFile",
+            route_method=None,
+            route_path=None,
+            authz_hint=None,
+            sensitivity_label="authorized_local_code",
+            payload={"handler": "readRecord", "line": 12},
+        ),
+    ]
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-java-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "src/RecordsController.java",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    },
+                    {
+                        "fact_type": "api_surface",
+                        "artifact_kind": "api",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {"fact_type": "har_context", "artifact_kind": "har"},
+                ],
+            }
+        ],
+        code_files=[],
+        supplemental_code_facts=persisted_code_facts,
+        surface_facts=[],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == (
+        "code:RecordsController.java:verifyRecordAccess"
+    )
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+    assert source_marker not in json.dumps(observations)
 
 
 def test_typescript_express_one_hop_ownership_guard_refutes_candidate():

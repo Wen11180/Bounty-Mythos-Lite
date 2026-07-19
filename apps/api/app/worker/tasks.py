@@ -17,7 +17,21 @@ from app.db_models import (
 )
 from app.mythos_brain import LearningSignal, MythosLesson, build_mythos_lessons
 from app.repository import DatabaseRepository
+from app.studio_workspace import load_authorized_campaign_inputs
 from app.worker.celery_app import celery_app
+
+
+_DISPATCHABLE_TASK_STATUSES = {"queued", "ready", "dispatched"}
+_NON_DISPATCHABLE_TASK_STATUSES = {
+    "awaiting_approval",
+    "awaiting_evidence",
+    "blocked",
+    "canceled",
+    "completed",
+    "failed",
+    "needs_evidence",
+    "running",
+}
 
 
 @celery_app.task(name="worker.ping")
@@ -62,6 +76,28 @@ def run_agent_task(
             "stop_reason": "campaign_task_not_found",
         }
 
+    if task.status in _NON_DISPATCHABLE_TASK_STATUSES:
+        return _persisted_task_result(task)
+    if task.task_type == "validation_handoff":
+        return _await_human_approval(task=task, repository=repository)
+    if task.status not in _DISPATCHABLE_TASK_STATUSES:
+        return {
+            "status": "blocked",
+            "task_id": task.id,
+            "stop_reason": "task_not_dispatchable",
+        }
+    claimed_task = repository.claim_campaign_task_execution(task.id)
+    if claimed_task is None:
+        persisted_task = repository.session.get(CampaignTaskRecord, task.id)
+        if persisted_task is None:
+            return {
+                "status": "not_found",
+                "task_id": task.id,
+                "stop_reason": "campaign_task_not_found",
+            }
+        return _persisted_task_result(persisted_task)
+    task = claimed_task
+
     if task.task_type == "candidate_hunter_evidence_inspection":
         from app.candidate_hunter_evidence import (
             resume_candidate_hunter_after_evidence,
@@ -70,11 +106,22 @@ def run_agent_task(
 
         result = run_evidence_inspection_task(repository=repository, task_id=task.id)
         if result.get("status") != "completed":
+            _record_runtime_evidence_resume(
+                evidence_task=task,
+                resumed=result,
+                repository=repository,
+            )
             return result
-        return resume_candidate_hunter_after_evidence(
+        resumed = resume_candidate_hunter_after_evidence(
             repository=repository,
             evidence_task_id=task.id,
         )
+        _record_runtime_evidence_resume(
+            evidence_task=task,
+            resumed=resumed,
+            repository=repository,
+        )
+        return resumed
 
     campaign = repository.get_campaign(task.campaign_id)
     stop_reason = _agent_task_stop_reason(
@@ -82,47 +129,61 @@ def run_agent_task(
         repository=repository,
         task_id=task.id,
     )
-    if stop_reason is not None:
-        active_run = repository.find_active_agent_run_for_task(task.id)
-        if active_run is not None:
-            agent_run = repository.finish_agent_run(
-                active_run.id,
-                status="blocked",
-                output_refs=[],
-                safety_gate_state="blocked",
-                stop_reason=stop_reason,
-                payload={"raw_payload_processed": False},
-            )
-        else:
-            agent_run = repository.save_agent_run(
-                campaign_id=task.campaign_id,
-                task_id=task.id,
-                agent_type=task.agent_type,
-                status="blocked",
-                input_refs=[f"campaign_task:{task.id}"],
-                output_refs=[],
-                tool_calls=[],
-                safety_gate_state="blocked",
-                stop_reason=stop_reason,
-                payload={"raw_payload_processed": False},
-            )
-        repository.update_campaign_task_status(
-            task.id,
-            "blocked",
-            output_refs=[f"agent_run:{agent_run.id}"],
+    from app.autonomous_research_runtime import (
+        autonomous_research_task_stop_reason,
+    )
+
+    if stop_reason is None:
+        stop_reason = autonomous_research_task_stop_reason(
+            task=task,
+            campaign=campaign,
+            repository=repository,
         )
-        return {
-            "status": "blocked",
-            "task_id": task.id,
-            "agent_run_id": agent_run.id,
-            "stop_reason": stop_reason,
-        }
+    if stop_reason is not None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=stop_reason,
+        )
+    workspace_inputs, workspace_stop_reason = _runtime_workspace_inputs(
+        task=task,
+        campaign=campaign,
+    )
+    if workspace_stop_reason is not None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=workspace_stop_reason,
+        )
+
+    if task.task_type == "candidate_refutation":
+        return _run_candidate_refutation_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+            workspace_inputs=workspace_inputs,
+        )
+
+    if task.task_type == "finding_dedup_and_rank":
+        return _run_finding_dedup_and_rank_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+        )
+
+    if task.task_type == "report_review":
+        return _run_report_review_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+        )
 
     active_run = repository.find_active_agent_run_for_task(task.id)
     materialized_output_refs, artifact_payload = _materialize_read_only_artifacts(
         task=task,
         campaign=campaign,
         repository=repository,
+        workspace_inputs=workspace_inputs,
     )
     agent_run_output_refs = materialized_output_refs or [f"campaign_task:{task.id}:completed"]
     agent_run_payload = {
@@ -152,16 +213,831 @@ def run_agent_task(
             stop_reason=None,
             payload=agent_run_payload,
         )
-    repository.update_campaign_task_status(
+    completed_task = repository.update_campaign_task_status(
         task.id,
         "completed",
         output_refs=[f"agent_run:{agent_run.id}", *materialized_output_refs],
     )
+    if completed_task is not None:
+        from app.autonomous_research_runtime import (
+            record_autonomous_research_task_completion,
+        )
+
+        record_autonomous_research_task_completion(
+            task=completed_task,
+            repository=repository,
+        )
     return {
         "status": "completed",
         "task_id": task.id,
         "agent_run_id": agent_run.id,
         "stop_reason": None,
+    }
+
+
+def _runtime_workspace_inputs(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord | None,
+) -> tuple[dict | None, str | None]:
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    if task_payload.get("runtime_schema") != "autonomous_research_v1":
+        return None, None
+    campaign_payload = campaign.payload if campaign is not None and isinstance(campaign.payload, dict) else {}
+    snapshot = campaign_payload.get("workspace_snapshot")
+    if snapshot is None:
+        return None, None
+    try:
+        inputs = load_authorized_campaign_inputs(snapshot)
+    except ValueError as exc:
+        reason = str(exc)
+        return None, (
+            "workspace_snapshot_changed"
+            if reason == "workspace_snapshot_changed"
+            else "workspace_snapshot_invalid"
+        )
+    if task_payload.get("source_snapshot_digest") != inputs.get(
+        "source_snapshot_digest"
+    ):
+        return None, "source_snapshot_changed"
+    return inputs, None
+
+
+def _await_human_approval(
+    *,
+    task: CampaignTaskRecord,
+    repository: DatabaseRepository,
+) -> dict:
+    repository.update_campaign_task_status(task.id, "awaiting_approval")
+    return {
+        "status": "awaiting_approval",
+        "task_id": task.id,
+        "stop_reason": "human_approval_required",
+    }
+
+
+def _persisted_task_result(task: CampaignTaskRecord) -> dict:
+    stop_reason = {
+        "awaiting_approval": "human_approval_required",
+        "awaiting_evidence": "awaiting_evidence",
+        "needs_evidence": "awaiting_evidence",
+        "running": "task_already_running",
+    }.get(task.status)
+    return {
+        "status": task.status,
+        "task_id": task.id,
+        "stop_reason": stop_reason,
+    }
+
+
+def _record_runtime_evidence_resume(
+    *,
+    evidence_task: CampaignTaskRecord,
+    resumed: dict,
+    repository: DatabaseRepository,
+) -> None:
+    payload = evidence_task.payload if isinstance(evidence_task.payload, dict) else {}
+    owner_task_id = payload.get("owner_task_id")
+    if not isinstance(owner_task_id, str):
+        return
+    owner_task = repository.session.get(CampaignTaskRecord, owner_task_id)
+    owner_payload = owner_task.payload if owner_task is not None else {}
+    if (
+        owner_task is None
+        or not isinstance(owner_payload, dict)
+        or owner_payload.get("runtime_schema") != "autonomous_research_v1"
+    ):
+        return
+
+    from app.autonomous_research_runtime import (
+        record_autonomous_research_task_awaiting_evidence,
+        record_autonomous_research_task_blocked,
+        record_autonomous_research_task_completion,
+    )
+
+    if owner_task.status == "completed" and resumed.get("status") == "completed":
+        pipeline_run_id = _worker_safe_string(payload.get("pipeline_run_id"))
+        pipeline_run_ref = f"pipeline_run:{pipeline_run_id}"
+        owner_output_refs = [
+            ref for ref in owner_task.output_refs if isinstance(ref, str)
+        ]
+        if pipeline_run_id and pipeline_run_ref not in owner_output_refs:
+            owner_task = (
+                repository.update_campaign_task_status(
+                    owner_task.id,
+                    "completed",
+                    output_refs=[*owner_output_refs, pipeline_run_ref],
+                )
+                or owner_task
+            )
+        record_autonomous_research_task_completion(
+            task=owner_task,
+            repository=repository,
+        )
+    elif owner_task.status in {"awaiting_evidence", "needs_evidence"}:
+        record_autonomous_research_task_awaiting_evidence(
+            task=owner_task,
+            repository=repository,
+        )
+    elif owner_task.status == "blocked":
+        record_autonomous_research_task_blocked(
+            task=owner_task,
+            repository=repository,
+            stop_reason=_worker_safe_string(resumed.get("stop_reason"))
+            or "candidate_hunter_blocked",
+        )
+
+
+def _block_agent_task(
+    *,
+    task: CampaignTaskRecord,
+    repository: DatabaseRepository,
+    stop_reason: str,
+) -> dict:
+    from app.autonomous_research_runtime import record_autonomous_research_task_blocked
+
+    active_run = repository.find_active_agent_run_for_task(task.id)
+    if active_run is not None:
+        agent_run = repository.finish_agent_run(
+            active_run.id,
+            status="blocked",
+            output_refs=[],
+            safety_gate_state="blocked",
+            stop_reason=stop_reason,
+            payload={"raw_payload_processed": False},
+        )
+    else:
+        agent_run = repository.save_agent_run(
+            campaign_id=task.campaign_id,
+            task_id=task.id,
+            agent_type=task.agent_type,
+            status="blocked",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=[],
+            tool_calls=[],
+            safety_gate_state="blocked",
+            stop_reason=stop_reason,
+            payload={"raw_payload_processed": False},
+        )
+    blocked_task = repository.update_campaign_task_status(
+        task.id,
+        "blocked",
+        output_refs=[f"agent_run:{agent_run.id}"],
+    )
+    if blocked_task is not None:
+        record_autonomous_research_task_blocked(
+            task=blocked_task,
+            repository=repository,
+            stop_reason=stop_reason,
+        )
+    return {
+        "status": "blocked",
+        "task_id": task.id,
+        "agent_run_id": agent_run.id,
+        "stop_reason": stop_reason,
+    }
+
+
+def _run_candidate_refutation_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    workspace_inputs: dict | None,
+) -> dict:
+    from app.candidate_hunter_loop import (
+        build_candidate_hunter_observations,
+        run_candidate_hunter_loop,
+    )
+    from app.autonomous_research_runtime import (
+        record_autonomous_research_task_awaiting_evidence,
+        record_autonomous_research_task_completion,
+    )
+
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    pipeline_run_id = task_payload.get("pipeline_run_id")
+    pipeline_run = (
+        repository.get_pipeline_run(pipeline_run_id)
+        if isinstance(pipeline_run_id, str)
+        else None
+    )
+    pipeline_payload = pipeline_run.payload if pipeline_run is not None else {}
+    hypotheses = pipeline_payload.get("hypotheses") if isinstance(pipeline_payload, dict) else None
+    if (
+        pipeline_run is None
+        or pipeline_run.asset != campaign.default_asset
+        or pipeline_run.scope_status != "in_scope"
+        or not isinstance(pipeline_payload, dict)
+        or pipeline_payload.get("campaign_id") != campaign.id
+        or not isinstance(hypotheses, list)
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="candidate_hunter_input_missing",
+        )
+
+    candidates = [candidate for candidate in hypotheses if isinstance(candidate, dict)]
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id=pipeline_run.id,
+        candidates=candidates,
+        code_files=[],
+        supplemental_code_facts=_candidate_hunter_persisted_code_facts(
+            repository.list_campaign_codebase_facts(campaign.id)
+        ),
+        surface_facts=[],
+        context_facts=[
+            {"artifact_kind": "scope", "fact_type": "scope_context"},
+            {"artifact_kind": "policy", "fact_type": "policy_context"},
+        ],
+    )
+    evidence_context = None
+    if workspace_inputs is not None:
+        evidence_context = {
+            "source_snapshot_digest": workspace_inputs["source_snapshot_digest"],
+            "source_manifest": workspace_inputs["source_manifest"],
+            "saved_scope_guard": {
+                "scope_status": "in_scope",
+                "authorized_local_root": workspace_inputs["authorized_local_root"],
+            },
+        }
+    loop_result = run_candidate_hunter_loop(
+        repository=repository,
+        record=pipeline_run,
+        policy_text=campaign.policy_text_hash,
+        candidates=candidates,
+        observations=observations,
+        evidence_context=evidence_context,
+    )
+    loop_status = loop_result.get("status")
+    if loop_status in {"blocked", "scope_not_in_scope"}:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=_worker_safe_string(loop_result.get("stop_reason"))
+            or "candidate_hunter_blocked",
+        )
+
+    stage_ids = loop_result.get("stage_refs", [])
+    safe_stage_ids = [
+        stage_id
+        for stage_id in stage_ids
+        if isinstance(stage_id, str) and stage_id
+    ] if isinstance(stage_ids, list) else []
+    output_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        *(f"pipeline_stage:{stage_id}" for stage_id in safe_stage_ids),
+    ]
+    active_run = repository.find_active_agent_run_for_task(task.id)
+    agent_run_payload = {
+        "artifact_kind": "candidate_hunter_projection",
+        "pipeline_run_id": pipeline_run.id,
+        "candidate_hunter_status": _worker_safe_string(loop_status),
+        "raw_payload_processed": False,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+    if active_run is not None:
+        agent_run = repository.finish_agent_run(
+            active_run.id,
+            status="completed",
+            output_refs=output_refs,
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload=agent_run_payload,
+        )
+    else:
+        agent_run = repository.save_agent_run(
+            campaign_id=task.campaign_id,
+            task_id=task.id,
+            agent_type=task.agent_type,
+            status="completed",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=output_refs,
+            tool_calls=[],
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload=agent_run_payload,
+        )
+    task_output_refs = [f"agent_run:{agent_run.id}", *output_refs]
+    if loop_status == "completed":
+        completed_task = repository.update_campaign_task_status(
+            task.id,
+            "completed",
+            output_refs=task_output_refs,
+        )
+        if completed_task is not None:
+            record_autonomous_research_task_completion(
+                task=completed_task,
+                repository=repository,
+            )
+        return {
+            "status": "completed",
+            "task_id": task.id,
+            "agent_run_id": agent_run.id,
+            "stop_reason": None,
+        }
+
+    awaiting_task = repository.update_campaign_task_status(
+        task.id,
+        "awaiting_evidence",
+        output_refs=task_output_refs,
+    )
+    if awaiting_task is not None:
+        record_autonomous_research_task_awaiting_evidence(
+            task=awaiting_task,
+            repository=repository,
+        )
+    return {
+        "status": "awaiting_evidence",
+        "task_id": task.id,
+        "agent_run_id": agent_run.id,
+        "stop_reason": "awaiting_evidence",
+    }
+
+
+def _run_finding_dedup_and_rank_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> dict:
+    from app.autonomous_research_runtime import record_autonomous_research_task_completion
+    from app.candidate_hunter_loop import load_candidate_hunter_projection
+
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    pipeline_run_id = task_payload.get("pipeline_run_id")
+    pipeline_run = (
+        repository.get_pipeline_run(pipeline_run_id)
+        if isinstance(pipeline_run_id, str)
+        else None
+    )
+    pipeline_payload = pipeline_run.payload if pipeline_run is not None else {}
+    if (
+        pipeline_run is None
+        or pipeline_run.asset != campaign.default_asset
+        or pipeline_run.scope_status != "in_scope"
+        or not isinstance(pipeline_payload, dict)
+        or pipeline_payload.get("campaign_id") != campaign.id
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="candidate_hunter_projection_missing",
+        )
+
+    projection = load_candidate_hunter_projection(
+        repository=repository,
+        pipeline_run_id=pipeline_run.id,
+    )
+    final_candidates = projection.get("final_candidates")
+    decisions = projection.get("candidate_decisions")
+    if (
+        projection.get("status") != "ready"
+        or not isinstance(final_candidates, list)
+        or not isinstance(decisions, list)
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="candidate_hunter_projection_invalid",
+        )
+
+    retained_ids = {
+        _worker_safe_string(decision.get("candidate_id"))
+        for decision in decisions
+        if isinstance(decision, dict)
+        and decision.get("disposition") == "retained"
+        and _worker_safe_string(decision.get("candidate_id"))
+    }
+    excluded_candidate_ids = sorted(
+        {
+            candidate_id
+            for decision in decisions
+            if isinstance(decision, dict)
+            if decision.get("disposition") != "retained"
+            if (candidate_id := _worker_safe_string(decision.get("candidate_id")))
+        }
+    )
+    rankable_candidates = []
+    for candidate in final_candidates:
+        if not isinstance(candidate, dict):
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason="candidate_hunter_projection_invalid",
+            )
+        candidate_id = _worker_safe_string(candidate.get("candidate_id"))
+        if candidate_id not in retained_ids:
+            continue
+        if any(
+            candidate.get(field) is not False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        ):
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason="candidate_hunter_projection_invalid",
+            )
+        rankable_candidates.append(
+            {
+                "candidate_id": candidate_id,
+                "survived_kill_score": _projection_score(candidate.get("survived_kill_score")),
+                "evidence_completeness_score": _projection_score(
+                    candidate.get("evidence_completeness_score")
+                ),
+                "priority_score": _projection_score(candidate.get("priority_score")),
+            }
+        )
+    ranked_candidates = sorted(
+        rankable_candidates,
+        key=lambda candidate: (
+            -candidate["survived_kill_score"],
+            -candidate["evidence_completeness_score"],
+            -candidate["priority_score"],
+            candidate["candidate_id"],
+        ),
+    )[:5]
+    top_candidates = [
+        {
+            "candidate_id": candidate["candidate_id"],
+            "rank": rank,
+            "survived_kill_score": candidate["survived_kill_score"],
+            "evidence_completeness_score": candidate["evidence_completeness_score"],
+            "priority_score": candidate["priority_score"],
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+        for rank, candidate in enumerate(ranked_candidates, start=1)
+    ]
+    ranking_stage = repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run.id,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_key="autonomous_finding_dedup_and_rank",
+        stage_order=30,
+        status="completed",
+        input_refs=[f"pipeline_run:{pipeline_run.id}"],
+        output_refs=[],
+        safety_gate_state="safe",
+        stop_reason=None,
+        payload={
+            "schema_version": "autonomous_finding_dedup_and_rank_v1",
+            "pipeline_run_id": pipeline_run.id,
+            "idempotency_key": sha256(
+                f"{task.id}:{pipeline_run.id}:finding_dedup_and_rank".encode("utf-8")
+            ).hexdigest(),
+            "top_candidates": top_candidates,
+            "excluded_candidate_ids": excluded_candidate_ids,
+            "submission_blocked": True,
+            "raw_payload_processed": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        },
+    )
+    output_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        f"pipeline_stage:{ranking_stage.id}",
+    ]
+    active_run = repository.find_active_agent_run_for_task(task.id)
+    agent_run_payload = {
+        "artifact_kind": "candidate_dedup_projection",
+        "pipeline_run_id": pipeline_run.id,
+        "top_candidate_count": len(top_candidates),
+        "raw_payload_processed": False,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+    if active_run is not None:
+        agent_run = repository.finish_agent_run(
+            active_run.id,
+            status="completed",
+            output_refs=output_refs,
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload=agent_run_payload,
+        )
+    else:
+        agent_run = repository.save_agent_run(
+            campaign_id=task.campaign_id,
+            task_id=task.id,
+            agent_type=task.agent_type,
+            status="completed",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=output_refs,
+            tool_calls=[],
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload=agent_run_payload,
+        )
+    completed_task = repository.update_campaign_task_status(
+        task.id,
+        "completed",
+        output_refs=[f"agent_run:{agent_run.id}", *output_refs],
+    )
+    if completed_task is not None:
+        record_autonomous_research_task_completion(
+            task=completed_task,
+            repository=repository,
+        )
+    return {
+        "status": "completed",
+        "task_id": task.id,
+        "agent_run_id": agent_run.id,
+        "stop_reason": None,
+    }
+
+
+def _projection_score(value: object) -> int | float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return max(0, value)
+    return 0
+
+
+def _run_report_review_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> dict:
+    from app.autonomous_research_runtime import record_autonomous_research_task_completion
+    from app.candidate_hunter_loop import load_candidate_hunter_projection
+    from app.intelligence_benchmark.candidate_report_bridge import (
+        build_submission_blocked_report_bundle,
+    )
+    from app.mythos_report import build_report_preview_response
+
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    pipeline_run_id = task_payload.get("pipeline_run_id")
+    pipeline_run = (
+        repository.get_pipeline_run(pipeline_run_id)
+        if isinstance(pipeline_run_id, str)
+        else None
+    )
+    pipeline_payload = pipeline_run.payload if pipeline_run is not None else {}
+    if (
+        pipeline_run is None
+        or pipeline_run.asset != campaign.default_asset
+        or pipeline_run.scope_status != "in_scope"
+        or not isinstance(pipeline_payload, dict)
+        or pipeline_payload.get("campaign_id") != campaign.id
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="report_review_input_missing",
+        )
+
+    ranking_stages = [
+        stage
+        for stage in repository.list_pipeline_stages_for_run(pipeline_run.id)
+        if stage.stage_key == "autonomous_finding_dedup_and_rank"
+        and stage.campaign_id == campaign.id
+        and stage.status == "completed"
+        and stage.safety_gate_state == "safe"
+    ]
+    if len(ranking_stages) != 1 or not isinstance(ranking_stages[0].payload, dict):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="report_review_input_missing",
+        )
+    ranking_payload = ranking_stages[0].payload
+    top_candidates = ranking_payload.get("top_candidates")
+    if (
+        not isinstance(top_candidates, list)
+        or ranking_payload.get("submission_blocked") is not True
+        or any(ranking_payload.get(field) is not False for field in (
+            "execution_allowed",
+            "dispatch_allowed",
+            "validation_allowed",
+            "candidate_promotion_allowed",
+            "report_submission_allowed",
+        ))
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="report_review_input_invalid",
+        )
+
+    projection = load_candidate_hunter_projection(
+        repository=repository,
+        pipeline_run_id=pipeline_run.id,
+    )
+    final_candidates = projection.get("final_candidates")
+    decisions = projection.get("candidate_decisions")
+    if (
+        projection.get("status") != "ready"
+        or not isinstance(final_candidates, list)
+        or not isinstance(decisions, list)
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="candidate_hunter_projection_invalid",
+        )
+    retained_ids = {
+        _worker_safe_string(decision.get("candidate_id"))
+        for decision in decisions
+        if isinstance(decision, dict)
+        and decision.get("disposition") == "retained"
+        and _worker_safe_string(decision.get("candidate_id"))
+    }
+    candidates_by_id = {
+        _worker_safe_string(candidate.get("candidate_id")): candidate
+        for candidate in final_candidates
+        if isinstance(candidate, dict)
+        and _worker_safe_string(candidate.get("candidate_id")) in retained_ids
+    }
+    ordered_candidate_ids = [
+        _worker_safe_string(candidate.get("candidate_id"))
+        for candidate in top_candidates
+        if isinstance(candidate, dict)
+        and _worker_safe_string(candidate.get("candidate_id"))
+    ]
+    if len(ordered_candidate_ids) != len(set(ordered_candidate_ids)) or any(
+        candidate_id not in candidates_by_id for candidate_id in ordered_candidate_ids
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="report_review_input_invalid",
+        )
+    try:
+        report_drafts = [
+            build_submission_blocked_report_bundle(candidates_by_id[candidate_id])
+            for candidate_id in ordered_candidate_ids
+        ]
+    except (TypeError, ValueError):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="report_review_bundle_invalid",
+        )
+    if any(
+        not isinstance(draft, dict)
+        or draft.get("submission_blocked") is not True
+        or draft.get("human_review_required") is not True
+        or draft.get("execution_allowed") is not False
+        or draft.get("validation_allowed") is not False
+        or draft.get("report_submission_allowed") is not False
+        for draft in report_drafts
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="report_review_bundle_invalid",
+        )
+    try:
+        build_report_preview_response(pipeline_run)
+    except ValueError:
+        report_preview_available = False
+    else:
+        report_preview_available = True
+    handoff_task_id = "campaign_task_validation_handoff_" + sha256(
+        f"{task.id}:{pipeline_run.id}:validation_handoff".encode("utf-8")
+    ).hexdigest()
+    validation_handoff, _ = repository.claim_campaign_task(
+        task_id=handoff_task_id,
+        campaign_id=campaign.id,
+        task_type="validation_handoff",
+        agent_type="human_review",
+        title="Review submission-blocked validation handoff",
+        input_refs=[
+            f"pipeline_run:{pipeline_run.id}",
+            f"campaign_task:{task.id}",
+            f"pipeline_stage:{ranking_stages[0].id}",
+        ],
+        payload={
+            "schema_version": "autonomous_validation_handoff_v1",
+            "pipeline_run_id": pipeline_run.id,
+            "report_review_task_id": task.id,
+            "source_snapshot_digest": task_payload.get("source_snapshot_digest"),
+            "candidate_ids": ordered_candidate_ids,
+            "submission_blocked": True,
+            "human_review_required": True,
+            "approval_required": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+    validation_handoff = (
+        repository.update_campaign_task_status(
+            validation_handoff.id,
+            "awaiting_approval",
+        )
+        or validation_handoff
+    )
+    report_stage = repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run.id,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_key="autonomous_report_review",
+        stage_order=40,
+        status="completed",
+        input_refs=[
+            f"pipeline_run:{pipeline_run.id}",
+            f"pipeline_stage:{ranking_stages[0].id}",
+        ],
+        output_refs=[f"campaign_task:{validation_handoff.id}"],
+        safety_gate_state="awaiting_review",
+        stop_reason="human_review_required",
+        payload={
+            "schema_version": "autonomous_report_review_v1",
+            "pipeline_run_id": pipeline_run.id,
+            "idempotency_key": sha256(
+                f"{task.id}:{pipeline_run.id}:report_review".encode("utf-8")
+            ).hexdigest(),
+            "submission_blocked": True,
+            "human_review_required": True,
+            "report_preview_available": report_preview_available,
+            "report_drafts": report_drafts,
+            "raw_payload_processed": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        },
+    )
+    output_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        f"pipeline_stage:{report_stage.id}",
+        f"campaign_task:{validation_handoff.id}",
+    ]
+    active_run = repository.find_active_agent_run_for_task(task.id)
+    agent_run_payload = {
+        "artifact_kind": "submission_blocked_report_review",
+        "pipeline_run_id": pipeline_run.id,
+        "report_draft_count": len(report_drafts),
+        "raw_payload_processed": False,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+    if active_run is not None:
+        agent_run = repository.finish_agent_run(
+            active_run.id,
+            status="completed",
+            output_refs=output_refs,
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload=agent_run_payload,
+        )
+    else:
+        agent_run = repository.save_agent_run(
+            campaign_id=task.campaign_id,
+            task_id=task.id,
+            agent_type=task.agent_type,
+            status="completed",
+            input_refs=[f"campaign_task:{task.id}"],
+            output_refs=output_refs,
+            tool_calls=[],
+            safety_gate_state="allowed",
+            stop_reason=None,
+            payload=agent_run_payload,
+        )
+    completed_task = repository.update_campaign_task_status(
+        task.id,
+        "completed",
+        output_refs=[f"agent_run:{agent_run.id}", *output_refs],
+    )
+    if completed_task is not None:
+        record_autonomous_research_task_completion(
+            task=completed_task,
+            repository=repository,
+        )
+    return {
+        "status": "completed",
+        "task_id": task.id,
+        "agent_run_id": agent_run.id,
+        "stop_reason": "human_review_required",
     }
 
 
@@ -177,6 +1053,8 @@ def _agent_task_stop_reason(
         return "scope_not_in_scope"
     if campaign.status == "paused":
         return "campaign_paused"
+    if campaign.status == "awaiting_review":
+        return "human_review_required"
     if campaign.status in {"blocked", "canceled", "completed", "failed"}:
         return f"campaign_{campaign.status}"
     if campaign.status != "running":
@@ -231,9 +1109,17 @@ def _materialize_read_only_artifacts(
     task: CampaignTaskRecord,
     campaign: CampaignRecord,
     repository: DatabaseRepository,
+    workspace_inputs: dict | None,
 ) -> tuple[list[str], dict]:
     if task.task_type == "attack_surface_mapping":
-        static_map = _map_authorized_attack_surface(task.payload)
+        mapping_payload = task.payload
+        if workspace_inputs is not None:
+            mapping_payload = {
+                **task.payload,
+                "authorized_code_files": workspace_inputs["code_files"],
+                "authorized_api_artifacts": workspace_inputs["api_artifacts"],
+            }
+        static_map = _map_authorized_attack_surface(mapping_payload)
         if static_map.facts:
             return _materialize_static_codebase_map(
                 task=task,
@@ -313,6 +1199,7 @@ def _materialize_read_only_artifacts(
             program_id=campaign.program_id,
             asset=campaign.default_asset,
             policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
             scope_status=campaign.scope_status,
             hypothesis_count=len(hypothesis_payload["hypotheses"]),
             blocked_count=1,
@@ -515,6 +1402,75 @@ def _fallback_hypothesis_payload(
             }
         ],
     }
+
+
+def _candidate_hunter_persisted_code_facts(
+    codebase_facts: list[CodebaseFactRecord],
+) -> list[CodebaseFactCandidate]:
+    allowed_fact_types = {
+        "route_handler",
+        "authz_check",
+        "sensitive_sink",
+        "service_call",
+        "authorization_gap_candidate",
+    }
+    projected: list[CodebaseFactCandidate] = []
+    seen: set[tuple[str, str, str, str, str, str, str, int]] = set()
+    for fact in codebase_facts:
+        if fact.fact_type not in allowed_fact_types:
+            continue
+        payload = fact.payload if isinstance(fact.payload, dict) else {}
+        if payload.get("mapping_mode") == "authorized_api_artifact":
+            continue
+        source_path = _worker_safe_string(fact.source_path)
+        symbol_name = _worker_safe_string(fact.symbol_name)
+        if not source_path or not symbol_name:
+            continue
+        handler = _worker_safe_string(payload.get("handler")) or symbol_name
+        caller = _worker_safe_string(payload.get("caller"))
+        line = payload.get("line")
+        safe_line = line if isinstance(line, int) and 0 < line <= 1_000_000 else 0
+        key = (
+            _worker_safe_string(fact.fact_type),
+            source_path,
+            symbol_name,
+            _worker_safe_string(fact.route_method),
+            _worker_safe_string(fact.route_path),
+            _worker_safe_string(fact.authz_hint),
+            handler,
+            safe_line,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        safe_payload: dict[str, object] = {
+            "handler": handler,
+            "mapping_mode": "persisted_codebase_fact_projection",
+            "raw_payload_processed": False,
+        }
+        if caller:
+            safe_payload["caller"] = caller
+        if safe_line:
+            safe_payload["line"] = safe_line
+        for name in ("root_cause", "root_symbol"):
+            if value := _worker_safe_string(payload.get(name)):
+                safe_payload[name] = value
+        if sink_symbols := _worker_safe_string_list(payload.get("sink_symbols")):
+            safe_payload["sink_symbols"] = sink_symbols
+        projected.append(
+            CodebaseFactCandidate(
+                fact_type=_worker_safe_string(fact.fact_type),
+                source_path=source_path,
+                symbol_name=symbol_name,
+                route_method=_worker_safe_string(fact.route_method) or None,
+                route_path=_worker_safe_string(fact.route_path) or None,
+                authz_hint=_worker_safe_string(fact.authz_hint) or None,
+                sensitivity_label=_worker_safe_string(fact.sensitivity_label)
+                or "authorized_local_code",
+                payload=safe_payload,
+            )
+        )
+    return projected
 
 
 def _codebase_fact_hypothesis_payload(

@@ -70,6 +70,7 @@ from app.campaign_orchestrator import (
     campaign_token_used_from_runs,
     tick_campaign,
 )
+from app.autonomous_research_runtime import tick_autonomous_research_campaign
 from app.candidate_hunter_loop import (
     build_candidate_hunter_observations,
     load_candidate_hunter_projection,
@@ -186,6 +187,7 @@ from app.source_audit import (
 from app.studio_workspace import (
     StudioArtifactImport,
     StudioWorkspaceAccessError,
+    build_authorized_campaign_snapshot,
     create_workspace,
     import_workspace_artifact,
     load_workspace_manifest,
@@ -988,6 +990,13 @@ class CampaignResponse(BaseModel):
     budget: CampaignBudgetResponse | None = None
 
 
+class AutonomousWakeupCampaignResponse(BaseModel):
+    id: str
+    autonomy_level: str
+    scope_status: str
+    status: str
+
+
 class CampaignControlCampaignResponse(BaseModel):
     id: str
     program_id: str | None = None
@@ -1474,6 +1483,18 @@ class CampaignCycleReviewCompletionRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class AutonomousValidationHandoffReviewRequest(BaseModel):
+    decision: Literal["accepted_for_manual_follow_up", "dismissed"]
+    reviewer: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
+    validation_mode: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AutonomousReportRevisionRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=100)
+    rationale: str = Field(min_length=1, max_length=1000)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "bounty-mythos-api"}
@@ -1593,6 +1614,72 @@ def _current_campaign_scope_guard_rule(
     )
 
 
+def _has_pending_autonomous_validation_handoff(
+    repository: DatabaseRepository,
+    campaign_id: str,
+) -> bool:
+    return any(
+        task.task_type == "validation_handoff"
+        and task.status == "awaiting_approval"
+        for task in repository.list_campaign_tasks(campaign_id)
+    )
+
+
+def _is_safe_autonomous_validation_handoff(
+    repository: DatabaseRepository,
+    campaign: CampaignRecord,
+    task: CampaignTaskRecord,
+) -> bool:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    pipeline_run_id = payload.get("pipeline_run_id")
+    report_review_task_id = payload.get("report_review_task_id")
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    if (
+        task.task_type != "validation_handoff"
+        or payload.get("schema_version") != "autonomous_validation_handoff_v1"
+        or not isinstance(pipeline_run_id, str)
+        or not isinstance(report_review_task_id, str)
+        or not isinstance(source_snapshot_digest, str)
+        or source_snapshot_digest != campaign_payload.get("source_snapshot_digest")
+        or payload.get("submission_blocked") is not True
+        or payload.get("human_review_required") is not True
+        or payload.get("approval_required") is not True
+        or any(
+            payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        return False
+    pipeline_run = repository.get_pipeline_run(pipeline_run_id)
+    report_review_task = repository.session.get(
+        CampaignTaskRecord,
+        report_review_task_id,
+    )
+    pipeline_payload = pipeline_run.payload if pipeline_run is not None else {}
+    return (
+        pipeline_run is not None
+        and pipeline_run.asset == campaign.default_asset
+        and pipeline_run.scope_status == "in_scope"
+        and isinstance(pipeline_payload, dict)
+        and pipeline_payload.get("campaign_id") == campaign.id
+        and report_review_task is not None
+        and report_review_task.campaign_id == campaign.id
+        and report_review_task.task_type == "report_review"
+        and report_review_task.status == "completed"
+        and f"pipeline_run:{pipeline_run_id}" in task.input_refs
+        and f"campaign_task:{report_review_task_id}" in task.input_refs
+    )
+
+
 @app.get("/mythos/campaigns", response_model=list[CampaignResponse])
 def list_mythos_campaigns(
     session: Session = Depends(get_session),
@@ -1601,6 +1688,24 @@ def list_mythos_campaigns(
     return [
         _campaign_response(campaign, repository)
         for campaign in repository.list_campaigns()
+    ]
+
+
+@app.get(
+    "/mythos/campaigns/autonomous-wakeup-candidates",
+    response_model=list[AutonomousWakeupCampaignResponse],
+)
+def list_mythos_autonomous_wakeup_campaigns(
+    after_id: str | None = Query(
+        default=None,
+        pattern=r"^campaign_[0-9a-f]{32}$",
+    ),
+    session: Session = Depends(get_session),
+) -> list[AutonomousWakeupCampaignResponse]:
+    repository = DatabaseRepository(session)
+    return [
+        AutonomousWakeupCampaignResponse(**campaign)
+        for campaign in repository.list_autonomous_wakeup_campaigns(after_id=after_id)
     ]
 
 
@@ -1632,7 +1737,23 @@ def start_mythos_campaign(
         raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
     if scope_guard_rule.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
-    campaign = repository.update_campaign_status(campaign_id, "running") or campaign
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if campaign.status in {"canceled", "completed", "failed"}:
+        raise HTTPException(status_code=409, detail="campaign_not_startable")
+    campaign = repository.transition_campaign_status_if_currently(
+        campaign_id,
+        "running",
+        allowed_current_statuses={
+            "draft",
+            "paused",
+            "blocked",
+            "awaiting_review",
+            "running",
+        },
+    )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_not_startable")
     tick_result = tick_campaign(
         campaign_id,
         repository=repository,
@@ -1648,7 +1769,28 @@ def pause_mythos_campaign(
     campaign_id: str,
     session: Session = Depends(get_session),
 ) -> CampaignResponse:
-    return _update_campaign_status(campaign_id, "paused", session)
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if campaign.status in {"canceled", "completed", "failed"}:
+        raise HTTPException(status_code=409, detail="campaign_not_pausable")
+    campaign = repository.transition_campaign_status_if_currently(
+        campaign_id,
+        "paused",
+        allowed_current_statuses={
+            "draft",
+            "paused",
+            "blocked",
+            "awaiting_review",
+            "running",
+        },
+    )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_not_pausable")
+    return _campaign_response(campaign, repository)
 
 
 @app.post("/mythos/campaigns/{campaign_id}/resume", response_model=CampaignResponse)
@@ -1667,6 +1809,10 @@ def resume_mythos_campaign(
         raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
     if scope_guard_rule.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if campaign.status in {"canceled", "completed", "failed"}:
+        raise HTTPException(status_code=409, detail="campaign_not_resumable")
     budget = repository.get_campaign_budget(campaign_id)
     if _campaign_budget_exhausted(
         budget,
@@ -1674,7 +1820,35 @@ def resume_mythos_campaign(
         agent_runs=repository.list_campaign_agent_runs(campaign.id),
     ):
         raise HTTPException(status_code=409, detail="budget_exhausted")
-    return _update_campaign_status(campaign_id, "running", session)
+    campaign = repository.transition_campaign_status_if_currently(
+        campaign_id,
+        "running",
+        allowed_current_statuses={
+            "draft",
+            "paused",
+            "blocked",
+            "awaiting_review",
+            "running",
+        },
+    )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_not_resumable")
+    return _campaign_response(campaign, repository)
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autonomous-research/tick")
+def tick_mythos_autonomous_research_campaign(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return tick_autonomous_research_campaign(
+        campaign_id,
+        repository=repository,
+        dispatcher=dispatch_agent_task,
+    )
 
 
 @app.get("/mythos/campaigns/{campaign_id}/tasks", response_model=list[CampaignTaskResponse])
@@ -1689,6 +1863,175 @@ def list_mythos_campaign_tasks(
         _campaign_task_response(record)
         for record in repository.list_campaign_tasks(campaign_id)
     ]
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/validation-handoffs/{task_id}/review",
+    response_model=CampaignTaskResponse,
+)
+def review_mythos_autonomous_validation_handoff(
+    campaign_id: str,
+    task_id: str,
+    request: AutonomousValidationHandoffReviewRequest,
+    session: Session = Depends(get_session),
+) -> CampaignTaskResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    task = repository.session.get(CampaignTaskRecord, task_id)
+    if task is None or task.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Validation handoff not found")
+    if task.status != "awaiting_approval":
+        raise HTTPException(status_code=409, detail="validation_handoff_not_awaiting_review")
+    if not _is_safe_autonomous_validation_handoff(repository, campaign, task):
+        raise HTTPException(status_code=409, detail="autonomous_validation_handoff_invalid")
+    if campaign.status == "running":
+        campaign = repository.transition_campaign_status_if_currently(
+            campaign.id,
+            "awaiting_review",
+            allowed_current_statuses={"running"},
+        )
+        if campaign is None:
+            raise HTTPException(status_code=409, detail="campaign_not_ready_for_review")
+    elif campaign.status not in {"awaiting_review", "paused"}:
+        raise HTTPException(status_code=409, detail="campaign_not_ready_for_review")
+
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    manual_validation = None
+    if (
+        request.decision == "accepted_for_manual_follow_up"
+        and request.validation_mode is not None
+    ):
+        validation_mode = safe_preview_text(request.validation_mode)
+        asset = campaign.default_asset
+        scope_rule, program_rule_reason = _current_campaign_scope_guard_rule(
+            repository,
+            campaign,
+            asset,
+        )
+        if program_rule_reason is not None:
+            raise HTTPException(status_code=409, detail=program_rule_reason)
+        if scope_rule is None:
+            raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+        scope_decision = evaluate_validation_request(
+            scope_rule,
+            ValidationRequest(
+                asset=asset,
+                validation_type=validation_mode,
+                human_approved=False,
+            ),
+        )
+        if (
+            scope_decision.reason == "human_approval_required"
+            and validation_mode not in scope_rule.allowed_validation
+        ):
+            raise HTTPException(status_code=409, detail="validation_not_allowed")
+        if (
+            not scope_decision.allowed
+            and scope_decision.reason != "human_approval_required"
+        ):
+            raise HTTPException(status_code=409, detail=scope_decision.reason)
+
+        candidate_ids = list(
+            dict.fromkeys(
+                safe_preview_text(candidate_id)
+                for candidate_id in payload.get("candidate_ids", [])
+                if isinstance(candidate_id, str) and safe_preview_text(candidate_id)
+            )
+        )[:100]
+        plan_material = {
+            "handoff_task_id": task.id,
+            "pipeline_run_id": payload["pipeline_run_id"],
+            "source_snapshot_digest": payload["source_snapshot_digest"],
+            "candidate_ids": candidate_ids,
+            "validation_mode": validation_mode,
+        }
+        plan_digest = "sha256:" + sha256(
+            json.dumps(plan_material, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        audit_payload = {
+            "source": "autonomous_validation_handoff",
+            "handoff_task_id": task.id,
+            "pipeline_run_id": payload["pipeline_run_id"],
+            "source_snapshot_digest": payload["source_snapshot_digest"],
+            "scope_reference": payload["source_snapshot_digest"],
+            "candidate_ids": candidate_ids,
+            "scope_guard_reason": scope_decision.reason,
+            "submission_blocked": True,
+            "human_review_completed": True,
+            "approval_required": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        }
+        manual_validation = {
+            "reviewer": request.reviewer,
+            "approval_reason": "Human approval required before validation preflight.",
+            "scope_reference": payload["source_snapshot_digest"],
+            "asset": asset,
+            "validation_mode": validation_mode,
+            "plan_digest": plan_digest,
+            "approval_payload": audit_payload,
+            "target_ref": f"campaign:{campaign.id}",
+            "summary": "Human approval required before non-destructive validation preflight.",
+            "validation_payload": audit_payload,
+        }
+    review_payload = {
+        "schema_version": "autonomous_validation_handoff_review_v1",
+        "idempotency_key": sha256(
+            f"{task.id}:autonomous_validation_handoff_review_v1".encode("utf-8")
+        ).hexdigest(),
+        "handoff_task_id": task.id,
+        "pipeline_run_id": payload["pipeline_run_id"],
+        "source_snapshot_digest": payload["source_snapshot_digest"],
+        "decision": request.decision,
+        "reviewer": request.reviewer,
+        "reason_recorded": bool(request.reason),
+        "validation_mode": (
+            manual_validation["validation_mode"] if manual_validation is not None else None
+        ),
+        "manual_validation_queued": manual_validation is not None,
+        "submission_blocked": True,
+        "human_review_completed": True,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+    }
+    if manual_validation is None:
+        review_result = repository.complete_autonomous_validation_handoff_review(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            pipeline_run_id=payload["pipeline_run_id"],
+            input_refs=[*task.input_refs, f"campaign_task:{task.id}"],
+            payload=review_payload,
+        )
+    else:
+        review_result = (
+            repository.complete_autonomous_validation_handoff_review_with_manual_validation(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                pipeline_run_id=payload["pipeline_run_id"],
+                input_refs=[*task.input_refs, f"campaign_task:{task.id}"],
+                payload=review_payload,
+                manual_validation=manual_validation,
+            )
+    )
+    if review_result is None:
+        raise HTTPException(status_code=409, detail="validation_handoff_not_awaiting_review")
+    reviewed_task = review_result[0]
+    return _campaign_task_response(reviewed_task)
 
 
 @app.post(
@@ -2121,6 +2464,132 @@ def list_mythos_campaign_pipeline_stages(
 
 
 @app.post(
+    "/mythos/campaigns/{campaign_id}/pipeline-stages/{stage_id}/report-revisions",
+    response_model=PipelineStageResponse,
+)
+def revise_autonomous_report_with_validation_evidence(
+    campaign_id: str,
+    stage_id: str,
+    request: AutonomousReportRevisionRequest,
+    session: Session = Depends(get_session),
+) -> PipelineStageResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+
+    stage = repository.get_pipeline_stage(stage_id)
+    if (
+        stage is None
+        or stage.campaign_id != campaign_id
+        or stage.stage_key != "autonomous_validation_evidence_import"
+        or stage.status != "evidence_recorded"
+        or stage.safety_gate_state != "advisory_validation_evidence_only"
+        or stage.pipeline_run_id is None
+        or stage.task_id is None
+        or not isinstance(stage.payload, dict)
+    ):
+        raise HTTPException(status_code=404, detail="Validation evidence stage not found")
+
+    payload = stage.payload
+    raw_candidate_ids = payload.get("candidate_ids")
+    candidate_ids = safe_string_list(raw_candidate_ids)
+    evidence_ref_count = _safe_non_negative_int(payload.get("evidence_ref_count"))
+    if (
+        payload.get("schema_version") != "autonomous_validation_evidence_import_v1"
+        or payload.get("source") != "autonomous_validation_handoff"
+        or payload.get("pipeline_run_id") != stage.pipeline_run_id
+        or payload.get("handoff_task_id") != stage.task_id
+        or payload.get("outcome") != "observed"
+        or payload.get("submission_blocked") is not True
+        or payload.get("human_review_completed") is not True
+        or not isinstance(raw_candidate_ids, list)
+        or not 1 <= len(candidate_ids) <= 100
+        or len(candidate_ids) != len(set(candidate_ids))
+        or any(
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or safe_preview_text(candidate_id) != candidate_id
+            for candidate_id in raw_candidate_ids
+        )
+        or evidence_ref_count < 1
+        or any(
+            payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        raise HTTPException(status_code=409, detail="validation_evidence_not_report_safe")
+
+    handoff = repository.session.get(CampaignTaskRecord, stage.task_id)
+    pipeline_run = repository.get_pipeline_run(stage.pipeline_run_id)
+    handoff_payload = handoff.payload if handoff is not None else {}
+    if (
+        handoff is None
+        or handoff.campaign_id != campaign_id
+        or handoff.status != "completed"
+        or not _is_safe_autonomous_validation_handoff(repository, campaign, handoff)
+        or not isinstance(handoff_payload, dict)
+        or safe_string_list(handoff_payload.get("candidate_ids")) != candidate_ids
+        or payload.get("source_snapshot_digest")
+        != handoff_payload.get("source_snapshot_digest")
+        or f"pipeline_run:{stage.pipeline_run_id}" not in stage.input_refs
+        or f"campaign_task:{stage.task_id}" not in stage.input_refs
+        or pipeline_run is None
+    ):
+        raise HTTPException(status_code=409, detail="validation_evidence_provenance_invalid")
+
+    revision = repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run.id,
+        campaign_id=campaign_id,
+        task_id=handoff.id,
+        stage_key="autonomous_report_revision",
+        stage_order=43,
+        status="completed",
+        input_refs=[
+            f"pipeline_run:{pipeline_run.id}",
+            f"campaign_task:{handoff.id}",
+            f"pipeline_stage:{stage.id}",
+        ],
+        output_refs=[],
+        safety_gate_state="submission_blocked_human_review",
+        stop_reason="human_review_required",
+        payload={
+            "schema_version": "autonomous_report_revision_v1",
+            "idempotency_key": sha256(
+                f"{stage.id}:autonomous_report_revision_v1".encode("utf-8")
+            ).hexdigest(),
+            "source_stage_id": stage.id,
+            "reviewer": safe_preview_text(request.reviewer),
+            "rationale": safe_preview_text(request.rationale),
+            "status": "submission_blocked_human_review",
+            "report_draft_count": len(candidate_ids),
+            "candidate_count": len(candidate_ids),
+            "validation_evidence_ref_count": evidence_ref_count,
+            "submission_blocked": True,
+            "human_review_required": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+    return _pipeline_stage_response(revision)
+
+
+@app.post(
     "/mythos/campaigns/{campaign_id}/pipeline-stages/{stage_id}/validation-feedback-review",
     response_model=PipelineStageResponse,
 )
@@ -2414,6 +2883,10 @@ def record_mythos_validation_run_manual_result(
             campaign=campaign,
         )
     if _validation_run_manual_result_matches(validation_run, request):
+        _record_autonomous_validation_evidence_import_stage(
+            repository,
+            validation_run,
+        )
         return _validation_run_response(validation_run, repository=repository)
     if validation_run.status != "preflight_passed":
         raise HTTPException(
@@ -2460,6 +2933,7 @@ def record_mythos_validation_run_manual_result(
             "validation_result_review": _validation_result_review_payload(updated_run),
         },
     )
+    _record_autonomous_validation_evidence_import_stage(repository, updated_run)
     _record_research_validation_feedback_stage(repository, updated_run, request)
     usage_record = _artifact_usage_record_for_validation_feedback(
         repository=repository,
@@ -4573,6 +5047,20 @@ def launch_mythos_studio_workspace_campaign(
     if repository.get_program(program_id) is None:
         raise HTTPException(status_code=404, detail="Program not found")
 
+    try:
+        workspace_snapshot = build_authorized_campaign_snapshot(
+            request.workspace_path
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    except ValueError as exc:
+        detail = (
+            "workspace_snapshot_redaction_review_required"
+            if str(exc) == "workspace_snapshot_redaction_review_required"
+            else "workspace_snapshot_invalid"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
+
     default_asset = request.default_asset or _studio_campaign_default_asset(
         manifest,
         request.workspace_path,
@@ -4583,8 +5071,10 @@ def launch_mythos_studio_workspace_campaign(
     )
     if scope_guard_rule.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
-
-    payload = _studio_campaign_payload_from_manifest(manifest)
+    payload = _studio_campaign_payload_from_manifest(
+        workspace_snapshot,
+        request.workspace_path,
+    )
     payload["scope_guard_rule"] = scope_guard_rule.model_dump(mode="json")
     campaign = repository.create_campaign(
         program_id=program_id,
@@ -4594,7 +5084,11 @@ def launch_mythos_studio_workspace_campaign(
         policy_text=_studio_policy_text_from_manifest(manifest),
         default_asset=default_asset,
         target_classes=["idor", "authorization"],
-        allowed_tools=["static_analyzer", "api_artifact_mapper"],
+        allowed_tools=[
+            "static_analyzer",
+            "api_artifact_mapper",
+            "candidate_hunter_local_evidence_inspector",
+        ],
         created_by="mythos_studio",
         payload=payload,
     )
@@ -4606,7 +5100,7 @@ def launch_mythos_studio_workspace_campaign(
         validation_budget=1,
     )
     campaign = repository.update_campaign_status(campaign.id, "running") or campaign
-    tick_result = tick_campaign(
+    tick_result = tick_autonomous_research_campaign(
         campaign.id,
         repository=repository,
         dispatcher=dispatch_agent_task,
@@ -4615,7 +5109,8 @@ def launch_mythos_studio_workspace_campaign(
         campaign = repository.update_campaign_status(campaign.id, "blocked") or campaign
 
     control_center = _campaign_control_center_response(campaign, repository)
-    dispatched_task_ids = tick_result.get("dispatched_task_ids", [])
+    campaign_task_id = tick_result.get("campaign_task_id")
+    dispatched_task_ids = [campaign_task_id] if isinstance(campaign_task_id, str) else []
     updated_manifest = record_workspace_campaign_hunter_run(
         request.workspace_path,
         campaign_id=campaign.id,
@@ -4961,24 +5456,51 @@ def _studio_missing_ab_artifacts(manifest: dict) -> list[str]:
     ]
 
 
-def _studio_campaign_payload_from_manifest(manifest: dict) -> dict[str, object]:
-    payload: dict[str, object] = {"source": "studio_workspace_campaign_bridge"}
-    code_path = _studio_artifact_path(manifest, "code")
-    api_path = _studio_artifact_path(manifest, "api")
-    har_path = _studio_artifact_path(manifest, "har")
-
-    code_files = _studio_authorized_code_files(code_path)
-    if code_files:
-        payload["authorized_code_files"] = code_files
-
-    api_artifacts = []
-    if api_path:
-        api_artifacts.append(_studio_authorized_json_artifact("openapi", api_path))
-    if har_path:
-        api_artifacts.append(_studio_authorized_json_artifact("har", har_path))
-    if api_artifacts:
-        payload["authorized_api_artifacts"] = api_artifacts
-    return payload
+def _studio_campaign_payload_from_manifest(
+    workspace_snapshot: dict[str, object],
+    workspace_path: str,
+) -> dict[str, object]:
+    source_snapshot_digest = workspace_snapshot.get("source_snapshot_digest")
+    source_manifest = workspace_snapshot.get("source_manifest")
+    artifact_refs = workspace_snapshot.get("artifact_refs")
+    if (
+        not isinstance(source_snapshot_digest, str)
+        or not isinstance(source_manifest, list)
+        or not isinstance(artifact_refs, list)
+    ):
+        raise ValueError("workspace_snapshot_invalid")
+    code_ref = next(
+        (
+            item
+            for item in artifact_refs
+            if isinstance(item, dict) and item.get("kind") == "code"
+        ),
+        None,
+    )
+    code_relative_path = (
+        code_ref.get("relative_path") if isinstance(code_ref, dict) else None
+    )
+    if not isinstance(code_relative_path, str):
+        raise ValueError("workspace_snapshot_invalid")
+    return {
+        "source": "studio_workspace_campaign_bridge",
+        "source_snapshot_digest": source_snapshot_digest,
+        "workspace_snapshot": workspace_snapshot,
+        "source_manifest": source_manifest,
+        "saved_scope_guard": {
+            "scope_status": "in_scope",
+            "authorized_local_root": str(
+                (Path(workspace_path) / code_relative_path).resolve(strict=True)
+            ),
+        },
+        "inspector_tool_allowlist": ["candidate_hunter_local_evidence_inspector"],
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+    }
 
 
 def _studio_policy_text_from_manifest(manifest: dict) -> str:
@@ -11844,6 +12366,137 @@ def _record_research_validation_feedback_stage(
     )
 
 
+def _record_autonomous_validation_evidence_import_stage(
+    repository: DatabaseRepository,
+    validation_run: ValidationRunRecord,
+) -> None:
+    payload = validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    pipeline_run_id = payload.get("pipeline_run_id")
+    handoff_task_id = payload.get("handoff_task_id")
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    if (
+        payload.get("source") != "autonomous_validation_handoff"
+        or validation_run.task_id is None
+        or validation_run.status not in {"evidence_recorded", "refuted", "needs_evidence"}
+        or validation_run.allowed_to_execute
+        or not isinstance(pipeline_run_id, str)
+        or not isinstance(handoff_task_id, str)
+        or not isinstance(source_snapshot_digest, str)
+        or handoff_task_id != validation_run.task_id
+        or payload.get("approval_required") is not True
+        or any(
+            payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        return
+
+    campaign = repository.get_campaign(validation_run.campaign_id)
+    handoff = repository.session.get(CampaignTaskRecord, handoff_task_id)
+    if (
+        campaign is None
+        or campaign.scope_status != "in_scope"
+        or handoff is None
+        or handoff.campaign_id != campaign.id
+        or handoff.status != "completed"
+        or not _is_safe_autonomous_validation_handoff(repository, campaign, handoff)
+    ):
+        return
+    handoff_payload = handoff.payload if isinstance(handoff.payload, dict) else {}
+    if (
+        handoff_payload.get("pipeline_run_id") != pipeline_run_id
+        or handoff_payload.get("source_snapshot_digest") != source_snapshot_digest
+    ):
+        return
+
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id
+        else None
+    )
+    if approval is None or not _validation_run_approval_matches(
+        approval=approval,
+        validation_run=validation_run,
+        campaign=campaign,
+        asset=_validation_run_scope_asset(validation_run, campaign),
+    ):
+        return
+
+    manual_result = payload.get("manual_result")
+    if not isinstance(manual_result, dict):
+        return
+    outcome = safe_preview_text(manual_result.get("outcome", ""))
+    if outcome not in {"observed", "refuted", "needs_more_evidence"}:
+        return
+
+    raw_candidate_ids = payload.get("candidate_ids")
+    candidate_ids = []
+    if isinstance(raw_candidate_ids, list):
+        for candidate_id in raw_candidate_ids:
+            if not isinstance(candidate_id, str):
+                continue
+            safe_candidate_id = safe_preview_text(candidate_id)
+            if safe_candidate_id and safe_candidate_id not in candidate_ids:
+                candidate_ids.append(safe_candidate_id)
+            if len(candidate_ids) >= 100:
+                break
+
+    repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run_id,
+        campaign_id=campaign.id,
+        task_id=handoff.id,
+        stage_key="autonomous_validation_evidence_import",
+        stage_order=42,
+        status=validation_run.status,
+        input_refs=[
+            f"pipeline_run:{pipeline_run_id}",
+            f"campaign_task:{handoff.id}",
+            f"approval:{approval.id}",
+            f"validation_run:{validation_run.id}",
+        ],
+        output_refs=[f"validation_run:{validation_run.id}"],
+        safety_gate_state="advisory_validation_evidence_only",
+        stop_reason=None,
+        payload={
+            "schema_version": "autonomous_validation_evidence_import_v1",
+            "idempotency_key": sha256(
+                f"{validation_run.id}:autonomous_validation_evidence_import_v1".encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+            "source": "autonomous_validation_handoff",
+            "pipeline_run_id": pipeline_run_id,
+            "handoff_task_id": handoff.id,
+            "source_snapshot_digest": source_snapshot_digest,
+            "approval_id": approval.id,
+            "validation_run_id": validation_run.id,
+            "candidate_ids": candidate_ids,
+            "outcome": outcome,
+            "evidence_ref_count": validation_run.evidence_ref_count,
+            "validation_result_review": _validation_result_review_payload(
+                validation_run
+            ),
+            "submission_blocked": True,
+            "human_review_completed": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+
+
 def _safe_priority_score(value: Any) -> int:
     score = int(value) if isinstance(value, int | float) else 0
     return max(0, min(100, score))
@@ -12017,6 +12670,38 @@ def _pipeline_stage_safe_payload(record: PipelineStageRecord) -> dict:
             "finding_confirmation_allowed": payload.get("finding_confirmation_allowed") is True,
             "report_submission_allowed": False,
             "validation_allowed": False,
+        }
+    if record.stage_key == "autonomous_validation_evidence_import":
+        return {
+            "outcome": safe_preview_text(payload.get("outcome", "unknown")),
+            "candidate_count": len(safe_string_list(payload.get("candidate_ids", []))),
+            "evidence_ref_count": _safe_non_negative_int(payload.get("evidence_ref_count")),
+            "validation_result_review": _safe_validation_result_review_payload(
+                payload.get("validation_result_review")
+            ),
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+    if record.stage_key == "autonomous_report_revision":
+        return {
+            "status": "submission_blocked_human_review",
+            "report_draft_count": _safe_non_negative_int(payload.get("report_draft_count")),
+            "candidate_count": _safe_non_negative_int(payload.get("candidate_count")),
+            "validation_evidence_ref_count": _safe_non_negative_int(
+                payload.get("validation_evidence_ref_count")
+            ),
+            "submission_blocked": True,
+            "human_review_required": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
         }
     if record.stage_key == "validation_manual_result":
         return {
