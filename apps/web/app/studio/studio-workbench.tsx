@@ -3,6 +3,7 @@
 import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { ProgramRuleIntake } from "./program-rule-intake";
 import {
   ApiRequestError,
   approveStudioBlackBoxLabRun,
@@ -45,6 +46,7 @@ import {
   toStudioWorkspaceSummary,
   type StudioWorkspaceManifest,
 } from "@/lib/studio-data";
+import type { SafeRefreshStatus } from "@/lib/program-rule-data";
 
 type LogEntry = {
   message: string;
@@ -62,6 +64,7 @@ type BlackBoxLabRunnerState =
 type MythosStudioDesktopBridge = {
   closeBlackBoxSessions: () => Promise<string>;
   createBlackBoxSessions: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
+  refreshProgramRules: () => Promise<SafeRefreshStatus>;
   runBlackBoxTrial: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
   selectDirectory: () => Promise<string | null>;
   selectFile: (options?: { title?: string }) => Promise<string | null>;
@@ -1174,6 +1177,8 @@ export function StudioWorkbench() {
           Authorized research workspace
         </h1>
       </header>
+
+      <ProgramRuleIntake />
 
       <section className="mt-6 border border-[var(--line)] bg-white">
         <SectionHeader title="Local research setup" />
