@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
   approveProgramRuleSnapshot,
@@ -13,6 +13,7 @@ import {
   rejectProgramRuleSnapshot,
 } from "@/lib/api";
 import {
+  isProgramRuleReviewBindingValid,
   isSafeProgramRuleRegistration,
   programRuleErrorMessage,
   toProgramRuleDiffView,
@@ -42,6 +43,8 @@ export function ProgramRuleIntake() {
   const [operatorConfirmed, setOperatorConfirmed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const sourceDetailsRequest = useRef(0);
+  const diffRequest = useRef(0);
 
   const selectedSource = useMemo(
     () => sources.find((source) => source.sourceId === selectedSourceId) ?? null,
@@ -51,8 +54,19 @@ export function ProgramRuleIntake() {
     () => snapshots.find((snapshot) => snapshot.snapshotId === selectedSnapshotId) ?? null,
     [selectedSnapshotId, snapshots],
   );
+  const reviewContractValid = useMemo(
+    () => isProgramRuleReviewBindingValid(selectedSource, selectedSnapshot, diff)
+      && scopeRules.every(
+        (rule) => rule.contractStatus === "valid" && rule.authorityStatus === "fixed_false",
+      ),
+    [diff, scopeRules, selectedSnapshot, selectedSource],
+  );
 
   const loadSourceDetails = useCallback(async (source: ProgramRuleSourceView) => {
+    const detailsRequestId = ++sourceDetailsRequest.current;
+    ++diffRequest.current;
+    setDiff(null);
+    setOperatorConfirmed(false);
     if (source.sourceId === "unknown_source") {
       setSnapshots([]);
       setSelectedSnapshotId(null);
@@ -65,6 +79,7 @@ export function ProgramRuleIntake() {
         listProgramRuleSnapshots(source.sourceId),
         source.programId ? listProgramScopeRules(source.programId) : Promise.resolve([]),
       ]);
+      if (detailsRequestId !== sourceDetailsRequest.current) return;
       const mappedSnapshots = rawSnapshots.map(toProgramRuleSnapshotView);
       const mappedScopeRules = rawScopeRules.map(toProgramScopeRuleView);
       const selected = mappedSnapshots.find(
@@ -73,15 +88,29 @@ export function ProgramRuleIntake() {
       setSnapshots(mappedSnapshots);
       setScopeRules(mappedScopeRules);
       setSelectedSnapshotId(selected?.snapshotId ?? null);
-      setOperatorConfirmed(false);
       if (selected === null || selected.snapshotId === "unknown_snapshot") {
-        setDiff(null);
         return;
       }
-      setDiff(toProgramRuleDiffView(
-        await getProgramRuleSnapshotDiff(source.sourceId, selected.snapshotId),
-      ));
+      const diffRequestId = ++diffRequest.current;
+      try {
+        const mappedDiff = toProgramRuleDiffView(
+          await getProgramRuleSnapshotDiff(source.sourceId, selected.snapshotId),
+        );
+        if (
+          detailsRequestId === sourceDetailsRequest.current
+          && diffRequestId === diffRequest.current
+        ) setDiff(mappedDiff);
+      } catch (error) {
+        if (
+          detailsRequestId === sourceDetailsRequest.current
+          && diffRequestId === diffRequest.current
+        ) {
+          setDiff(null);
+          setNotice(programRuleErrorMessage(error));
+        }
+      }
     } catch (error) {
+      if (detailsRequestId !== sourceDetailsRequest.current) return;
       setSnapshots([]);
       setSelectedSnapshotId(null);
       setDiff(null);
@@ -179,6 +208,7 @@ export function ProgramRuleIntake() {
     if (
       !selectedSource
       || !selectedSnapshot
+      || !reviewContractValid
       || selectedSnapshot.reviewStatus !== "pending"
       || selectedSnapshot.reviewDigest === "unavailable"
       || !safeAliasPattern.test(reviewerAlias)
@@ -219,6 +249,7 @@ export function ProgramRuleIntake() {
 
   async function handleSelectSource(source: ProgramRuleSourceView) {
     setSelectedSourceId(source.sourceId);
+    setDiff(null);
     setNotice(null);
     await loadSourceDetails(source);
   }
@@ -227,18 +258,25 @@ export function ProgramRuleIntake() {
     if (!selectedSource) return;
     setSelectedSnapshotId(snapshot.snapshotId);
     setOperatorConfirmed(false);
+    setDiff(null);
+    setNotice(null);
+    const diffRequestId = ++diffRequest.current;
     try {
-      setDiff(toProgramRuleDiffView(
+      const mappedDiff = toProgramRuleDiffView(
         await getProgramRuleSnapshotDiff(selectedSource.sourceId, snapshot.snapshotId),
-      ));
+      );
+      if (diffRequestId === diffRequest.current) setDiff(mappedDiff);
     } catch (error) {
-      setDiff(null);
-      setNotice(programRuleErrorMessage(error));
+      if (diffRequestId === diffRequest.current) {
+        setDiff(null);
+        setNotice(programRuleErrorMessage(error));
+      }
     }
   }
 
   const reviewEnabled = Boolean(
-    selectedSnapshot?.reviewStatus === "pending"
+    reviewContractValid
+    && selectedSnapshot?.reviewStatus === "pending"
     && selectedSnapshot.reviewDigest !== "unavailable"
     && safeAliasPattern.test(reviewerAlias)
     && operatorConfirmed
@@ -359,6 +397,7 @@ export function ProgramRuleIntake() {
                 busy={busy}
                 confirmed={operatorConfirmed}
                 enabled={reviewEnabled}
+                bindingValid={reviewContractValid}
                 onConfirm={setOperatorConfirmed}
                 onDecision={(decision) => void handleReview(decision)}
                 onReviewer={setReviewerAlias}
@@ -388,7 +427,7 @@ function SourceStatus({ source }: { source: ProgramRuleSourceView }) {
       <Status label="Review state" value={source.reviewPending ? "pending" : "none"} />
       <Status label="Next check" value={source.nextCheckAt ?? "unavailable"} />
       <Status label="Contract" value={source.contractStatus} />
-      <Status label="Authority" value="fixed false" />
+      <Status label="Authority" value={authorityLabel(source.authorityStatus)} />
     </dl>
   );
 }
@@ -423,16 +462,19 @@ function SnapshotSelector({
 
 function SnapshotStatus({ snapshot }: { snapshot: ProgramRuleSnapshotView }) {
   return (
-    <dl className="grid grid-cols-2 gap-2 border border-[var(--line)] p-4 text-xs md:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-2 border border-[var(--line)] p-4 text-xs md:grid-cols-6">
       <Status label="Review state" value={snapshot.reviewStatus} />
       <Status label="Fetch mode" value={snapshot.fetchMode} />
       <Status label="Language" value={snapshot.language} />
       <Status label="AI status" value={snapshot.aiStatus} />
+      <Status label="Contract" value={snapshot.contractStatus} />
+      <Status label="Authority" value={authorityLabel(snapshot.authorityStatus)} />
     </dl>
   );
 }
 
 function ReviewPanel({
+  bindingValid,
   busy,
   confirmed,
   enabled,
@@ -442,6 +484,7 @@ function ReviewPanel({
   reviewerAlias,
   snapshot,
 }: {
+  bindingValid: boolean;
   busy: string | null;
   confirmed: boolean;
   enabled: boolean;
@@ -454,6 +497,12 @@ function ReviewPanel({
   return (
     <div className="grid gap-3 border border-[var(--line)] p-4">
       <h3 className="font-semibold">Human snapshot review</h3>
+      {!bindingValid ? (
+        <p className="text-sm text-[var(--warning)]">
+          Review disabled: the source, snapshot, displayed diff, or scope contract is invalid or
+          mismatched.
+        </p>
+      ) : null}
       <Field label="Reviewer alias">
         <input
           className={inputClassName}
@@ -501,6 +550,10 @@ function DiffPanel({ diff }: { diff: ProgramRuleDiffView }) {
   return (
     <div className="grid gap-4 border border-[var(--line)] p-4 text-sm">
       <h3 className="font-semibold">Snapshot diff</h3>
+      <dl className="grid grid-cols-2 gap-2 text-xs">
+        <Status label="Contract" value={diff.contractStatus} />
+        <Status label="Authority" value={authorityLabel(diff.authorityStatus)} />
+      </dl>
       <RuleGroup label="Added rules" rules={diff.addedRules} />
       <RuleGroup label="Removed rules" rules={diff.removedRules} />
       <div>
@@ -570,7 +623,10 @@ function ScopeRulePanel({ rules }: { rules: ProgramScopeRuleView[] }) {
             {rule.scopeStatus} · automation {rule.automation} · {rule.rateLimit ?? "rate needs review"}
           </p>
           <p className="mt-1 text-xs text-[var(--muted)]">
-            Effective {rule.effectiveStatus}; execution and submission authority fixed false.
+            Contract {rule.contractStatus}; authority {authorityLabel(rule.authorityStatus)}.
+            {rule.contractStatus === "valid" && rule.authorityStatus === "fixed_false"
+              ? ` Effective ${rule.effectiveStatus}; execution and submission authority fixed false.`
+              : " This projection is not review-authoritative."}
           </p>
         </div>
       ))}
@@ -636,6 +692,10 @@ function EmptyValue() {
 
 function shortDigest(value: string) {
   return value === "unavailable" ? value : `${value.slice(0, 12)}…`;
+}
+
+function authorityLabel(status: "fixed_false" | "invalid") {
+  return status === "fixed_false" ? "fixed false" : "invalid";
 }
 
 const inputClassName = "min-h-10 border border-[var(--line)] bg-white px-3 py-2 outline-none focus:border-[var(--accent)]";

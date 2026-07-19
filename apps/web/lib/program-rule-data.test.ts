@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isProgramRuleReviewBindingValid,
   isSafeProgramRuleRegistration,
   programRuleErrorMessage,
   toProgramRuleDiffView,
@@ -61,10 +62,34 @@ test("unknown statuses and authority drift map to review-required fixed-false vi
   assert.equal(source.fetchStatus, "failed");
   assert.equal(source.effectiveStatus, "needs_review");
   assert.equal(source.contractStatus, "invalid");
+  assert.equal(source.authorityStatus, "invalid");
   assert.deepEqual(source.permissions, fixedFalseView());
   assert.equal(snapshot.reviewStatus, "pending");
   assert.equal(snapshot.contractStatus, "invalid");
+  assert.equal(snapshot.authorityStatus, "invalid");
   assert.deepEqual(snapshot.permissions, fixedFalseView());
+});
+
+test("snapshot, diff, and scope mappers expose invalid contracts and authority drift", () => {
+  const snapshot = toProgramRuleSnapshotView({
+    ...snapshotFixture(),
+    snapshot_id: null,
+  });
+  const diff = toProgramRuleDiffView({
+    ...diffFixture(),
+    review_digest: "not-a-digest",
+  });
+  const scope = toProgramScopeRuleView({
+    ...scopeFixture(),
+    effective_scope_status: "execute_everything",
+  });
+
+  assert.equal(snapshot.contractStatus, "invalid");
+  assert.equal(snapshot.authorityStatus, "fixed_false");
+  assert.equal(diff.contractStatus, "invalid");
+  assert.equal(diff.authorityStatus, "fixed_false");
+  assert.equal(scope.contractStatus, "invalid");
+  assert.equal(scope.authorityStatus, "fixed_false");
 });
 
 test("snapshot mapper enumerates review-safe fields and caps evidence excerpts", () => {
@@ -129,8 +154,57 @@ test("diff and scope mappers preserve review facts but never authority", () => {
   assert.equal(diff.addedRules[0]?.asset, "api.example.test");
   assert.equal(diff.modifiedRules[0]?.after.asset, "api.example.test/v2");
   assert.deepEqual(diff.permissions, fixedFalseView());
+  assert.equal(diff.authorityStatus, "fixed_false");
   assert.equal(scope.rateLimit, "5 per minute");
   assert.deepEqual(scope.permissions, fixedFalseView());
+  assert.equal(scope.authorityStatus, "fixed_false");
+});
+
+test("review binding requires the displayed diff to match source, snapshot, and digest", () => {
+  const source = toProgramRuleSourceView({
+    approved_snapshot_id: null,
+    canonical_url: "https://rules.example.test/program",
+    effective_scope_status: "needs_review",
+    fetch_status: "ok",
+    last_success_at: "2026-07-19T12:00:00Z",
+    next_check_at: "2026-07-20T12:00:00Z",
+    pending_snapshot_id: "snapshot_pending",
+    program_alias: "synthetic_program",
+    program_id: "program_synthetic",
+    registered_url: "https://rules.example.test/program",
+    source_id: "source_synthetic",
+    warning: null,
+  });
+  const snapshot = toProgramRuleSnapshotView(snapshotFixture());
+  const diff = toProgramRuleDiffView(diffFixture());
+
+  assert.equal(isProgramRuleReviewBindingValid(source, snapshot, diff), true);
+  assert.equal(isProgramRuleReviewBindingValid(source, snapshot, null), false);
+  assert.equal(isProgramRuleReviewBindingValid(source, snapshot, {
+    ...diff,
+    sourceId: "source_other",
+  }), false);
+  assert.equal(isProgramRuleReviewBindingValid(source, snapshot, {
+    ...diff,
+    pendingSnapshotId: "snapshot_other",
+  }), false);
+  assert.equal(isProgramRuleReviewBindingValid(source, snapshot, {
+    ...diff,
+    reviewDigest: "b".repeat(64),
+  }), false);
+  assert.equal(isProgramRuleReviewBindingValid({
+    ...source,
+    pendingSnapshotId: "snapshot_other",
+  }, snapshot, diff), false);
+  assert.equal(isProgramRuleReviewBindingValid({
+    ...source,
+    pendingSnapshotId: null,
+    reviewPending: false,
+  }, snapshot, diff), false);
+  assert.equal(isProgramRuleReviewBindingValid(source, {
+    ...snapshot,
+    contractStatus: "invalid",
+  }, diff), false);
 });
 
 test("registration validator accepts only safe aliases and canonical public HTTPS URLs", () => {
@@ -226,6 +300,46 @@ function linkedArtifact() {
     promotion_allowed: false,
     url: "https://rules.example.test/openapi.json",
     url_sha256: SHA,
+  };
+}
+
+function diffFixture() {
+  const candidate = candidateRule("api.example.test");
+  return {
+    ...permissions,
+    added_linked_artifacts: [linkedArtifact()],
+    added_prohibitions: ["automated_scanning"],
+    added_rules: [candidate],
+    approved_snapshot_id: null,
+    modified_rules: [],
+    pending_snapshot_id: "snapshot_pending",
+    removed_linked_artifacts: [],
+    removed_prohibitions: [],
+    removed_rules: [],
+    review_digest: SHA,
+    source_id: "source_synthetic",
+  };
+}
+
+function scopeFixture() {
+  return {
+    ...permissions,
+    allowed_validation: ["manual_read_only"],
+    approval_digest: SHA,
+    approved_snapshot_id: "snapshot_approved",
+    asset_kind: "exact_host",
+    automation: "limited",
+    canonical_asset: "api.example.test",
+    effective_at: "2026-07-18T12:00:00Z",
+    effective_scope_status: "active",
+    prohibited: ["automated_scanning"],
+    program_id: "program_synthetic",
+    rate_limit: { evidence_ids: [SHA], period: 1, requests: 5, unit: "minute" },
+    rule_id: "rule_synthetic",
+    scope_status: "in_scope",
+    source_evidence_refs: [SHA],
+    source_id: "source_synthetic",
+    warning: null,
   };
 }
 

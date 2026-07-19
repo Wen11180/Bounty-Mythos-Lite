@@ -162,6 +162,7 @@ export type SafeRefreshStatus = {
 };
 
 type ContractStatus = "invalid" | "valid";
+type AuthorityStatus = "fixed_false" | "invalid";
 
 export type FixedFalsePermissionView = {
   executionAllowed: false;
@@ -173,6 +174,7 @@ export type FixedFalsePermissionView = {
 
 export type ProgramRuleSourceView = {
   approvedSnapshotId: string | null;
+  authorityStatus: AuthorityStatus;
   canonicalUrl: string;
   contractStatus: ContractStatus;
   effectiveStatus: ProgramRuleEffectiveStatus;
@@ -204,6 +206,7 @@ export type ProgramRuleCandidateView = {
 export type ProgramRuleSnapshotView = {
   aiStatus: "not_requested" | "ok" | "rejected" | "unavailable";
   artifactWarning: "openapi_promotion_pending" | null;
+  authorityStatus: AuthorityStatus;
   contentTypes: string[];
   contractStatus: ContractStatus;
   evidence: ProgramRuleEvidenceView[];
@@ -249,6 +252,7 @@ export type ProgramRuleDiffView = {
   addedProhibitions: string[];
   addedRules: ProgramRuleCandidateView[];
   approvedSnapshotId: string | null;
+  authorityStatus: AuthorityStatus;
   contractStatus: ContractStatus;
   modifiedRules: Array<{
     after: ProgramRuleCandidateView;
@@ -265,6 +269,7 @@ export type ProgramRuleDiffView = {
 };
 
 export type ProgramScopeRuleView = ProgramRuleCandidateView & {
+  authorityStatus: AuthorityStatus;
   contractStatus: ContractStatus;
   effectiveStatus: ProgramRuleEffectiveStatus;
   permissions: FixedFalsePermissionView;
@@ -312,6 +317,7 @@ export function toProgramRuleSourceView(value: unknown): ProgramRuleSourceView {
   const programAlias = boundedString(source.program_alias, 64, "needs_review");
   const registeredUrl = boundedString(source.registered_url, 2_048, "unavailable");
   const canonicalUrl = boundedString(source.canonical_url, 2_048, "unavailable");
+  const authorityStatus = hasUnexpectedAuthority(source) ? "invalid" : "fixed_false";
   const contractValid = (
     sourceId !== "unknown_source"
     && programAlias !== "needs_review"
@@ -319,11 +325,12 @@ export function toProgramRuleSourceView(value: unknown): ProgramRuleSourceView {
     && canonicalUrl !== "unavailable"
     && fetchStatuses.has(source.fetch_status as ProgramRuleFetchStatus)
     && effectiveStatuses.has(source.effective_scope_status as ProgramRuleEffectiveStatus)
-    && !hasUnexpectedAuthority(source)
+    && authorityStatus === "fixed_false"
   );
   const pendingSnapshotId = nullableString(source.pending_snapshot_id, 128);
   return {
     approvedSnapshotId: nullableString(source.approved_snapshot_id, 128),
+    authorityStatus,
     canonicalUrl,
     contractStatus: contractValid ? "valid" : "invalid",
     effectiveStatus,
@@ -345,18 +352,28 @@ export function toProgramRuleSnapshotView(value: unknown): ProgramRuleSnapshotVi
   const snapshot = record(value);
   const extraction = record(snapshot.extraction);
   const reviewStatus = enumValue(snapshot.review_status, reviewStatuses, "pending");
+  const authorityStatus = fixedFalseAuthority(snapshot) ? "fixed_false" : "invalid";
+  const normalizedSha256 = sha256(snapshot.normalized_sha256);
+  const reviewDigest = sha256(snapshot.review_digest);
+  const snapshotId = boundedString(snapshot.snapshot_id, 128, "unknown_snapshot");
+  const sourceId = boundedString(snapshot.source_id, 128, "unknown_source");
   const contractValid = (
-    fixedFalseAuthority(snapshot)
+    authorityStatus === "fixed_false"
     && reviewStatuses.has(snapshot.review_status as ProgramRuleReviewStatus)
     && aiStatuses.has(snapshot.ai_status as ProgramRuleSnapshotView["aiStatus"])
     && ["en", "unsupported"].includes(String(snapshot.detected_language))
     && ["browser", "static"].includes(String(snapshot.fetch_mode))
+    && normalizedSha256 !== "unavailable"
+    && reviewDigest !== "unavailable"
+    && snapshotId !== "unknown_snapshot"
+    && sourceId !== "unknown_source"
   );
   return {
     aiStatus: enumValue(snapshot.ai_status, aiStatuses, "rejected"),
     artifactWarning: snapshot.artifact_warning === "openapi_promotion_pending"
       ? "openapi_promotion_pending"
       : null,
+    authorityStatus,
     contentTypes: stringArray(snapshot.content_types, 100, 100),
     contractStatus: contractValid ? "valid" : "invalid",
     evidence: array(snapshot.evidence, 500).map(toEvidenceView),
@@ -367,27 +384,38 @@ export function toProgramRuleSnapshotView(value: unknown): ProgramRuleSnapshotVi
     language: snapshot.detected_language === "en" ? "en" : "unsupported",
     linkedArtifacts: array(snapshot.openapi_candidates, 100).map(toLinkedArtifactView),
     linkedDocuments: array(snapshot.linked_documents, 8).map(toLinkedDocumentView),
-    normalizedSha256: sha256(snapshot.normalized_sha256),
+    normalizedSha256,
     permissions: fixedFalsePermissionView(),
-    reviewDigest: sha256(snapshot.review_digest),
+    reviewDigest,
     reviewIssues: stringArray(extraction.review_issues, 100, 500),
     reviewStatus,
     reviewedAt: safeDate(snapshot.reviewed_at),
     reviewerAlias: nullableString(snapshot.reviewer_alias, 100),
     rules: array(extraction.rules, 500).map(toCandidateView),
-    snapshotId: boundedString(snapshot.snapshot_id, 128, "unknown_snapshot"),
-    sourceId: boundedString(snapshot.source_id, 128, "unknown_source"),
+    snapshotId,
+    sourceId,
   };
 }
 
 export function toProgramRuleDiffView(value: unknown): ProgramRuleDiffView {
   const diff = record(value);
+  const authorityStatus = fixedFalseAuthority(diff) ? "fixed_false" : "invalid";
+  const pendingSnapshotId = boundedString(diff.pending_snapshot_id, 128, "unknown_snapshot");
+  const reviewDigest = sha256(diff.review_digest);
+  const sourceId = boundedString(diff.source_id, 128, "unknown_source");
+  const contractValid = (
+    authorityStatus === "fixed_false"
+    && pendingSnapshotId !== "unknown_snapshot"
+    && reviewDigest !== "unavailable"
+    && sourceId !== "unknown_source"
+  );
   return {
     addedLinkedArtifacts: array(diff.added_linked_artifacts, 100).map(toLinkedArtifactView),
     addedProhibitions: stringArray(diff.added_prohibitions, 500, 500),
     addedRules: array(diff.added_rules, 500).map(toCandidateView),
     approvedSnapshotId: nullableString(diff.approved_snapshot_id, 128),
-    contractStatus: fixedFalseAuthority(diff) ? "valid" : "invalid",
+    authorityStatus,
+    contractStatus: contractValid ? "valid" : "invalid",
     modifiedRules: array(diff.modified_rules, 500).map((item) => {
       const modification = record(item);
       return {
@@ -396,18 +424,21 @@ export function toProgramRuleDiffView(value: unknown): ProgramRuleDiffView {
         before: toCandidateView(modification.before),
       };
     }),
-    pendingSnapshotId: boundedString(diff.pending_snapshot_id, 128, "unknown_snapshot"),
+    pendingSnapshotId,
     permissions: fixedFalsePermissionView(),
     removedLinkedArtifacts: array(diff.removed_linked_artifacts, 100).map(toLinkedArtifactView),
     removedProhibitions: stringArray(diff.removed_prohibitions, 500, 500),
     removedRules: array(diff.removed_rules, 500).map(toCandidateView),
-    reviewDigest: sha256(diff.review_digest),
-    sourceId: boundedString(diff.source_id, 128, "unknown_source"),
+    reviewDigest,
+    sourceId,
   };
 }
 
 export function toProgramScopeRuleView(value: unknown): ProgramScopeRuleView {
   const rule = record(value);
+  const authorityStatus = fixedFalseAuthority(rule) ? "fixed_false" : "invalid";
+  const effectiveStatus = enumValue(rule.effective_scope_status, effectiveStatuses, "needs_review");
+  const ruleId = boundedString(rule.rule_id, 128, "unknown_rule");
   const candidate = toCandidateView({
     allowed_validation: rule.allowed_validation,
     asset: rule.canonical_asset,
@@ -419,15 +450,55 @@ export function toProgramScopeRuleView(value: unknown): ProgramScopeRuleView {
     review_state: "ready",
     scope_status: rule.scope_status,
   });
+  const contractValid = (
+    authorityStatus === "fixed_false"
+    && effectiveStatuses.has(rule.effective_scope_status as ProgramRuleEffectiveStatus)
+    && scopeStatuses.has(rule.scope_status as ProgramRuleScopeStatus)
+    && automationStatuses.has(rule.automation as ProgramRuleAutomation)
+    && ["api_base_path", "exact_host", "url_prefix", "wildcard_host"].includes(
+      String(rule.asset_kind),
+    )
+    && boundedString(rule.canonical_asset, 2_048, "needs_review") !== "needs_review"
+    && boundedString(rule.source_id, 128, "unknown_source") !== "unknown_source"
+    && boundedString(rule.program_id, 128, "unknown_program") !== "unknown_program"
+    && boundedString(rule.approved_snapshot_id, 128, "unknown_snapshot") !== "unknown_snapshot"
+    && sha256(rule.approval_digest) !== "unavailable"
+    && ruleId !== "unknown_rule"
+  );
   return {
     ...candidate,
-    contractStatus: fixedFalseAuthority(rule) ? "valid" : "invalid",
-    effectiveStatus: enumValue(rule.effective_scope_status, effectiveStatuses, "needs_review"),
+    authorityStatus,
+    contractStatus: contractValid ? "valid" : "invalid",
+    effectiveStatus,
     permissions: fixedFalsePermissionView(),
     rateLimit: rateLimitLabel(rule.rate_limit),
-    ruleId: boundedString(rule.rule_id, 128, "unknown_rule"),
+    ruleId,
     warning: nullableString(rule.warning, 500),
   };
+}
+
+export function isProgramRuleReviewBindingValid(
+  source: ProgramRuleSourceView | null,
+  snapshot: ProgramRuleSnapshotView | null,
+  diff: ProgramRuleDiffView | null,
+): boolean {
+  return Boolean(
+    source
+    && snapshot
+    && diff
+    && source.contractStatus === "valid"
+    && source.authorityStatus === "fixed_false"
+    && snapshot.contractStatus === "valid"
+    && snapshot.authorityStatus === "fixed_false"
+    && diff.contractStatus === "valid"
+    && diff.authorityStatus === "fixed_false"
+    && source.reviewPending
+    && source.pendingSnapshotId === snapshot.snapshotId
+    && snapshot.sourceId === source.sourceId
+    && diff.sourceId === source.sourceId
+    && diff.pendingSnapshotId === snapshot.snapshotId
+    && diff.reviewDigest === snapshot.reviewDigest
+  );
 }
 
 export function isSafeProgramRuleRegistration(value: {

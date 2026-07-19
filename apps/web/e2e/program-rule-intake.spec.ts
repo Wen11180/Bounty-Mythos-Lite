@@ -31,9 +31,7 @@ test("Studio registers, refreshes, and reviews one public rule source without br
     program_alias: "synthetic_program",
     public_rule_url: publicRuleUrl,
   }]);
-  await expect.poll(() => page.evaluate(() => (
-    window as Window & { __programRuleRefreshCalls?: number }
-  ).__programRuleRefreshCalls)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__programRuleRefreshCalls)).toBe(1);
 
   await expect(intake.getByText("Fetch state", { exact: true })).toBeVisible();
   await expect(intake.getByText("Effective state", { exact: true })).toBeVisible();
@@ -79,18 +77,69 @@ test("browser-only registration fails closed with studio_required and never fetc
   expect(publicRequests).toEqual([]);
 });
 
+test("snapshot selection clears the prior diff and keeps a non-pending review blocked", async ({ page }) => {
+  const mock = await mockTwoSnapshotApi(page, { delayInitialDiff: false, delaySelectedDiff: true });
+
+  await page.goto("/studio");
+  const intake = page.getByTestId("program-rule-intake");
+  await expect(intake.getByText("diff_marker_a", { exact: true })).toBeVisible();
+
+  await intake.getByRole("button", { name: /2026-07-19T03:00:00Z · pending/u }).click();
+  await expect(intake.getByText("Snapshot diff", { exact: true })).toHaveCount(0);
+  await intake.getByLabel("Reviewer alias").fill("reviewer_two");
+  await intake.getByRole("checkbox").check();
+  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
+
+  mock.releaseSelectedDiff();
+  await expect(intake.getByText("diff_marker_b", { exact: true })).toBeVisible();
+  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
+  expect(mock.reviewPaths).toEqual([]);
+  expect(mock.reviewBodies).toEqual([]);
+});
+
+test("out-of-order diff responses cannot replace the selected snapshot binding", async ({ page }) => {
+  const mock = await mockTwoSnapshotApi(page, { delayInitialDiff: true, delaySelectedDiff: false });
+
+  await page.goto("/studio");
+  const intake = page.getByTestId("program-rule-intake");
+  await intake.getByRole("button", { name: /2026-07-19T03:00:00Z · pending/u }).click();
+  await expect(intake.getByText("diff_marker_b", { exact: true })).toBeVisible();
+
+  mock.releaseInitialDiff();
+  await expect.poll(() => mock.initialDiffFulfilled).toBe(1);
+  await expect(intake.getByText("diff_marker_b", { exact: true })).toBeVisible();
+  await expect(intake.getByText("diff_marker_a", { exact: true })).toHaveCount(0);
+
+  await intake.getByLabel("Reviewer alias").fill("reviewer_two");
+  await intake.getByRole("checkbox").check();
+  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
+  expect(mock.reviewPaths).toEqual([]);
+  expect(mock.reviewBodies).toEqual([]);
+});
+
+test("invalid contracts and authority drift are explicit and block both review decisions", async ({ page }) => {
+  await mockInvalidProgramRuleApi(page);
+
+  await page.goto("/studio");
+  const intake = page.getByTestId("program-rule-intake");
+  await expect(intake.getByText(/Review disabled: the source, snapshot, displayed diff/u)).toBeVisible();
+  await expect(intake.getByText(/Contract invalid; authority invalid\./u)).toBeVisible();
+  await expect(intake).not.toContainText("fixed false");
+
+  await intake.getByLabel("Reviewer alias").fill("reviewer_one");
+  await intake.getByRole("checkbox").check();
+  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
+  await expect(intake.getByRole("button", { name: "Reject snapshot" })).toBeDisabled();
+});
+
 async function installProgramRuleBridge(page: Page) {
   await page.addInitScript(() => {
-    const testWindow = window as Window & {
-      __programRuleRefreshCalls: number;
-      mythosStudio: Record<string, unknown>;
-    };
-    testWindow.__programRuleRefreshCalls = 0;
-    testWindow.mythosStudio = {
+    window.__programRuleRefreshCalls = 0;
+    const bridge = {
       closeBlackBoxSessions: async () => JSON.stringify({ event: "sessions_closed" }),
       createBlackBoxSessions: async () => JSON.stringify({ event: "sessions_created" }),
       refreshProgramRules: async () => {
-        testWindow.__programRuleRefreshCalls += 1;
+        window.__programRuleRefreshCalls += 1;
         return { next_due_at: null, processed: true, status: "completed" };
       },
       runBlackBoxTrial: async () => JSON.stringify({ event: "trial_complete" }),
@@ -98,7 +147,8 @@ async function installProgramRuleBridge(page: Page) {
       selectFile: async () => null,
       startBlackBoxRecording: async () => JSON.stringify({ event: "recording_started" }),
       stopBlackBoxRecording: async () => JSON.stringify({ event: "recording_stopped", traces: [] }),
-    };
+    } satisfies NonNullable<Window["mythosStudio"]>;
+    window.mythosStudio = bridge;
   });
 }
 
@@ -158,6 +208,99 @@ async function mockProgramRuleApi(page: Page) {
   return { registrationBodies, reviewBodies };
 }
 
+async function mockTwoSnapshotApi(
+  page: Page,
+  options: { delayInitialDiff: boolean; delaySelectedDiff: boolean },
+) {
+  const initialDiffGate = deferredGate();
+  const selectedDiffGate = deferredGate();
+  const reviewBodies: unknown[] = [];
+  const reviewPaths: string[] = [];
+  let initialDiffFulfilled = 0;
+
+  await page.route(`http://127.0.0.1:${mockApiPort}/**`, async (route) => {
+    const request = route.request();
+    const method = request.method();
+    const path = new URL(request.url()).pathname;
+    if (method === "OPTIONS") {
+      await route.fulfill({ headers: corsHeaders(), status: 204 });
+      return;
+    }
+    if (method === "GET" && path === "/program-rule-sources") {
+      await fulfillJson(route, [sourceFixture(false)]);
+      return;
+    }
+    if (method === "GET" && path === "/program-rule-sources/source_synthetic/snapshots") {
+      await fulfillJson(route, [
+        snapshotVariant("snapshot_pending", sha, "2026-07-19T02:00:00Z"),
+        snapshotVariant("snapshot_new", "b".repeat(64), "2026-07-19T03:00:00Z"),
+      ]);
+      return;
+    }
+    if (method === "GET" && path === "/program-rule-sources/source_synthetic/snapshots/snapshot_pending/diff") {
+      if (options.delayInitialDiff) await initialDiffGate.wait;
+      await fulfillJson(route, diffVariant("snapshot_pending", sha, "diff_marker_a"));
+      initialDiffFulfilled += 1;
+      return;
+    }
+    if (method === "GET" && path === "/program-rule-sources/source_synthetic/snapshots/snapshot_new/diff") {
+      if (options.delaySelectedDiff) await selectedDiffGate.wait;
+      await fulfillJson(route, diffVariant("snapshot_new", "b".repeat(64), "diff_marker_b"));
+      return;
+    }
+    if (method === "GET" && path === "/programs/program_synthetic/scope-rules") {
+      await fulfillJson(route, []);
+      return;
+    }
+    if (method === "POST" && path.endsWith("/approve")) {
+      reviewPaths.push(path);
+      reviewBodies.push(request.postDataJSON());
+      await fulfillJson(route, snapshotVariant("snapshot_new", "b".repeat(64), "2026-07-19T03:00:00Z"));
+      return;
+    }
+    await fulfillJson(route, { detail: "not_found" }, 404);
+  });
+
+  return {
+    get initialDiffFulfilled() {
+      return initialDiffFulfilled;
+    },
+    releaseInitialDiff: initialDiffGate.release,
+    releaseSelectedDiff: selectedDiffGate.release,
+    reviewBodies,
+    reviewPaths,
+  };
+}
+
+async function mockInvalidProgramRuleApi(page: Page) {
+  await page.route(`http://127.0.0.1:${mockApiPort}/**`, async (route) => {
+    const request = route.request();
+    const method = request.method();
+    const path = new URL(request.url()).pathname;
+    if (method === "OPTIONS") {
+      await route.fulfill({ headers: corsHeaders(), status: 204 });
+      return;
+    }
+    if (method === "GET" && path === "/program-rule-sources") {
+      await fulfillJson(route, [{ ...sourceFixture(false), execution_allowed: true }]);
+      return;
+    }
+    if (method === "GET" && path === "/program-rule-sources/source_synthetic/snapshots") {
+      await fulfillJson(route, [{ ...snapshotFixture("pending"), execution_allowed: true }]);
+      return;
+    }
+    if (method === "GET" && path.endsWith("/snapshot_pending/diff")) {
+      await fulfillJson(route, { ...diffFixture(), execution_allowed: true });
+      return;
+    }
+    if (method === "GET" && path === "/programs/program_synthetic/scope-rules") {
+      await fulfillJson(route, [{ ...scopeRuleFixture(), execution_allowed: true }]);
+      return;
+    }
+    await fulfillJson(route, { detail: "not_found" }, 404);
+  });
+}
+
 function sourceFixture(approved: boolean) {
   return {
     approved_snapshot_id: approved ? "snapshot_pending" : null,
@@ -213,6 +356,15 @@ function snapshotFixture(reviewStatus: "approved" | "pending") {
   };
 }
 
+function snapshotVariant(snapshotId: string, reviewDigest: string, fetchedAt: string) {
+  return {
+    ...snapshotFixture("pending"),
+    fetched_at: fetchedAt,
+    review_digest: reviewDigest,
+    snapshot_id: snapshotId,
+  };
+}
+
 function candidateFixture() {
   return {
     allowed_validation: ["manual_read_only"],
@@ -261,6 +413,15 @@ function diffFixture() {
   };
 }
 
+function diffVariant(snapshotId: string, reviewDigest: string, marker: string) {
+  return {
+    ...diffFixture(),
+    added_prohibitions: [marker],
+    pending_snapshot_id: snapshotId,
+    review_digest: reviewDigest,
+  };
+}
+
 function scopeRuleFixture() {
   return {
     ...permissions,
@@ -285,6 +446,14 @@ function scopeRuleFixture() {
 
 async function fulfillJson(route: Route, json: unknown, status = 200) {
   await route.fulfill({ headers: corsHeaders(), json, status });
+}
+
+function deferredGate() {
+  let release = () => {};
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { release, wait };
 }
 
 function corsHeaders() {
