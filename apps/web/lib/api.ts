@@ -1202,10 +1202,10 @@ async function apiGet<T>(path: string, fallback: T, signal?: AbortSignal): Promi
   }
 }
 
-async function apiGetRequired<T>(path: string): Promise<T> {
+async function apiGetRequired<T>(path: string, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store" });
+    response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store", signal });
   } catch {
     throw apiNetworkError(`GET ${path} failed`);
   }
@@ -1437,6 +1437,16 @@ export function getCampaignControlCenter(
   );
 }
 
+export function getCampaignControlCenterRequired(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<CampaignControlCenter> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/control-center`,
+    signal,
+  );
+}
+
 export function getCampaignAgentRuns(
   campaignId: string,
   fallback: CampaignAgentRun[],
@@ -1593,6 +1603,14 @@ export function getStudioWorkspaceManifest(
   return apiGet(`/mythos/studio/workspaces/manifest?${query}`, fallback, signal);
 }
 
+export function getStudioWorkspaceManifestRequired(
+  workspacePath: string,
+  signal?: AbortSignal,
+): Promise<StudioWorkspaceManifest> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  return apiGetRequired(`/mythos/studio/workspaces/manifest?${query}`, signal);
+}
+
 export function importStudioWorkspaceArtifact(
   request: StudioArtifactImportRequest,
 ): Promise<StudioWorkspaceManifest | null> {
@@ -1624,6 +1642,18 @@ export function listStudioWorkspaceCandidates(
   return apiGet(`/mythos/studio/workspaces/candidates?${query}`, fallback, signal);
 }
 
+export function listStudioWorkspaceCandidatesRequired(
+  workspacePath: string,
+  runId: string | null,
+  signal?: AbortSignal,
+): Promise<StudioWorkspaceCandidatesResponse> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  return apiGetRequired(`/mythos/studio/workspaces/candidates?${query}`, signal);
+}
+
 export function getStudioWorkspaceMission(
   workspacePath: string,
   runId: string | null,
@@ -1635,6 +1665,18 @@ export function getStudioWorkspaceMission(
     query.set("run_id", runId);
   }
   return apiGet(`/mythos/studio/workspaces/mission?${query}`, fallback, signal);
+}
+
+export function getStudioWorkspaceMissionRequired(
+  workspacePath: string,
+  runId: string | null,
+  signal?: AbortSignal,
+): Promise<StudioWorkspaceMissionResponse> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  return apiGetRequired(`/mythos/studio/workspaces/mission?${query}`, signal);
 }
 
 export function getStudioWorkspaceMissionHandoff(

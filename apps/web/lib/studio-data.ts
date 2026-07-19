@@ -2002,13 +2002,12 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
     })),
     candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
     gates: {
-      humanReviewRequired: mission?.quality_gates?.human_review_required === true,
-      reportSubmissionAllowed: mission?.quality_gates?.report_submission_allowed === true,
-      submissionBlocked: mission?.quality_gates?.submission_blocked !== false,
+      humanReviewRequired: true,
+      reportSubmissionAllowed: false,
+      submissionBlocked: true,
       topCandidateQualityGate: mission?.quality_gates?.top_candidate_quality_gate === true,
       topCandidatesLimited: mission?.quality_gates?.top_candidates_limited === true,
-      validationExecutionAllowed:
-        mission?.quality_gates?.validation_execution_allowed === true,
+      validationExecutionAllowed: false,
     },
     modeLabel:
       mission?.mode === "local_ai_vulnerability_research_workbench"

@@ -19,8 +19,12 @@ async function installStudioBridge(page: Page) {
   });
 }
 
-async function mockStudioApi(page: Page) {
+async function mockStudioApi(
+  page: Page,
+  options: { candidatesUnavailable?: boolean; startProjectionUnavailable?: boolean } = {},
+) {
   const requests = { candidates: 0, manifest: 0, mission: 0 };
+  let researchStarted = false;
   let invalidated = false;
   let releaseInvalidation: (() => void) | null = null;
   const invalidationReady = new Promise<void>((resolve) => {
@@ -87,6 +91,14 @@ async function mockStudioApi(page: Page) {
   });
   await page.route("**/mythos/studio/workspaces/candidates**", async (route) => {
     requests.candidates += 1;
+    if (options.candidatesUnavailable || (options.startProjectionUnavailable && researchStarted)) {
+      await route.fulfill({ json: { detail: "candidate projection unavailable" }, status: 503 });
+      return;
+    }
+    if (options.startProjectionUnavailable) {
+      await route.fulfill({ json: { candidates: [], run_id: runId } });
+      return;
+    }
     await route.fulfill({
       json: {
         candidates: [
@@ -155,6 +167,22 @@ async function mockStudioApi(page: Page) {
       },
     });
   });
+  await page.route("**/mythos/studio/workspaces/runs", async (route) => {
+    researchStarted = true;
+    await route.fulfill({
+      json: {
+        candidate_count: 9,
+        manifest: {
+          artifacts: [],
+          name: "Research POST partial manifest",
+          runs: [{ run_id: "post-run" }],
+          safety: { blocked_actions: ["submit_report"], scope_guard_status: "in_scope" },
+        },
+        run_id: "post-run",
+      },
+      status: 200,
+    });
+  });
   return {
     emitInvalidation() {
       invalidated = true;
@@ -168,10 +196,13 @@ async function openWorkspace(page: Page) {
   await installStudioBridge(page);
   const mock = await mockStudioApi(page);
   await page.goto("/studio");
-  const workspaceInput = page.getByLabel("Workspace path").first();
+  const workspaceInput = page.getByLabel("Workspace path");
+  await expect(workspaceInput).toHaveCount(1);
   await workspaceInput.fill(workspacePath);
-  await page.getByRole("button", { name: "Open workspace" }).first().click();
-  await expect(page.getByTestId("studio-candidate-list").first().getByRole("button", { name: /H-001/ })).toBeVisible();
+  const openButton = page.getByRole("button", { name: "Open workspace" });
+  await expect(openButton).toHaveCount(1);
+  await openButton.click();
+  await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button", { name: /H-001/ })).toBeVisible();
   return mock;
 }
 
@@ -193,18 +224,19 @@ test("Studio desktop keeps three columns and candidate selection preserves conve
   expect(navigationBox!.x).toBeLessThan(mainBox!.x);
   expect(mainBox!.x).toBeLessThan(inspectorBox!.x);
 
-  await expect(page.getByText("Studio ready.").first()).toBeVisible();
+  await expect(page.getByText("Studio ready.")).toHaveCount(1);
+  await expect(page.getByText("Studio ready.")).toBeVisible();
   await page.getByLabel("候选漏洞").selectOption("H-002");
   await expect(page.getByTestId("studio-inspector").getByRole("heading", { name: "SSRF candidate" })).toBeVisible();
-  await expect(page.getByText("Studio ready.").first()).toBeVisible();
-  await expect(page.getByText("POST /preview").first()).toBeVisible();
+  await expect(page.getByText("Studio ready.")).toBeVisible();
+  await expect(page.getByTestId("studio-inspector").getByText("POST /preview")).toBeVisible();
 
   const before = { ...mock.requests };
   mock.emitInvalidation();
   await expect.poll(() => mock.requests.manifest).toBeGreaterThan(before.manifest);
   await expect.poll(() => mock.requests.mission).toBeGreaterThan(before.mission);
   await expect.poll(() => mock.requests.candidates).toBeGreaterThan(before.candidates);
-  await expect(page.getByTestId("studio-candidate-list").first().getByRole("button", { name: /H-003/ })).toBeVisible();
+  await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button", { name: /H-003/ })).toBeVisible();
   await page.getByRole("tab", { name: "报告草稿" }).click();
   await expect(page.getByText("C:/drafts/studio-e2e-run-v2.md", { exact: true })).toBeVisible();
 });
@@ -239,11 +271,45 @@ test("Studio mobile tabs and desktop path selectors remain keyboard operable", a
   await expect(mobileDetails.getByRole("tab", { name: "候选详情" })).toBeFocused();
 
   await page.getByRole("tab", { name: "总览" }).click();
-  const workspaceBrowse = page.getByLabel("Workspace path").first().locator("..").getByRole("button", { name: "Browse" });
+  const workspaceBrowse = page.getByLabel("Workspace path").locator("..").getByRole("button", { name: "Browse" });
   await workspaceBrowse.click();
-  await expect(page.getByLabel("Workspace path").first()).toHaveValue("C:/authorized/selected-directory");
+  await expect(page.getByLabel("Workspace path")).toHaveValue("C:/authorized/selected-directory");
 
   const policyLabel = page.getByText("Policy file", { exact: true });
   await policyLabel.locator("..").getByRole("button", { name: "Browse" }).click();
   await expect(policyLabel.locator("..").locator("input")).toHaveValue("C:/authorized/selected-policy.yaml");
+});
+
+test("Studio workspace open keeps its last-known-good projection when candidates return 503", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await installStudioBridge(page);
+  await mockStudioApi(page, { candidatesUnavailable: true });
+  await page.goto("/studio");
+  await page.getByLabel("Workspace path").fill(workspacePath);
+  await page.getByRole("button", { name: "Open workspace" }).click();
+
+  await expect(page.getByText(/Workspace open failed \(API 503\)/)).toBeVisible();
+  await expect(page.getByText("Workspace opened locally.")).toHaveCount(0);
+  await expect(page.getByText("授权研究演练")).toHaveCount(0);
+  await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button"))
+    .toHaveCount(0);
+});
+
+test("Studio research start publishes nothing when strict candidates refresh returns 503", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await installStudioBridge(page);
+  await mockStudioApi(page, { startProjectionUnavailable: true });
+  await page.goto("/studio");
+  await page.getByLabel("Workspace path").fill(workspacePath);
+  await page.getByRole("button", { name: "Open workspace" }).click();
+  await expect(page.getByText("授权研究演练")).toBeVisible();
+
+  await page.getByRole("button", { name: "Start local research" }).click();
+
+  await expect(page.getByText(/Research run failed \(API 503\)/)).toBeVisible();
+  await expect(page.getByText(/Research run post-run produced/)).toHaveCount(0);
+  await expect(page.getByText("授权研究演练")).toBeVisible();
+  await expect(page.getByText("Research POST partial manifest")).toHaveCount(0);
+  await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button"))
+    .toHaveCount(0);
 });

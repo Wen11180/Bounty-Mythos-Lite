@@ -35,6 +35,31 @@ export interface ControlCenterLiveController {
   stop(): void;
 }
 
+export async function executeControlCenterRefresh<T>({
+  load,
+  onRefreshError,
+  publish,
+  signal,
+}: {
+  load(signal: AbortSignal): Promise<T>;
+  onRefreshError(message: string): void;
+  publish(value: T): void;
+  signal: AbortSignal;
+}): Promise<void> {
+  try {
+    const value = await load(signal);
+    if (!signal.aborted) {
+      publish(value);
+    }
+  } catch (error) {
+    if (signal.aborted) {
+      return;
+    }
+    onRefreshError(error instanceof Error ? error.message : "control_center_request_failed");
+    throw error;
+  }
+}
+
 export function createControlCenterLiveController(
   options: ControlCenterLiveOptions,
 ): ControlCenterLiveController {
@@ -48,6 +73,7 @@ export function createControlCenterLiveController(
   let activeRefetch: AbortController | null = null;
   let pendingRefresh = false;
   let generation = 0;
+  let openEpoch = 0;
 
   const setState = (nextState: ControlCenterLiveState) => {
     if (state !== nextState) {
@@ -80,6 +106,7 @@ export function createControlCenterLiveController(
     }
     const request = new AbortController();
     const requestGeneration = generation;
+    const requestOpenEpoch = openEpoch;
     activeRefetch = request;
     const finish = () => {
       if (activeRefetch !== request) {
@@ -96,7 +123,17 @@ export function createControlCenterLiveController(
         refetch();
       }
     };
-    void options.refetch(request.signal).then(finish, finish);
+    void options.refetch(request.signal).then(finish, () => {
+      if (
+        !request.signal.aborted &&
+        started &&
+        generation === requestGeneration &&
+        openEpoch === requestOpenEpoch
+      ) {
+        startPolling();
+      }
+      finish();
+    });
   };
 
   const startPolling = () => {
@@ -109,6 +146,7 @@ export function createControlCenterLiveController(
   };
 
   const onOpen = () => {
+    openEpoch += 1;
     consecutiveErrors = 0;
     stopPolling();
     setState("live");

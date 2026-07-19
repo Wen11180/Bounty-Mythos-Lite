@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createControlCenterLiveController,
+  executeControlCenterRefresh,
   type ControlCenterEventSource,
   type ControlCenterLiveState,
 } from "./control-center-live.ts";
@@ -105,6 +106,14 @@ function deferred() {
   return { promise, resolve };
 }
 
+function rejectedDeferred() {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((_resolve, fail) => {
+    reject = fail;
+  });
+  return { promise, reject };
+}
+
 async function flushAsyncWork() {
   for (let index = 0; index < 4; index += 1) {
     await Promise.resolve();
@@ -199,6 +208,105 @@ test("degraded polling keeps at most one refetch in flight", async () => {
   assert.equal(harness.refetches(), 2);
 });
 
+test("a required projection failure degrades polling and preserves the last-known-good view", async () => {
+  const published: string[] = [];
+  let attempt = 0;
+  const harness = liveHarness({
+    refetch: async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        published.push("last-known-good");
+        return;
+      }
+      throw new Error("required projection unavailable");
+    },
+  });
+  harness.controller.start();
+  harness.sources[0]?.source.emit("open");
+  await flushAsyncWork();
+  assert.equal(harness.states.at(-1), "live");
+
+  harness.sources[0]?.source.emit("control-center-invalidated");
+  await flushAsyncWork();
+
+  assert.deepEqual(published, ["last-known-good"]);
+  assert.equal(harness.states.at(-1), "degraded");
+  assert.equal(harness.intervals.size, 1);
+});
+
+test("a successful degraded poll keeps polling until EventSource reopens", async () => {
+  let attempt = 0;
+  const published: string[] = [];
+  const harness = liveHarness({
+    refetch: async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new Error("required projection unavailable");
+      }
+      published.push(`snapshot-${attempt}`);
+    },
+  });
+  harness.controller.start();
+  harness.sources[0]?.source.emit("control-center-invalidated");
+  await flushAsyncWork();
+  assert.equal(harness.states.at(-1), "degraded");
+  assert.equal(harness.intervals.size, 1);
+
+  const poll = [...harness.intervals.values()][0];
+  poll?.();
+  await flushAsyncWork();
+
+  assert.equal(harness.states.at(-1), "degraded");
+  assert.equal(harness.intervals.size, 1);
+  assert.deepEqual(published, ["snapshot-2"]);
+
+  poll?.();
+  await flushAsyncWork();
+  assert.equal(harness.refetches(), 3);
+  assert.equal(harness.intervals.size, 1);
+  assert.deepEqual(published, ["snapshot-2", "snapshot-3"]);
+
+  harness.sources[0]?.source.emit("open");
+  await flushAsyncWork();
+  assert.equal(harness.states.at(-1), "live");
+  assert.equal(harness.intervals.size, 0);
+});
+
+test("production refresh reports non-abort failures and rethrows them", async () => {
+  const reported: string[] = [];
+  const failure = new Error("strict overview unavailable");
+
+  await assert.rejects(
+    executeControlCenterRefresh({
+      load: async () => {
+        throw failure;
+      },
+      onRefreshError: (message) => reported.push(message),
+      publish: () => assert.fail("failed refresh must not publish"),
+      signal: new AbortController().signal,
+    }),
+    failure,
+  );
+  assert.deepEqual(reported, ["strict overview unavailable"]);
+});
+
+test("production refresh keeps aborts silent", async () => {
+  const controller = new AbortController();
+  const reported: string[] = [];
+  controller.abort();
+
+  await executeControlCenterRefresh({
+    load: async () => {
+      throw new Error("aborted request");
+    },
+    onRefreshError: (message) => reported.push(message),
+    publish: () => assert.fail("aborted refresh must not publish"),
+    signal: controller.signal,
+  });
+
+  assert.deepEqual(reported, []);
+});
+
 test("a refetch finishing after pause cannot publish into a newer generation", async () => {
   const request = deferred();
   const published: string[] = [];
@@ -287,5 +395,62 @@ test("open keeps an in-flight degraded refresh and queues one recovery refresh",
   second.resolve();
   await second.promise;
   await Promise.resolve();
+  harness.controller.stop();
+});
+
+test("an old degraded poll failure cannot override a reopened live connection", async () => {
+  const degradedPoll = rejectedDeferred();
+  const recovery = deferred();
+  let requestIndex = 0;
+  const harness = liveHarness({
+    refetch: () => [degradedPoll.promise, recovery.promise][requestIndex++] ?? Promise.resolve(),
+  });
+  harness.controller.start();
+  const source = harness.sources[0]?.source;
+  source?.emit("error");
+  source?.emit("error");
+  [...harness.intervals.values()][0]?.();
+
+  source?.emit("open");
+  assert.equal(harness.states.at(-1), "live");
+  assert.equal(harness.intervals.size, 0);
+
+  degradedPoll.reject(new Error("stale degraded poll failed"));
+  await flushAsyncWork();
+
+  assert.equal(harness.states.at(-1), "live");
+  assert.equal(harness.intervals.size, 0);
+  assert.equal(harness.refetches(), 2);
+
+  recovery.resolve();
+  await recovery.promise;
+  await flushAsyncWork();
+  harness.controller.stop();
+});
+
+test("a queued recovery failure after open enters degraded polling", async () => {
+  const degradedPoll = rejectedDeferred();
+  const recovery = rejectedDeferred();
+  let requestIndex = 0;
+  const harness = liveHarness({
+    refetch: () => [degradedPoll.promise, recovery.promise][requestIndex++] ?? Promise.resolve(),
+  });
+  harness.controller.start();
+  const source = harness.sources[0]?.source;
+  source?.emit("error");
+  source?.emit("error");
+  [...harness.intervals.values()][0]?.();
+  source?.emit("open");
+
+  degradedPoll.reject(new Error("stale degraded poll failed"));
+  await flushAsyncWork();
+  assert.equal(harness.states.at(-1), "live");
+  assert.equal(harness.intervals.size, 0);
+
+  recovery.reject(new Error("current live recovery failed"));
+  await flushAsyncWork();
+
+  assert.equal(harness.states.at(-1), "degraded");
+  assert.equal(harness.intervals.size, 1);
   harness.controller.stop();
 });

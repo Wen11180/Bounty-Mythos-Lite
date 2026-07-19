@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { toStudioConversationActorLabel } from "@/lib/studio-data";
 
 interface ResearchConversationProps {
-  actions?: ReactNode;
   children?: ReactNode;
   messages: Array<{
     actor?: "operator" | "system";
@@ -14,7 +13,7 @@ interface ResearchConversationProps {
   runId: string;
 }
 
-export function ResearchConversation({ actions, children, messages, runId }: ResearchConversationProps) {
+export function ResearchConversation({ children, messages, runId }: ResearchConversationProps) {
   return (
     <section aria-labelledby="conversation-title" className="mt-5" data-testid="studio-conversation">
       <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[var(--cc-border)] pb-3">
@@ -41,7 +40,6 @@ export function ResearchConversation({ actions, children, messages, runId }: Res
         })}
       </div>
       {children ? <div className="border-t border-[var(--cc-border)] pt-4">{children}</div> : null}
-      {actions ? <div className="sticky bottom-3 mt-4 border border-[var(--cc-border-strong)] bg-[var(--cc-surface-glass)] p-3 backdrop-blur-xl">{actions}</div> : null}
     </section>
   );
 }

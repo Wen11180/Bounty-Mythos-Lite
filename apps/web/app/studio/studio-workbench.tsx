@@ -1,7 +1,7 @@
 "use client";
 
 import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { CandidateInspector } from "@/components/studio/candidate-inspector";
 import { EvidenceInspector } from "@/components/studio/evidence-inspector";
@@ -20,13 +20,14 @@ import {
   exportStudioWorkspaceCampaignHunterReport,
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
-  getCampaignControlCenter,
+  getCampaignControlCenterRequired,
   getStudioBlackBoxRemoteStatus,
-  getStudioWorkspaceManifest,
+  getStudioWorkspaceManifestRequired,
   getStudioWorkspaceMission,
+  getStudioWorkspaceMissionRequired,
   importStudioWorkspaceArtifact,
   launchStudioWorkspaceCampaignHunter,
-  listStudioWorkspaceCandidates,
+  listStudioWorkspaceCandidatesRequired,
   previewStudioBlackBoxLabLease,
   recordCandidateHunterLearningOutcome,
   runStudioWorkspaceBenchmark,
@@ -49,9 +50,8 @@ import {
 } from "@/lib/control-center-live";
 import {
   buildStudioEventsUrl,
-  latestStudioSession,
   refreshStudioProjection,
-  reportExportFromStudioSession,
+  type StudioRefreshProjection,
 } from "@/lib/studio-live";
 import {
   toStudioArtifactChecklist,
@@ -117,6 +117,16 @@ const remoteStatusFallback: StudioBlackBoxRemoteStatusResponse = {
   stop_reason: "relogin_required",
   report_submission_allowed: false,
   human_confirmation_allowed: false,
+};
+
+const studioRefreshDependencies = {
+  getCampaign: getCampaignControlCenterRequired,
+  getManifest: getStudioWorkspaceManifestRequired,
+  getMission: getStudioWorkspaceMissionRequired,
+  listCandidates: listStudioWorkspaceCandidatesRequired,
+  mapCampaignCandidates: toStudioCampaignHunterCandidateCards,
+  mapMission: toStudioMissionPanel,
+  mapResearchCandidates: toStudioCandidateCards,
 };
 
 function blackBoxLabLeaseExpiry() {
@@ -239,9 +249,6 @@ export function StudioWorkbench() {
     () => artifactChecklist.filter((item) => !item.required),
     [artifactChecklist],
   );
-  const localCandidateHuntInputReady = [policyPath, scopePath, codePath, apiPath, harPath].every(
-    (value) => value.trim(),
-  );
   const benchmarkEvidenceGaps = benchmarkResult?.benchmark.evidence_gaps ?? [];
   const remoteStatusView = useMemo(
     () => toStudioBlackBoxRemoteStatus(remoteStatus),
@@ -252,6 +259,15 @@ export function StudioWorkbench() {
     () => toStudioControlCenterView(candidates, selectedCandidateId),
     [candidates, selectedCandidateId],
   );
+
+  const applyStudioProjection = useCallback((projection: StudioRefreshProjection) => {
+    setManifest(projection.manifest);
+    setLatestRunId(projection.latestRunId);
+    setLatestCampaignHunterId(projection.latestCampaignHunterId);
+    setCandidates(projection.candidates);
+    setMissionPanel(projection.missionPanel);
+    setReportExport(projection.reportExport);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -273,35 +289,14 @@ export function StudioWorkbench() {
       onStateChange: setConnectionState,
       async refetch(signal) {
         const projection = await refreshStudioProjection({
-          dependencies: {
-            getCampaign: (campaignId, signal) => getCampaignControlCenter(campaignId, null, signal),
-            getManifest: (path, signal) => getStudioWorkspaceManifest(path, null, signal),
-            getMission: (path, runId, signal) => getStudioWorkspaceMission(path, runId, null, signal),
-            listCandidates: (path, runId, signal) => listStudioWorkspaceCandidates(
-              path,
-              runId,
-              {
-                candidates: [],
-                run_id: runId,
-              },
-              signal,
-            ),
-            mapCampaignCandidates: toStudioCampaignHunterCandidateCards,
-            mapMission: toStudioMissionPanel,
-            mapResearchCandidates: toStudioCandidateCards,
-          },
+          dependencies: studioRefreshDependencies,
           signal,
           workspacePath,
         });
         if (!projection || signal.aborted) {
           return;
         }
-        setManifest(projection.manifest);
-        setLatestRunId(projection.latestRunId);
-        setLatestCampaignHunterId(projection.latestCampaignHunterId);
-        setCandidates(projection.candidates);
-        setMissionPanel(projection.missionPanel);
-        setReportExport(projection.reportExport);
+        applyStudioProjection(projection);
       },
       scheduler: {
         clearInterval: (id) => window.clearInterval(id),
@@ -317,7 +312,7 @@ export function StudioWorkbench() {
     });
     controller.start();
     return () => controller.stop();
-  }, [latestCampaignHunterId, latestRunId, workspacePath]);
+  }, [applyStudioProjection, latestCampaignHunterId, latestRunId, workspacePath]);
 
   useEffect(() => {
     let mounted = true;
@@ -649,7 +644,11 @@ export function StudioWorkbench() {
     }
     setLabTraceReviewConfirmed(true);
     setLabApproval(null);
-    pushLog("Normalized alias-only traces reviewed; raw headers and bodies remain excluded.", "safe");
+    pushLog(
+      "Normalized alias-only traces reviewed; raw headers and bodies remain excluded.",
+      "safe",
+      "operator",
+    );
   }
 
   async function handleApproveBlackBoxLabRun() {
@@ -675,7 +674,7 @@ export function StudioWorkbench() {
         return;
       }
       setLabApproval(approval);
-      pushLog("Bounded local trial approved for one explicit runner dispatch.", "safe");
+      pushLog("Bounded local trial approved for one explicit runner dispatch.", "safe", "operator");
     } catch (error) {
       pushMutationFailure("Local lab run confirmation", error);
     } finally {
@@ -749,34 +748,21 @@ export function StudioWorkbench() {
     }
     setBusy("open");
     try {
-      const opened = await getStudioWorkspaceManifest(workspacePath, null);
-      if (!opened) {
+      const projection = await refreshStudioProjection({
+        dependencies: studioRefreshDependencies,
+        signal: new AbortController().signal,
+        workspacePath,
+      });
+      if (!projection) {
         pushLog("Workspace manifest was not found.", "blocked");
         return;
       }
-      setManifest(opened);
-      const latest = latestStudioSession(opened);
-      setLatestRunId(latest.kind === "research" ? latest.id : null);
-      setLatestCampaignHunterId(latest.kind === "campaign_hunter" ? latest.id : null);
-      setReportExport(reportExportFromStudioSession(opened, latest));
+      applyStudioProjection(projection);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
-      if (latest.kind === "research" && latest.id) {
-        const listed = await listStudioWorkspaceCandidates(workspacePath, latest.id, {
-          candidates: [],
-          run_id: latest.id,
-        });
-        setCandidates(toStudioCandidateCards(listed.candidates));
-        await refreshMissionPanel(workspacePath, latest.id);
-      } else if (latest.kind === "campaign_hunter" && latest.id) {
-        const controlCenter = await getCampaignControlCenter(latest.id, null);
-        setCandidates(toStudioCampaignHunterCandidateCards(controlCenter));
-        setMissionPanel(toStudioMissionPanel(null));
-      } else {
-        setCandidates([]);
-        setMissionPanel(toStudioMissionPanel(null));
-      }
       pushLog("Workspace opened locally.", "safe");
+    } catch (error) {
+      pushMutationFailure("Workspace open", error);
     } finally {
       setBusy(null);
     }
@@ -836,77 +822,6 @@ export function StudioWorkbench() {
     }
   }
 
-  async function handleRunLocalCandidateHunt() {
-    if (!localCandidateHuntInputReady) {
-      pushLog("Select policy, scope, code, API, and HAR inputs before starting the local candidate hunt.", "blocked");
-      return;
-    }
-    setBusy("candidate-hunt");
-    try {
-      let activeWorkspacePath = workspacePath;
-      let activeManifest: StudioWorkspaceManifest | null = manifest;
-      if (!activeWorkspacePath) {
-        const created = await createStudioWorkspace(
-          { name: workspaceName, root_path: workspaceRoot },
-        );
-        if (!created) {
-          pushLog("Workspace creation failed. Check that the local API is running.", "blocked");
-          return;
-        }
-        activeWorkspacePath = created.path;
-        activeManifest = created.manifest;
-        setWorkspacePath(created.path);
-      }
-
-      for (const artifact of studioArtifactInputs(activeWorkspacePath)) {
-        if (!artifact.source_path.trim()) {
-          continue;
-        }
-        activeManifest = await importStudioWorkspaceArtifact(artifact);
-      }
-      if (!activeManifest) {
-        pushLog("Authorized artifact import failed.", "blocked");
-        return;
-      }
-
-      setManifest(activeManifest);
-      const readiness = toStudioResearchReadiness(activeWorkspacePath, activeManifest);
-      if (!readiness.canStart) {
-        pushLog(readiness.reason, "blocked");
-        return;
-      }
-
-      const run = await runStudioResearchOnce(activeWorkspacePath);
-      if (run === undefined) {
-        return;
-      }
-      if (!run) {
-        pushLog("Local candidate hunt did not start. Scope and code artifacts are required.", "blocked");
-        return;
-      }
-      setManifest(run.manifest);
-      setLatestRunId(run.run_id);
-      setLatestCampaignHunterId(null);
-      const listed = await listStudioWorkspaceCandidates(activeWorkspacePath, run.run_id, {
-        candidates: [],
-        run_id: run.run_id,
-      });
-      setCandidates(toStudioCandidateCards(listed.candidates));
-      await refreshMissionPanel(activeWorkspacePath, run.run_id);
-      setReportExport(null);
-      setMissionDossierExport(null);
-      setBenchmarkResult(null);
-      pushLog(
-        `Local candidate hunt ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
-        "safe",
-      );
-    } catch (error) {
-      pushMutationFailure("Local candidate hunt", error);
-    } finally {
-      setBusy(null);
-    }
-  }
-
   async function handleSelectPath({
     mode,
     setter,
@@ -944,16 +859,16 @@ export function StudioWorkbench() {
         pushLog("Research run did not start. Scope and code artifacts are required.", "blocked");
         return;
       }
-      setManifest(run.manifest);
-      setLatestRunId(run.run_id);
-      setLatestCampaignHunterId(null);
-      const listed = await listStudioWorkspaceCandidates(workspacePath, run.run_id, {
-        candidates: [],
-        run_id: run.run_id,
+      const projection = await refreshStudioProjection({
+        dependencies: studioRefreshDependencies,
+        signal: new AbortController().signal,
+        workspacePath,
       });
-      setCandidates(toStudioCandidateCards(listed.candidates));
-      await refreshMissionPanel(workspacePath, run.run_id);
-      setReportExport(null);
+      if (!projection) {
+        pushLog("Research projection was not available. No success state was recorded.", "blocked");
+        return;
+      }
+      applyStudioProjection(projection);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
       pushLog(
@@ -1028,7 +943,11 @@ export function StudioWorkbench() {
         },
       );
       setLearningProfile(profile);
-      pushLog(`Recorded ${outcome} learning feedback for ${action.candidateId}.`, "safe");
+      pushLog(
+        `Recorded ${outcome} learning feedback for ${action.candidateId}.`,
+        "safe",
+        "operator",
+      );
     } catch (error) {
       pushMutationFailure("Learning feedback", error);
     } finally {
@@ -1060,7 +979,7 @@ export function StudioWorkbench() {
         },
       );
       setLearningProfile(profile);
-      pushLog(`Recorded ${outcome} learning feedback for ${candidate.id}.`, "safe");
+      pushLog(`Recorded ${outcome} learning feedback for ${candidate.id}.`, "safe", "operator");
     } catch (error) {
       pushMutationFailure("Learning feedback", error);
     } finally {
@@ -1190,8 +1109,12 @@ export function StudioWorkbench() {
     }
   }
 
-  function pushLog(message: string, tone: LogEntry["tone"]) {
-    setLog((entries) => [{ message, tone }, ...entries].slice(0, 6));
+  function pushLog(
+    message: string,
+    tone: LogEntry["tone"],
+    actor: LogEntry["actor"] = "system",
+  ) {
+    setLog((entries) => [{ actor, message, tone }, ...entries].slice(0, 6));
   }
 
   function pushMutationFailure(action: string, error: unknown) {
@@ -1219,14 +1142,14 @@ export function StudioWorkbench() {
     ];
   }
 
-  const wizardPrimaryAction =
+  const nextSafeAction =
     currentWizardStep === "workspace"
       ? {
-          busy: busy === "open" || busy === "workspace",
-          disabled: false,
+          busy: false,
+          disabled: true,
           icon: <FolderPlus size={16} aria-hidden="true" />,
-          label: workspacePath.trim() ? "Open workspace" : "Create workspace",
-          onClick: workspacePath.trim() ? handleOpenWorkspace : handleCreateWorkspace,
+          label: "Complete workspace setup in navigation",
+          onClick: () => undefined,
         }
       : currentWizardStep === "authorized_materials"
         ? {
@@ -1245,11 +1168,11 @@ export function StudioWorkbench() {
               onClick: handleStartResearch,
             }
           : {
-              busy: busy === "export",
-              disabled: !latestRunId && !latestCampaignHunterId,
-              icon: <FileDown size={16} aria-hidden="true" />,
-              label: "Export submission-blocked draft",
-              onClick: handleExportReport,
+              busy: false,
+              disabled: studioView.selectedCandidate === null,
+              icon: <ShieldCheck size={16} aria-hidden="true" />,
+              label: "Review selected candidate",
+              onClick: () => setInspectorTab("candidate"),
             };
 
   const studioCandidateList = (
@@ -1317,6 +1240,28 @@ export function StudioWorkbench() {
           label="Open workspace"
           onClick={handleOpenWorkspace}
         />
+        <div className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4">
+          <TextField
+            browseEnabled={desktopPickerAvailable}
+            label="Workspace root"
+            onBrowse={() =>
+              handleSelectPath({
+                mode: "directory",
+                setter: setWorkspaceRoot,
+                title: "Select workspace root",
+              })
+            }
+            value={workspaceRoot}
+            onChange={setWorkspaceRoot}
+          />
+          <TextField label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
+          <ActionButton
+            busy={busy === "workspace"}
+            icon={<FolderPlus size={16} aria-hidden="true" />}
+            label="Create workspace"
+            onClick={handleCreateWorkspace}
+          />
+        </div>
       </div>
       <dl className="grid gap-2 border-t border-[var(--line)] pt-4 text-xs">
         <StatusRow label="Scope Guard" value={workspace.scopeGuardLabel} warning />
@@ -1398,7 +1343,29 @@ export function StudioWorkbench() {
       </TabsContent>
       <TabsContent className="pt-4" tabIndex={-1} value="report">
           <ReportInspector
+            actions={(
+              <>
+                <ActionButton
+                  busy={busy === "export"}
+                  disabled={!latestRunId && !latestCampaignHunterId}
+                  icon={<FileDown size={16} aria-hidden="true" />}
+                  label="Export report preview"
+                  onClick={handleExportReport}
+                />
+                <ActionButton
+                  busy={busy === "mission-dossier"}
+                  disabled={!latestRunId}
+                  icon={<FileDown size={16} aria-hidden="true" />}
+                  label="Export mission dossier"
+                  onClick={handleExportMissionDossier}
+                />
+              </>
+            )}
             candidate={studioView.selectedCandidate}
+            dossierPaths={[
+              missionDossierExport?.mission_dossier_markdown_path,
+              missionDossierExport?.agent_queue_markdown_path,
+            ].filter((path): path is string => Boolean(path))}
             markdownPath={reportExport?.report_markdown_path}
           />
       </TabsContent>
@@ -1431,36 +1398,18 @@ export function StudioWorkbench() {
       />
 
       <ResearchConversation
-        actions={(
-          <div className="flex flex-wrap items-center gap-2">
-            <ActionButton
-              busy={busy === "candidate-hunt"}
-              disabled={!localCandidateHuntInputReady}
-              icon={<Play size={16} aria-hidden="true" />}
-              label="Run local candidate hunt"
-              onClick={handleRunLocalCandidateHunt}
-            />
-            <ActionButton
-              busy={wizardPrimaryAction.busy}
-              disabled={wizardPrimaryAction.disabled}
-              icon={wizardPrimaryAction.icon}
-              label={wizardPrimaryAction.label}
-              onClick={wizardPrimaryAction.onClick}
-            />
-          </div>
-        )}
         messages={log}
         runId={missionPanel.runId}
       />
 
       <ProgramRuleIntake />
 
-      <section className="mt-6 border border-[var(--line)] bg-white" id="studio-artifacts">
+      <section className="mt-6 border-b border-[var(--line)] pb-5" id="studio-artifacts">
         <SectionHeader title="Local research setup" />
         <div className="grid gap-3 p-5 text-sm md:grid-cols-4">
           {wizardSteps.map((step, index) => (
             <div
-              className={`border border-[var(--line)] p-3 ${
+              className={`border-t border-[var(--line)] p-3 ${
                 step.id === currentWizardStep ? "bg-[var(--background)]" : "bg-white"
               }`}
               key={step.id}
@@ -1475,11 +1424,11 @@ export function StudioWorkbench() {
         <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] p-5 text-sm">
           <p className="font-semibold">Next safe action</p>
           <ActionButton
-            busy={wizardPrimaryAction.busy}
-            disabled={wizardPrimaryAction.disabled}
-            icon={wizardPrimaryAction.icon}
-            label={wizardPrimaryAction.label}
-            onClick={wizardPrimaryAction.onClick}
+            busy={nextSafeAction.busy}
+            disabled={nextSafeAction.disabled}
+            icon={nextSafeAction.icon}
+            label={nextSafeAction.label}
+            onClick={nextSafeAction.onClick}
           />
           <ActionButton
             busy={busy === "campaign-hunter"}
@@ -1584,7 +1533,7 @@ export function StudioWorkbench() {
         </div>
       </section>
 
-      <section className="mt-6 border border-[var(--line)] bg-white" id="studio-lab">
+      <section className="mt-6 border-y border-[var(--line)]" id="studio-lab">
         <SectionHeader title="Local black-box lab (explicit)" />
         <details className="p-5 text-sm">
           <summary className="cursor-pointer font-semibold">Enable explicit local black-box lab</summary>
@@ -1734,7 +1683,7 @@ export function StudioWorkbench() {
               />
             </dl>
             {labTraceReview.length > 0 ? (
-              <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+              <div className="border-t border-[var(--line)] pt-4">
                 <p className="font-semibold">Normalized traces</p>
                 <ul className="mt-2 grid gap-2 text-xs text-[var(--muted)]">
                   {labTraceReview.map((trace) => (
@@ -1751,63 +1700,8 @@ export function StudioWorkbench() {
       </section>
 
       <div className="mt-6 grid gap-5">
-        <section className="border border-[var(--line)] bg-white">
-          <SectionHeader title="Workspaces" />
-          <div className="grid gap-4 p-5 text-sm">
-            <TextField
-              browseEnabled={desktopPickerAvailable}
-              label="Workspace path"
-              onBrowse={() =>
-                handleSelectPath({
-                  mode: "directory",
-                  setter: setWorkspacePath,
-                  title: "Select Mythos workspace",
-                })
-              }
-              value={workspacePath}
-              onChange={setWorkspacePath}
-            />
-            <ActionButton
-              busy={busy === "open"}
-              icon={<FolderOpen size={16} aria-hidden="true" />}
-              label="Open workspace"
-              onClick={handleOpenWorkspace}
-            />
-            <TextField
-              browseEnabled={desktopPickerAvailable}
-              label="Workspace root"
-              onBrowse={() =>
-                handleSelectPath({
-                  mode: "directory",
-                  setter: setWorkspaceRoot,
-                  title: "Select workspace root",
-                })
-              }
-              value={workspaceRoot}
-              onChange={setWorkspaceRoot}
-            />
-            <TextField label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
-            <ActionButton
-              busy={busy === "workspace"}
-              icon={<FolderPlus size={16} aria-hidden="true" />}
-              label="Create workspace"
-              onClick={handleCreateWorkspace}
-            />
-
-            <div className="border-t border-[var(--line)] pt-4">
-              <dl className="grid gap-3">
-                <StatusRow label="Name" value={workspace.name} />
-                <StatusRow label="Path" value={workspacePath || "No workspace selected"} />
-                <StatusRow label="Scope Guard" value={workspace.scopeGuardLabel} warning />
-                <StatusRow label="Artifacts" value={String(workspace.artifactCount)} />
-                <StatusRow label="Runs" value={String(workspace.runCount)} />
-              </dl>
-            </div>
-          </div>
-        </section>
-
-        <section className="border border-[var(--line)] bg-white">
-          <SectionHeader title="Conversation" />
+        <section className="border-b border-[var(--line)] pb-5">
+          <SectionHeader title="Authorized materials / evaluation" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <TextField
@@ -1941,12 +1835,12 @@ export function StudioWorkbench() {
                 onChange={setKnowledgePath}
               />
             </div>
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] p-4">
               <p className="font-semibold">Artifact readiness</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {artifactChecklist.map((item) => (
                   <span
-                    className={`border border-[var(--line)] px-3 py-2 ${checklistTone(item.status)}`}
+                    className={`border-l-2 border-[var(--line)] px-3 py-2 ${checklistTone(item.status)}`}
                     key={item.kind}
                   >
                     {item.label}: {item.status}
@@ -1955,36 +1849,7 @@ export function StudioWorkbench() {
               </div>
               <p className="mt-3 text-[var(--muted)]">{researchReadiness.reason}</p>
             </div>
-            <div className="flex flex-wrap gap-3">
-              <ActionButton
-                busy={busy === "import"}
-                icon={<Upload size={16} aria-hidden="true" />}
-                label="Import artifacts"
-                onClick={handleImportArtifacts}
-              />
-              <ActionButton
-                busy={busy === "research"}
-                disabled={!researchReadiness.canStart}
-                icon={<Play size={16} aria-hidden="true" />}
-                label="Start research"
-                onClick={handleStartResearch}
-              />
-              <ActionButton
-                busy={busy === "export"}
-                disabled={!latestRunId && !latestCampaignHunterId}
-                icon={<FileDown size={16} aria-hidden="true" />}
-                label="Export report preview"
-                onClick={handleExportReport}
-              />
-              <ActionButton
-                busy={busy === "mission-dossier"}
-                disabled={!latestRunId}
-                icon={<FileDown size={16} aria-hidden="true" />}
-                label="Export mission dossier"
-                onClick={handleExportMissionDossier}
-              />
-            </div>
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] p-4">
               <p className="font-semibold">A+B benchmark</p>
               <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                 <TextField
@@ -2054,7 +1919,7 @@ export function StudioWorkbench() {
                 </div>
               ) : null}
             </div>
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] p-4">
               <p className="font-semibold">Research intent</p>
               <p className="mt-2 text-[var(--muted)]">
                 Access control, role boundaries, refutation first.
@@ -2066,7 +1931,7 @@ export function StudioWorkbench() {
         <section className="border-b border-[var(--line)] pb-5" data-testid="studio-mission-details">
           <SectionHeader title="Mission details" />
           <div className="grid gap-4 p-5 text-sm">
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] pt-4">
               <p className="font-semibold">Mission control</p>
               <dl className="mt-3 grid gap-3">
                 <StatusRow label="Mode" value={missionPanel.modeLabel} />
@@ -2272,41 +2137,7 @@ export function StudioWorkbench() {
         </section>
       </div>
 
-      <section className="mt-5 border-t border-[var(--line)] pt-5" id="studio-candidates">
-        {reportExport ? (
-          <div className="border-t border-[var(--line)] p-5 text-sm">
-            <p className="font-semibold">{reportExport.title}</p>
-            {reportExport.report_markdown_path ? (
-              <p className="mt-1 text-[var(--muted)]">
-                Markdown draft: {reportExport.report_markdown_path}
-              </p>
-            ) : null}
-            <p className="mt-1 text-[var(--muted)]">
-              Exported report preview remains submission-blocked and cannot be submitted from
-              Studio.
-            </p>
-          </div>
-        ) : null}
-        {missionDossierExport ? (
-          <div className="border-t border-[var(--line)] p-5 text-sm">
-            <p className="font-semibold">Mission dossier exported</p>
-            {missionDossierExport.mission_dossier_markdown_path ? (
-              <p className="mt-1 text-[var(--muted)]">
-                Mission dossier: {missionDossierExport.mission_dossier_markdown_path}
-              </p>
-            ) : null}
-            {missionDossierExport.agent_queue_markdown_path ? (
-              <p className="mt-1 text-[var(--muted)]">
-                Agent queue audit: {missionDossierExport.agent_queue_markdown_path}
-              </p>
-            ) : null}
-            <p className="mt-1 text-[var(--muted)]">
-              Local mission dossiers are review-only and do not grant validation execution or
-              report submission.
-            </p>
-          </div>
-        ) : null}
-      </section>
+      <div className="mt-5" id="studio-candidates" />
       </div>
     </StudioShell>
   );

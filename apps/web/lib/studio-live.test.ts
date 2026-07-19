@@ -114,3 +114,93 @@ test("campaign invalidation refetches the supported campaign projection", async 
   assert.equal(projection?.candidates[0]?.id, "campaign-H-1");
   assert.equal(projection?.reportExport?.report_markdown_path, "C:/drafts/campaign-9.md");
 });
+
+test("research refresh rejects atomically when candidates fail after manifest succeeds", async () => {
+  const calls: string[] = [];
+  await assert.rejects(
+    refreshStudioProjection({
+      dependencies: {
+        async getCampaign() {
+          return null;
+        },
+        async getManifest() {
+          calls.push("manifest");
+          return { name: "research", runs: [{ run_id: "run-atomic" }] };
+        },
+        async getMission() {
+          calls.push("mission");
+          return { run_id: "run-atomic" };
+        },
+        async listCandidates() {
+          calls.push("candidates");
+          throw new Error("candidates unavailable");
+        },
+        mapCampaignCandidates: toStudioCampaignHunterCandidateCards,
+        mapMission: toStudioMissionPanel,
+        mapResearchCandidates: toStudioCandidateCards,
+      },
+      signal: new AbortController().signal,
+      workspacePath: "C:/authorized/research",
+    }),
+    /candidates unavailable/,
+  );
+  assert.equal(calls[0], "manifest");
+  assert.deepEqual(calls.slice(1).sort(), ["candidates", "mission"]);
+});
+
+test("research refresh rejects atomically when mission fails after manifest succeeds", async () => {
+  await assert.rejects(
+    refreshStudioProjection({
+      dependencies: {
+        async getCampaign() {
+          return null;
+        },
+        async getManifest() {
+          return { name: "research", runs: [{ run_id: "run-mission-atomic" }] };
+        },
+        async getMission() {
+          throw new Error("mission unavailable");
+        },
+        async listCandidates() {
+          return { candidates: [{ hypothesis_id: "H-hidden" }], run_id: "run-mission-atomic" };
+        },
+        mapCampaignCandidates: toStudioCampaignHunterCandidateCards,
+        mapMission: toStudioMissionPanel,
+        mapResearchCandidates: toStudioCandidateCards,
+      },
+      signal: new AbortController().signal,
+      workspacePath: "C:/authorized/research",
+    }),
+    /mission unavailable/,
+  );
+});
+
+test("campaign refresh rejects atomically when its required projection fails", async () => {
+  await assert.rejects(
+    refreshStudioProjection({
+      dependencies: {
+        async getCampaign() {
+          throw new Error("campaign unavailable");
+        },
+        async getManifest() {
+          return {
+            campaign_hunter_runs: [{ campaign_id: "campaign-atomic" }],
+            name: "campaign",
+          };
+        },
+        async getMission() {
+          return null;
+        },
+        async listCandidates() {
+          return { candidates: [], run_id: null };
+        },
+        mapCampaignCandidates: toStudioCampaignHunterCandidateCards,
+        mapMission: toStudioMissionPanel,
+        mapResearchCandidates: toStudioCandidateCards,
+      },
+      signal: new AbortController().signal,
+      workspacePath: "C:/authorized/campaign",
+    }),
+    /campaign unavailable/,
+  );
+});

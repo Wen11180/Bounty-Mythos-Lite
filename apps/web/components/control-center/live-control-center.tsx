@@ -5,6 +5,7 @@ import { useCallback, useEffect } from "react";
 import { getControlCenterOverview } from "@/lib/api";
 import {
   createControlCenterLiveController,
+  executeControlCenterRefresh,
   type ControlCenterLiveState,
 } from "@/lib/control-center-live";
 import {
@@ -37,22 +38,18 @@ export function LiveControlCenter({
   onRefreshError,
   onSnapshot,
 }: LiveControlCenterProps) {
-  const refetch = useCallback(async (signal: AbortSignal) => {
-    try {
-      const response = await getControlCenterOverview(campaignId, signal);
-      if (signal.aborted) {
-        return;
-      }
-      onSnapshot(
-        filterControlCenterSnapshot(mapControlCenterOverview(response), searchQuery),
-      );
-    } catch (error) {
-      if (signal.aborted) {
-        return;
-      }
-      onRefreshError(error instanceof Error ? error.message : "control_center_request_failed");
-    }
-  }, [campaignId, onRefreshError, onSnapshot, searchQuery]);
+  const refetch = useCallback(
+    (signal: AbortSignal) => executeControlCenterRefresh({
+      load: async (requestSignal) => filterControlCenterSnapshot(
+        mapControlCenterOverview(await getControlCenterOverview(campaignId, requestSignal)),
+        searchQuery,
+      ),
+      onRefreshError,
+      publish: onSnapshot,
+      signal,
+    }),
+    [campaignId, onRefreshError, onSnapshot, searchQuery],
+  );
 
   useEffect(() => {
     const controller = createControlCenterLiveController({

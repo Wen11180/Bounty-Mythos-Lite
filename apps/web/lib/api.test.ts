@@ -11,20 +11,24 @@ import {
   createStudioWorkspace,
   createFindingCandidate,
   getCampaignControlCenter,
+  getCampaignControlCenterRequired,
   getControlCenterOverview,
   getProgramRuleSnapshotDiff,
   getProgramRuleSource,
   getStudioBlackBoxRemoteStatus,
   getStudioWorkspaceManifest,
+  getStudioWorkspaceManifestRequired,
   importStudioWorkspaceArtifact,
   exportStudioWorkspaceCampaignHunterReport,
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   listStudioWorkspaceCandidates,
+  listStudioWorkspaceCandidatesRequired,
   listProgramRuleSnapshots,
   listProgramRuleSources,
   listProgramScopeRules,
   getStudioWorkspaceMission,
+  getStudioWorkspaceMissionRequired,
   getStudioWorkspaceMissionHandoff,
   materializeResearchQueueTask,
   recordCandidateHunterLearningOutcome,
@@ -348,6 +352,42 @@ test("studio live-refresh helpers forward AbortSignal to their GET requests", as
     assert.equal(mission, null);
     assert.deepEqual(receivedSignals, Array.from({ length: 4 }, () => controller.signal));
     assert.equal(controller.signal.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio strict live-refresh helpers reject required GET failures without fallbacks", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const receivedSignals: Array<AbortSignal | null | undefined> = [];
+  globalThis.fetch = async (_input, init) => {
+    receivedSignals.push(init?.signal);
+    return new Response(JSON.stringify({ detail: "projection unavailable" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 503,
+    });
+  };
+
+  try {
+    const results = await Promise.allSettled([
+      getCampaignControlCenterRequired("campaign_1", controller.signal),
+      getStudioWorkspaceManifestRequired("C:/authorized/studio", controller.signal),
+      getStudioWorkspaceMissionRequired("C:/authorized/studio", "run_1", controller.signal),
+      listStudioWorkspaceCandidatesRequired(
+        "C:/authorized/studio",
+        "run_1",
+        controller.signal,
+      ),
+    ]);
+
+    assert.deepEqual(results.map((result) => result.status), [
+      "rejected",
+      "rejected",
+      "rejected",
+      "rejected",
+    ]);
+    assert.deepEqual(receivedSignals, Array.from({ length: 4 }, () => controller.signal));
   } finally {
     globalThis.fetch = originalFetch;
   }

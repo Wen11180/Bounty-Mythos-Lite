@@ -192,7 +192,9 @@ test("V0 rendered source-audit flow stays human gated", async ({ page }) => {
   await page.getByRole("link", { name: "Report" }).click();
   await expect(page).toHaveURL(new RegExp(`/reports/${fallbackRunId}$`));
   await expect(page.getByRole("heading", { name: "Manual submission gate" })).toBeVisible();
-  await expect(page.getByText("Submission blocked").first()).toBeVisible();
+  await expect(
+    page.getByText("Manual submission gate", { exact: true }).locator("..").getByText("Submission blocked"),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: /submit report/i })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Review validation" }).click();
