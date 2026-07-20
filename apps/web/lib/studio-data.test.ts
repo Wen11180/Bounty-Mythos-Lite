@@ -2849,6 +2849,16 @@ test("studio workbench exposes explicit non-persistent local black-box lab contr
 
   assert.match(workbench, /previewStudioBlackBoxLabLease/);
   assert.match(workbench, /approveStudioBlackBoxLabRun/);
+  assert.match(workbench, /preflightStudioBlackBoxLabRun/);
+  assert.match(workbench, /recordStudioBlackBoxLabBoundedResult/);
+  assert.match(workbench, /boundedTraceFromTrialResult/);
+  assert.match(workbench, /labDispatchInFlight/);
+  assert.match(workbench, /complete_plan: completePlan/);
+  assert.match(workbench, /window\.addEventListener\("pagehide"/);
+  assert.doesNotMatch(
+    workbench,
+    /return \(\) => \{\s*void window\.mythosStudio\?\.closeBlackBoxSessions/s,
+  );
   assert.match(workbench, /function blackBoxLabLeaseRequest/);
   assert.match(workbench, /createBlackBoxSessions/);
   assert.match(workbench, /startBlackBoxRecording/);
@@ -2864,15 +2874,29 @@ test("studio workbench exposes explicit non-persistent local black-box lab contr
   assert.match(workbench, /Start recording/);
   assert.match(workbench, /Stop recording/);
   assert.match(workbench, /Review normalized traces/);
-  assert.match(workbench, /Confirm bounded lab run/);
-  assert.match(workbench, /Run approved trial/);
+  assert.match(workbench, /Review and approve complete plan/);
+  const approvalStart = workbench.indexOf("async function handleApproveBlackBoxLabRun");
+  const approvalEnd = workbench.indexOf("async function handleCloseBlackBoxSessions");
+  assert.ok(approvalStart >= 0 && approvalEnd > approvalStart);
+  assert.match(
+    workbench.slice(approvalStart, approvalEnd),
+    /finally \{[\s\S]*setBusy\(null\);[\s\S]*labDispatchInFlight\.current = false;/,
+  );
+  assert.doesNotMatch(workbench, /Confirm bounded lab run|Run approved trial/);
   assert.match(workbench, /Stop local lab/);
-  assert.match(workbench, /disabled=\{!labApproval\?\.local_runner_dispatch_allowed\}/);
+  assert.match(workbench, /approval\.approved_session_alias/);
+  assert.match(workbench, /approval\.approved_workflow_alias/);
+  assert.equal(workbench.match(/await bridge\.runBlackBoxTrial\(/g)?.length, 1);
+  assert.match(workbench, /Bounded result/);
 
   const labStart = workbench.indexOf("function blackBoxLabLeaseRequest");
   const labEnd = workbench.indexOf("async function handleOpenWorkspace");
   assert.ok(labStart >= 0 && labEnd > labStart);
   assert.doesNotMatch(workbench.slice(labStart, labEnd), /setManifest|localStorage|sessionStorage/);
+  const trialStart = workbench.indexOf("await bridge.runBlackBoxTrial(");
+  const resultStart = workbench.indexOf("await recordStudioBlackBoxLabBoundedResult(");
+  assert.ok(trialStart >= 0 && resultStart > trialStart);
+  assert.doesNotMatch(workbench.slice(trialStart, resultStart), /\.\.\.trace/);
 });
 
 test("studio workbench shows remote human-lease status without execution controls", async () => {

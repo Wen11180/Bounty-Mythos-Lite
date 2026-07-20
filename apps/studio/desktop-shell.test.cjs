@@ -38,6 +38,19 @@ test("main process installs the local-only Studio navigation guard", async () =>
   assert.match(main, /installStudioNavigationGuard\(window,\s*config\.studioUrl\)/);
 });
 
+test("main process closes black-box sessions on main-frame reload and renderer loss", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+
+  assert.match(
+    main,
+    /webContents\.on\(\s*"did-start-navigation"[\s\S]*isMainFrame[\s\S]*blackBoxRunner\.closeSessions\("page_closed"\)/,
+  );
+  assert.match(
+    main,
+    /webContents\.on\("render-process-gone"[\s\S]*blackBoxRunner\.closeSessions\("browser_crash"\)/,
+  );
+});
+
 test("desktop launcher defaults to inline worker dispatch for local campaigns", async () => {
   const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
 
@@ -84,6 +97,22 @@ test("desktop runner binds remote lease decisions only to the derived loopback A
   assert.match(main, /authorizeRemoteRequest:\s*remoteLeaseApi\.authorize/);
   assert.match(main, /completeRemoteRequest:\s*remoteLeaseApi\.complete/);
   assert.match(main, /stopRemoteLease:\s*remoteLeaseApi\.stop/);
+});
+
+test("desktop main rechecks local trial authority at the derived API immediately before runner dispatch", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+  const preload = await fs.readFile(path.join(__dirname, "preload.cjs"), "utf8");
+
+  assert.match(main, /createLocalLabDispatchHandler/);
+  assert.match(main, /getApiBaseUrl:\s*\(\) => studioApiBaseUrl/);
+  assert.match(main, /runRunner:\s*\(line\) => blackBoxRunner\.handleLine\(line\)/);
+  assert.match(
+    main,
+    /closeRunnerSessions:\s*\(reason\) => blackBoxRunner\.closeSessions\(reason\)/,
+  );
+  assert.match(main, /rendererGenerations/);
+  assert.match(main, /isCurrent/);
+  assert.doesNotMatch(preload, /preflight|grant|authority/);
 });
 
 test("desktop shell wakes only the local read-only research runtime after startup", async () => {

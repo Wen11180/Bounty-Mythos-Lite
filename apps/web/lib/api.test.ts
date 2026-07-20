@@ -42,6 +42,9 @@ import {
   reviewValidationFeedbackForFindingPromotion,
   runSourceAuditScan,
   previewStudioBlackBoxLabLease,
+  preflightMythosValidationRun,
+  preflightStudioBlackBoxLabRun,
+  recordStudioBlackBoxLabBoundedResult,
   SourceAuditScanError,
   type Finding,
   type ProgramIntelligenceProfile,
@@ -926,6 +929,205 @@ test("studio black-box lab helpers send only alias-only local review contracts",
     assert.doesNotMatch(
       JSON.stringify(calls),
       /cookie|credential|password|authorization|session_storage|workspace_manifest/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("validation preflight helper is strict and bound to the requested run", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+      url: String(input),
+    });
+    return new Response(
+      JSON.stringify({
+        decision: { allowed: true, reason: "approved_validation_record" },
+        execution_started: false,
+        validation_run: {
+          allowed_to_execute: true,
+          id: "validation_local_lab",
+          preflight_passed: true,
+        },
+      }),
+      { status: 200 },
+    );
+  };
+  try {
+    const response = await preflightMythosValidationRun("validation_local_lab");
+    assert.equal(response.decision.allowed, true);
+    assert.equal(response.validation_run.id, "validation_local_lab");
+    assert.deepEqual(calls, [
+      {
+        body: {},
+        url: "http://localhost:8000/mythos/validation-runs/validation_local_lab/preflight",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio local-lab exact preflight sends the approval, lease, and original complete plan", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody: unknown = null;
+  let requestedUrl = "";
+  const completePlan = {
+    lease_preview: {
+      active_origin: "http://127.0.0.1:43110",
+      sessions: [
+        { account_alias: "account_a", ready: true, role_alias: "member", session_alias: "session_a" as const },
+        { account_alias: "account_b", ready: true, role_alias: "member", session_alias: "session_b" as const },
+      ],
+      workflows: [{
+        action: "read_only_replay" as const,
+        method: "GET" as const,
+        object_aliases: ["widget_a"],
+        origin: "http://127.0.0.1:43110",
+        route_template: "/widgets/{object}",
+        session_alias: "session_a" as const,
+        workflow_alias: "read_widget_a",
+      }],
+    },
+    operator_confirmed: true,
+    trace_review: [{
+      redacted: true as const,
+      response_schema_fingerprint: `sha256:${"a".repeat(64)}`,
+      route_template: "/widgets/{object}",
+      session_alias: "session_a",
+      workflow_alias: "read_widget_a",
+    }],
+    validation_run_id: "validation_local_lab",
+  };
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      approval_id: "approval_local_lab",
+      approved_session_alias: "session_b",
+      approved_workflow_alias: "read_widget_a",
+      complete_plan_digest: `sha256:${"d".repeat(64)}`,
+      execution_allowed: false,
+      expires_at: "2099-07-19T12:15:00Z",
+      lease_digest: `sha256:${"b".repeat(64)}`,
+      local_runner_dispatch_allowed: true,
+      plan_digest: "plan_sha256_local_lab",
+      report_submission_allowed: false,
+      scope_reference: `sha256:${"c".repeat(64)}`,
+      validation_run_id: "validation_local_lab",
+    }), { status: 200 });
+  };
+
+  try {
+    const response = await preflightStudioBlackBoxLabRun({
+      approval_id: "approval_local_lab",
+      complete_plan: completePlan,
+      complete_plan_digest: `sha256:${"d".repeat(64)}`,
+      lease_digest: `sha256:${"b".repeat(64)}`,
+    });
+
+    assert.equal(response.local_runner_dispatch_allowed, true);
+    assert.equal(
+      new URL(requestedUrl).pathname,
+      "/mythos/studio/black-box-lab/runs/preflight",
+    );
+    assert.deepEqual(requestedBody, {
+      approval_id: "approval_local_lab",
+      complete_plan: completePlan,
+      complete_plan_digest: `sha256:${"d".repeat(64)}`,
+      lease_digest: `sha256:${"b".repeat(64)}`,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio local-lab bounded result sends only the exact preflight and normalized trace", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody: unknown = null;
+  let requestedUrl = "";
+  const exactPreflight = {
+    approval_id: "approval_local_lab",
+    complete_plan: {
+      lease_preview: {
+        active_origin: "http://127.0.0.1:43110",
+        sessions: [
+          { account_alias: "account_a", ready: true, role_alias: "member", session_alias: "session_a" as const },
+          { account_alias: "account_b", ready: true, role_alias: "member", session_alias: "session_b" as const },
+        ],
+        workflows: [{
+          action: "read_only_replay" as const,
+          method: "GET" as const,
+          object_aliases: ["widget_a"],
+          origin: "http://127.0.0.1:43110",
+          route_template: "/widgets/{object}",
+          session_alias: "session_a" as const,
+          workflow_alias: "read_widget_a",
+        }],
+      },
+      operator_confirmed: true as const,
+      trace_review: [{
+        redacted: true as const,
+        response_schema_fingerprint: `sha256:${"a".repeat(64)}`,
+        route_template: "/widgets/{object}",
+        session_alias: "session_a" as const,
+        workflow_alias: "read_widget_a",
+      }],
+      validation_run_id: "validation_local_lab",
+    },
+    complete_plan_digest: `sha256:${"d".repeat(64)}`,
+    lease_digest: `sha256:${"b".repeat(64)}`,
+  };
+  const trace = {
+    aliases: {
+      account_alias: "account_b",
+      object_aliases: ["widget_a"],
+      role_alias: "member",
+      session_alias: "session_b",
+      workflow_alias: "read_widget_a",
+    },
+    method: "GET" as const,
+    parameters: [{ location: "path" as const, name: "object", value_type: "object_alias" as const }],
+    response_schema_fingerprint: `sha256:${"b".repeat(64)}`,
+    route_template: "/widgets/{object}",
+    status_class: "2xx" as const,
+    timing_bucket: "under_500ms" as const,
+  };
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      campaign_id: "campaign_local_lab",
+      difference_labels: ["response_schema_changed"],
+      evidence_ref_count: 1,
+      execution_allowed: false,
+      human_review_required: true,
+      pipeline_run_id: "pipeline_local_lab",
+      report_preview_refreshed: true,
+      report_submission_allowed: false,
+      result_digest: `sha256:${"e".repeat(64)}`,
+      submission_blocked: true,
+      validation_run_id: "validation_local_lab",
+      validation_status: "needs_evidence",
+    }), { status: 200 });
+  };
+
+  try {
+    const response = await recordStudioBlackBoxLabBoundedResult({ exact_preflight: exactPreflight, trace });
+
+    assert.equal(response.human_review_required, true);
+    assert.equal(response.submission_blocked, true);
+    assert.equal(
+      new URL(requestedUrl).pathname,
+      "/mythos/studio/black-box-lab/runs/bounded-result",
+    );
+    assert.deepEqual(requestedBody, { exact_preflight: exactPreflight, trace });
+    assert.doesNotMatch(
+      JSON.stringify(requestedBody),
+      /authorization|cookie|password|secret|storage_state|raw_headers|raw_body|token/i,
     );
   } finally {
     globalThis.fetch = originalFetch;

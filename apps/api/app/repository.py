@@ -1072,6 +1072,54 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def append_studio_black_box_bounded_result(
+        self,
+        *,
+        run_id: str,
+        validation_run_id: str,
+        result: dict,
+    ) -> PipelineRunRecord | None:
+        record = self.get_pipeline_run(run_id)
+        if record is None:
+            return None
+        safe_result = _safe_display_value(result)
+        if (
+            not isinstance(safe_result, dict)
+            or safe_result.get("validation_run_id") != validation_run_id
+            or not isinstance(safe_result.get("result_digest"), str)
+            or safe_result.get("execution_allowed") is not False
+            or safe_result.get("report_submission_allowed") is not False
+            or safe_result.get("submission_blocked") is not True
+            or safe_result.get("human_review_required") is not True
+        ):
+            return None
+
+        payload = dict(record.payload)
+        existing_results = payload.get("studio_black_box_bounded_results", [])
+        results = existing_results if isinstance(existing_results, list) else []
+        matching_result = next(
+            (
+                item
+                for item in results
+                if isinstance(item, dict)
+                and item.get("validation_run_id") == validation_run_id
+            ),
+            None,
+        )
+        if matching_result is not None:
+            return (
+                record
+                if matching_result.get("result_digest") == safe_result["result_digest"]
+                else None
+            )
+
+        payload["studio_black_box_bounded_results"] = results + [safe_result]
+        record.payload = payload
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
     def list_pipeline_runs_for_program(self, program_id: str) -> list[PipelineRunRecord]:
         return self.session.scalars(
             select(PipelineRunRecord)

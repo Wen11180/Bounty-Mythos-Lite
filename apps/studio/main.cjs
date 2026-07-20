@@ -4,6 +4,7 @@ const path = require("node:path");
 
 const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./launcher.cjs");
 const { createAppExitHandler, createBlackBoxRunner } = require("./black-box-runner.cjs");
+const { createLocalLabDispatchHandler } = require("./local-lab-dispatch.cjs");
 const { createLocalResearchWakeup } = require("./local-research-wakeup.cjs");
 const { installStudioNavigationGuard } = require("./navigation-guard.cjs");
 const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
@@ -14,6 +15,7 @@ const { createRemoteLeaseApiClient } = require("./remote-api-client.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
+const rendererGenerations = new WeakMap();
 let studioApiBaseUrl = null;
 const localResearchWakeup = createLocalResearchWakeup({
   getBaseUrl: () => studioApiBaseUrl,
@@ -30,6 +32,11 @@ const blackBoxRunner = createBlackBoxRunner({
   authorizeRemoteRequest: remoteLeaseApi.authorize,
   completeRemoteRequest: remoteLeaseApi.complete,
   stopRemoteLease: remoteLeaseApi.stop,
+});
+const dispatchBlackBoxLine = createLocalLabDispatchHandler({
+  closeRunnerSessions: (reason) => blackBoxRunner.closeSessions(reason),
+  getApiBaseUrl: () => studioApiBaseUrl,
+  runRunner: (line) => blackBoxRunner.handleLine(line),
 });
 
 function spawnChild(command, args, cwd, env = {}) {
@@ -111,6 +118,27 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
     },
   });
+  rendererGenerations.set(window.webContents, 0);
+
+  window.webContents.on(
+    "did-start-navigation",
+    (_event, _url, _isInPlace, isMainFrame) => {
+      if (isMainFrame) {
+        rendererGenerations.set(
+          window.webContents,
+          (rendererGenerations.get(window.webContents) ?? 0) + 1,
+        );
+        void blackBoxRunner.closeSessions("page_closed");
+      }
+    },
+  );
+  window.webContents.on("render-process-gone", () => {
+    rendererGenerations.set(
+      window.webContents,
+      (rendererGenerations.get(window.webContents) ?? 0) + 1,
+    );
+    void blackBoxRunner.closeSessions("browser_crash");
+  });
 
   return window;
 }
@@ -123,8 +151,15 @@ ipcMain.handle("mythos:select-directory", (event, options) => {
   return selectStudioDirectory(dialog, BrowserWindow.fromWebContents(event.sender), options);
 });
 
-ipcMain.handle("mythos:black-box-runner", (_event, line) => {
-  return blackBoxRunner.handleLine(line);
+ipcMain.handle("mythos:black-box-runner", (event, line) => {
+  const sender = event.sender;
+  const generation = rendererGenerations.get(sender) ?? 0;
+  return dispatchBlackBoxLine(line, {
+    isCurrent: () => (
+      !sender.isDestroyed()
+      && rendererGenerations.get(sender) === generation
+    ),
+  });
 });
 
 ipcMain.handle("mythos:refresh-program-rules", () => {

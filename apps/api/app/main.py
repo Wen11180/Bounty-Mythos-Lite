@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from threading import RLock
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -13,6 +14,8 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import JSON, String, cast, func, update
+from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.orm import Session
 
 from app.artifact_ingestion import normalize_artifact
@@ -554,11 +557,135 @@ class StudioBlackBoxLabRunApprovalResponse(BaseModel):
     approval_status: Literal["approved"] = "approved"
     validation_run_id: str
     approval_id: str
+    approved_session_alias: str
+    approved_workflow_alias: str
+    complete_plan_digest: str
+    expires_at: str
     lease_digest: str
-    local_runner_dispatch_allowed: bool = True
-    execution_allowed: bool = False
-    report_submission_allowed: bool = False
+    plan_digest: str
+    scope_reference: str
+    local_runner_dispatch_allowed: Literal[True] = True
+    execution_allowed: Literal[False] = False
+    report_submission_allowed: Literal[False] = False
     reason: Literal["bounded_local_lab_run_approved"] = "bounded_local_lab_run_approved"
+
+
+class StudioBlackBoxLabRunPreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approval_id: str = Field(min_length=1, max_length=100)
+    complete_plan_digest: str = Field(
+        min_length=71,
+        max_length=71,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    lease_digest: str = Field(
+        min_length=71,
+        max_length=71,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    complete_plan: StudioBlackBoxLabRunApprovalRequest
+
+
+class StudioBlackBoxLabRunPreflightResponse(BaseModel):
+    validation_run_id: str
+    approval_id: str
+    approved_session_alias: str
+    approved_workflow_alias: str
+    complete_plan_digest: str
+    expires_at: str
+    lease_digest: str
+    plan_digest: str
+    scope_reference: str
+    local_runner_dispatch_allowed: Literal[True] = True
+    execution_allowed: Literal[False] = False
+    report_submission_allowed: Literal[False] = False
+
+
+class StudioBlackBoxLabBoundedTraceAliases(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_alias: str = Field(min_length=1, max_length=64)
+    object_aliases: list[str] = Field(min_length=1, max_length=20)
+    role_alias: str = Field(min_length=1, max_length=64)
+    session_alias: str = Field(min_length=1, max_length=64)
+    workflow_alias: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_safe_aliases(self):
+        self.account_alias = _studio_black_box_safe_alias(self.account_alias)
+        self.role_alias = _studio_black_box_safe_alias(self.role_alias)
+        self.session_alias = _studio_black_box_safe_alias(self.session_alias)
+        self.workflow_alias = _studio_black_box_safe_alias(self.workflow_alias)
+        if len(set(self.object_aliases)) != len(self.object_aliases):
+            raise ValueError("unique_lab_object_aliases_required")
+        self.object_aliases = [
+            _studio_black_box_safe_alias(alias) for alias in self.object_aliases
+        ]
+        return self
+
+
+class StudioBlackBoxLabBoundedTraceParameter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location: Literal["path"]
+    name: str = Field(min_length=1, max_length=64)
+    value_type: Literal["object_alias"]
+
+    @model_validator(mode="after")
+    def validate_safe_parameter_name(self):
+        self.name = _studio_black_box_safe_alias(self.name)
+        return self
+
+
+class StudioBlackBoxLabBoundedTrace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    aliases: StudioBlackBoxLabBoundedTraceAliases
+    method: Literal["GET", "HEAD"]
+    parameters: list[StudioBlackBoxLabBoundedTraceParameter] = Field(
+        min_length=1,
+        max_length=1,
+    )
+    response_schema_fingerprint: str = Field(min_length=71, max_length=71)
+    route_template: str = Field(min_length=1, max_length=1024)
+    status_class: Literal["1xx", "2xx", "3xx", "4xx", "5xx"]
+    timing_bucket: Literal["under_100ms", "under_500ms", "under_2s", "over_2s"]
+
+    @model_validator(mode="after")
+    def validate_safe_trace(self):
+        self.route_template = _studio_black_box_route_template(self.route_template)
+        digest = self.response_schema_fingerprint.removeprefix("sha256:")
+        if (
+            not self.response_schema_fingerprint.startswith("sha256:")
+            or len(digest) != 64
+            or digest != digest.lower()
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("safe_trace_fingerprint_required")
+        return self
+
+
+class StudioBlackBoxLabBoundedResultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    exact_preflight: StudioBlackBoxLabRunPreflightRequest
+    trace: StudioBlackBoxLabBoundedTrace
+
+
+class StudioBlackBoxLabBoundedResultResponse(BaseModel):
+    campaign_id: str
+    difference_labels: list[Literal["response_schema_changed", "response_schema_unchanged"]]
+    evidence_ref_count: int = Field(ge=0)
+    execution_allowed: Literal[False] = False
+    human_review_required: Literal[True] = True
+    pipeline_run_id: str
+    report_preview_refreshed: bool
+    report_submission_allowed: Literal[False] = False
+    result_digest: str
+    submission_blocked: Literal[True] = True
+    validation_run_id: str
+    validation_status: str
 
 
 def build_studio_black_box_lab_lease_preview(
@@ -790,6 +917,326 @@ def _studio_black_box_remote_as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _studio_black_box_local_scope_digest(
+    repository: DatabaseRepository,
+    campaign: CampaignRecord,
+    asset: str,
+) -> str | None:
+    rule, reason = _current_campaign_scope_guard_rule(repository, campaign, asset)
+    if reason is not None or rule is None:
+        return None
+    return _studio_black_box_remote_digest(
+        {
+            "asset": asset,
+            "allowed_tools": sorted(campaign.allowed_tools),
+            "scope_guard_rule": rule.model_dump(mode="json"),
+            "target_classes": sorted(campaign.target_classes),
+        }
+    )
+
+
+def _studio_black_box_local_lease_digest(
+    request: StudioBlackBoxLabLeasePreviewRequest,
+) -> str:
+    return _studio_black_box_remote_digest(request.model_dump(mode="json"))
+
+
+def _studio_black_box_local_complete_plan_digest(
+    request: StudioBlackBoxLabRunApprovalRequest,
+) -> str:
+    return _studio_black_box_remote_digest(request.model_dump(mode="json"))
+
+
+def _studio_black_box_local_bind_complete_plan_digest(
+    approval: ApprovalRecord,
+    complete_plan_digest: str,
+    *,
+    repository: DatabaseRepository,
+) -> bool:
+    if (
+        not isinstance(complete_plan_digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", complete_plan_digest) is None
+    ):
+        return False
+    if not isinstance(approval.payload, dict):
+        return False
+    payload = approval.payload
+    if "complete_plan_digest" in payload:
+        durable_digest = payload["complete_plan_digest"]
+        return (
+            isinstance(durable_digest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", durable_digest) is not None
+            and durable_digest == complete_plan_digest
+        )
+
+    dialect = repository.session.get_bind().dialect.name
+    if dialect == "postgresql":
+        jsonb_payload = cast(ApprovalRecord.payload, JSONB)
+        updated_payload = cast(
+            func.jsonb_set(
+                jsonb_payload,
+                array(["complete_plan_digest"]),
+                func.to_jsonb(cast(complete_plan_digest, String)),
+                True,
+            ),
+            JSON,
+        )
+        payload_is_object = func.jsonb_typeof(jsonb_payload) == "object"
+        digest_key_is_missing = jsonb_payload.op("?")(
+            "complete_plan_digest"
+        ).is_(False)
+    elif dialect == "sqlite":
+        updated_payload = func.json_set(
+            ApprovalRecord.payload,
+            "$.complete_plan_digest",
+            complete_plan_digest,
+        )
+        payload_is_object = func.json_type(ApprovalRecord.payload) == "object"
+        digest_key_is_missing = func.json_type(
+            ApprovalRecord.payload,
+            "$.complete_plan_digest",
+        ).is_(None)
+    else:
+        return False
+
+    result = repository.session.execute(
+        update(ApprovalRecord)
+        .where(ApprovalRecord.id == approval.id)
+        .where(payload_is_object)
+        .where(digest_key_is_missing)
+        .values(payload=updated_payload)
+    )
+    repository.session.commit()
+    repository.session.refresh(approval)
+    return result.rowcount in {0, 1} and (
+        isinstance(approval.payload, dict)
+        and approval.payload.get("complete_plan_digest") == complete_plan_digest
+    )
+
+
+def _studio_black_box_local_aliases_match(
+    payload: object,
+    *,
+    request: StudioBlackBoxLabLeasePreviewRequest,
+    lease_digest: str,
+    policy_digest: str,
+    scope_reference: str,
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    expected = {
+        "allowed_accounts": {session.account_alias for session in request.sessions},
+        "allowed_roles": {session.role_alias for session in request.sessions},
+        "allowed_workflows": {
+            workflow.workflow_alias for workflow in request.workflows
+        },
+    }
+    for key, aliases in expected.items():
+        values = payload.get(key)
+        if (
+            not isinstance(values, list)
+            or any(not isinstance(value, str) for value in values)
+            or set(values) != aliases
+        ):
+            return False
+    return (
+        payload.get("local_lab_complete_plan") is True
+        and payload.get("lease_digest") == lease_digest
+        and payload.get("policy_digest") == policy_digest
+        and payload.get("scope_reference") == scope_reference
+    )
+
+
+def _studio_black_box_local_auto_dispatch_facts(
+    *,
+    repository: DatabaseRepository,
+    validation_run: ValidationRunRecord,
+    campaign: CampaignRecord,
+    approval: ApprovalRecord | None,
+    request: StudioBlackBoxLabLeasePreviewRequest,
+    complete_plan_digest: str | None = None,
+) -> dict[str, str] | None:
+    if len(request.workflows) != 1 or approval is None:
+        return None
+    now = datetime.now(UTC)
+    decided_at = _studio_black_box_remote_as_utc(approval.decided_at)
+    expires_at = _studio_black_box_remote_as_utc(approval.expires_at)
+    if (
+        decided_at is None
+        or decided_at > now
+        or expires_at is None
+        or expires_at <= now
+        or approval.task_id is None
+        or validation_run.task_id != approval.task_id
+        or approval.run_id is None
+        or approval.scope_reference is None
+        or not validation_run.plan_digest
+        or approval.requested_action != "local_black_box_differential"
+        or (
+            complete_plan_digest is not None
+            and (
+                not isinstance(approval.payload, dict)
+                or approval.payload.get("complete_plan_digest")
+                != complete_plan_digest
+            )
+        )
+    ):
+        return None
+    validation_payload = (
+        validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    )
+    pipeline_run_id = validation_payload.get("pipeline_run_id")
+    if pipeline_run_id != approval.run_id:
+        return None
+    pipeline_run = repository.get_pipeline_run(approval.run_id)
+    if (
+        pipeline_run is None
+        or not isinstance(pipeline_run.payload, dict)
+        or pipeline_run.payload.get("campaign_id") != campaign.id
+        or pipeline_run.scope_status != "in_scope"
+    ):
+        return None
+    asset = _validation_run_scope_asset(validation_run, campaign)
+    if pipeline_run.asset != asset:
+        return None
+    try:
+        policy_digest = _studio_black_box_remote_policy_digest(campaign)
+    except ValueError:
+        return None
+    scope_reference = _studio_black_box_local_scope_digest(
+        repository,
+        campaign,
+        asset,
+    )
+    if scope_reference is None:
+        return None
+    lease_digest = _studio_black_box_local_lease_digest(request)
+    if (
+        approval.campaign_id != campaign.id
+        or approval.asset is None
+        or _safe_asset_value(approval.asset) != _safe_asset_value(asset)
+        or approval.validation_mode != validation_run.validation_mode
+        or approval.plan_digest != validation_run.plan_digest
+        or approval.scope_reference != scope_reference
+        or not _studio_black_box_local_aliases_match(
+            approval.payload,
+            request=request,
+            lease_digest=lease_digest,
+            policy_digest=policy_digest,
+            scope_reference=scope_reference,
+        )
+        or not _studio_black_box_local_aliases_match(
+            validation_payload,
+            request=request,
+            lease_digest=lease_digest,
+            policy_digest=policy_digest,
+            scope_reference=scope_reference,
+        )
+        or not _validation_run_currently_allowed_to_execute(
+            validation_run,
+            repository=repository,
+        )
+    ):
+        return None
+    workflow = request.workflows[0]
+    trial_session = next(
+        (
+            session.session_alias
+            for session in request.sessions
+            if session.session_alias != workflow.session_alias
+        ),
+        None,
+    )
+    if trial_session is None:
+        return None
+    return {
+        "approved_session_alias": trial_session,
+        "approved_workflow_alias": workflow.workflow_alias,
+        "expires_at": expires_at.isoformat(),
+        "lease_digest": lease_digest,
+        "plan_digest": validation_run.plan_digest,
+        "scope_reference": scope_reference,
+    }
+
+
+def _studio_black_box_local_bounded_result_details(
+    *,
+    request: StudioBlackBoxLabBoundedResultRequest,
+    preflight: StudioBlackBoxLabRunPreflightResponse,
+) -> dict[str, Any]:
+    complete_plan = request.exact_preflight.complete_plan
+    workflow = next(
+        (
+            item
+            for item in complete_plan.lease_preview.workflows
+            if item.workflow_alias == preflight.approved_workflow_alias
+        ),
+        None,
+    )
+    trial_session = next(
+        (
+            item
+            for item in complete_plan.lease_preview.sessions
+            if item.session_alias == preflight.approved_session_alias
+        ),
+        None,
+    )
+    reviewed_trace = next(
+        (
+            item
+            for item in complete_plan.trace_review
+            if workflow is not None
+            and item.workflow_alias == workflow.workflow_alias
+            and item.session_alias == workflow.session_alias
+            and item.route_template == workflow.route_template
+        ),
+        None,
+    )
+    trace = request.trace
+    if (
+        workflow is None
+        or trial_session is None
+        or reviewed_trace is None
+        or trace.aliases.account_alias != trial_session.account_alias
+        or trace.aliases.role_alias != trial_session.role_alias
+        or trace.aliases.session_alias != trial_session.session_alias
+        or trace.aliases.workflow_alias != workflow.workflow_alias
+        or trace.aliases.object_aliases != workflow.object_aliases
+        or trace.method != workflow.method
+        or trace.route_template != workflow.route_template
+    ):
+        raise ValueError("bounded_result_trace_plan_mismatch")
+    difference_labels: list[Literal["response_schema_changed", "response_schema_unchanged"]] = [
+        (
+            "response_schema_unchanged"
+            if trace.response_schema_fingerprint
+            == reviewed_trace.response_schema_fingerprint
+            else "response_schema_changed"
+        )
+    ]
+    trace_payload = trace.model_dump(mode="json")
+    return {
+        "difference_labels": difference_labels,
+        "safe_counters": {
+            "difference_count": len(difference_labels),
+            "object_alias_count": len(trace.aliases.object_aliases),
+            "parameter_count": len(trace.parameters),
+        },
+        "trace": trace_payload,
+    }
+
+
+def _studio_black_box_local_bounded_result_digest(
+    request: StudioBlackBoxLabBoundedResultRequest,
+) -> str:
+    return _studio_black_box_remote_digest(
+        {
+            "exact_preflight": request.exact_preflight.model_dump(mode="json"),
+            "trace": request.trace.model_dump(mode="json"),
+        }
+    )
 
 
 def _studio_black_box_remote_payload_matches(
@@ -4260,24 +4707,364 @@ def approve_mythos_studio_black_box_lab_run(
     if approval is None:
         raise HTTPException(status_code=409, detail="active_lab_approval_required")
 
+    dispatch_facts = _studio_black_box_local_auto_dispatch_facts(
+        repository=repository,
+        validation_run=validation_run,
+        campaign=campaign,
+        approval=approval,
+        request=request.lease_preview,
+    )
+    if dispatch_facts is None:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_approval_required",
+        )
+
     approved_asset = _validation_run_scope_asset(validation_run, campaign)
     active_origin = request.lease_preview.active_origin
     origin_netloc = urlparse(active_origin).netloc
     if approved_asset not in {active_origin, origin_netloc}:
         raise HTTPException(status_code=409, detail="lab_origin_approval_mismatch")
 
-    lease_payload = request.lease_preview.model_dump(mode="json")
-    serialized_lease = json.dumps(
-        lease_payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    lease_digest = f"sha256:{sha256(serialized_lease.encode('utf-8')).hexdigest()}"
+    complete_plan_digest = _studio_black_box_local_complete_plan_digest(request)
+    if not _studio_black_box_local_bind_complete_plan_digest(
+        approval,
+        complete_plan_digest,
+        repository=repository,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_approval_required",
+        )
+
     return StudioBlackBoxLabRunApprovalResponse(
         validation_run_id=validation_run.id,
         approval_id=approval.id,
-        lease_digest=lease_digest,
+        complete_plan_digest=complete_plan_digest,
+        **dispatch_facts,
+    )
+
+
+@app.post(
+    "/mythos/studio/black-box-lab/runs/preflight",
+    response_model=StudioBlackBoxLabRunPreflightResponse,
+)
+def preflight_mythos_studio_black_box_lab_run(
+    request: StudioBlackBoxLabRunPreflightRequest,
+    session: Session = Depends(get_session),
+) -> StudioBlackBoxLabRunPreflightResponse:
+    complete_plan = request.complete_plan
+    expected_traces = {
+        (
+            workflow.workflow_alias,
+            workflow.session_alias,
+            workflow.route_template,
+        )
+        for workflow in complete_plan.lease_preview.workflows
+    }
+    reviewed_traces = {
+        (trace.workflow_alias, trace.session_alias, trace.route_template)
+        for trace in complete_plan.trace_review
+    }
+    if (
+        not complete_plan.operator_confirmed
+        or not all(session.ready for session in complete_plan.lease_preview.sessions)
+        or len(complete_plan.trace_review) != len(reviewed_traces)
+        or reviewed_traces != expected_traces
+        or request.lease_digest
+        != _studio_black_box_local_lease_digest(complete_plan.lease_preview)
+        or request.complete_plan_digest
+        != _studio_black_box_local_complete_plan_digest(complete_plan)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+
+    try:
+        fresh_preflight = preflight_mythos_validation_run(
+            complete_plan.validation_run_id,
+            session,
+        )
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        ) from exc
+    if not fresh_preflight.decision.allowed:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+
+    repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(complete_plan.validation_run_id)
+    if validation_run is None:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id == request.approval_id
+        else None
+    )
+    dispatch_facts = _studio_black_box_local_auto_dispatch_facts(
+        repository=repository,
+        validation_run=validation_run,
+        campaign=campaign,
+        approval=approval,
+        request=complete_plan.lease_preview,
+        complete_plan_digest=request.complete_plan_digest,
+    )
+    approved_asset = _validation_run_scope_asset(validation_run, campaign)
+    active_origin = complete_plan.lease_preview.active_origin
+    if (
+        dispatch_facts is None
+        or dispatch_facts["lease_digest"] != request.lease_digest
+        or approved_asset not in {active_origin, urlparse(active_origin).netloc}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+    return StudioBlackBoxLabRunPreflightResponse(
+        validation_run_id=validation_run.id,
+        approval_id=request.approval_id,
+        complete_plan_digest=request.complete_plan_digest,
+        **dispatch_facts,
+    )
+
+
+@app.post(
+    "/mythos/studio/black-box-lab/runs/bounded-result",
+    response_model=StudioBlackBoxLabBoundedResultResponse,
+)
+def record_mythos_studio_black_box_lab_bounded_result(
+    request: StudioBlackBoxLabBoundedResultRequest,
+    session: Session = Depends(get_session),
+) -> StudioBlackBoxLabBoundedResultResponse:
+    repository = DatabaseRepository(session)
+    result_digest = _studio_black_box_local_bounded_result_digest(request)
+    requested_validation_run = repository.get_validation_run(
+        request.exact_preflight.complete_plan.validation_run_id
+    )
+    existing_result = (
+        requested_validation_run.payload.get("black_box_bounded_result")
+        if requested_validation_run is not None
+        and isinstance(requested_validation_run.payload, dict)
+        else None
+    )
+    if isinstance(existing_result, dict):
+        existing_payload = existing_result.get("result_payload")
+        validation_payload = requested_validation_run.payload
+        pipeline_run_id = validation_payload.get("pipeline_run_id")
+        pipeline_run = (
+            repository.get_pipeline_run(pipeline_run_id)
+            if isinstance(pipeline_run_id, str)
+            else None
+        )
+        difference_labels = (
+            existing_payload.get("difference_labels")
+            if isinstance(existing_payload, dict)
+            else None
+        )
+        if (
+            not isinstance(existing_payload, dict)
+            or existing_payload.get("request_digest") != result_digest
+            or not isinstance(difference_labels, list)
+            or any(
+                item
+                not in {"response_schema_changed", "response_schema_unchanged"}
+                for item in difference_labels
+            )
+            or pipeline_run is None
+        ):
+            raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+        campaign = _validation_run_campaign_or_404_in_scope(
+            repository,
+            requested_validation_run,
+        )
+        return StudioBlackBoxLabBoundedResultResponse(
+            campaign_id=campaign.id,
+            difference_labels=difference_labels,
+            evidence_ref_count=requested_validation_run.evidence_ref_count,
+            pipeline_run_id=pipeline_run.id,
+            report_preview_refreshed=isinstance(
+                pipeline_run.payload.get("report_draft"),
+                dict,
+            ),
+            result_digest=result_digest,
+            validation_run_id=requested_validation_run.id,
+            validation_status=requested_validation_run.status,
+        )
+    try:
+        preflight = preflight_mythos_studio_black_box_lab_run(
+            request.exact_preflight,
+            session,
+        )
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        ) from exc
+
+    validation_run = repository.get_validation_run(preflight.validation_run_id)
+    if validation_run is None:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id == preflight.approval_id
+        else None
+    )
+    validation_payload = (
+        validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    )
+    pipeline_run_id = validation_payload.get("pipeline_run_id")
+    pipeline_run = (
+        repository.get_pipeline_run(pipeline_run_id)
+        if isinstance(pipeline_run_id, str)
+        else None
+    )
+    if (
+        approval is None
+        or approval.campaign_id != campaign.id
+        or approval.run_id != pipeline_run_id
+        or pipeline_run is None
+        or not isinstance(pipeline_run.payload, dict)
+        or pipeline_run.payload.get("campaign_id") != campaign.id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+    try:
+        details = _studio_black_box_local_bounded_result_details(
+            request=request,
+            preflight=preflight,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    result_payload = {
+        "schema_version": "studio_black_box_bounded_result_v1",
+        "request_digest": result_digest,
+        "trace": details["trace"],
+        "difference_labels": details["difference_labels"],
+        "safe_counters": details["safe_counters"],
+        "provenance_refs": [
+            f"approval:{approval.id}",
+            f"pipeline_run:{pipeline_run.id}",
+            f"validation_run:{validation_run.id}",
+        ],
+        "human_review_required": True,
+        "submission_blocked": True,
+        "execution_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+    }
+    existing_result = validation_payload.get("black_box_bounded_result")
+    if isinstance(existing_result, dict):
+        existing_payload = existing_result.get("result_payload")
+        if (
+            not isinstance(existing_payload, dict)
+            or existing_payload.get("request_digest") != result_digest
+        ):
+            raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+        updated_validation_run = validation_run
+    else:
+        updated_validation_run = repository.record_validation_run_bounded_result(
+            validation_run.id,
+            audit_digest=result_digest,
+            decision_status="observed",
+            evidence_refs=["sanitized_cross_account_diff"],
+            payload=result_payload,
+        )
+        if updated_validation_run is None:
+            raise HTTPException(
+                status_code=409,
+                detail="fresh_complete_local_plan_preflight_required",
+            )
+
+    pipeline_result = {
+        "schema_version": "studio_black_box_bounded_result_v1",
+        "validation_run_id": validation_run.id,
+        "result_digest": result_digest,
+        "aliases": details["trace"]["aliases"],
+        "response_schema_fingerprint": details["trace"][
+            "response_schema_fingerprint"
+        ],
+        "status_class": details["trace"]["status_class"],
+        "timing_bucket": details["trace"]["timing_bucket"],
+        "difference_labels": details["difference_labels"],
+        "safe_counters": details["safe_counters"],
+        "provenance_refs": result_payload["provenance_refs"],
+        "human_review_required": True,
+        "submission_blocked": True,
+        "execution_allowed": False,
+        "report_submission_allowed": False,
+    }
+    updated_pipeline_run = repository.append_studio_black_box_bounded_result(
+        run_id=pipeline_run.id,
+        validation_run_id=validation_run.id,
+        result=pipeline_result,
+    )
+    if updated_pipeline_run is None:
+        raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+
+    matching_stage = next(
+        (
+            stage
+            for stage in repository.list_pipeline_stages_for_run(updated_pipeline_run.id)
+            if stage.stage_key == "studio_black_box_bounded_result"
+            and isinstance(stage.payload, dict)
+            and stage.payload.get("validation_run_id") == validation_run.id
+        ),
+        None,
+    )
+    if matching_stage is None:
+        repository.save_pipeline_stage(
+            pipeline_run_id=updated_pipeline_run.id,
+            campaign_id=campaign.id,
+            task_id=validation_run.task_id,
+            stage_key="studio_black_box_bounded_result",
+            stage_order=len(
+                repository.list_pipeline_stages_for_run(updated_pipeline_run.id)
+            ),
+            status=updated_validation_run.status,
+            input_refs=[
+                f"approval:{approval.id}",
+                f"validation_run:{validation_run.id}",
+            ],
+            output_refs=["sanitized_cross_account_diff"],
+            safety_gate_state="human_review_required",
+            stop_reason=None,
+            payload={
+                **pipeline_result,
+                "pipeline_run_id": updated_pipeline_run.id,
+                "raw_payload_processed": False,
+            },
+        )
+    elif matching_stage.payload.get("result_digest") != result_digest:
+        raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+
+    return StudioBlackBoxLabBoundedResultResponse(
+        campaign_id=campaign.id,
+        difference_labels=details["difference_labels"],
+        evidence_ref_count=updated_validation_run.evidence_ref_count,
+        pipeline_run_id=updated_pipeline_run.id,
+        report_preview_refreshed=isinstance(
+            updated_pipeline_run.payload.get("report_draft"),
+            dict,
+        ),
+        result_digest=result_digest,
+        validation_run_id=updated_validation_run.id,
+        validation_status=updated_validation_run.status,
     )
 
 

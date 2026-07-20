@@ -666,12 +666,104 @@ export type StudioBlackBoxLabRunApprovalRequest = {
 export type StudioBlackBoxLabRunApprovalResponse = {
   approval_id: string;
   approval_status: "approved";
+  approved_session_alias: string;
+  approved_workflow_alias: string;
+  complete_plan_digest: string;
   execution_allowed: false;
+  expires_at: string;
   lease_digest: string;
   local_runner_dispatch_allowed: true;
+  plan_digest: string;
   reason: "bounded_local_lab_run_approved";
   report_submission_allowed: false;
+  scope_reference: string;
   validation_run_id: string;
+};
+
+export type StudioBlackBoxLabCompletePlan = {
+  lease_preview: StudioBlackBoxLabLeasePreviewRequest;
+  operator_confirmed: true;
+  trace_review: StudioBlackBoxLabTraceReviewRequest[];
+  validation_run_id: string;
+};
+
+export type StudioBlackBoxLabRunPreflightRequest = {
+  approval_id: string;
+  complete_plan: StudioBlackBoxLabCompletePlan;
+  complete_plan_digest: string;
+  lease_digest: string;
+};
+
+export type StudioBlackBoxLabRunPreflightResponse = {
+  approval_id: string;
+  approved_session_alias: string;
+  approved_workflow_alias: string;
+  complete_plan_digest: string;
+  execution_allowed: false;
+  expires_at: string;
+  lease_digest: string;
+  local_runner_dispatch_allowed: true;
+  plan_digest: string;
+  report_submission_allowed: false;
+  scope_reference: string;
+  validation_run_id: string;
+};
+
+export type StudioBlackBoxLabBoundedTraceAliases = {
+  account_alias: string;
+  object_aliases: string[];
+  role_alias: string;
+  session_alias: "session_a" | "session_b";
+  workflow_alias: string;
+};
+
+export type StudioBlackBoxLabBoundedTraceParameter = {
+  location: "path";
+  name: string;
+  value_type: "object_alias";
+};
+
+export type StudioBlackBoxLabBoundedTrace = {
+  aliases: StudioBlackBoxLabBoundedTraceAliases;
+  method: "GET" | "HEAD";
+  parameters: StudioBlackBoxLabBoundedTraceParameter[];
+  response_schema_fingerprint: string;
+  route_template: string;
+  status_class: "1xx" | "2xx" | "3xx" | "4xx" | "5xx";
+  timing_bucket: "under_100ms" | "under_500ms" | "under_2s" | "over_2s";
+};
+
+export type StudioBlackBoxLabBoundedResultRequest = {
+  exact_preflight: StudioBlackBoxLabRunPreflightRequest;
+  trace: StudioBlackBoxLabBoundedTrace;
+};
+
+export type StudioBlackBoxLabBoundedResultResponse = {
+  campaign_id: string;
+  difference_labels: Array<"response_schema_changed" | "response_schema_unchanged">;
+  evidence_ref_count: number;
+  execution_allowed: false;
+  human_review_required: true;
+  pipeline_run_id: string;
+  report_preview_refreshed: boolean;
+  report_submission_allowed: false;
+  result_digest: string;
+  submission_blocked: true;
+  validation_run_id: string;
+  validation_status: string;
+};
+
+export type MythosValidationRunPreflightResponse = {
+  decision: {
+    allowed: boolean;
+    reason: string;
+  };
+  execution_started: false;
+  validation_run: {
+    allowed_to_execute: boolean;
+    id: string;
+    preflight_passed: boolean;
+  };
 };
 
 export type StudioBlackBoxRemoteStatusResponse = {
@@ -1577,8 +1669,29 @@ export function previewStudioBlackBoxLabLease(
 
 export function approveStudioBlackBoxLabRun(
   request: StudioBlackBoxLabRunApprovalRequest,
-): Promise<StudioBlackBoxLabRunApprovalResponse | null> {
+): Promise<StudioBlackBoxLabRunApprovalResponse> {
   return apiPost("/mythos/studio/black-box-lab/runs/approve", request);
+}
+
+export function preflightStudioBlackBoxLabRun(
+  request: StudioBlackBoxLabRunPreflightRequest,
+): Promise<StudioBlackBoxLabRunPreflightResponse> {
+  return apiPost("/mythos/studio/black-box-lab/runs/preflight", request);
+}
+
+export function recordStudioBlackBoxLabBoundedResult(
+  request: StudioBlackBoxLabBoundedResultRequest,
+): Promise<StudioBlackBoxLabBoundedResultResponse> {
+  return apiPost("/mythos/studio/black-box-lab/runs/bounded-result", request);
+}
+
+export function preflightMythosValidationRun(
+  validationRunId: string,
+): Promise<MythosValidationRunPreflightResponse> {
+  return apiPost(
+    `/mythos/validation-runs/${encodeURIComponent(validationRunId)}/preflight`,
+    {},
+  );
 }
 
 export function getStudioBlackBoxRemoteStatus(): Promise<StudioBlackBoxRemoteStatusResponse> {

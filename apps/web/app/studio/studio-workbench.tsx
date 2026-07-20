@@ -1,7 +1,7 @@
 "use client";
 
 import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CandidateInspector } from "@/components/studio/candidate-inspector";
 import { EvidenceInspector } from "@/components/studio/evidence-inspector";
@@ -28,8 +28,10 @@ import {
   importStudioWorkspaceArtifact,
   launchStudioWorkspaceCampaignHunter,
   listStudioWorkspaceCandidatesRequired,
+  preflightStudioBlackBoxLabRun,
   previewStudioBlackBoxLabLease,
   recordCandidateHunterLearningOutcome,
+  recordStudioBlackBoxLabBoundedResult,
   runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
   type CandidateHunterLearningOutcome,
@@ -37,7 +39,10 @@ import {
   type StudioBenchmarkRunResponse,
   type StudioBlackBoxLabLeasePreviewRequest,
   type StudioBlackBoxLabLeasePreviewResponse,
-  type StudioBlackBoxLabRunApprovalResponse,
+  type StudioBlackBoxLabBoundedResultResponse,
+  type StudioBlackBoxLabBoundedTrace,
+  type StudioBlackBoxLabCompletePlan,
+  type StudioBlackBoxLabRunPreflightRequest,
   type StudioBlackBoxLabTraceReviewRequest,
   type StudioBlackBoxRemoteStatusResponse,
   type StudioMissionDossierExportResponse,
@@ -133,6 +138,11 @@ function blackBoxLabLeaseExpiry() {
   return new Date(Date.now() + 15 * 60 * 1000).toISOString();
 }
 
+function isFutureExpiry(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed > Date.now();
+}
+
 export function StudioWorkbench() {
   const [workspaceRoot, setWorkspaceRoot] = useState("C:/mythos-workspaces");
   const [workspaceName, setWorkspaceName] = useState("authorized-target");
@@ -175,8 +185,11 @@ export function StudioWorkbench() {
     useState<StudioBlackBoxLabLeasePreviewResponse | null>(null);
   const [labTraceReview, setLabTraceReview] = useState<StudioBlackBoxLabTraceReviewRequest[]>([]);
   const [labTraceReviewConfirmed, setLabTraceReviewConfirmed] = useState(false);
-  const [labApproval, setLabApproval] = useState<StudioBlackBoxLabRunApprovalResponse | null>(null);
+  const [labBoundedResult, setLabBoundedResult] =
+    useState<StudioBlackBoxLabBoundedResultResponse | null>(null);
   const [labRunnerState, setLabRunnerState] = useState<BlackBoxLabRunnerState>("idle");
+  const labReviewGeneration = useRef(0);
+  const labDispatchInFlight = useRef(false);
   const [remoteStatus, setRemoteStatus] =
     useState<StudioBlackBoxRemoteStatusResponse>(remoteStatusFallback);
   const [busy, setBusy] = useState<string | null>(null);
@@ -190,6 +203,14 @@ export function StudioWorkbench() {
       tone: "info",
     },
   ]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      void window.mythosStudio?.closeBlackBoxSessions().catch(() => undefined);
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, []);
 
   const workspace = useMemo(() => toStudioWorkspaceSummary(manifest), [manifest]);
   const artifactChecklist = useMemo(() => toStudioArtifactChecklist(manifest), [manifest]);
@@ -398,11 +419,12 @@ export function StudioWorkbench() {
   }
 
   function invalidateBlackBoxLabReview() {
+    labReviewGeneration.current += 1;
     setLabLeaseRequestSnapshot(null);
     setLabLeasePreview(null);
     setLabTraceReview([]);
     setLabTraceReviewConfirmed(false);
-    setLabApproval(null);
+    setLabBoundedResult(null);
   }
 
   function handleLabOriginChange(value: string) {
@@ -423,8 +445,8 @@ export function StudioWorkbench() {
   }
 
   function handleLabValidationRunIdChange(value: string) {
+    labReviewGeneration.current += 1;
     setLabValidationRunId(value);
-    setLabApproval(null);
   }
 
   function parseBlackBoxRunnerEvent(line: string): Record<string, unknown> {
@@ -480,6 +502,107 @@ export function StudioWorkbench() {
     });
   }
 
+  function boundedTraceFromTrialResult(
+    event: Record<string, unknown>,
+    completePlan: StudioBlackBoxLabCompletePlan,
+    preflight: { approved_session_alias: string; approved_workflow_alias: string },
+  ): StudioBlackBoxLabBoundedTrace {
+    const rawTrace = event.trace;
+    if (!rawTrace || typeof rawTrace !== "object" || Array.isArray(rawTrace)) {
+      throw new Error("bounded_trial_trace_required");
+    }
+    const trace = rawTrace as Record<string, unknown>;
+    const rawAliases = trace.aliases;
+    if (!rawAliases || typeof rawAliases !== "object" || Array.isArray(rawAliases)) {
+      throw new Error("bounded_trial_trace_required");
+    }
+    const aliases = rawAliases as Record<string, unknown>;
+    const workflow = completePlan.lease_preview.workflows.find(
+      (item) => item.workflow_alias === preflight.approved_workflow_alias,
+    );
+    const trialSession = completePlan.lease_preview.sessions.find(
+      (item) => item.session_alias === preflight.approved_session_alias,
+    );
+    const objectAliases = aliases.object_aliases;
+    const parameters = trace.parameters;
+    if (
+      !workflow ||
+      !trialSession ||
+      (workflow.method !== "GET" && workflow.method !== "HEAD") ||
+      aliases.account_alias !== trialSession.account_alias ||
+      aliases.role_alias !== trialSession.role_alias ||
+      aliases.session_alias !== trialSession.session_alias ||
+      aliases.workflow_alias !== workflow.workflow_alias ||
+      !Array.isArray(objectAliases) ||
+      objectAliases.length !== workflow.object_aliases.length ||
+      objectAliases.some((value, index) => value !== workflow.object_aliases[index]) ||
+      trace.method !== workflow.method ||
+      trace.route_template !== workflow.route_template ||
+      !Array.isArray(parameters) ||
+      parameters.length !== 1
+    ) {
+      throw new Error("bounded_trial_trace_plan_mismatch");
+    }
+    const parameter = parameters[0];
+    if (
+      !parameter ||
+      typeof parameter !== "object" ||
+      Array.isArray(parameter) ||
+      (parameter as Record<string, unknown>).location !== "path" ||
+      (parameter as Record<string, unknown>).name !== "object" ||
+      (parameter as Record<string, unknown>).value_type !== "object_alias"
+    ) {
+      throw new Error("bounded_trial_trace_parameter_mismatch");
+    }
+    if (
+      typeof trace.response_schema_fingerprint !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(trace.response_schema_fingerprint)
+    ) {
+      throw new Error("bounded_trial_trace_fingerprint_required");
+    }
+    if (
+      trace.status_class !== "1xx" &&
+      trace.status_class !== "2xx" &&
+      trace.status_class !== "3xx" &&
+      trace.status_class !== "4xx" &&
+      trace.status_class !== "5xx"
+    ) {
+      throw new Error("bounded_trial_trace_status_required");
+    }
+
+    const timingBucket = boundedTrialTimingBucket(trace.timing_bucket);
+    return {
+      aliases: {
+        account_alias: trialSession.account_alias,
+        object_aliases: [...workflow.object_aliases],
+        role_alias: trialSession.role_alias,
+        session_alias: trialSession.session_alias,
+        workflow_alias: workflow.workflow_alias,
+      },
+      method: workflow.method,
+      parameters: [{ location: "path", name: "object", value_type: "object_alias" }],
+      response_schema_fingerprint: trace.response_schema_fingerprint,
+      route_template: workflow.route_template,
+      status_class: trace.status_class,
+      timing_bucket: timingBucket,
+    };
+  }
+
+  function boundedTrialTimingBucket(
+    value: unknown,
+  ): StudioBlackBoxLabBoundedTrace["timing_bucket"] {
+    if (value === "under_100ms" || value === "under_500ms" || value === "under_2s" || value === "over_2s") {
+      return value;
+    }
+    if (value === "under_1s") {
+      return "under_2s";
+    }
+    if (value === "under_3s" || value === "over_3s") {
+      return "over_2s";
+    }
+    throw new Error("bounded_trial_trace_timing_required");
+  }
+
   function resetBlackBoxLabState() {
     setLabSessionAReady(false);
     setLabSessionBReady(false);
@@ -498,7 +621,6 @@ export function StudioWorkbench() {
       }
       setLabLeaseRequestSnapshot(request);
       setLabLeasePreview(preview);
-      setLabApproval(null);
       pushLog(
         preview.sessions_ready
           ? "Bounded loopback lease reviewed; both session aliases are marked ready."
@@ -592,7 +714,7 @@ export function StudioWorkbench() {
       }
       setLabTraceReview([]);
       setLabTraceReviewConfirmed(false);
-      setLabApproval(null);
+      setLabBoundedResult(null);
       setLabRunnerState("recording");
       pushLog("Recording alias-only normalized traces for the declared local workflow.", "safe");
     } catch (error) {
@@ -643,7 +765,6 @@ export function StudioWorkbench() {
       return;
     }
     setLabTraceReviewConfirmed(true);
-    setLabApproval(null);
     pushLog(
       "Normalized alias-only traces reviewed; raw headers and bodies remain excluded.",
       "safe",
@@ -652,7 +773,12 @@ export function StudioWorkbench() {
   }
 
   async function handleApproveBlackBoxLabRun() {
+    const bridge = window.mythosStudio;
+    if (labDispatchInFlight.current) {
+      return;
+    }
     if (
+      !bridge ||
       !labLeaseRequestSnapshot ||
       !labTraceReviewConfirmed ||
       !labValidationRunId.trim() ||
@@ -661,46 +787,74 @@ export function StudioWorkbench() {
       pushLog("A durable validation run and reviewed traces are required for confirmation.", "blocked");
       return;
     }
+    labDispatchInFlight.current = true;
+    const generation = labReviewGeneration.current;
+    const leasePreview = labLeaseRequestSnapshot;
+    const validationRunId = labValidationRunId.trim();
+    let trialDispatched = false;
     setBusy("lab-approve");
     try {
-      const approval = await approveStudioBlackBoxLabRun({
-        lease_preview: labLeaseRequestSnapshot,
+      const completePlan: StudioBlackBoxLabCompletePlan = {
+        lease_preview: leasePreview,
         operator_confirmed: true,
         trace_review: labTraceReview,
-        validation_run_id: labValidationRunId.trim(),
-      });
-      if (!approval) {
-        pushLog("Local lab approval was not returned.", "blocked");
-        return;
+        validation_run_id: validationRunId,
+      };
+      const approval = await approveStudioBlackBoxLabRun(completePlan);
+      if (
+        labReviewGeneration.current !== generation ||
+        approval.approval_status !== "approved" ||
+        approval.validation_run_id !== validationRunId ||
+        approval.local_runner_dispatch_allowed !== true ||
+        approval.execution_allowed !== false ||
+        approval.report_submission_allowed !== false ||
+        !/^sha256:[0-9a-f]{64}$/u.test(approval.complete_plan_digest) ||
+        !/^sha256:[0-9a-f]{64}$/u.test(approval.lease_digest) ||
+        !approval.plan_digest ||
+        !approval.scope_reference ||
+        !isFutureExpiry(approval.expires_at) ||
+        !leasePreview.sessions.some(
+          (session) => session.session_alias === approval.approved_session_alias,
+        ) ||
+        !leasePreview.workflows.some(
+          (workflow) => workflow.workflow_alias === approval.approved_workflow_alias,
+        )
+      ) {
+        throw new Error("local_lab_approval_binding_changed");
       }
-      setLabApproval(approval);
-      pushLog("Bounded local trial approved for one explicit runner dispatch.", "safe", "operator");
-    } catch (error) {
-      pushMutationFailure("Local lab run confirmation", error);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleRunApprovedBlackBoxTrial() {
-    const bridge = window.mythosStudio;
-    if (
-      !bridge ||
-      !labApproval?.local_runner_dispatch_allowed ||
-      labRunnerState !== "sessions_ready"
-    ) {
-      pushLog("The bounded local trial is not approved for dispatch.", "blocked");
-      return;
-    }
-    setBusy("lab-trial");
-    try {
+      const exactPreflightRequest: StudioBlackBoxLabRunPreflightRequest = {
+        approval_id: approval.approval_id,
+        complete_plan: completePlan,
+        complete_plan_digest: approval.complete_plan_digest,
+        lease_digest: approval.lease_digest,
+      };
+      const preflight = await preflightStudioBlackBoxLabRun(exactPreflightRequest);
+      if (
+        labReviewGeneration.current !== generation ||
+        preflight.approval_id !== approval.approval_id ||
+        preflight.validation_run_id !== approval.validation_run_id ||
+        preflight.approved_session_alias !== approval.approved_session_alias ||
+        preflight.approved_workflow_alias !== approval.approved_workflow_alias ||
+        preflight.complete_plan_digest !== approval.complete_plan_digest ||
+        preflight.expires_at !== approval.expires_at ||
+        preflight.lease_digest !== approval.lease_digest ||
+        preflight.plan_digest !== approval.plan_digest ||
+        preflight.scope_reference !== approval.scope_reference ||
+        preflight.local_runner_dispatch_allowed !== true ||
+        preflight.execution_allowed !== false ||
+        preflight.report_submission_allowed !== false ||
+        !isFutureExpiry(preflight.expires_at)
+      ) {
+        throw new Error("fresh_local_lab_preflight_required");
+      }
+      trialDispatched = true;
       const event = parseBlackBoxRunnerEvent(
         await bridge.runBlackBoxTrial({
-          session_alias: "session_b",
-          workflow_alias: "read_widget_a",
+          exact_preflight_request: exactPreflightRequest,
+          session_alias: preflight.approved_session_alias,
+          workflow_alias: preflight.approved_workflow_alias,
         }),
       );
-      setLabApproval(null);
       if (event.event === "stop") {
         setLabRunnerState("stopped");
         pushLog(`Local trial stopped: ${String(event.reason ?? "safety_stop")}.`, "blocked");
@@ -709,14 +863,44 @@ export function StudioWorkbench() {
       if (event.event !== "trial_result") {
         throw new Error("bounded_trial_result_required");
       }
+      const trace = boundedTraceFromTrialResult(event, completePlan, preflight);
+      if (labReviewGeneration.current !== generation) {
+        throw new Error("local_lab_result_binding_changed");
+      }
+      const boundedResult = await recordStudioBlackBoxLabBoundedResult({
+        exact_preflight: exactPreflightRequest,
+        trace,
+      });
+      if (
+        labReviewGeneration.current !== generation ||
+        boundedResult.validation_run_id !== validationRunId ||
+        !boundedResult.pipeline_run_id ||
+        !/^sha256:[0-9a-f]{64}$/u.test(boundedResult.result_digest) ||
+        boundedResult.evidence_ref_count < 1 ||
+        boundedResult.execution_allowed !== false ||
+        boundedResult.report_submission_allowed !== false ||
+        boundedResult.submission_blocked !== true ||
+        boundedResult.human_review_required !== true
+      ) {
+        throw new Error("bounded_result_review_gate_required");
+      }
+      setLabBoundedResult(boundedResult);
       setLabRunnerState("trial_complete");
       pushLog("One bounded local differential trial completed; result remains review-only.", "safe");
+      pushLog(
+        boundedResult.report_preview_refreshed
+          ? "Bounded result recorded; report preview refreshed for human review. Submission remains blocked."
+          : "Bounded result recorded for human review. Submission remains blocked.",
+        "safe",
+      );
     } catch (error) {
-      setLabApproval(null);
-      setLabRunnerState("stopped");
-      pushMutationFailure("Bounded local lab trial", error);
+      if (trialDispatched) {
+        setLabRunnerState("stopped");
+      }
+      pushMutationFailure("Complete local lab plan", error);
     } finally {
       setBusy(null);
+      labDispatchInFlight.current = false;
     }
   }
 
@@ -1560,7 +1744,7 @@ export function StudioWorkbench() {
                 </span>
                 <input
                   className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)] disabled:opacity-60"
-                  disabled={Boolean(labApproval)}
+                  disabled={Boolean(busy)}
                   onChange={(event) => handleLabValidationRunIdChange(event.target.value)}
                   value={labValidationRunId}
                 />
@@ -1651,15 +1835,8 @@ export function StudioWorkbench() {
                   labRunnerState !== "sessions_ready"
                 }
                 icon={<ShieldCheck size={16} aria-hidden="true" />}
-                label="Confirm bounded lab run"
+                label="Review and approve complete plan"
                 onClick={handleApproveBlackBoxLabRun}
-              />
-              <ActionButton
-                busy={busy === "lab-trial"}
-                disabled={!labApproval?.local_runner_dispatch_allowed}
-                icon={<Play size={16} aria-hidden="true" />}
-                label="Run approved trial"
-                onClick={handleRunApprovedBlackBoxTrial}
               />
               <ActionButton
                 busy={busy === "lab-close"}
@@ -1669,7 +1846,7 @@ export function StudioWorkbench() {
                 onClick={handleCloseBlackBoxSessions}
               />
             </div>
-            <dl className="grid gap-3 sm:grid-cols-3">
+            <dl className="grid gap-3 sm:grid-cols-4">
               <StatusRow label="Runner state" value={labRunnerState} />
               <StatusRow
                 label="Lease review"
@@ -1681,7 +1858,19 @@ export function StudioWorkbench() {
                 value={labTraceReviewConfirmed ? "confirmed" : "required"}
                 warning={!labTraceReviewConfirmed}
               />
+              <StatusRow
+                label="Bounded result"
+                value={labBoundedResult ? "recorded" : "not recorded"}
+                warning={!labBoundedResult}
+              />
             </dl>
+            {labBoundedResult ? (
+              <p className="text-xs text-[var(--muted)]">
+                {labBoundedResult.report_preview_refreshed
+                  ? "Report preview refreshed from the bounded local-lab result; human review remains required."
+                  : "Bounded local-lab result recorded; human review remains required."}
+              </p>
+            ) : null}
             {labTraceReview.length > 0 ? (
               <div className="border-t border-[var(--line)] pt-4">
                 <p className="font-semibold">Normalized traces</p>

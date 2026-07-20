@@ -383,24 +383,54 @@ class BlackBoxRunner {
     if (this.stopEvent) {
       return this._safeEvent(this.stopEvent);
     }
-    if (this.state !== "sessions_ready") {
-      throw new Error("recording_must_stop_before_trial");
-    }
-    if (this.now() >= this.lease.expires_at_ms) {
-      return this._stopOnce("lease_expired");
-    }
-    const remote = this.lease.profile === "remote_human_lease";
+    const remote = this.lease?.profile === "remote_human_lease";
     if (this.activeTrial) {
       if (remote) {
         return this._stopOnce("concurrency_limit");
       }
       throw new Error("trial_already_running");
     }
+    if (this.state === "trial_complete") {
+      throw new Error("trial_already_consumed");
+    }
+    if (this.state !== "sessions_ready") {
+      throw new Error("recording_must_stop_before_trial");
+    }
+    if (this.now() >= this.lease.expires_at_ms) {
+      return this._stopOnce("lease_expired");
+    }
     const trialKeys = remote
       ? ["session_alias", "trial_class", "workflow_alias"]
-      : ["session_alias", "workflow_alias"];
+      : [
+        "approval_expires_at",
+        "complete_plan_digest",
+        "local_plan_binding",
+        "session_alias",
+        "workflow_alias",
+      ];
     if (!payload || !hasOnlyKeys(payload, trialKeys)) {
       throw new Error("safe_trial_aliases_required");
+    }
+    let approvalExpiresAtMs = null;
+    let localPlanBinding = null;
+    if (!remote && (
+      "approval_expires_at" in payload
+      || "complete_plan_digest" in payload
+      || "local_plan_binding" in payload
+    )) {
+      approvalExpiresAtMs = Date.parse(payload.approval_expires_at);
+      if (
+        !("approval_expires_at" in payload)
+        || !("complete_plan_digest" in payload)
+        || !("local_plan_binding" in payload)
+        || !Number.isFinite(approvalExpiresAtMs)
+        || this.now() >= approvalExpiresAtMs
+        || typeof payload.complete_plan_digest !== "string"
+        || !/^sha256:[0-9a-f]{64}$/u.test(payload.complete_plan_digest)
+      ) {
+        throw new Error("fresh_local_lab_preflight_required");
+      }
+      localPlanBinding = payload.local_plan_binding;
     }
 
     const session = this.sessions.get(payload.session_alias);
@@ -410,6 +440,15 @@ class BlackBoxRunner {
     }
     if (!this.lease.active_origins.has(recorded.workflow.origin)) {
       throw new Error("active_origin_not_lease_approved");
+    }
+    if (localPlanBinding !== null) {
+      validateLocalPlanBinding(
+        localPlanBinding,
+        payload,
+        this.lease,
+        this.sessions,
+        recorded,
+      );
     }
     let remoteWorkflow = null;
     if (remote) {
@@ -448,7 +487,12 @@ class BlackBoxRunner {
           trial,
         );
       }
-      return await this._runTrial(session, recorded, trial);
+      return await this._runTrial(
+        session,
+        recorded,
+        trial,
+        approvalExpiresAtMs,
+      );
     } finally {
       if (this.activeTrial === trial) {
         this.activeTrial = null;
@@ -608,31 +652,61 @@ class BlackBoxRunner {
     }
   }
 
-  async _runTrial(session, recorded, trial) {
+  async _runTrial(session, recorded, trial, approvalExpiresAtMs = null) {
     const startedAt = this.now();
     let response;
+    this.state = "trial_complete";
+    if (approvalExpiresAtMs !== null && this.now() >= approvalExpiresAtMs) {
+      return this._stopOnce("lease_expired");
+    }
     try {
-      response = await session.context.request.fetch(recorded.request_url, {
+      let approvalExpiry = null;
+      if (approvalExpiresAtMs !== null) {
+        approvalExpiry = new Promise((resolve, reject) => {
+          trial.approvalExpiryTimer = this.setTimer(
+            () => this._stopOnce("lease_expired").then(resolve, reject),
+            Math.max(0, approvalExpiresAtMs - this.now()),
+          );
+        });
+      }
+      const fetchRequest = session.context.request.fetch(recorded.request_url, {
         failOnStatusCode: false,
         maxRedirects: 0,
         method: recorded.workflow.method,
       });
+      response = approvalExpiry === null
+        ? await fetchRequest
+        : await Promise.race([fetchRequest, approvalExpiry]);
     } catch {
       const cancelled = this._cancelledTrialResult(trial);
       if (cancelled) {
         return cancelled;
       }
       return this._stopOnce("request_failed");
+    } finally {
+      if (trial.approvalExpiryTimer !== undefined) {
+        this.clearTimer(trial.approvalExpiryTimer);
+        delete trial.approvalExpiryTimer;
+      }
+    }
+    if (response?.event === "stop") {
+      return response;
     }
 
     let cancelled = this._cancelledTrialResult(trial);
     if (cancelled) {
       return cancelled;
     }
+    if (approvalExpiresAtMs !== null && this.now() >= approvalExpiresAtMs) {
+      return this._stopOnce("lease_expired");
+    }
     const stopReason = await this._responseStopReason(response);
     cancelled = this._cancelledTrialResult(trial);
     if (cancelled) {
       return cancelled;
+    }
+    if (approvalExpiresAtMs !== null && this.now() >= approvalExpiresAtMs) {
+      return this._stopOnce("lease_expired");
     }
     if (stopReason) {
       return this._stopOnce(stopReason);
@@ -647,6 +721,9 @@ class BlackBoxRunner {
     cancelled = this._cancelledTrialResult(trial);
     if (cancelled) {
       return cancelled;
+    }
+    if (approvalExpiresAtMs !== null && this.now() >= approvalExpiresAtMs) {
+      return this._stopOnce("lease_expired");
     }
     const result = this._safeEvent({ event: "trial_result", trace });
     this.emit(result);
@@ -997,6 +1074,10 @@ class BlackBoxRunner {
     }
     this.closing = true;
     this.lifecycleGeneration += 1;
+    if (this.activeTrial?.approvalExpiryTimer !== undefined) {
+      this.clearTimer(this.activeTrial.approvalExpiryTimer);
+      delete this.activeTrial.approvalExpiryTimer;
+    }
     this.activeTrial = null;
     this._detachRecordingListeners();
     if (this.expiryTimer !== null) {
@@ -1587,6 +1668,114 @@ function validateRemoteRecordedWorkflows(workflows, lease) {
     ) {
       throw new Error("recorded_remote_workflow_mismatch");
     }
+  }
+}
+
+function validateLocalPlanBinding(binding, payload, lease, sessions, recorded) {
+  try {
+    if (
+      !binding
+      || typeof binding !== "object"
+      || Array.isArray(binding)
+      || !hasOnlyKeys(binding, ["active_origin", "sessions", "workflow"])
+      || !Array.isArray(binding.sessions)
+      || binding.sessions.length !== 2
+    ) {
+      throw new Error("invalid_binding");
+    }
+    const activeOrigin = exactLoopbackOrigin(binding.active_origin);
+    const boundSessions = new Map();
+    for (const session of binding.sessions) {
+      if (
+        !session
+        || typeof session !== "object"
+        || Array.isArray(session)
+        || !hasOnlyKeys(session, ["account_alias", "role_alias", "session_alias"])
+      ) {
+        throw new Error("invalid_session");
+      }
+      const sessionAlias = safeAlias(session.session_alias);
+      const accountAlias = safeAlias(session.account_alias);
+      const roleAlias = safeAlias(session.role_alias);
+      const actual = sessions.get(sessionAlias);
+      if (
+        boundSessions.has(sessionAlias)
+        || !actual
+        || actual.account_alias !== accountAlias
+        || actual.role_alias !== roleAlias
+      ) {
+        throw new Error("session_mismatch");
+      }
+      boundSessions.set(sessionAlias, { accountAlias, roleAlias });
+    }
+    if (
+      !boundSessions.has("session_a")
+      || !boundSessions.has("session_b")
+      || !binding.workflow
+      || typeof binding.workflow !== "object"
+      || Array.isArray(binding.workflow)
+      || !hasOnlyKeys(binding.workflow, [
+        "action",
+        "method",
+        "object_aliases",
+        "origin",
+        "route_template",
+        "session_alias",
+        "workflow_alias",
+      ])
+    ) {
+      throw new Error("invalid_workflow");
+    }
+    const workflow = binding.workflow;
+    const sourceSessionAlias = safeAlias(workflow.session_alias);
+    const workflowAlias = safeAlias(workflow.workflow_alias);
+    const sourceSession = boundSessions.get(sourceSessionAlias);
+    const trialSession = boundSessions.get(payload.session_alias);
+    const objectAliases = Array.isArray(workflow.object_aliases)
+      ? workflow.object_aliases.map(safeAlias)
+      : null;
+    const routeSegments = typeof workflow.route_template === "string"
+      ? workflow.route_template.split("/").filter(Boolean)
+      : [];
+    const objectSegment = routeSegments.indexOf("{object}") + 1;
+    const recordedWorkflow = recorded.workflow;
+    const recordedParameter = recordedWorkflow.path_parameters[0];
+    if (
+      !sourceSession
+      || !trialSession
+      || payload.session_alias === sourceSessionAlias
+      || workflowAlias !== payload.workflow_alias
+      || workflow.action !== "read_only_replay"
+      || (workflow.method !== "GET" && workflow.method !== "HEAD")
+      || workflow.origin !== activeOrigin
+      || routeSegments.filter((segment) => segment === "{object}").length !== 1
+      || !objectAliases
+      || objectAliases.length < 1
+      || lease.profile !== "local_lab"
+      || lease.active_origins.size !== 1
+      || !lease.active_origins.has(activeOrigin)
+      || recordedWorkflow.action !== workflow.action
+      || recordedWorkflow.method !== workflow.method
+      || recordedWorkflow.origin !== workflow.origin
+      || recordedWorkflow.route_template !== workflow.route_template
+      || recordedWorkflow.aliases.workflow_alias !== workflowAlias
+      || recordedWorkflow.aliases.session_alias !== sourceSessionAlias
+      || recordedWorkflow.aliases.account_alias !== sourceSession.accountAlias
+      || recordedWorkflow.aliases.role_alias !== sourceSession.roleAlias
+      || recordedWorkflow.aliases.object_aliases.length !== objectAliases.length
+      || recordedWorkflow.aliases.object_aliases.some(
+        (alias, index) => alias !== objectAliases[index],
+      )
+      || recordedWorkflow.path_parameters.length !== 1
+      || recordedParameter.location !== "path"
+      || recordedParameter.segment !== objectSegment
+      || recordedParameter.value_type !== "object_alias"
+      || recordedWorkflow.query_parameters.length !== 0
+    ) {
+      throw new Error("workflow_mismatch");
+    }
+  } catch {
+    throw new Error("local_plan_binding_mismatch");
   }
 }
 
