@@ -133,6 +133,20 @@ function waitForUrl(url, options = {}) {
       });
     }
 
+    function stopActiveRequest() {
+      try {
+        activeResponse?.destroy();
+      } catch {}
+      try {
+        activeRequest?.destroy();
+      } catch {}
+    }
+
+    function rejectForTimeout() {
+      rejectFor(timeoutCode, "Timed out waiting for local service");
+      stopActiveRequest();
+    }
+
     function retry() {
       const failure = startupFailure();
       if (failure) {
@@ -140,7 +154,7 @@ function waitForUrl(url, options = {}) {
         return;
       }
       if (Date.now() >= deadline) {
-        rejectFor(timeoutCode, "Timed out waiting for local service");
+        rejectForTimeout();
         return;
       }
       setTimeout(attempt, Math.min(intervalMs, deadline - Date.now()));
@@ -167,6 +181,10 @@ function waitForUrl(url, options = {}) {
           return;
         }
         attemptComplete = true;
+        if (Date.now() >= deadline) {
+          rejectForTimeout();
+          return;
+        }
         callback();
       };
 
@@ -204,15 +222,7 @@ function waitForUrl(url, options = {}) {
       }
     }
 
-    deadlineTimer = setTimeout(() => {
-      rejectFor(timeoutCode, "Timed out waiting for local service");
-      try {
-        activeResponse?.destroy();
-      } catch {}
-      try {
-        activeRequest?.destroy();
-      } catch {}
-    }, timeoutMs);
+    deadlineTimer = setTimeout(rejectForTimeout, timeoutMs);
     attempt();
   });
 }
