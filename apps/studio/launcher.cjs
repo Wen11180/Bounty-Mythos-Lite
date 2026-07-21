@@ -1,6 +1,10 @@
 const http = require("node:http");
 const https = require("node:https");
 const net = require("node:net");
+const {
+  createStartupDiagnostic,
+  createStartupDiagnosticError,
+} = require("./startup-diagnostics.cjs");
 
 const defaultHost = "127.0.0.1";
 const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
@@ -57,7 +61,7 @@ async function findAvailablePort(preferredPort, options = {}) {
       return port;
     }
   }
-  throw new Error(`No available local port starting at ${preferredPort}`);
+  throw createStartupDiagnosticError("port_unavailable");
 }
 
 function isPortAvailable(port, host) {
@@ -80,45 +84,259 @@ function isPortAvailable(port, host) {
 function waitForUrl(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 60_000;
   const intervalMs = options.intervalMs ?? 750;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 3_000;
+  const getStartupFailure = options.getStartupFailure;
+  const timeoutCode = options.timeoutCode;
+  const unhealthyCode = options.unhealthyCode;
+  const validateResponse = options.validateResponse ?? validateGenericResponse;
   const deadline = Date.now() + timeoutMs;
 
+  let parsed;
+  try {
+    parsed = new URL(url);
+    assertLoopbackHttpUrl(parsed);
+  } catch {
+    return Promise.reject(createStartupDiagnosticError("startup_unknown"));
+  }
+
   return new Promise((resolve, reject) => {
-    function retry(lastError) {
-      if (Date.now() >= deadline) {
-        reject(
-          new Error(
-            `Timed out waiting for ${url}${lastError ? `: ${lastError.message}` : ""}`,
-          ),
-        );
+    let settled = false;
+    let activeRequest = null;
+    let activeResponse = null;
+    let deadlineTimer = null;
+
+    function complete(callback) {
+      if (settled) {
         return;
       }
-      setTimeout(attempt, intervalMs);
+      settled = true;
+      if (deadlineTimer) {
+        clearTimeout(deadlineTimer);
+      }
+      callback();
+    }
+
+    function startupFailure() {
+      if (typeof getStartupFailure !== "function") {
+        return null;
+      }
+      try {
+        return getStartupFailure() || null;
+      } catch {
+        return "startup_unknown";
+      }
+    }
+
+    function rejectFor(code, fallbackMessage) {
+      complete(() => {
+        reject(code ? createStartupDiagnosticError(code) : new Error(fallbackMessage));
+      });
+    }
+
+    function retry() {
+      const failure = startupFailure();
+      if (failure) {
+        rejectFor(failure, "Local service stopped during startup");
+        return;
+      }
+      if (Date.now() >= deadline) {
+        rejectFor(timeoutCode, "Timed out waiting for local service");
+        return;
+      }
+      setTimeout(attempt, Math.min(intervalMs, deadline - Date.now()));
     }
 
     function attempt() {
-      const parsed = new URL(url);
+      if (settled) {
+        return;
+      }
+      const failure = startupFailure();
+      if (failure) {
+        rejectFor(failure, "Local service stopped during startup");
+        return;
+      }
+      if (Date.now() >= deadline) {
+        retry();
+        return;
+      }
+
       const client = parsed.protocol === "https:" ? https : http;
-      const request = client.get(parsed, (response) => {
-        response.resume();
-        if (response.statusCode && response.statusCode < 500) {
-          resolve(url);
+      let attemptComplete = false;
+      const completeAttempt = (callback) => {
+        if (attemptComplete || settled) {
           return;
         }
-        retry(new Error(`status ${response.statusCode ?? "unknown"}`));
-      });
+        attemptComplete = true;
+        callback();
+      };
 
-      request.setTimeout(3_000, () => {
-        request.destroy(new Error("request timed out"));
-      });
-      request.on("error", retry);
+      let request;
+      try {
+        request = client.get(parsed, (response) => {
+          activeResponse = response;
+          Promise.resolve(validateResponse(response)).then(
+            (result) => completeAttempt(() => {
+              const childFailure = startupFailure();
+              if (childFailure) {
+                rejectFor(childFailure, "Local service stopped during startup");
+                return;
+              }
+              if (result === "ready") {
+                complete(() => resolve(url));
+                return;
+              }
+              if (result === "retry") {
+                retry();
+                return;
+              }
+              rejectFor(unhealthyCode, "Local service readiness check failed");
+            }),
+            () => completeAttempt(() => rejectFor(unhealthyCode, "Local service readiness check failed")),
+          );
+        });
+        activeRequest = request;
+        request.setTimeout(requestTimeoutMs, () => {
+          request.destroy();
+        });
+        request.once("error", () => completeAttempt(retry));
+      } catch {
+        completeAttempt(retry);
+      }
     }
 
+    deadlineTimer = setTimeout(() => {
+      rejectFor(timeoutCode, "Timed out waiting for local service");
+      try {
+        activeResponse?.destroy();
+      } catch {}
+      try {
+        activeRequest?.destroy();
+      } catch {}
+    }, timeoutMs);
     attempt();
   });
 }
 
-function startupErrorHtml(error) {
-  const message = error instanceof Error ? error.message : String(error);
+function waitForApiHealth(apiBaseUrl, options = {}) {
+  return waitForUrl(endpointUrl(apiBaseUrl, "/health"), {
+    intervalMs: 250,
+    requestTimeoutMs: 2_000,
+    timeoutMs: 45_000,
+    ...options,
+    timeoutCode: "api_timeout",
+    unhealthyCode: "api_unhealthy",
+    validateResponse: validateApiHealthResponse,
+  });
+}
+
+function waitForStudio(studioUrl, options = {}) {
+  return waitForUrl(endpointUrl(studioUrl, "/studio"), {
+    intervalMs: 250,
+    requestTimeoutMs: 2_000,
+    timeoutMs: 45_000,
+    ...options,
+    timeoutCode: "web_timeout",
+    unhealthyCode: "web_unhealthy",
+    validateResponse: validateStudioResponse,
+  });
+}
+
+function validateGenericResponse(response) {
+  response.resume();
+  return response.statusCode && response.statusCode < 500 ? "ready" : "retry";
+}
+
+async function validateApiHealthResponse(response) {
+  if (response.statusCode !== 200) {
+    response.resume();
+    return "unhealthy";
+  }
+  const body = await readBoundedResponseBody(response, 8 * 1024);
+  if (body === null) {
+    return "unhealthy";
+  }
+  try {
+    return isExactApiHealth(JSON.parse(body)) ? "ready" : "unhealthy";
+  } catch {
+    return "unhealthy";
+  }
+}
+
+function validateStudioResponse(response) {
+  response.resume();
+  return response.statusCode === 200 ? "ready" : "unhealthy";
+}
+
+function readBoundedResponseBody(response, maxBytes) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let byteCount = 0;
+    let finished = false;
+    const finish = (value) => {
+      if (!finished) {
+        finished = true;
+        resolve(value);
+      }
+    };
+    response.on("data", (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      byteCount += buffer.length;
+      if (byteCount > maxBytes) {
+        response.destroy();
+        finish(null);
+        return;
+      }
+      chunks.push(buffer);
+    });
+    response.once("end", () => finish(Buffer.concat(chunks).toString("utf8")));
+    response.once("error", () => finish(null));
+  });
+}
+
+function isExactApiHealth(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const keys = Object.keys(value).sort();
+  return (
+    keys.length === 2
+    && keys[0] === "service"
+    && keys[1] === "status"
+    && value.service === "bounty-mythos-api"
+    && value.status === "ok"
+  );
+}
+
+function endpointUrl(baseUrl, pathname) {
+  const parsed = new URL(baseUrl);
+  parsed.hash = "";
+  parsed.pathname = pathname;
+  parsed.search = "";
+  return parsed.toString();
+}
+
+function assertLoopbackHttpUrl(parsed) {
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+    || !loopbackHosts.has(parsed.hostname)
+  ) {
+    throw new Error("local_startup_url_required");
+  }
+}
+
+function startupErrorHtml(diagnostic, { packaged = false } = {}) {
+  const safeDiagnostic = createStartupDiagnostic(diagnostic?.code);
+  const steps = packaged
+    ? [
+      "Restart the installed app.",
+      "Close other local copies of Studio before trying again.",
+      "Keep local data unchanged until the app can open its existing recovery controls.",
+    ]
+    : [
+      '<span class="command">apps/api</span>: run <span class="command">python -m pip install -r requirements.txt</span>',
+      '<span class="command">apps/web</span>: run <span class="command">npm install</span>',
+      '<span class="command">apps/studio</span>: run <span class="command">npm install</span>, then <span class="command">npm start</span>',
+    ];
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -161,14 +379,13 @@ function startupErrorHtml(error) {
   <body>
     <main>
       <h1>Mythos Studio could not start</h1>
-      <p>The local app shell started, but the local Studio service did not become ready.</p>
+      <p>${escapeHtml(safeDiagnostic.detail)}</p>
+      <p>Diagnostic code: <code>${escapeHtml(safeDiagnostic.code)}</code></p>
       <h2>Check local prerequisites</h2>
       <ol>
-        <li><span class="command">apps/api</span>: run <span class="command">python -m pip install -r requirements.txt</span></li>
-        <li><span class="command">apps/web</span>: run <span class="command">npm install</span></li>
-        <li><span class="command">apps/studio</span>: run <span class="command">npm install</span>, then <span class="command">npm start</span></li>
+        ${steps.map((step) => `<li>${step}</li>`).join("\n        ")}
       </ol>
-      <code>${escapeHtml(message)}</code>
+      <p>No research, validation, or report submission was started.</p>
     </main>
   </body>
 </html>`;
@@ -192,5 +409,7 @@ module.exports = {
   createStudioLaunchConfig,
   findAvailablePort,
   startupErrorHtml,
+  waitForApiHealth,
+  waitForStudio,
   waitForUrl,
 };

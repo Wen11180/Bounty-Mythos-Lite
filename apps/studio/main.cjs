@@ -1,12 +1,25 @@
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
-const { spawn } = require("node:child_process");
+const { app, BrowserWindow, dialog, ipcMain, utilityProcess } = require("electron");
+const { execFile, spawn } = require("node:child_process");
 const path = require("node:path");
+const { promisify } = require("node:util");
 
-const { createStudioLaunchConfig, startupErrorHtml, waitForUrl } = require("./launcher.cjs");
+const {
+  createStudioLaunchConfig,
+  startupErrorHtml,
+  waitForApiHealth,
+  waitForStudio,
+} = require("./launcher.cjs");
 const { createAppExitHandler, createBlackBoxRunner } = require("./black-box-runner.cjs");
 const { createLocalLabDispatchHandler } = require("./local-lab-dispatch.cjs");
 const { createLocalResearchWakeup } = require("./local-research-wakeup.cjs");
 const { installStudioNavigationGuard } = require("./navigation-guard.cjs");
+const { createPackagedRuntime } = require("./packaged-runtime.cjs");
+const {
+  createStartupLiveness,
+  diagnosticFromError,
+  preflightDevelopmentRuntime,
+  resolveDevelopmentDataDirectory,
+} = require("./startup-diagnostics.cjs");
 const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
 const { createProgramRuleApiClient } = require("./program-rule-api-client.cjs");
 const { createProgramRuleRefreshPump } = require("./program-rule-refresh-pump.cjs");
@@ -15,7 +28,10 @@ const { createRemoteLeaseApiClient } = require("./remote-api-client.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
+const execFileAsync = promisify(execFile);
 const rendererGenerations = new WeakMap();
+let packagedRuntime = null;
+let developmentStartupLiveness = null;
 let studioApiBaseUrl = null;
 const localResearchWakeup = createLocalResearchWakeup({
   getBaseUrl: () => studioApiBaseUrl,
@@ -57,9 +73,19 @@ function spawnChild(command, args, cwd, env = {}) {
   return child;
 }
 
-function startServices(config, workspaceRoot) {
+function startDevelopmentServices(config, workspaceRoot) {
+  preflightDevelopmentRuntime({
+    apiDirectory: path.join(root, "apps", "api"),
+    dataDirectory: resolveDevelopmentDataDirectory(
+      process.env.DATABASE_URL || "sqlite:///./bounty_mythos_studio.db",
+      path.join(root, "apps", "api"),
+    ),
+    webDirectory: path.join(root, "apps", "web"),
+    workspaceDirectory: workspaceRoot,
+  });
+  developmentStartupLiveness = createStartupLiveness();
   const studioWebOrigin = new URL(config.studioUrl).origin;
-  spawnChild(
+  const apiChild = spawnChild(
     "python",
     [
       "-m",
@@ -76,7 +102,8 @@ function startServices(config, workspaceRoot) {
       STUDIO_WEB_ORIGIN: studioWebOrigin,
     },
   );
-  spawnChild(
+  developmentStartupLiveness.watch(apiChild, "api_exited");
+  const webChild = spawnChild(
     "npm",
     ["run", "dev", "--", "--hostname", "127.0.0.1", "--port", String(config.webPort)],
     path.join(root, "apps", "web"),
@@ -86,14 +113,50 @@ function startServices(config, workspaceRoot) {
       NEXT_PUBLIC_STUDIO_WORKSPACE_ROOT: workspaceRoot,
     },
   );
+  developmentStartupLiveness.watch(webChild, "web_exited");
+  return developmentStartupLiveness;
 }
 
-function killChildren() {
-  for (const child of children) {
-    if (!child.killed) {
-      child.kill();
-    }
+function startServices(config, workspaceRoot) {
+  if (app.isPackaged) {
+    packagedRuntime = createPackagedRuntime({
+      app,
+      execFile: execFileAsync,
+      processObject: process,
+      spawn,
+      utilityProcess,
+    });
+    packagedRuntime.preflight();
+    packagedRuntime.start(config);
+    return packagedRuntime;
   }
+  return startDevelopmentServices(config, workspaceRoot);
+}
+
+async function killChildren() {
+  developmentStartupLiveness?.stopMonitoring();
+  developmentStartupLiveness = null;
+  const runtime = packagedRuntime;
+  packagedRuntime = null;
+  await runtime?.stop();
+  await Promise.all(children.splice(0).map(stopDevelopmentChild));
+}
+
+async function stopDevelopmentChild(child) {
+  if (!child || child.killed) {
+    return;
+  }
+  if (process.platform === "win32" && Number.isInteger(child.pid) && child.pid > 0) {
+    try {
+      await execFileAsync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+      });
+      return;
+    } catch {}
+  }
+  try {
+    child.kill();
+  } catch {}
 }
 
 const handleBeforeQuit = createAppExitHandler({
@@ -167,21 +230,32 @@ ipcMain.handle("mythos:refresh-program-rules", () => {
 });
 
 app.whenReady().then(async () => {
-  const window = createWindow();
+  let window;
   try {
     const workspaceRoot =
       process.env.STUDIO_WORKSPACE_ROOT || path.join(app.getPath("userData"), "workspaces");
     const config = await createStudioLaunchConfig();
+    window = createWindow();
     studioApiBaseUrl = config.apiBaseUrl;
-    startServices(config, workspaceRoot);
-    await waitForUrl(config.apiBaseUrl);
-    await waitForUrl(config.studioUrl);
+    const startupController = startServices(config, workspaceRoot);
+    await waitForApiHealth(config.apiBaseUrl, {
+      getStartupFailure: () => startupController.getStartupFailure(),
+    });
+    await waitForStudio(config.studioUrl, {
+      getStartupFailure: () => startupController.getStartupFailure(),
+    });
+    startupController.markStartupReady();
     localResearchWakeup.start();
     programRulePump.start();
     installStudioNavigationGuard(window, config.studioUrl);
     window.loadURL(config.studioUrl);
   } catch (error) {
-    window.loadURL(`data:text/html,${encodeURIComponent(startupErrorHtml(error))}`);
+    await killChildren();
+    const diagnostic = diagnosticFromError(error);
+    window ??= createWindow();
+    window.loadURL(
+      `data:text/html,${encodeURIComponent(startupErrorHtml(diagnostic, { packaged: app.isPackaged }))}`,
+    );
   }
 });
 

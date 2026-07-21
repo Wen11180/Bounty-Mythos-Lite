@@ -115,6 +115,34 @@ test("desktop main rechecks local trial authority at the derived API immediately
   assert.doesNotMatch(preload, /preflight|grant|authority/);
 });
 
+test("desktop startup preflights local services and cleans up before rendering a bounded diagnostic", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+
+  assert.match(main, /preflightDevelopmentRuntime/);
+  assert.match(main, /packagedRuntime\.preflight\(\)/);
+  assert.match(
+    main,
+    /dataDirectory:\s*resolveDevelopmentDataDirectory\(\s*process\.env\.DATABASE_URL\s*\|\|\s*"sqlite:\/\/\/\.\/bounty_mythos_studio\.db",\s*path\.join\(root,\s*"apps",\s*"api"\),\s*\)/s,
+  );
+  assert.doesNotMatch(
+    main,
+    /dataDirectory:\s*path\.join\(app\.getPath\("userData"\),\s*"data"\)/,
+  );
+  assert.match(
+    main,
+    /const startupController = startServices\(config,\s*workspaceRoot\);\s*await waitForApiHealth\(config\.apiBaseUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*await waitForStudio\(config\.studioUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*startupController\.markStartupReady\(\);/s,
+  );
+  assert.match(
+    main,
+    /catch \(error\) \{\s*await killChildren\(\);\s*const diagnostic = diagnosticFromError\(error\);[\s\S]*startupErrorHtml\(diagnostic,\s*\{ packaged: app\.isPackaged \}\)/,
+  );
+  assert.match(
+    main,
+    /async function killChildren\(\)[\s\S]*await runtime\?\.stop\(\)[\s\S]*execFileAsync\("taskkill",\s*\["\/pid",\s*String\(child\.pid\),\s*"\/T",\s*"\/F"\]/,
+  );
+  assert.doesNotMatch(main, /startupErrorHtml\(error\)/);
+});
+
 test("desktop shell wakes only the local read-only research runtime after startup", async () => {
   const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
   const wakeup = await fs.readFile(path.join(__dirname, "local-research-wakeup.cjs"), "utf8");
@@ -126,7 +154,7 @@ test("desktop shell wakes only the local read-only research runtime after startu
   );
   assert.match(
     main,
-    /await waitForUrl\(config\.studioUrl\);\s*localResearchWakeup\.start\(\);/s,
+    /await waitForStudio\(config\.studioUrl,[\s\S]*startupController\.markStartupReady\(\);\s*localResearchWakeup\.start\(\);/s,
   );
   assert.match(
     main,
@@ -144,7 +172,7 @@ test("desktop shell starts the bounded program-rule pump only after local servic
   assert.match(main, /createProgramRuleRefreshPump\(\{ runner: programRuleRunner \}\)/);
   assert.match(
     main,
-    /await waitForUrl\(config\.apiBaseUrl\);\s*await waitForUrl\(config\.studioUrl\);[\s\S]*programRulePump\.start\(\);/,
+    /await waitForApiHealth\(config\.apiBaseUrl,[\s\S]*await waitForStudio\(config\.studioUrl,[\s\S]*startupController\.markStartupReady\(\);[\s\S]*programRulePump\.start\(\);/,
   );
   assert.match(
     main,

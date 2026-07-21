@@ -693,6 +693,45 @@ test("run_trial replays an internally recorded active route without returning va
   assert.doesNotMatch(JSON.stringify(result), new RegExp(`${OBJECT_ID}|private-value`));
 });
 
+test("[hardening] app exit waits for asynchronous child termination", async () => {
+  const termination = deferred();
+  const calls = { exit: [], kill: 0 };
+  const handler = createAppExitHandler({
+    closeSessions: async () => {},
+    exit(code) {
+      calls.exit.push(code);
+    },
+    killChildren() {
+      calls.kill += 1;
+      return termination.promise;
+    },
+  });
+
+  const shutdown = handler({ preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(calls.kill, 1);
+  assert.deepEqual(calls.exit, []);
+
+  termination.resolve();
+  await shutdown;
+
+  assert.deepEqual(calls.exit, [0]);
+});
+
+test("packaged sessions use only the prevalidated bundled Chromium executable", async () => {
+  const fixture = createFixture({
+    browserExecutablePath: "C:\\Program Files\\BountyMythosLite\\resources\\playwright\\chromium\\chrome.exe",
+  });
+
+  await fixture.runner.createSessions(sessionRequest());
+
+  assert.deepEqual(fixture.browserType.launchCalls, [{
+    executablePath: "C:\\Program Files\\BountyMythosLite\\resources\\playwright\\chromium\\chrome.exe",
+    headless: false,
+  }]);
+});
+
 test("[hardening] one successful local trial is consumed until sessions close", async () => {
   const fixture = createFixture();
   const requestUrl = await prepareRecordedTrial(fixture);
@@ -1778,6 +1817,7 @@ function createFixture(options = {}) {
   const events = [];
   const runner = createBlackBoxRunner({
     authorizeRemoteRequest: options.authorizeRemoteRequest,
+    browserExecutablePath: options.browserExecutablePath,
     browserType,
     clearTimer: clock.clearTimer,
     completeRemoteRequest: options.completeRemoteRequest,

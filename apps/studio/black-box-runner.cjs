@@ -124,7 +124,7 @@ function createAppExitHandler({ closeSessions, exit, killChildren }) {
     if (!shutdown) {
       shutdown = (async () => {
         await closeSessions("app_exit");
-        killChildren();
+        await killChildren();
         exit(0);
       })();
     }
@@ -135,6 +135,7 @@ function createAppExitHandler({ closeSessions, exit, killChildren }) {
 class BlackBoxRunner {
   constructor(options) {
     this.authorizeRemoteRequest = options.authorizeRemoteRequest ?? null;
+    this.browserExecutablePath = options.browserExecutablePath ?? null;
     this.browserType = options.browserType ?? null;
     this.completeRemoteRequest = options.completeRemoteRequest ?? null;
     this.createId = options.createId ?? (() => randomUUID().replaceAll("-", ""));
@@ -198,9 +199,15 @@ class BlackBoxRunner {
 
   async _createSessions(request, generation) {
     const browserType = this.browserType ?? require("playwright").chromium;
+    const browserExecutablePath = this.browserExecutablePath
+      ?? process.env.MYTHOS_PLAYWRIGHT_CHROMIUM_EXECUTABLE;
+    const launchOptions = { headless: false };
+    if (browserExecutablePath) {
+      launchOptions.executablePath = browserExecutablePath;
+    }
     let browser;
     try {
-      browser = await browserType.launch({ headless: false });
+      browser = await browserType.launch(launchOptions);
     } catch {
       if (!this._isCreationCurrent(generation)) {
         throw new Error("session_creation_cancelled");
