@@ -10,6 +10,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.codebase_map import CodebaseFactCandidate
 from app.candidate_hunter_loop import (
+    SAFE_VALIDATION_STEP,
+    _safe_prior_candidate_projection,
+    _snapshot_candidate,
     advance_candidate_hunter_round,
     build_candidate_hunter_observations,
     load_candidate_hunter_projection,
@@ -88,6 +91,9 @@ def _build_single_candidate_observations(
     pipeline_run_id: str = "run-001",
     route_path: str = "/records/{record_id}",
     symbol_name: str = "read_record",
+    source_path: str = "code.py",
+    vuln_type: str = "authorization",
+    root_cause: str = "missing_object_ownership_check",
 ) -> dict:
     route = route_path
     api_fact = {
@@ -103,23 +109,23 @@ def _build_single_candidate_observations(
         candidates=[
             {
                 "hypothesis_id": "H-001",
-                "vuln_type": "authorization",
+                "vuln_type": vuln_type,
                 "location": f"GET {route}",
                 "priority_score": 80,
                 "source_facts": [
                     {
                         "fact_type": "authorization_gap_candidate",
                         "artifact_kind": "code",
-                        "source_path": "code.py",
+                        "source_path": source_path,
                         "symbol_name": symbol_name,
                         "route_method": "GET",
                         "route_path": route,
-                        "root_cause": "missing_object_ownership_check",
+                        "root_cause": root_cause,
                     }
                 ],
             }
         ],
-        code_files=[{"path": "code.py", "content": code}],
+        code_files=[{"path": source_path, "content": code}],
         surface_facts=[
             api_fact,
             {"fact_type": "har_context", "artifact_kind": "har"},
@@ -155,6 +161,132 @@ def test_observations_preserve_model_priority_for_advisory_tiebreak():
     )
 
     assert observations["candidate_states"][0]["model_priority_score"] == 100
+
+
+def test_observations_preserve_sarif_route_support_without_making_it_required():
+    route = "/records/{record_id}"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "source_facts": [
+                    {
+                        "fact_type": "scope_context",
+                        "artifact_kind": "scope",
+                    },
+                    {
+                        "fact_type": "policy_context",
+                        "artifact_kind": "policy",
+                    },
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.py",
+                        "symbol_name": "read_record",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {
+                        "fact_type": "route_handler",
+                        "artifact_kind": "api",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {
+                        "fact_type": "route_handler",
+                        "artifact_kind": "har",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {
+                        "fact_type": "route_handler",
+                        "artifact_kind": "sarif",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                ],
+            }
+        ],
+        code_files=[],
+        surface_facts=[],
+        context_facts=[],
+    )
+
+    state = observations["candidate_states"][0]
+
+    assert "sarif:GET:/records/{record_id}" in state["source_fact_refs"]
+    assert state["required_artifact_kinds"] == REQUIRED_ARTIFACT_KINDS
+    assert "sarif" not in state["observed_artifact_kinds"]
+
+
+def test_observations_preserve_reachable_sbom_support_without_making_it_required():
+    route = "/records/{record_id}"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "source_facts": [
+                    {
+                        "fact_type": "scope_context",
+                        "artifact_kind": "scope",
+                    },
+                    {
+                        "fact_type": "policy_context",
+                        "artifact_kind": "policy",
+                    },
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.py",
+                        "symbol_name": "read_record",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {
+                        "fact_type": "route_handler",
+                        "artifact_kind": "api",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {
+                        "fact_type": "route_handler",
+                        "artifact_kind": "har",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {
+                        "fact_ref": "sbom_artifact:dependency:" + "a" * 64,
+                        "fact_type": "dependency_signal",
+                        "artifact_kind": "sbom",
+                        "source_path": "routes.py",
+                        "symbol_name": "django",
+                        "package_name": "django",
+                        "package_version": "4.2.1",
+                        "ecosystem": "pypi",
+                        "vulnerability_id": "CVE-2099-0001",
+                        "severity": "high",
+                        "description": "sbom-body-marker",
+                    },
+                ],
+            }
+        ],
+        code_files=[],
+        surface_facts=[],
+        context_facts=[],
+    )
+
+    state = observations["candidate_states"][0]
+
+    assert "sbom_artifact:dependency:" + "a" * 64 in state["source_fact_refs"]
+    assert state["required_artifact_kinds"] == REQUIRED_ARTIFACT_KINDS
+    assert "sbom" not in state["observed_artifact_kinds"]
+    assert "sbom-body-marker" not in json.dumps(observations)
 
 
 def test_complete_unguarded_sensitive_flow_is_retained():
@@ -193,6 +325,7 @@ def test_retained_projection_includes_research_card_fields():
         "Does a local ownership check run before send_file?",
     ]
     assert retained["affected_code_path"].startswith("code:")
+    assert retained["affected_code_path"] in retained["source_fact_refs"]
     assert any(
         "Local review only" in item and "GET" in item
         for item in retained["safe_validation_plan"]
@@ -205,6 +338,110 @@ def test_retained_projection_includes_research_card_fields():
     projection = result["candidate_decisions"][0]["candidate_projection"]
     assert projection["refutation_questions"] == retained["refutation_questions"]
     assert projection["affected_code_path"] == retained["affected_code_path"]
+
+
+def test_complete_candidate_without_observed_code_ref_requests_code_evidence():
+    state = _complete_candidate_state()
+    state["source_fact_refs"] = [
+        ref for ref in state["source_fact_refs"] if not ref.startswith("code:")
+    ]
+    state["gap_evidence_ref"] = "api:GET:/records/{record_id}"
+
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=_safe_observations(),
+        prior_decisions=[],
+    )
+
+    assert result["final_candidates"] == []
+    assert result["candidate_decisions"] == []
+    assert result["evidence_requests"][0]["missing_evidence"] == ["code_path"]
+    assert result["evidence_requests"][0]["requested_artifact_kinds"] == ["code"]
+
+
+def test_retained_projection_preserves_specific_research_metadata():
+    state = _complete_candidate_state()
+    state.update(
+        {
+            "broken_invariant": (
+                "Outbound requests to user-controlled URLs must validate the target "
+                "against private networks, metadata endpoints, and unsafe schemes."
+            ),
+            "validation_mode": "offline_ssrf_target_policy_review",
+            "evidence_needed": ["local_egress_validation_trace"],
+            "impact_rationale": (
+                "Potential server-side outbound request risk if an untrusted target "
+                "reaches the mapped egress sink."
+            ),
+            "impact_score": 80,
+            "safe_validation_plan": [
+                "Review the local URL parsing and egress policy call path.",
+            ],
+            "refutation_questions": [
+                "Does a same-handler URL validation control run before the outbound sink?",
+            ],
+        }
+    )
+
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=_safe_observations(),
+        prior_decisions=[],
+    )
+
+    retained = result["final_candidates"][0]
+    assert retained["broken_invariant"] == state["broken_invariant"]
+    assert retained["falsification_card"]["broken_invariant"] == state[
+        "broken_invariant"
+    ]
+    assert retained["validation_mode"] == "offline_ssrf_target_policy_review"
+    assert retained["evidence_needed"] == ["local_egress_validation_trace"]
+    assert retained["impact_rationale"] == state["impact_rationale"]
+    assert retained["impact_score"] == 80
+    assert retained["safe_validation_plan"][0].startswith("Local review only")
+    assert state["safe_validation_plan"][0] not in retained["safe_validation_plan"]
+    assert "Do not execute live validation" in retained["safe_validation_plan"][-1]
+    assert retained["refutation_questions"] == state["refutation_questions"]
+    assert all(retained[field] is False for field in (
+        "execution_allowed",
+        "dispatch_allowed",
+        "validation_allowed",
+        "candidate_promotion_allowed",
+        "report_submission_allowed",
+    ))
+
+
+def test_validation_plans_are_fixed_across_final_snapshot_and_recovery():
+    state = _complete_candidate_state()
+    unsafe_step = "Local POST to public endpoint with a synthetic payload."
+    state["safe_validation_plan"] = [unsafe_step]
+
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=_safe_observations(),
+        prior_decisions=[],
+    )
+
+    final_candidate = result["final_candidates"][0]
+    snapshot = _snapshot_candidate(state)
+    recovered = _safe_prior_candidate_projection(
+        {**final_candidate, "safe_validation_plan": [unsafe_step]},
+        final_candidate["candidate_id"],
+        final_candidate["root_cause_id"],
+    )
+
+    assert recovered is not None
+    for projection in (final_candidate, snapshot, recovered):
+        plan = projection["safe_validation_plan"]
+        assert unsafe_step not in plan
+        assert plan[0].startswith("Local review only")
+        assert plan[-1] == SAFE_VALIDATION_STEP
 
 
 def test_positive_observed_control_refutes_candidate():
@@ -253,6 +490,46 @@ def test_explicit_public_evidence_suppresses_candidate():
     assert decision["falsification_card"]["decision"]["status"] == "suppressed"
     assert decision["falsification_card"]["decision"]["why_dead"]
     assert result["final_candidates"] == []
+
+
+@pytest.mark.parametrize(
+    "vuln_type",
+    [
+        "ssrf",
+        "path_traversal",
+        "mass_assignment",
+        "command_injection",
+        "unsafe_deserialization",
+        "file_upload",
+        "business_logic",
+        "agent_tool_authz_gap",
+    ],
+)
+def test_public_evidence_does_not_suppress_non_authorization_candidate(vuln_type):
+    state = _complete_candidate_state()
+    state["vuln_type"] = vuln_type
+    state["root_cause_id"] = f"missing_{vuln_type}_validation:local_handler"
+    public_ref = "api:GET:/records/{record_id}:public_access"
+    state["source_fact_refs"].append(public_ref)
+    state["public_evidence_ref"] = public_ref
+
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=_safe_observations(),
+        prior_decisions=[],
+    )
+
+    decision = result["candidate_decisions"][0]
+    impact_attempt = next(
+        attempt
+        for attempt in decision["falsification_card"]["kill_attempts"]
+        if attempt["dimension"] == "impact"
+    )
+    assert decision["disposition"] == "retained"
+    assert impact_attempt["status"] == "survived"
+    assert result["final_candidates"][0]["vuln_type"] == vuln_type
 
 
 def test_candidates_sharing_observed_service_root_are_deduplicated():
@@ -734,6 +1011,341 @@ def verify_record_access(record_id: str, current_user):
         prior_decisions=[],
     )
     assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_go_nested_ownership_guard_is_decisive_refutation_evidence():
+    observations = _build_single_candidate_observations(
+        '''
+package handlers
+
+func mount(r Router) { r.GET("/records/{recordId}", readRecord) }
+
+func readRecord() {
+  record := loadRecord(recordId)
+  loadRecordForUser(record, user)
+  sendFile(record.Path)
+}
+
+func loadRecordForUser(record Record, user User) {
+  validateAccess(record, user)
+}
+
+func validateAccess(record Record, user User) {
+  if record.OwnerID != user.ID { return }
+}
+''',
+        route_path="/records/{recordId}",
+        symbol_name="readRecord",
+        source_path="handlers.go",
+    )
+    state = observations["candidate_states"][0]
+
+    assert state["control_evidence_ref"].startswith("code:handlers.go:")
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_go_nested_ownership_guard_after_sink_is_not_decisive():
+    observations = _build_single_candidate_observations(
+        '''
+package handlers
+
+func mount(r Router) { r.GET("/records/{recordId}", readRecord) }
+
+func readRecord() {
+  record := loadRecord(recordId)
+  loadRecordForUser(record, user)
+}
+
+func loadRecordForUser(record Record, user User) {
+  sendFile(record.Path)
+  validateAccess(record, user)
+}
+
+func validateAccess(record Record, user User) {
+  if record.OwnerID != user.ID { return }
+}
+''',
+        route_path="/records/{recordId}",
+        symbol_name="readRecord",
+        source_path="handlers.go",
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_ruby_nested_ownership_guard_is_decisive_refutation_evidence():
+    observations = _build_single_candidate_observations(
+        '''
+get "/records/:record_id", to: "records#read_record"
+
+def read_record
+  record = load_record(params[:record_id])
+  load_record_for_user(record, current_user)
+  send_file record.path
+end
+
+def load_record_for_user(record, user)
+  validate_access(record, user)
+end
+
+def validate_access(record, user)
+  if record.owner_id != user.id
+    deny
+  end
+end
+''',
+        source_path="records.rb",
+    )
+    state = observations["candidate_states"][0]
+
+    assert state["control_evidence_ref"].startswith("code:records.rb:")
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_ruby_nested_ownership_guard_after_sink_is_not_decisive():
+    observations = _build_single_candidate_observations(
+        '''
+get "/records/:record_id", to: "records#read_record"
+
+def read_record
+  record = load_record(params[:record_id])
+  load_record_for_user(record, current_user)
+end
+
+def load_record_for_user(record, user)
+  send_file record.path
+  validate_access(record, user)
+end
+
+def validate_access(record, user)
+  if record.owner_id != user.id
+    deny
+  end
+end
+''',
+        source_path="records.rb",
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_hypothesis_source_path_does_not_borrow_guard_from_same_named_file():
+    route = "/records/{record_id}"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "api/routes.py",
+                        "symbol_name": "read_record",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "admin/routes.py",
+                "content": f'''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("{route}")
+def read_record(record_id: str, current_user):
+    verify_record_access(record_id, current_user)
+    return send_file(record_id)
+
+def verify_record_access(record_id: str, current_user):
+    record = load_record(record_id)
+    if record.owner_id != current_user.id:
+        raise PermissionError()
+    return record
+''',
+            },
+            {
+                "path": "api/routes.py",
+                "content": f'''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("{route}")
+def read_record(record_id: str):
+    return send_file(record_id)
+''',
+            },
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+
+    assert state["hypothesis_source_path"] == "api/routes.py"
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_unique_cross_file_guard_remains_reachable_from_hypothesis_source_path():
+    route = "/records/{record_id}"
+    persisted_code_facts = [
+        CodebaseFactCandidate(
+            fact_type="route_handler",
+            source_path="api/routes.py",
+            symbol_name="read_record",
+            route_method="GET",
+            route_path=route,
+            authz_hint=None,
+            sensitivity_label="authorized_local_code",
+            payload={"handler": "read_record", "line": 4},
+        ),
+        CodebaseFactCandidate(
+            fact_type="service_call",
+            source_path="api/routes.py",
+            symbol_name="verify_record_access",
+            route_method=None,
+            route_path=None,
+            authz_hint=None,
+            sensitivity_label="authorized_local_code",
+            payload={"caller": "read_record", "line": 5},
+        ),
+        CodebaseFactCandidate(
+            fact_type="authz_check",
+            source_path="services/access.py",
+            symbol_name="verify_record_access",
+            route_method=None,
+            route_path=None,
+            authz_hint="ownership_boundary_check",
+            sensitivity_label="authorized_local_code",
+            payload={"handler": "verify_record_access", "line": 8},
+        ),
+        CodebaseFactCandidate(
+            fact_type="sensitive_sink",
+            source_path="api/routes.py",
+            symbol_name="send_file",
+            route_method=None,
+            route_path=None,
+            authz_hint=None,
+            sensitivity_label="authorized_local_code",
+            payload={"handler": "read_record", "line": 12},
+        ),
+    ]
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "api/routes.py",
+                        "symbol_name": "read_record",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    },
+                    {
+                        "fact_type": "api_surface",
+                        "artifact_kind": "api",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {"fact_type": "har_context", "artifact_kind": "har"},
+                ],
+            }
+        ],
+        code_files=[],
+        supplemental_code_facts=persisted_code_facts,
+        surface_facts=[],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == (
+        "code:services/access.py:verify_record_access"
+    )
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
 def test_reachable_public_filter_is_positive_suppression_evidence():
     observations = _build_single_candidate_observations(
         '''
@@ -763,6 +1375,28 @@ def load_published_record(record_id: str):
         prior_decisions=[],
     )
     assert result["candidate_decisions"][0]["disposition"] == "suppressed"
+
+
+def test_reachable_public_filter_is_not_attached_to_non_authorization_candidate():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str):
+    record = load_published_record(record_id)
+    return send_file(record.path)
+
+def load_published_record(record_id: str):
+    return record_store.get(record_id=record_id, visibility="public")
+''',
+        vuln_type="ssrf",
+        root_cause="missing_ssrf_validation",
+    )
+
+    assert "public_evidence_ref" not in observations["candidate_states"][0]
 
 
 def test_mapper_sensitive_sink_drives_ownership_guard_detection():
@@ -1361,6 +1995,16 @@ def test_projection_loader_uses_latest_valid_rerank_and_rejects_unsafe_stage():
             "H-001"
         ]
         assert projection["candidate_decisions"][0]["disposition"] == "retained"
+        candidate = projection["final_candidates"][0]
+        decision = projection["candidate_decisions"][0]
+        for field in (
+            "survived_kill_score",
+            "evidence_completeness_score",
+            "priority_score",
+        ):
+            assert candidate[field] == decision[field]
+        assert candidate["priority_score"] == 80
+        assert candidate["evidence_completeness_score"] == len(REQUIRED_ARTIFACT_KINDS)
         assert projection["audit"]["round_count"] == 1
         assert len(projection["audit"]["stage_refs"]) == 4
 
@@ -1413,7 +2057,7 @@ def test_projection_loader_rejects_cross_stage_decision_mismatch():
         session.close()
 
 
-@pytest.mark.parametrize("tamper", ["rank", "evidence"])
+@pytest.mark.parametrize("tamper", ["rank", "evidence", "code_path"])
 def test_projection_loader_rejects_invalid_rerank_schema(tamper: str):
     repository, session = _repository()
     try:
@@ -1436,6 +2080,14 @@ def test_projection_loader_rejects_invalid_rerank_schema(tamper: str):
         if tamper == "rank":
             final_candidates = deepcopy(rerank.payload["final_candidates"])
             final_candidates[0]["rank"] = 2
+            rerank.payload = {
+                **rerank.payload,
+                "final_candidates": final_candidates,
+            }
+            session.add(rerank)
+        elif tamper == "code_path":
+            final_candidates = deepcopy(rerank.payload["final_candidates"])
+            final_candidates[0]["affected_code_path"] = "code:invented.py:read_record"
             rerank.payload = {
                 **rerank.payload,
                 "final_candidates": final_candidates,
@@ -1736,7 +2388,7 @@ def test_persisted_java_ownership_guard_refutes_without_source_body():
     )
 
     assert state["control_evidence_ref"] == (
-        "code:RecordsController.java:verifyRecordAccess"
+        "code:src/RecordsController.java:verifyRecordAccess"
     )
     assert result["candidate_decisions"][0]["disposition"] == "refuted"
     assert source_marker not in json.dumps(observations)
@@ -1815,6 +2467,668 @@ async function verifyRecordAccess(recordId: string, user: User) {
     )
 
     assert state["control_evidence_ref"].startswith("code:routes.ts:")
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_express_two_hop_verified_access_guard_refutes_candidate():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/records/:recordId", readRecord);
+
+async function readRecord(req: Request, res: Response) {
+  const record = await verifyRecordAccess(req.params.recordId, req.user);
+  return sendFile(record.id);
+}
+
+function isRecordOwner(record: Record, user: User): boolean {
+  return record.ownerId === user.id;
+}
+
+async function verifyRecordAccess(recordId: string, user: User) {
+  const record = await loadRecord(recordId);
+  if (isRecordOwner(record, user)) {
+    return record;
+  }
+  return deny();
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:routes.ts:owner_id_filter"
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_two_hop_verified_access_after_sink_is_not_decisive():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/records/:recordId", readRecord);
+
+async function readRecord(req: Request, res: Response) {
+  const response = sendFile(req.params.recordId);
+  await verifyRecordAccess(req.params.recordId, req.user);
+  return response;
+}
+
+function isRecordOwner(record: Record, user: User): boolean {
+  return record.ownerId === user.id;
+}
+
+async function verifyRecordAccess(recordId: string, user: User) {
+  const record = await loadRecord(recordId);
+  if (isRecordOwner(record, user)) {
+    return record;
+  }
+  return deny();
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_command_validation_control_refutes_command_execution_candidate():
+    route = "/maintenance/run"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-command-001",
+                "vuln_type": "command_injection",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "runMaintenance",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_command_injection_validation",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/maintenance/run", runMaintenance);
+
+async function runMaintenance(req: Request, res: Response) {
+  const command = commandAllowlist(req.body.command);
+  return exec(command);
+}
+
+function commandAllowlist(command: string) {
+  return command;
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:routes.ts:commandAllowlist"
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_query_validation_does_not_refute_command_execution_candidate():
+    route = "/maintenance/run"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-command-002",
+                "vuln_type": "command_injection",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "runMaintenance",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_command_injection_validation",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/maintenance/run", runMaintenance);
+
+async function runMaintenance(req: Request, res: Response) {
+  const command = parameterize(req.body.command);
+  return exec(command);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_deserialization_validation_refutes_deserialization_candidate():
+    route = "/imports/profile"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-deserialization-001",
+                "vuln_type": "unsafe_deserialization",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "importProfile",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_unsafe_deserialization_guard",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/imports/profile", importProfile);
+
+async function importProfile(req: Request, res: Response) {
+  const payload = validateSerializedPayload(req.body.payload);
+  return unsafeDeserialize(payload);
+}
+
+function validateSerializedPayload(payload: string) {
+  return payload;
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:routes.ts:validateSerializedPayload"
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_upload_validation_refutes_file_upload_candidate():
+    route = "/uploads"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-upload-001",
+                "vuln_type": "file_upload",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "uploadDocument",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_file_upload_validation",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/uploads", uploadDocument);
+
+async function uploadDocument(req: Request, res: Response) {
+  const upload = validateUpload(req.file);
+  return storeUpload(upload);
+}
+
+function validateUpload(upload: unknown) {
+  return upload;
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:routes.ts:validateUpload"
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_server_amount_derivation_refutes_money_flow_candidate():
+    route = "/payments/transfers"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-money-flow-001",
+                "vuln_type": "business_logic",
+                "location": f"POST {route}",
+                "priority_score": 85,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "createTransfer",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_server_authoritative_amount_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/payments/transfers", createTransfer);
+
+async function createTransfer(req: Request, res: Response) {
+  const serverAmount = deriveServerAmount(req.body.orderId);
+  return transferFunds(req.body.recipientId, serverAmount);
+}
+
+function deriveServerAmount(orderId: string) {
+  return 1;
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:routes.ts:deriveServerAmount"
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_server_amount_derivation_after_sink_does_not_refute_money_flow_candidate():
+    route = "/payments/transfers"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-money-flow-after-sink-001",
+                "vuln_type": "business_logic",
+                "location": f"POST {route}",
+                "priority_score": 85,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "createTransfer",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_server_authoritative_amount_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/payments/transfers", createTransfer);
+
+async function createTransfer(req: Request, res: Response) {
+  const result = transferFunds(req.body.recipientId, req.body.amount);
+  deriveServerAmount(req.body.orderId);
+  return result;
+}
+
+function deriveServerAmount(orderId: string) {
+  return 1;
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_agent_tool_policy_refutes_agent_tool_candidate():
+    route = "/agents/:agentId/tools/execute"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-agent-tool-001",
+                "vuln_type": "agent_tool_authz_gap",
+                "location": f"POST {route}",
+                "priority_score": 85,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "runAgentTool",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_agent_tool_authorization_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/agents/:agentId/tools/execute", runAgentTool);
+
+async function runAgentTool(req: Request, res: Response) {
+  assertToolAllowed(req.params.agentId, req.body.toolName);
+  return executeAgentTool(req.params.agentId, req.body.toolName);
+}
+
+function assertToolAllowed(agentId: string, toolName: string) {
+  return true;
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:routes.ts:assertToolAllowed"
     assert result["candidate_decisions"][0]["disposition"] == "refuted"
 
 

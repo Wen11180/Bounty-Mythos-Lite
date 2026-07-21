@@ -32,6 +32,7 @@ from app.main import (
     _studio_openapi_surface_facts,
     _studio_report_candidate_guidance,
     _studio_authorized_code_files,
+    _studio_fact_pack_code_files,
 )
 from app.llm.base import LLMMode, LLMResponse, ProviderName
 from app.llm.registry import LLMRegistry
@@ -94,6 +95,46 @@ def test_studio_authorized_code_files_rejects_symlink_escape(tmp_path: Path):
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "studio_artifact_not_authorized"
+
+
+def test_studio_authorized_code_files_preserve_relative_paths_for_fact_packs(
+    tmp_path: Path,
+):
+    repo = tmp_path / "repo"
+    (repo / "api").mkdir(parents=True)
+    (repo / "admin").mkdir()
+    (repo / "api" / "routes.py").write_text("def api_route(): pass\n")
+    (repo / "admin" / "routes.py").write_text("def admin_route(): pass\n")
+
+    code_files = _studio_authorized_code_files(str(repo))
+    fact_pack_files = _studio_fact_pack_code_files(code_files)
+
+    assert [item["path"] for item in code_files] == [
+        "admin/routes.py",
+        "api/routes.py",
+    ]
+    assert [item["path"] for item in fact_pack_files] == [
+        "admin/routes.py",
+        "api/routes.py",
+    ]
+
+
+def test_studio_authorized_code_files_include_all_mapped_extensions(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    filenames = [
+        "Controller.cs",
+        "handler.rs",
+        "routes.cts",
+        "routes.mts",
+        "service.scala",
+    ]
+    for filename in filenames:
+        (repo / filename).write_text("local source fixture\n", encoding="utf-8")
+
+    code_files = _studio_authorized_code_files(str(repo))
+
+    assert {item["path"] for item in code_files} == set(filenames)
 
 
 def test_studio_api_allows_only_configured_loopback_web_origin():

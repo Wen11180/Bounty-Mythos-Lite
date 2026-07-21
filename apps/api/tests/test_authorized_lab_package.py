@@ -40,6 +40,73 @@ def test_stage_authorized_lab_package_inputs_fail_closed():
     assert "read_note" in code.text
 
 
+@pytest.mark.parametrize(
+    ("code_name", "expected_supported"),
+    [
+        ("code.py", True),
+        ("code.ts", True),
+        ("code.tsx", True),
+        ("code.mts", True),
+        ("code.cts", True),
+        ("code.java", True),
+        ("code.go", True),
+        ("code.rb", True),
+        ("code.cs", True),
+        ("code.php", True),
+        ("code.kt", True),
+        ("code.rs", True),
+        ("code.scala", True),
+        ("code.js", False),
+    ],
+)
+def test_authorized_lab_package_accepts_mapped_code_languages_only(
+    tmp_path: Path,
+    code_name: str,
+    expected_supported: bool,
+):
+    package_root = tmp_path / "multilang-package"
+    inputs = package_root / "inputs"
+    inputs.mkdir(parents=True)
+    for name, body in {
+        "scope.json": '{"allowed_repos":["${STAGED_CODE_ROOT}"],"local_only":true}',
+        "policy.md": "local static review only",
+        "api.json": "{}",
+        "traffic.har.json": '{"log":{"version":"1.2","entries":[]}}',
+        code_name: "local source fixture\n",
+    }.items():
+        (inputs / name).write_text(body, encoding="utf-8")
+    (package_root / "package.json").write_text(
+        json.dumps(
+            {
+                "package_id": "multilang-package",
+                "authorized_for_local_research": True,
+                "contains_real_user_data": False,
+                "contains_secrets": False,
+                "inputs": [
+                    {"kind": "scope", "path": "inputs/scope.json"},
+                    {"kind": "policy", "path": "inputs/policy.md"},
+                    {"kind": "api", "path": "inputs/api.json"},
+                    {"kind": "har", "path": "inputs/traffic.har.json"},
+                    {"kind": "code", "path": f"inputs/{code_name}"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    if not expected_supported:
+        with pytest.raises(AuthorizedLabPackageError, match="supported_code_required"):
+            load_authorized_lab_package(package_root)
+        return
+
+    package = load_authorized_lab_package(package_root)
+    staged = stage_authorized_lab_package_inputs(package)
+    code = next(item for item in staged if item.kind == "code")
+
+    assert code.path.name == code_name
+    assert code.text == "local source fixture\n"
+
+
 def test_authorized_lab_package_rejects_missing_authorization(tmp_path: Path):
     package_root = tmp_path / "bad-package"
     (package_root / "inputs").mkdir(parents=True)

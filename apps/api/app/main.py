@@ -79,6 +79,7 @@ from app.candidate_hunter_loop import (
     load_candidate_hunter_projection,
     run_candidate_hunter_loop,
 )
+from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
 from app.cross_source_candidate_generator import (
     CandidateModelConfig,
     CandidateReasoner,
@@ -6325,7 +6326,7 @@ def _studio_authorized_code_files(path_value: str | None) -> list[dict[str, str]
         return []
     path = Path(path_value)
     if path.is_file():
-        return [{"path": str(path), "content": _studio_read_text_file(str(path))}]
+        return [{"path": path.name, "content": _studio_read_text_file(str(path))}]
     if not path.is_dir():
         return []
 
@@ -6340,25 +6341,22 @@ def _studio_authorized_code_files(path_value: str | None) -> list[dict[str, str]
             continue
         if not resolved_candidate.is_relative_to(resolved_root):
             raise HTTPException(status_code=403, detail="studio_artifact_not_authorized")
-        if not resolved_candidate.is_file() or candidate.suffix.lower() not in {
-            ".py",
-            ".js",
-            ".jsx",
-            ".ts",
-            ".tsx",
-            ".go",
-            ".java",
-            ".kt",
-            ".rb",
-            ".php",
-        }:
+        if (
+            not resolved_candidate.is_file()
+            or candidate.suffix.lower() not in SUPPORTED_CODE_SOURCE_SUFFIXES
+        ):
             continue
         try:
             content = resolved_candidate.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             continue
         if content.strip():
-            files.append({"path": str(candidate), "content": content[:20000]})
+            files.append(
+                {
+                    "path": resolved_candidate.relative_to(resolved_root).as_posix(),
+                    "content": content[:20000],
+                }
+            )
     return files
 
 
@@ -6370,8 +6368,16 @@ def _studio_fact_pack_code_files(code_files: list[dict[str, str]]) -> list[dict[
         content = item.get("content")
         if not isinstance(path, str) or not isinstance(content, str):
             continue
-        source_path = Path(path).name
-        if not source_path or source_path in seen_paths:
+        source_path = path.replace("\\", "/").strip()
+        if source_path.startswith("./"):
+            source_path = source_path[2:]
+        if (
+            not source_path
+            or source_path.startswith("/")
+            or ":" in source_path
+            or any(segment in {"", ".", ".."} for segment in source_path.split("/"))
+            or source_path in seen_paths
+        ):
             continue
         seen_paths.add(source_path)
         files.append({"path": source_path, "content": content})

@@ -10,6 +10,7 @@ from typing import Any
 from app.codebase_map import (
     CodebaseFactCandidate,
     SENSITIVE_SINK_NAMES,
+    SUPPORTED_CODE_SOURCE_SUFFIXES,
     map_authorized_code_files,
 )
 from app.falsification_engine import (
@@ -28,11 +29,23 @@ SAFETY_FIELDS = (
     "raw_payload_processed",
 )
 REQUIRED_ARTIFACT_KINDS = ("scope", "policy", "code", "api", "har")
+ADVISORY_ARTIFACT_KINDS = ("sarif", "sbom")
+SUPPORTED_ARTIFACT_KINDS = (*REQUIRED_ARTIFACT_KINDS, *ADVISORY_ARTIFACT_KINDS)
 STAGE_KEYS = (
     "candidate_hunter_snapshot",
     "candidate_hunter_evidence_request",
     "candidate_hunter_decision",
     "candidate_hunter_rerank",
+)
+PUBLIC_FILTER_REFUTABLE_VULN_TYPES = {
+    "authorization",
+    "authorization_boundary",
+    "bola_idor",
+    "broken_access_control",
+    "idor",
+}
+SAFE_VALIDATION_STEP = (
+    "Do not execute live validation, access production accounts, or submit a report."
 )
 
 
@@ -94,14 +107,6 @@ def build_candidate_hunter_observations(
             if not candidate_id:
                 continue
             route = _candidate_route(candidate)
-            matching_code_facts = _matching_code_facts(mapped_code_facts, route)
-            handler = _route_handler(matching_code_facts, route)
-            route_source_paths = {
-                _safe_source_name(fact.source_path)
-                for fact in matching_code_facts
-                if fact.fact_type == "route_handler"
-                and _code_fact_matches_route(fact, route)
-            }
             candidate_facts = _safe_candidate_source_facts(candidate.get("source_facts"))
             hypothesis_code_fact = next(
                 (
@@ -115,6 +120,21 @@ def build_candidate_hunter_observations(
                 ),
                 {},
             )
+            hypothesis_source_path = _safe_source_name(
+                hypothesis_code_fact.get("source_path")
+            )
+            matching_code_facts = _matching_code_facts(
+                mapped_code_facts,
+                route,
+                preferred_source_path=hypothesis_source_path,
+            )
+            handler = _route_handler(matching_code_facts, route)
+            route_source_paths = {
+                _safe_source_name(fact.source_path)
+                for fact in matching_code_facts
+                if fact.fact_type == "route_handler"
+                and _code_fact_matches_route(fact, route)
+            }
             # Frameworks without decorator routes (e.g. Django function views) still
             # declare a candidate code path/symbol; use that to attach semantic guards.
             if not handler:
@@ -207,7 +227,7 @@ def build_candidate_hunter_observations(
                 matching_code_facts,
             )
             shared_root, shared_ref = _shared_root(
-                mapped_code_facts,
+                matching_code_facts,
                 handler,
             )
             root_cause = (
@@ -245,6 +265,16 @@ def build_candidate_hunter_observations(
                 "refutation_questions": _refutation_questions(candidate),
                 "reanalysis_status": "completed",
             }
+            if broken_invariant := _safe_text(candidate.get("broken_invariant")):
+                state["broken_invariant"] = broken_invariant
+            if validation_mode := _safe_validation_mode(candidate.get("validation_mode")):
+                state["validation_mode"] = validation_mode
+            if evidence_needed := _safe_research_strings(candidate.get("evidence_needed")):
+                state["evidence_needed"] = evidence_needed
+            if impact_rationale := _safe_text(candidate.get("impact_rationale")):
+                state["impact_rationale"] = impact_rationale
+            if impact_score := _priority_score(candidate.get("impact_score")):
+                state["impact_score"] = impact_score
             if hypothesis_source_path := _text(hypothesis_code_fact.get("source_path")):
                 state["hypothesis_source_path"] = hypothesis_source_path
             if hypothesis_symbol_name := _text(hypothesis_code_fact.get("symbol_name")):
@@ -265,7 +295,17 @@ def build_candidate_hunter_observations(
                     preferred.add("path_validation_check")
                 if "mass_assignment" in root_cause:
                     preferred.add("mass_assignment_check")
-                if "injection" in root_cause:
+                if "unsafe_deserialization" in root_cause:
+                    preferred.add("deserialization_validation_check")
+                if "file_upload" in root_cause:
+                    preferred.add("file_upload_validation_check")
+                if "server_authoritative_amount" in root_cause:
+                    preferred.add("server_authoritative_amount_check")
+                if "agent_tool_authorization" in root_cause:
+                    preferred.add("agent_tool_authorization_check")
+                if "command_injection" in root_cause:
+                    preferred.add("command_injection_validation_check")
+                elif "injection" in root_cause:
                     preferred.add("injection_validation_check")
                 control_fact = _typescript_control_fact(
                     matching_code_facts,
@@ -284,7 +324,7 @@ def build_candidate_hunter_observations(
                 public_fact = _typescript_public_filter_fact(matching_code_facts)
             if control_fact is not None:
                 state["control_evidence_ref"] = control_fact["fact_ref"]
-            if public_fact is not None:
+            if public_fact is not None and _public_filter_refutes_candidate(state):
                 state["public_evidence_ref"] = public_fact["fact_ref"]
             initial_root_cause = (
                 _text(initial_gap_fact.get("root_cause"))
@@ -350,6 +390,11 @@ def _typescript_control_fact(
         "path_validation_check",
         "mass_assignment_check",
         "injection_validation_check",
+        "command_injection_validation_check",
+        "deserialization_validation_check",
+        "file_upload_validation_check",
+        "server_authoritative_amount_check",
+        "agent_tool_authorization_check",
     }
     preferred_hints = preferred_hints or set()
     # Pure RBAC (role/permission) does not close object-level ownership gaps (IDOR).
@@ -385,9 +430,7 @@ def _typescript_control_fact(
         if (
             fact.fact_type == "authz_check"
             and fact.authz_hint in decisive_hints
-            and fact.source_path.lower().endswith(
-                (".py", ".ts", ".tsx", ".mts", ".cts", ".java", ".go", ".rb", ".cs", ".php", ".kt", ".rs", ".scala")
-            )
+            and fact.source_path.lower().endswith(SUPPORTED_CODE_SOURCE_SUFFIXES)
         ):
             if isinstance(fact.payload, dict):
                 handler = _safe_text(fact.payload.get("handler"))
@@ -406,6 +449,8 @@ def _typescript_control_fact(
     for fact in candidates:
         if fact.authz_hint in preferred_hints:
             return _safe_code_fact(fact)
+    if preferred_hints:
+        return None
     return _safe_code_fact(candidates[0])
 
 
@@ -416,9 +461,7 @@ def _typescript_public_filter_fact(
         if (
             fact.fact_type == "authz_check"
             and fact.authz_hint == "public_filter"
-            and fact.source_path.lower().endswith(
-                (".py", ".ts", ".tsx", ".mts", ".cts", ".java", ".go", ".rb", ".cs", ".php", ".kt", ".rs", ".scala")
-            )
+            and fact.source_path.lower().endswith(SUPPORTED_CODE_SOURCE_SUFFIXES)
         ):
             return _safe_code_fact(fact)
     return None
@@ -1520,7 +1563,7 @@ def _ast_identifier(value: ast.AST) -> str:
 def _safe_external_fact(value: dict) -> dict[str, Any] | None:
     artifact_kind = _safe_text(value.get("artifact_kind"))
     fact_type = _safe_text(value.get("fact_type"))
-    if artifact_kind not in REQUIRED_ARTIFACT_KINDS or not fact_type:
+    if artifact_kind not in SUPPORTED_ARTIFACT_KINDS or not fact_type:
         return None
     route = _route(value.get("route_method"), value.get("route_path"))
     fact_ref = f"{artifact_kind}:{fact_type}"
@@ -1550,20 +1593,25 @@ def _safe_candidate_source_facts(value: object) -> list[dict[str, Any]]:
             continue
         artifact_kind = _safe_text(item.get("artifact_kind"))
         fact_type = _safe_text(item.get("fact_type"))
-        if artifact_kind not in REQUIRED_ARTIFACT_KINDS or not fact_type:
+        if artifact_kind not in SUPPORTED_ARTIFACT_KINDS or not fact_type:
             continue
         source_path = _safe_source_name(item.get("source_path"))
         symbol_name = _safe_text(item.get("symbol_name"))
+        route = _route(item.get("route_method"), item.get("route_path"))
+        fact_ref = (
+            _code_fact_ref(source_path, symbol_name, fact_type)
+            if artifact_kind == "code"
+            else f"{artifact_kind}:{route['method']}:{route['path']}"
+            if route
+            else f"{artifact_kind}:{fact_type}"
+        )
+        if artifact_kind == "sbom":
+            fact_ref = _safe_sbom_fact_ref(item.get("fact_ref")) or fact_ref
         fact: dict[str, Any] = {
-            "fact_ref": (
-                _code_fact_ref(source_path, symbol_name, fact_type)
-                if artifact_kind == "code"
-                else f"{artifact_kind}:{fact_type}"
-            ),
+            "fact_ref": fact_ref,
             "fact_type": fact_type,
             "artifact_kind": artifact_kind,
         }
-        route = _route(item.get("route_method"), item.get("route_path"))
         if route:
             fact["route"] = route
         if source_path:
@@ -1572,6 +1620,16 @@ def _safe_candidate_source_facts(value: object) -> list[dict[str, Any]]:
             fact["symbol_name"] = symbol_name
         if root_cause := _safe_text(item.get("root_cause")):
             fact["root_cause"] = root_cause
+        if artifact_kind == "sbom":
+            for field in (
+                "package_name",
+                "package_version",
+                "ecosystem",
+                "vulnerability_id",
+                "severity",
+            ):
+                if safe_value := _safe_sbom_fact_value(item.get(field)):
+                    fact[field] = safe_value
         facts.append(fact)
     return facts
 
@@ -1659,43 +1717,141 @@ def _route_segment_matches(pattern: str, value: str) -> bool:
 def _matching_code_facts(
     facts: list[CodebaseFactCandidate],
     route: dict[str, str],
+    *,
+    preferred_source_path: str = "",
 ) -> list[CodebaseFactCandidate]:
-    handlers = {
-        _safe_text(fact.payload.get("handler"))
+    route_facts = [
+        fact
         for fact in facts
-        if fact.fact_type == "route_handler"
-        and _code_fact_matches_route(fact, route)
-        and isinstance(fact.payload, dict)
+        if fact.fact_type == "route_handler" and _code_fact_matches_route(fact, route)
+    ]
+    if preferred_source_path:
+        route_facts = [
+            fact
+            for fact in route_facts
+            if _safe_source_name(fact.source_path) == preferred_source_path
+        ]
+
+    handlers = {
+        identity
+        for fact in route_facts
+        if (identity := _code_fact_identity(fact, "handler")) is not None
     }
-    calls_by_handler: dict[str, list[CodebaseFactCandidate]] = {}
+    calls_by_handler: dict[tuple[str, str], list[CodebaseFactCandidate]] = {}
+    handlers_by_symbol: dict[str, set[tuple[str, str]]] = {}
+    callers_by_symbol: dict[str, set[tuple[str, str]]] = {}
+    earliest_sink_line: dict[tuple[str, str], int] = {}
     for fact in facts:
-        if fact.fact_type == "service_call" and isinstance(fact.payload, dict):
-            caller = _safe_text(fact.payload.get("caller"))
-            if caller:
-                calls_by_handler.setdefault(caller, []).append(fact)
+        if handler_identity := _code_fact_identity(fact, "handler"):
+            handlers_by_symbol.setdefault(handler_identity[1], set()).add(handler_identity)
+        if fact.fact_type == "sensitive_sink":
+            handler_identity = _code_fact_identity(fact, "handler")
+            line = fact.payload.get("line") if isinstance(fact.payload, dict) else None
+            if handler_identity is not None and isinstance(line, int):
+                previous_line = earliest_sink_line.get(handler_identity)
+                if previous_line is None or line < previous_line:
+                    earliest_sink_line[handler_identity] = line
+        if fact.fact_type != "service_call":
+            continue
+        if caller_identity := _code_fact_identity(fact, "caller"):
+            calls_by_handler.setdefault(caller_identity, []).append(fact)
+            callers_by_symbol.setdefault(caller_identity[1], set()).add(caller_identity)
+
     reachable = set(handlers)
-    pending = list(handlers)
+    verified_access_helpers = {
+        identity
+        for identity, calls in calls_by_handler.items()
+        if _is_typescript_verified_access_helper(identity, calls)
+    }
+    pending = [(identity, identity in verified_access_helpers) for identity in handlers]
+    seen_paths = set(pending)
     while pending:
-        caller = pending.pop()
+        caller, through_verified_access = pending.pop()
         for fact in calls_by_handler.get(caller, []):
+            if not _service_call_precedes_local_sink(fact, earliest_sink_line):
+                continue
             callee = _safe_text(fact.symbol_name)
-            if callee and callee not in reachable:
-                reachable.add(callee)
-                pending.append(callee)
+            candidates = handlers_by_symbol.get(callee, set())
+            same_source = (caller[0], callee)
+            next_handlers = (
+                {same_source}
+                if same_source in candidates
+                else candidates
+                if len(candidates) == 1
+                else set()
+            )
+            if not next_handlers:
+                call_only_candidates = callers_by_symbol.get(callee, set())
+                call_only_same_source = (caller[0], callee)
+                call_only_handlers = (
+                    {call_only_same_source}
+                    if call_only_same_source in call_only_candidates
+                    else call_only_candidates
+                    if len(call_only_candidates) == 1
+                    else set()
+                )
+                if (
+                    _service_call_precedes_local_sink(fact, earliest_sink_line)
+                    and (
+                        through_verified_access
+                        or bool(call_only_handlers & verified_access_helpers)
+                    )
+                ):
+                    next_handlers = call_only_handlers
+            for next_handler in next_handlers:
+                next_through_verified_access = (
+                    through_verified_access or next_handler in verified_access_helpers
+                )
+                path_state = (next_handler, next_through_verified_access)
+                if path_state in seen_paths:
+                    continue
+                seen_paths.add(path_state)
+                reachable.add(next_handler)
+                pending.append(path_state)
+
     return [
         fact
         for fact in facts
-        if (
-            _code_fact_matches_route(fact, route)
-            or (
-                isinstance(fact.payload, dict)
-                and (
-                    _safe_text(fact.payload.get("handler")) in reachable
-                    or _safe_text(fact.payload.get("caller")) in reachable
-                )
-            )
-        )
+        if fact in route_facts
+        or _code_fact_identity(fact, "handler") in reachable
+        or _code_fact_identity(fact, "caller") in reachable
     ]
+
+
+def _is_typescript_verified_access_helper(
+    identity: tuple[str, str],
+    calls: list[CodebaseFactCandidate],
+) -> bool:
+    source_path, function_name = identity
+    normalized_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", function_name)
+    normalized_name = re.sub(r"[^A-Za-z0-9]+", "_", normalized_name).strip("_").lower()
+    return (
+        source_path.lower().endswith((".ts", ".tsx", ".mts", ".cts"))
+        and normalized_name.startswith("verify_")
+        and normalized_name.endswith("_access")
+        and any(_safe_text(call.symbol_name) == "deny" for call in calls)
+    )
+
+
+def _service_call_precedes_local_sink(
+    fact: CodebaseFactCandidate,
+    earliest_sink_line: dict[tuple[str, str], int],
+) -> bool:
+    caller = _code_fact_identity(fact, "caller")
+    line = fact.payload.get("line") if isinstance(fact.payload, dict) else None
+    sink_line = earliest_sink_line.get(caller) if caller is not None else None
+    return not isinstance(line, int) or sink_line is None or line < sink_line
+
+
+def _code_fact_identity(
+    fact: CodebaseFactCandidate,
+    symbol_key: str,
+) -> tuple[str, str] | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    source_path = _safe_source_name(fact.source_path)
+    symbol = _safe_text(fact.payload.get(symbol_key))
+    return (source_path, symbol) if source_path and symbol else None
 
 
 def _matching_gap_fact(
@@ -1832,8 +1988,28 @@ def _code_fact_ref(source_path: str, symbol_name: str, fact_type: str) -> str:
 
 
 def _safe_source_name(value: object) -> str:
+    text = _safe_text(value).replace("\\", "/")
+    if (
+        not text
+        or len(text) > 200
+        or text.startswith("/")
+        or ":" in text
+        or any(segment in {"", ".", ".."} for segment in text.split("/"))
+    ):
+        return ""
+    return text
+
+
+def _safe_sbom_fact_ref(value: object) -> str:
     text = _safe_text(value)
-    return _safe_text(Path(text).name) if text else ""
+    return text if re.fullmatch(r"sbom_artifact:dependency:[0-9a-f]{64}", text) else ""
+
+
+def _safe_sbom_fact_value(value: object) -> str:
+    text = _safe_text(value)
+    if len(text) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+/@:-]*", text):
+        return ""
+    return text
 
 
 def _safe_text(value: object) -> str:
@@ -1856,6 +2032,47 @@ def _safe_text(value: object) -> str:
         "production user",
     )
     return "" if any(marker in lowered for marker in unsafe_markers) else text
+
+
+def _safe_validation_mode(value: object) -> str:
+    text = _safe_text(value)
+    return text if re.fullmatch(r"[a-z][a-z0-9_]{0,100}", text) else ""
+
+
+def _public_filter_refutes_candidate(candidate: object) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    return (
+        _safe_text(candidate.get("vuln_type")).lower()
+        in PUBLIC_FILTER_REFUTABLE_VULN_TYPES
+    )
+
+
+def _safe_research_strings(value: object, *, maximum: int = 8) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    values = []
+    for item in value:
+        safe_value = _safe_text(item)
+        if safe_value and safe_value not in values:
+            values.append(safe_value)
+        if len(values) >= maximum:
+            break
+    return values
+
+
+def _local_validation_plan(
+    *,
+    route_label: str,
+    root_symbol: str,
+) -> list[str]:
+    return [
+        f"Local review only for {route_label}: confirm whether an ownership "
+        f"or authorization guard runs before the sensitive sink"
+        + (f" reached via {root_symbol}" if root_symbol else "")
+        + ".",
+        SAFE_VALIDATION_STEP,
+    ]
 
 
 def _ordered_unique(values: Any) -> list[str]:
@@ -1985,7 +2202,11 @@ def advance_candidate_hunter_round(
             )
             continue
         public_ref = _text(state.get("public_evidence_ref"))
-        if public_ref and public_ref in evidence_refs:
+        if (
+            public_ref
+            and public_ref in evidence_refs
+            and _public_filter_refutes_candidate(state)
+        ):
             suppress_card = build_falsification_card(
                 state,
                 disposition="suppressed",
@@ -2031,15 +2252,24 @@ def advance_candidate_hunter_round(
         code_refs = [
             ref for ref in evidence_refs if _text(ref).startswith("code:")
         ]
-        affected_code_path = code_refs[0] if code_refs else (
-            f"code:{root_symbol}" if root_symbol else ""
-        )
+        affected_code_path = code_refs[0]
         retain_card = build_falsification_card(
             state,
             disposition="retained",
             evidence_refs=evidence_refs,
         )
         retain_summary = project_falsification_summary(retain_card)
+        retain_survived_kill_score = survived_kill_score(retain_card)
+        retain_evidence_completeness_score = _evidence_completeness_score(state)
+        retain_priority_score = _priority_score(state.get("priority_score"))
+        safe_validation_plan = _local_validation_plan(
+            route_label=route_label,
+            root_symbol=root_symbol,
+        )
+        impact_rationale = _safe_text(state.get("impact_rationale")) or (
+            f"Potential {state['vuln_type']} impact on {route_label}; "
+            "the local evidence remains unverified."
+        )
         candidate_projection = {
             "candidate_id": state["candidate_id"],
             "rank": len(final_candidates) + 1,
@@ -2047,6 +2277,9 @@ def advance_candidate_hunter_round(
             "root_cause_id": state["root_cause_id"],
             "route": state["route"],
             "source_fact_refs": evidence_refs,
+            "survived_kill_score": retain_survived_kill_score,
+            "evidence_completeness_score": retain_evidence_completeness_score,
+            "priority_score": retain_priority_score,
             "affected_code_path": affected_code_path,
             "evidence_trace_status": "traceable",
             "human_validation_readiness": "ready",
@@ -2056,22 +2289,21 @@ def advance_candidate_hunter_round(
             "candidate_promotion_allowed": False,
             "report_submission_allowed": False,
             "refutation_questions": _refutation_questions(state),
-            "safe_validation_plan": [
-                (
-                    f"Local review only for {route_label}: confirm whether an ownership "
-                    f"or authorization guard runs before the sensitive sink"
-                    + (f" reached via {root_symbol}" if root_symbol else "")
-                    + "."
-                ),
-                "Do not execute live validation, access production accounts, or submit a report.",
-            ],
+            "validation_mode": _safe_validation_mode(state.get("validation_mode"))
+            or "non_destructive_request_review",
+            "evidence_needed": _safe_research_strings(state.get("evidence_needed")),
+            "impact_rationale": impact_rationale,
+            "impact_score": _priority_score(state.get("impact_score")),
+            "safe_validation_plan": safe_validation_plan,
             "next_allowed_action": "Human review of the cited local evidence.",
             "safety_blockers": [
                 "execute_live_validation",
                 "touch_real_user_data",
                 "submit_report",
             ],
-            "broken_invariant": retain_card.get("broken_invariant") or "",
+            "broken_invariant": _safe_text(state.get("broken_invariant"))
+            or retain_card.get("broken_invariant")
+            or "",
             "why_still_alive": list(retain_summary.get("why_still_alive") or []),
             "falsification_summary": retain_summary,
             "falsification_card": retain_card,
@@ -2083,9 +2315,9 @@ def advance_candidate_hunter_round(
                 "disposition": "retained",
                 "evidence_refs": evidence_refs,
                 "candidate_projection": candidate_projection,
-                "priority_score": _priority_score(state.get("priority_score")),
-                "evidence_completeness_score": _evidence_completeness_score(state),
-                "survived_kill_score": survived_kill_score(retain_card),
+                "priority_score": retain_priority_score,
+                "evidence_completeness_score": retain_evidence_completeness_score,
+                "survived_kill_score": retain_survived_kill_score,
                 "falsification_card": retain_card,
                 "falsification_summary": retain_summary,
             }
@@ -2681,6 +2913,8 @@ def _projection_schema_failures(
         candidate_id = _text(candidate.get("candidate_id"))
         root_cause_id = _text(candidate.get("root_cause_id"))
         route = candidate.get("route")
+        source_fact_refs = _string_list(candidate.get("source_fact_refs"))
+        affected_code_path = _text(candidate.get("affected_code_path"))
         if not candidate_id or candidate_id in final_ids:
             failures.append("final_candidate_id_invalid")
         if not root_cause_id or root_cause_id in final_roots:
@@ -2691,11 +2925,16 @@ def _projection_schema_failures(
             not _text(candidate.get("vuln_type"))
             or not isinstance(route, dict)
             or not _route(route.get("method"), route.get("path"))
-            or not _string_list(candidate.get("source_fact_refs"))
+            or not source_fact_refs
             or candidate.get("evidence_trace_status") != "traceable"
             or candidate.get("human_validation_readiness") != "ready"
         ):
             failures.append(f"{candidate_id}:final_candidate_evidence_invalid")
+        if (
+            not affected_code_path.startswith("code:")
+            or affected_code_path not in source_fact_refs
+        ):
+            failures.append(f"{candidate_id}:final_candidate_code_path_invalid")
         if any(candidate.get(field) is not False for field in SAFETY_FIELDS[:-1]):
             failures.append(f"{candidate_id}:final_candidate_permissions_invalid")
         if not required_blockers.issubset(
@@ -2746,8 +2985,19 @@ def _projection_schema_failures(
             "root_cause_id",
             "route",
             "source_fact_refs",
+            "affected_code_path",
             "evidence_trace_status",
             "human_validation_readiness",
+            "broken_invariant",
+            "validation_mode",
+            "evidence_needed",
+            "safe_validation_plan",
+            "refutation_questions",
+            "impact_rationale",
+            "impact_score",
+            "survived_kill_score",
+            "evidence_completeness_score",
+            "priority_score",
         ):
             if projection.get(field) != candidate.get(field):
                 failures.append(f"{candidate_id}:retained_projection_mismatch")
@@ -3020,12 +3270,17 @@ def _safe_prior_candidate_projection(
         for ref in value.get("source_fact_refs", [])
         if (safe_ref := _safe_text(ref))
     ] if isinstance(value.get("source_fact_refs"), list) else []
+    code_refs = [ref for ref in source_fact_refs if ref.startswith("code:")]
+    affected_code_path = _safe_text(value.get("affected_code_path")) or (
+        code_refs[0] if code_refs else ""
+    )
     if (
         _safe_text(value.get("candidate_id")) != candidate_id
         or _safe_text(value.get("root_cause_id")) != root_cause_id
         or not _safe_text(value.get("vuln_type"))
         or not safe_route
         or not source_fact_refs
+        or affected_code_path not in code_refs
         or value.get("evidence_trace_status") != "traceable"
         or any(value.get(field) is not False for field in SAFETY_FIELDS[:-1])
     ):
@@ -3037,10 +3292,10 @@ def _safe_prior_candidate_projection(
     ] if isinstance(value.get("refutation_questions"), list) else []
     if not refutation_questions:
         refutation_questions = _refutation_questions({})
-    affected_code_path = _safe_text(value.get("affected_code_path"))
-    if not affected_code_path:
-        code_refs = [ref for ref in source_fact_refs if ref.startswith("code:")]
-        affected_code_path = code_refs[0] if code_refs else ""
+    safe_validation_plan = _local_validation_plan(
+        route_label=f"{safe_route['method']} {safe_route['path']}",
+        root_symbol="",
+    )
     projection = {
         "candidate_id": candidate_id,
         "rank": _priority_score(value.get("rank")) or 1,
@@ -3057,11 +3312,12 @@ def _safe_prior_candidate_projection(
         "candidate_promotion_allowed": False,
         "report_submission_allowed": False,
         "refutation_questions": refutation_questions,
-        "safe_validation_plan": [
-            safe_text
-            for item in value.get("safe_validation_plan", [])
-            if (safe_text := _safe_text(item))
-        ] if isinstance(value.get("safe_validation_plan"), list) else [],
+        "validation_mode": _safe_validation_mode(value.get("validation_mode"))
+        or "non_destructive_request_review",
+        "evidence_needed": _safe_research_strings(value.get("evidence_needed")),
+        "impact_rationale": _safe_text(value.get("impact_rationale")),
+        "impact_score": _priority_score(value.get("impact_score")),
+        "safe_validation_plan": safe_validation_plan,
         "next_allowed_action": _safe_text(value.get("next_allowed_action")),
         "safety_blockers": [
             safe_text
@@ -3149,6 +3405,9 @@ def _snapshot_candidate(value: object) -> dict[str, Any]:
         "reanalysis_status",
         "hypothesis_source_path",
         "hypothesis_symbol_name",
+        "broken_invariant",
+        "validation_mode",
+        "impact_rationale",
     ):
         if safe_value := _safe_text(value.get(field)):
             snapshot[field] = safe_value
@@ -3161,16 +3420,28 @@ def _snapshot_candidate(value: object) -> dict[str, Any]:
         "observed_artifact_kinds",
         "required_artifact_kinds",
         "refutation_questions",
+        "evidence_needed",
     ):
         snapshot[field] = [
             safe_value
             for item in value.get(field, [])
             if (safe_value := _safe_text(item))
         ] if isinstance(value.get(field), list) else []
+    snapshot_route = snapshot.get("route")
+    snapshot_route_label = (
+        f"{snapshot_route['method']} {snapshot_route['path']}"
+        if isinstance(snapshot_route, dict)
+        else "the mapped local code path"
+    )
+    snapshot["safe_validation_plan"] = _local_validation_plan(
+        route_label=snapshot_route_label,
+        root_symbol=_safe_text(value.get("hypothesis_symbol_name")),
+    )
     snapshot["priority_score"] = _priority_score(value.get("priority_score"))
     snapshot["model_priority_score"] = _priority_score(
         value.get("model_priority_score")
     )
+    snapshot["impact_score"] = _priority_score(value.get("impact_score"))
     return snapshot
 
 
@@ -3218,7 +3489,10 @@ def _duplicate_targets(
         source_refs = _string_list(state.get("source_fact_refs"))
         if _text(state.get("control_evidence_ref")) in source_refs:
             continue
-        if _text(state.get("public_evidence_ref")) in source_refs:
+        if (
+            _text(state.get("public_evidence_ref")) in source_refs
+            and _public_filter_refutes_candidate(state)
+        ):
             continue
         shared_root = _text(state.get("shared_root"))
         shared_ref = _text(state.get("shared_root_evidence_ref"))
@@ -3318,6 +3592,8 @@ def _requested_artifact_kinds(
         )
     ):
         requested.append("code")
+    if "code_path" in missing_evidence:
+        requested.append("code")
     if "route" in missing_evidence:
         requested.extend(("code", "api"))
     if "provenance" in missing_evidence:
@@ -3385,6 +3661,8 @@ def _missing_evidence(candidate: object, pipeline_run_id: str = "") -> list[str]
     source_fact_refs = _string_list(candidate.get("source_fact_refs"))
     if not source_fact_refs:
         missing.append("provenance")
+    if not any(ref.startswith("code:") for ref in source_fact_refs):
+        missing.append("code_path")
     gap_ref = _text(candidate.get("gap_evidence_ref"))
     if gap_ref and gap_ref not in source_fact_refs:
         missing.append("gap_provenance")
