@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect } from "react";
 
-import { getControlCenterOverview } from "@/lib/api";
+import { getControlCenterOverview, getRuntimeApiBaseUrl } from "@/lib/api";
 import {
   createControlCenterLiveController,
   executeControlCenterRefresh,
@@ -23,8 +23,7 @@ interface LiveControlCenterProps {
 }
 
 function controlCenterEventsUrl(campaignId?: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-  const url = new URL("/mythos/control-center/events", baseUrl);
+  const url = new URL("/mythos/control-center/events", getRuntimeApiBaseUrl());
   if (campaignId) {
     url.searchParams.set("campaign_id", campaignId);
   }

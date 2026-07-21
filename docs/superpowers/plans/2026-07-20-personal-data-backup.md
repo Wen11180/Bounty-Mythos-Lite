@@ -21,7 +21,7 @@
 - Python standard library `sqlite3.Connection.backup`, `zipfile`, `hashlib`,
   `tempfile`, `shutil`, and `os.replace`.
 - Existing Alembic `command.upgrade` seam in `desktop_server.py`.
-- Existing Node `child_process.spawn`/`execFileSync` and Electron IPC/path
+- Existing Node `child_process.spawn`/promisified `execFile` and Electron IPC/path
   dialog seams.
 - Existing Studio `ActionButton` and desktop bridge type in
   `apps/web/app/studio/studio-workbench.tsx:90-106`.
@@ -138,8 +138,9 @@ Set-Location apps/api
 ### GREEN implementation
 
 1. Store the active launch config in `createPackagedRuntime`.
-2. Add a non-shell `execFileSync` maintenance helper using the packaged API
-   executable and the exact flags from Phase 2.
+2. Add a non-shell promisified `execFile` maintenance helper with a bounded
+   output buffer, using the packaged API executable and the exact flags from
+   Phase 2 without blocking Electron's main loop.
 3. Stop/restart in `try/finally`; preserve the existing child cleanup and
    loopback assertions.
 

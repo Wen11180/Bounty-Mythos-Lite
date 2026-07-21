@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const { apiBaseUrlFromArguments } = require("./runtime-origin.cjs");
 
 function invokeBlackBoxRunner(operation, payload = {}) {
   const line = `${JSON.stringify({ operation, payload })}\n`;
@@ -6,6 +7,10 @@ function invokeBlackBoxRunner(operation, payload = {}) {
 }
 
 contextBridge.exposeInMainWorld("mythosStudio", {
+  apiBaseUrl: apiBaseUrlFromArguments(process.argv),
+  createBackup() {
+    return ipcRenderer.invoke("mythos:create-backup");
+  },
   createBlackBoxSessions(payload) {
     return invokeBlackBoxRunner("create_sessions", payload);
   },
@@ -23,6 +28,9 @@ contextBridge.exposeInMainWorld("mythosStudio", {
   },
   refreshProgramRules() {
     return ipcRenderer.invoke("mythos:refresh-program-rules");
+  },
+  restoreBackup() {
+    return ipcRenderer.invoke("mythos:restore-backup");
   },
   selectDirectory(options) {
     return ipcRenderer.invoke("mythos:select-directory", options);

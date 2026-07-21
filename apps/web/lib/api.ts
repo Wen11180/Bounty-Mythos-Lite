@@ -36,8 +36,44 @@ export type {
   ProgramScopeRule,
 } from "./program-rule-data";
 
-const API_BASE_URL =
+const buildApiBaseUrl =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+
+export function resolveRuntimeApiBaseUrl(
+  desktopBaseUrl: string | null | undefined,
+  fallback: string,
+): string {
+  if (!desktopBaseUrl) {
+    return fallback;
+  }
+  try {
+    const url = new URL(desktopBaseUrl);
+    if (
+      url.protocol !== "http:" ||
+      !["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname) ||
+      !url.port ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      return fallback;
+    }
+    return url.origin;
+  } catch {
+    return fallback;
+  }
+}
+
+export function getRuntimeApiBaseUrl(): string {
+  const desktopBaseUrl = typeof window === "undefined"
+    ? null
+    : (window as Window & {
+        mythosStudio?: { apiBaseUrl?: string | null };
+      }).mythosStudio?.apiBaseUrl;
+  return resolveRuntimeApiBaseUrl(desktopBaseUrl, buildApiBaseUrl);
+}
 
 export type ScopeStatus = "in_scope" | "out_of_scope" | "needs_review";
 export type PolicyStatus = "allowed" | "blocked" | "needs_review";
@@ -1282,7 +1318,7 @@ export type ReasoningMemoryPlaybook = {
 
 async function apiGet<T>(path: string, fallback: T, signal?: AbortSignal): Promise<T> {
   try {
-    const response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store", signal });
+    const response = await fetch(new URL(path, getRuntimeApiBaseUrl()), { cache: "no-store", signal });
 
     if (!response.ok) {
       return fallback;
@@ -1297,7 +1333,7 @@ async function apiGet<T>(path: string, fallback: T, signal?: AbortSignal): Promi
 async function apiGetRequired<T>(path: string, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store", signal });
+    response = await fetch(new URL(path, getRuntimeApiBaseUrl()), { cache: "no-store", signal });
   } catch {
     throw apiNetworkError(`GET ${path} failed`);
   }
@@ -1318,7 +1354,7 @@ async function apiGetRequired<T>(path: string, signal?: AbortSignal): Promise<T>
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(new URL(path, API_BASE_URL), {
+    response = await fetch(new URL(path, getRuntimeApiBaseUrl()), {
       body: JSON.stringify(body),
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
@@ -1475,7 +1511,7 @@ export async function getControlCenterOverview(
   campaignId?: string,
   signal?: AbortSignal,
 ): Promise<ControlCenterOverviewResponse> {
-  const url = new URL("/mythos/control-center/overview", API_BASE_URL);
+  const url = new URL("/mythos/control-center/overview", getRuntimeApiBaseUrl());
   if (campaignId) {
     url.searchParams.set("campaign_id", campaignId);
   }
@@ -1839,7 +1875,7 @@ async function runSourceAuditScanRequest(
 ): Promise<SourceAuditScanResponse | null> {
   let response: Response;
   try {
-    response = await fetch(new URL("/mythos/source-audit/scans", API_BASE_URL), {
+    response = await fetch(new URL("/mythos/source-audit/scans", getRuntimeApiBaseUrl()), {
       body: JSON.stringify(sourceAuditScanRequestBody(request)),
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
@@ -1975,7 +2011,7 @@ async function createFindingCandidateRequest(runId: string): Promise<Finding | n
   let response: Response;
   try {
     response = await fetch(
-      new URL(`/mythos/pipeline/runs/${encodeURIComponent(runId)}/finding-candidates`, API_BASE_URL),
+      new URL(`/mythos/pipeline/runs/${encodeURIComponent(runId)}/finding-candidates`, getRuntimeApiBaseUrl()),
       {
         body: JSON.stringify({}),
         cache: "no-store",

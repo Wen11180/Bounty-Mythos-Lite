@@ -21,6 +21,7 @@ import {
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   getCampaignControlCenterRequired,
+  getRuntimeApiBaseUrl,
   getStudioBlackBoxRemoteStatus,
   getStudioWorkspaceManifestRequired,
   getStudioWorkspaceMission,
@@ -86,10 +87,18 @@ type BlackBoxLabRunnerState =
   | "trial_complete"
   | "stopped";
 
+type DesktopBackupResult =
+  | { status: "cancelled" | "failed" | "unavailable" }
+  | { archive_name: string; file_count: number; status: "created" }
+  | { archive_name: string; rollback_archive_name: string | null; status: "restored" };
+
 type MythosStudioDesktopBridge = {
+  apiBaseUrl?: string | null;
   closeBlackBoxSessions: () => Promise<string>;
+  createBackup?: () => Promise<DesktopBackupResult>;
   createBlackBoxSessions: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
   refreshProgramRules: () => Promise<SafeRefreshStatus>;
+  restoreBackup?: () => Promise<DesktopBackupResult>;
   runBlackBoxTrial: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
   selectDirectory: () => Promise<string | null>;
   selectFile: (options?: { title?: string }) => Promise<string | null>;
@@ -195,6 +204,7 @@ export function StudioWorkbench() {
   const [busy, setBusy] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<ControlCenterLiveState>("connecting");
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
+  const [desktopBackupAvailable, setDesktopBackupAvailable] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<"candidate" | "evidence" | "report" | "validation">("candidate");
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([
@@ -293,6 +303,9 @@ export function StudioWorkbench() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDesktopPickerAvailable(Boolean(window.mythosStudio));
+      setDesktopBackupAvailable(
+        Boolean(window.mythosStudio?.createBackup && window.mythosStudio?.restoreBackup),
+      );
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -303,7 +316,7 @@ export function StudioWorkbench() {
     }
     const controller = createControlCenterLiveController({
       eventsUrl: buildStudioEventsUrl(
-        process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000",
+        getRuntimeApiBaseUrl(),
         latestCampaignHunterId,
       ),
       eventSourceFactory: (url) => new EventSource(url),
@@ -952,6 +965,49 @@ export function StudioWorkbench() {
     }
   }
 
+  async function handleCreateDesktopBackup() {
+    const createBackup = window.mythosStudio?.createBackup;
+    if (!createBackup) {
+      pushLog("Desktop backup is available only in Mythos Studio.", "blocked");
+      return;
+    }
+    setBusy("backup");
+    try {
+      const result = await createBackup();
+      if (result.status !== "created") {
+        pushLog("Backup was not created. No state was changed.", "blocked");
+        return;
+      }
+      pushLog(`Local backup created: ${result.archive_name}.`, "safe");
+    } catch {
+      pushLog("Backup failed. No success state was recorded.", "blocked");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRestoreDesktopBackup() {
+    const restoreBackup = window.mythosStudio?.restoreBackup;
+    if (!restoreBackup) {
+      pushLog("Desktop restore is available only in Mythos Studio.", "blocked");
+      return;
+    }
+    setBusy("restore");
+    try {
+      const result = await restoreBackup();
+      if (result.status !== "restored") {
+        pushLog("Backup was not restored. Current state remains active.", "blocked");
+        return;
+      }
+      pushLog("Local state restored. Reloading Studio.", "safe");
+      window.setTimeout(() => window.location.reload(), 50);
+    } catch {
+      pushLog("Restore failed. Current state remains active.", "blocked");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleCreateWorkspace() {
     setBusy("workspace");
     try {
@@ -1447,6 +1503,25 @@ export function StudioWorkbench() {
           />
         </div>
       </div>
+      {desktopBackupAvailable ? (
+        <div className="grid gap-2 border-t border-[var(--line)] pt-4" data-testid="desktop-data-recovery">
+          <p className="text-xs font-semibold text-[var(--muted)]">本地数据恢复</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ActionButton
+              busy={busy === "backup"}
+              icon={<FileDown size={16} aria-hidden="true" />}
+              label="创建备份"
+              onClick={handleCreateDesktopBackup}
+            />
+            <ActionButton
+              busy={busy === "restore"}
+              icon={<Upload size={16} aria-hidden="true" />}
+              label="恢复备份"
+              onClick={handleRestoreDesktopBackup}
+            />
+          </div>
+        </div>
+      ) : null}
       <dl className="grid gap-2 border-t border-[var(--line)] pt-4 text-xs">
         <StatusRow label="Scope Guard" value={workspace.scopeGuardLabel} warning />
         <StatusRow label="授权材料" value={String(workspace.artifactCount)} />

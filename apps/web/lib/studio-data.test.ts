@@ -2841,6 +2841,24 @@ test("studio workbench can use the desktop path picker bridge", async () => {
   assert.doesNotMatch(workbench, /useEffect\(\(\) => \{\s*setDesktopPickerAvailable/s);
 });
 
+test("studio workbench exposes desktop backup and restore without unsafe bridge access", async () => {
+  const workbench = await fs.readFile(
+    new URL("../app/studio/studio-workbench.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workbench, /createBackup/);
+  assert.match(workbench, /restoreBackup/);
+  assert.match(workbench, /本地数据恢复/);
+  assert.match(workbench, /创建备份/);
+  assert.match(workbench, /恢复备份/);
+  assert.match(workbench, /setDesktopBackupAvailable/);
+  assert.match(workbench, /backup/);
+  assert.match(workbench, /restore/);
+  assert.doesNotMatch(workbench, /readFile|writeFile|exec\(|spawn\(/);
+  assert.doesNotMatch(workbench, /submitReport|runValidation|approveValidation/);
+});
+
 test("studio workbench exposes explicit non-persistent local black-box lab controls", async () => {
   const workbench = await fs.readFile(
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),

@@ -39,6 +39,29 @@ npm start
 npm test
 ```
 
+## Windows x64 package
+
+The internal desktop build bundles Next standalone assets, a PyInstaller API
+runtime, and Playwright Chromium. It does not use system Node, Python, npm, or a
+first-launch browser download.
+
+```powershell
+cd apps/api
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-desktop.txt
+cd ../studio
+npm install
+$env:MYTHOS_DESKTOP_PYTHON=(Resolve-Path ..\api\.venv\Scripts\python.exe)
+npm run make -- --platform=win32 --arch=x64
+```
+
+The unsigned Squirrel installer is written to
+`apps/studio/out/make/squirrel.windows/x64/BountyMythosLite Setup.exe`.
+SmartScreen may warn because this internal artifact is unsigned. Uninstalling
+removes the application but intentionally retains the Electron `userData`
+directory, including the local database and workspaces, until the operator
+deletes it explicitly.
+
 ## Safety
 
 This launcher does not enable public-target attacks, destructive validation, real-user-data handling, raw secret storage, or automatic report submission.

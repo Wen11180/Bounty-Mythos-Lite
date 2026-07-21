@@ -19,6 +19,10 @@ test("preload exposes only limited Mythos Studio path picker methods", async () 
   assert.match(preload, /selectDirectory/);
   assert.match(preload, /ipcRenderer\.invoke\("mythos:select-file"/);
   assert.match(preload, /ipcRenderer\.invoke\("mythos:select-directory"/);
+  assert.match(preload, /createBackup/);
+  assert.match(preload, /restoreBackup/);
+  assert.match(preload, /ipcRenderer\.invoke\("mythos:create-backup"/);
+  assert.match(preload, /ipcRenderer\.invoke\("mythos:restore-backup"/);
   assert.doesNotMatch(preload, /readFile|writeFile|exec|spawn/);
 });
 
@@ -29,6 +33,11 @@ test("main process registers file and directory picker IPC handlers", async () =
   assert.match(main, /ipcMain\.handle\("mythos:select-directory"/);
   assert.match(main, /selectStudioFile/);
   assert.match(main, /selectStudioDirectory/);
+  assert.match(main, /ipcMain\.handle\("mythos:create-backup"/);
+  assert.match(main, /ipcMain\.handle\("mythos:restore-backup"/);
+  assert.match(main, /selectDesktopBackupDestination/);
+  assert.match(main, /selectDesktopRestoreArchive/);
+  assert.match(main, /confirmDesktopRestore/);
 });
 
 test("main process installs the local-only Studio navigation guard", async () => {
@@ -97,6 +106,17 @@ test("desktop runner binds remote lease decisions only to the derived loopback A
   assert.match(main, /authorizeRemoteRequest:\s*remoteLeaseApi\.authorize/);
   assert.match(main, /completeRemoteRequest:\s*remoteLeaseApi\.complete/);
   assert.match(main, /stopRemoteLease:\s*remoteLeaseApi\.stop/);
+});
+
+test("desktop shell gives preload only the derived loopback API origin", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+  const preload = await fs.readFile(path.join(__dirname, "preload.cjs"), "utf8");
+
+  assert.match(main, /function createWindow\(apiBaseUrl\)/);
+  assert.match(main, /additionalArguments:\s*\[`--mythos-api-base-url=\$\{apiBaseUrl\}`\]/);
+  assert.match(main, /createWindow\(config\.apiBaseUrl\)/);
+  assert.match(preload, /apiBaseUrl:\s*apiBaseUrlFromArguments\(process\.argv\)/);
+  assert.doesNotMatch(preload, /MYTHOS_API_PORT|API_BASE_URL|NEXT_PUBLIC_API_BASE_URL/);
 });
 
 test("desktop main rechecks local trial authority at the derived API immediately before runner dispatch", async () => {

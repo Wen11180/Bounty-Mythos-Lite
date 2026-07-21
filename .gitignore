@@ -44,6 +44,7 @@ authorized_packages/**/_upstream/
 /apps/api/tmp/
 /apps/api/_pytest_*.log.err
 apps/web/test-results/
+apps/studio/runtime/
 
 # Redacted authorized track-record packages (never commit real outcomes by accident)
 apps/api/authorized_track_records/**

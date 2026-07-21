@@ -3,6 +3,10 @@ const { execFile, spawn } = require("node:child_process");
 const path = require("node:path");
 const { promisify } = require("node:util");
 
+if (require("electron-squirrel-startup")) {
+  app.quit();
+}
+
 const {
   createStudioLaunchConfig,
   startupErrorHtml,
@@ -20,7 +24,13 @@ const {
   preflightDevelopmentRuntime,
   resolveDevelopmentDataDirectory,
 } = require("./startup-diagnostics.cjs");
-const { selectStudioDirectory, selectStudioFile } = require("./path-dialog.cjs");
+const {
+  confirmDesktopRestore,
+  selectDesktopBackupDestination,
+  selectDesktopRestoreArchive,
+  selectStudioDirectory,
+  selectStudioFile,
+} = require("./path-dialog.cjs");
 const { createProgramRuleApiClient } = require("./program-rule-api-client.cjs");
 const { createProgramRuleRefreshPump } = require("./program-rule-refresh-pump.cjs");
 const { createProgramRuleRunner } = require("./program-rule-runner.cjs");
@@ -33,6 +43,7 @@ const rendererGenerations = new WeakMap();
 let packagedRuntime = null;
 let developmentStartupLiveness = null;
 let studioApiBaseUrl = null;
+let studioLaunchConfig = null;
 const localResearchWakeup = createLocalResearchWakeup({
   getBaseUrl: () => studioApiBaseUrl,
 });
@@ -169,12 +180,13 @@ const handleBeforeQuit = createAppExitHandler({
   killChildren,
 });
 
-function createWindow() {
+function createWindow(apiBaseUrl) {
   const window = new BrowserWindow({
     width: 1440,
     height: 920,
     title: "Mythos Studio",
     webPreferences: {
+      additionalArguments: [`--mythos-api-base-url=${apiBaseUrl}`],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -225,6 +237,46 @@ ipcMain.handle("mythos:black-box-runner", (event, line) => {
   });
 });
 
+ipcMain.handle("mythos:create-backup", async (event) => {
+  if (!packagedRuntime || !studioLaunchConfig) {
+    return { status: "unavailable" };
+  }
+  const browserWindow = BrowserWindow.fromWebContents(event.sender);
+  const destination = await selectDesktopBackupDestination(dialog, browserWindow);
+  if (!destination) {
+    return { status: "cancelled" };
+  }
+  await blackBoxRunner.closeSessions("operator_stop");
+  try {
+    const result = await packagedRuntime.createBackup(destination);
+    await waitForDesktopServices();
+    return result;
+  } catch {
+    await waitForDesktopServices().catch(() => undefined);
+    return { status: "failed" };
+  }
+});
+
+ipcMain.handle("mythos:restore-backup", async (event) => {
+  if (!packagedRuntime || !studioLaunchConfig) {
+    return { status: "unavailable" };
+  }
+  const browserWindow = BrowserWindow.fromWebContents(event.sender);
+  const archive = await selectDesktopRestoreArchive(dialog, browserWindow);
+  if (!archive || !await confirmDesktopRestore(dialog, browserWindow, archive)) {
+    return { status: "cancelled" };
+  }
+  await blackBoxRunner.closeSessions("operator_stop");
+  try {
+    const result = await packagedRuntime.restoreBackup(archive);
+    await waitForDesktopServices();
+    return result;
+  } catch {
+    await waitForDesktopServices().catch(() => undefined);
+    return { status: "failed" };
+  }
+});
+
 ipcMain.handle("mythos:refresh-program-rules", () => {
   return programRulePump.kick();
 });
@@ -232,10 +284,11 @@ ipcMain.handle("mythos:refresh-program-rules", () => {
 app.whenReady().then(async () => {
   let window;
   try {
+    const config = await createStudioLaunchConfig();
+    studioLaunchConfig = config;
+    window = createWindow(config.apiBaseUrl);
     const workspaceRoot =
       process.env.STUDIO_WORKSPACE_ROOT || path.join(app.getPath("userData"), "workspaces");
-    const config = await createStudioLaunchConfig();
-    window = createWindow();
     studioApiBaseUrl = config.apiBaseUrl;
     const startupController = startServices(config, workspaceRoot);
     await waitForApiHealth(config.apiBaseUrl, {
@@ -252,7 +305,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     await killChildren();
     const diagnostic = diagnosticFromError(error);
-    window ??= createWindow();
+    window ??= createWindow("http://127.0.0.1:1");
     window.loadURL(
       `data:text/html,${encodeURIComponent(startupErrorHtml(diagnostic, { packaged: app.isPackaged }))}`,
     );
@@ -264,3 +317,21 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", handleBeforeQuit);
+
+async function waitForDesktopServices() {
+  if (!studioLaunchConfig) {
+    throw new Error("desktop_launch_config_missing");
+  }
+  const getStartupFailure = () => (
+    app.isPackaged
+      ? packagedRuntime?.getStartupFailure() ?? null
+      : developmentStartupLiveness?.getStartupFailure() ?? null
+  );
+  await waitForApiHealth(studioLaunchConfig.apiBaseUrl, { getStartupFailure });
+  await waitForStudio(studioLaunchConfig.studioUrl, { getStartupFailure });
+  if (app.isPackaged) {
+    packagedRuntime?.markStartupReady();
+  } else {
+    developmentStartupLiveness?.markStartupReady();
+  }
+}
