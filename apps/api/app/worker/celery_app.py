@@ -11,3 +11,9 @@ celery_app = Celery(
     backend=settings.redis_url,
     include=["app.worker.tasks"],
 )
+celery_app.conf.beat_schedule = {
+    "autonomous-research-wakeup": {
+        "task": "autonomous_research.wakeup",
+        "schedule": 60.0,
+    },
+}

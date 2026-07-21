@@ -14,6 +14,7 @@ from app.db_models import (
     AgentRunRecord,
     ApprovalRecord,
     ArtifactRecord,
+    AutonomousResearchWakeupStateRecord,
     CampaignBudgetRecord,
     CampaignRecord,
     CampaignTaskRecord,
@@ -83,6 +84,9 @@ _REQUEST_TRACE_EVIDENCE_REFS = {
 _CORROBORATING_EVIDENCE_REFS = _REPORT_SAFE_REVIEW_EVIDENCE_REFS - _REQUEST_TRACE_EVIDENCE_REFS
 _PROGRAM_RULE_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+AUTONOMOUS_RESEARCH_WAKEUP_PAGE_SIZE = 20
+AUTONOMOUS_RESEARCH_WAKEUP_LEASE_SECONDS = 120
+_AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID = "autonomous_research_wakeup"
 _PROGRAM_RULE_RAW_HTML_PATTERN = re.compile(
     r"<!doctype\s+html|</?html(?:\s|>)|</?body(?:\s|>)",
     re.IGNORECASE,
@@ -1191,7 +1195,7 @@ class DatabaseRepository:
         rows = self.session.execute(
             statement
             .order_by(CampaignRecord.id.asc())
-            .limit(20)
+            .limit(AUTONOMOUS_RESEARCH_WAKEUP_PAGE_SIZE)
         ).all()
         return [
             {
@@ -1202,6 +1206,144 @@ class DatabaseRepository:
             }
             for row in rows
         ]
+
+    def get_autonomous_research_wakeup_state(
+        self,
+    ) -> AutonomousResearchWakeupStateRecord | None:
+        return self.session.get(
+            AutonomousResearchWakeupStateRecord,
+            _AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID,
+        )
+
+    def claim_autonomous_research_wakeup(
+        self,
+        *,
+        claim_token_digest: str,
+        now: datetime,
+    ) -> dict[str, str | None] | None:
+        if _SHA256_PATTERN.fullmatch(claim_token_digest) is None:
+            return None
+        timestamp = _as_utc(now)
+        state = self.get_autonomous_research_wakeup_state()
+        if state is None:
+            state = AutonomousResearchWakeupStateRecord(
+                id=_AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID,
+                execution_allowed=False,
+                validation_allowed=False,
+                report_submission_allowed=False,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self.session.add(state)
+            try:
+                self.session.commit()
+            except IntegrityError:
+                self.session.rollback()
+
+        claimable = or_(
+            AutonomousResearchWakeupStateRecord.lease_token_digest.is_(None),
+            and_(
+                AutonomousResearchWakeupStateRecord.lease_expires_at.is_not(None),
+                AutonomousResearchWakeupStateRecord.lease_expires_at <= timestamp,
+            ),
+        )
+        result = self.session.execute(
+            update(AutonomousResearchWakeupStateRecord)
+            .where(
+                AutonomousResearchWakeupStateRecord.id
+                == _AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID,
+                claimable,
+            )
+            .values(
+                lease_token_digest=claim_token_digest,
+                lease_started_at=timestamp,
+                lease_expires_at=timestamp
+                + timedelta(seconds=AUTONOMOUS_RESEARCH_WAKEUP_LEASE_SECONDS),
+                updated_at=timestamp,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        self.session.commit()
+        if result.rowcount != 1:
+            return None
+        self.session.expire_all()
+        state = self.get_autonomous_research_wakeup_state()
+        if state is None or state.lease_token_digest != claim_token_digest:
+            return None
+        return {"after_campaign_id": state.after_campaign_id}
+
+    def finish_autonomous_research_wakeup(
+        self,
+        *,
+        claim_token_digest: str,
+        after_campaign_id: str | None,
+        now: datetime,
+    ) -> bool:
+        if (
+            _SHA256_PATTERN.fullmatch(claim_token_digest) is None
+            or (
+                after_campaign_id is not None
+                and (
+                    not isinstance(after_campaign_id, str)
+                    or not after_campaign_id
+                    or len(after_campaign_id) > 100
+                )
+            )
+        ):
+            return False
+        timestamp = _as_utc(now)
+        result = self.session.execute(
+            update(AutonomousResearchWakeupStateRecord)
+            .where(
+                AutonomousResearchWakeupStateRecord.id
+                == _AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID,
+                AutonomousResearchWakeupStateRecord.lease_token_digest
+                == claim_token_digest,
+                AutonomousResearchWakeupStateRecord.lease_expires_at.is_not(None),
+                AutonomousResearchWakeupStateRecord.lease_expires_at > timestamp,
+            )
+            .values(
+                after_campaign_id=after_campaign_id,
+                lease_token_digest=None,
+                lease_started_at=None,
+                lease_expires_at=None,
+                updated_at=timestamp,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        self.session.commit()
+        self.session.expire_all()
+        return result.rowcount == 1
+
+    def renew_autonomous_research_wakeup(
+        self,
+        *,
+        claim_token_digest: str,
+        now: datetime,
+    ) -> bool:
+        if _SHA256_PATTERN.fullmatch(claim_token_digest) is None:
+            return False
+        timestamp = _as_utc(now)
+        result = self.session.execute(
+            update(AutonomousResearchWakeupStateRecord)
+            .where(
+                AutonomousResearchWakeupStateRecord.id
+                == _AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID,
+                AutonomousResearchWakeupStateRecord.lease_token_digest
+                == claim_token_digest,
+                AutonomousResearchWakeupStateRecord.lease_expires_at.is_not(None),
+                AutonomousResearchWakeupStateRecord.lease_expires_at > timestamp,
+            )
+            .values(
+                lease_expires_at=timestamp
+                + timedelta(seconds=AUTONOMOUS_RESEARCH_WAKEUP_LEASE_SECONDS),
+                updated_at=timestamp,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        self.session.commit()
+        self.session.expire_all()
+        return result.rowcount == 1
 
     def get_campaign(self, campaign_id: str) -> CampaignRecord | None:
         return self.session.get(CampaignRecord, campaign_id)

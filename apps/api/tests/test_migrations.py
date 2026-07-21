@@ -12,6 +12,7 @@ PROGRAM_RULE_TABLES = {
     "program_rule_snapshots",
     "program_scope_rules",
 }
+WAKEUP_TABLES = {"autonomous_research_wakeup_states"}
 
 
 def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path, monkeypatch):
@@ -48,6 +49,10 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         column["name"]
         for column in inspector.get_columns("program_scope_rules")
     }
+    wakeup_columns = {
+        column["name"]
+        for column in inspector.get_columns("autonomous_research_wakeup_states")
+    }
 
     assert "target_relationships" in learning_columns
     assert "identity_hash" in learning_columns
@@ -72,6 +77,7 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         "validation_runs",
     } <= tables
     assert PROGRAM_RULE_TABLES <= tables
+    assert WAKEUP_TABLES <= tables
     assert {
         "canonical_url",
         "refresh_interval_seconds",
@@ -96,6 +102,15 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         "source_evidence_refs",
         "approval_digest",
     } <= rule_columns
+    assert {
+        "after_campaign_id",
+        "lease_token_digest",
+        "lease_started_at",
+        "lease_expires_at",
+        "execution_allowed",
+        "validation_allowed",
+        "report_submission_allowed",
+    } <= wakeup_columns
 
     source_unique = {
         tuple(constraint["column_names"])
@@ -124,6 +139,17 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         "ck_program_rule_snapshots_review_bypass_allowed_false",
         "ck_program_rule_snapshots_report_submission_allowed_false",
     } <= snapshot_checks
+    wakeup_checks = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "autonomous_research_wakeup_states"
+        )
+    }
+    assert {
+        "ck_autonomous_research_wakeup_execution_allowed_false",
+        "ck_autonomous_research_wakeup_validation_allowed_false",
+        "ck_autonomous_research_wakeup_report_submission_allowed_false",
+    } <= wakeup_checks
 
 
 def test_program_rule_migration_downgrade_removes_only_new_tables(tmp_path, monkeypatch):
@@ -145,9 +171,10 @@ def test_program_rule_migration_downgrade_removes_only_new_tables(tmp_path, monk
     tables_after = set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert PROGRAM_RULE_TABLES <= tables_before
-    assert PROGRAM_RULE_TABLES.isdisjoint(tables_after)
-    assert tables_after == tables_before - PROGRAM_RULE_TABLES
+    new_tables = PROGRAM_RULE_TABLES | WAKEUP_TABLES
+    assert new_tables <= tables_before
+    assert new_tables.isdisjoint(tables_after)
+    assert tables_after == tables_before - new_tables
     assert version == "0012_field_pilot_feedback"
     engine.dispose()
 
@@ -167,7 +194,7 @@ def test_initialize_database_upgrades_persistent_sqlite_from_0010(tmp_path, monk
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
     unique_constraints = inspect(engine).get_unique_constraints("artifacts")
-    assert version == "0013_program_rule_intake"
+    assert version == "0014_autonomous_research_wakeup"
     assert any(
         constraint["name"] == "uq_artifacts_program_source_hash"
         and constraint["column_names"] == ["program_id", "source_hash"]
@@ -192,7 +219,7 @@ def test_initialize_database_adopts_unversioned_0010_sqlite(tmp_path, monkeypatc
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0013_program_rule_intake"
+    assert version == "0014_autonomous_research_wakeup"
     assert any(
         constraint["name"] == "uq_artifacts_program_source_hash"
         for constraint in inspect(engine).get_unique_constraints("artifacts")
@@ -216,7 +243,7 @@ def test_initialize_database_adopts_unversioned_field_pilot_schema(tmp_path, mon
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0013_program_rule_intake"
+    assert version == "0014_autonomous_research_wakeup"
     assert "field_pilot_feedback" in {
         column["name"] for column in inspect(engine).get_columns("learning_signals")
     }
@@ -240,6 +267,7 @@ def test_initialize_database_adopts_unversioned_program_rule_schema(tmp_path, mo
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0013_program_rule_intake"
+    assert version == "0014_autonomous_research_wakeup"
     assert PROGRAM_RULE_TABLES <= set(inspect(engine).get_table_names())
+    assert WAKEUP_TABLES <= set(inspect(engine).get_table_names())
     engine.dispose()

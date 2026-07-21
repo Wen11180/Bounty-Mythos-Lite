@@ -401,6 +401,64 @@ class CampaignRecord(Base):
     program_record: Mapped[ProgramRecord | None] = relationship()
 
 
+class AutonomousResearchWakeupStateRecord(Base):
+    __tablename__ = "autonomous_research_wakeup_states"
+    __table_args__ = (
+        CheckConstraint(
+            "execution_allowed = false",
+            name="ck_autonomous_research_wakeup_execution_allowed_false",
+        ),
+        CheckConstraint(
+            "validation_allowed = false",
+            name="ck_autonomous_research_wakeup_validation_allowed_false",
+        ),
+        CheckConstraint(
+            "report_submission_allowed = false",
+            name="ck_autonomous_research_wakeup_report_submission_allowed_false",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    after_campaign_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_token_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    execution_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    validation_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    report_submission_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+
 class CampaignBudgetRecord(Base):
     __tablename__ = "campaign_budgets"
 

@@ -46,6 +46,18 @@ def run_agent_task_from_queue(campaign_task_id: str) -> dict:
         return run_agent_task(campaign_task_id, repository=DatabaseRepository(session))
 
 
+@celery_app.task(name="autonomous_research.wakeup")
+def run_autonomous_research_wakeup_from_queue() -> dict:
+    from app.autonomous_research_wakeup import run_autonomous_research_wakeup
+
+    initialize_database()
+    with get_session_factory()() as session:
+        return run_autonomous_research_wakeup(
+            repository=DatabaseRepository(session),
+            dispatcher=dispatch_agent_task,
+        )
+
+
 def dispatch_agent_task(*, campaign_task_id: str) -> dict:
     if get_settings().worker_dispatch_mode == "inline":
         result = run_agent_task_from_queue.run(campaign_task_id)

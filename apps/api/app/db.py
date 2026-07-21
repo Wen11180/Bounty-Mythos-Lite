@@ -146,7 +146,25 @@ def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
             and ("source_id", "normalized_sha256") in snapshot_unique
             and ("approved_snapshot_id", "canonical_asset") in rule_unique
         ):
-            revision = "0013_program_rule_intake"
+            wakeup_table = "autonomous_research_wakeup_states"
+            if wakeup_table in tables:
+                wakeup_columns = {
+                    column["name"]
+                    for column in inspector.get_columns(wakeup_table)
+                }
+                if not {
+                    "after_campaign_id",
+                    "lease_token_digest",
+                    "lease_started_at",
+                    "lease_expires_at",
+                    "execution_allowed",
+                    "validation_allowed",
+                    "report_submission_allowed",
+                }.issubset(wakeup_columns):
+                    raise RuntimeError("database_schema_unversioned")
+                revision = "0014_autonomous_research_wakeup"
+            else:
+                revision = "0013_program_rule_intake"
         else:
             raise RuntimeError("database_schema_unversioned")
     elif present_program_rule_tables:
