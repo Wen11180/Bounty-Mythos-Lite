@@ -1,3 +1,5 @@
+import pytest
+
 from app.codebase_map import map_authorized_code_files
 
 
@@ -50,6 +52,695 @@ def export_file(file_id: str):
     assert "Bearer" not in str(gap.payload)
 
 
+def test_map_authorized_code_files_composes_static_fastapi_router_prefixes():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "app.py",
+                    "content": """
+from fastapi import FastAPI
+from api.router import router as api_router
+
+app = FastAPI()
+app.include_router(api_router, prefix="/v1")
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": """
+from fastapi import APIRouter
+from routes.files import router as files_router
+
+router = APIRouter(prefix="/api")
+router.include_router(files_router, prefix="/files")
+""",
+                },
+                {
+                    "path": "routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/exports")
+
+@router.get("/{file_id}")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = [
+        (fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    ]
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert routes == [("GET", "/v1/api/files/exports/{file_id}")]
+    assert gap.route_path == "/v1/api/files/exports/{file_id}"
+
+
+def test_map_authorized_code_files_resolves_package_relative_fastapi_router_imports():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/__init__.py",
+                    "content": """
+from fastapi import FastAPI
+from .routes import router
+
+app = FastAPI()
+app.include_router(router, prefix="/v1")
+""",
+                },
+                {
+                    "path": "project/routes.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/api")
+
+@router.get("/exports/{file_id}")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+                {
+                    "path": "other/routes.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/other")
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert route.route_path == "/v1/api/exports/{file_id}"
+    assert gap.route_path == "/v1/api/exports/{file_id}"
+
+
+def test_map_authorized_code_files_keeps_dynamic_fastapi_include_prefix_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "app.py",
+                    "content": """
+from fastapi import FastAPI
+from routes.files import router as files_router
+
+app = FastAPI()
+api_prefix = load_local_prefix()
+app.include_router(files_router, prefix=api_prefix)
+""",
+                },
+                {
+                    "path": "routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/files")
+
+@router.get("/{file_id}")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert route.route_path == "/files/{file_id}"
+    assert gap.route_path == "/files/{file_id}"
+
+
+def test_map_authorized_code_files_does_not_assume_unknown_include_router_owner():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "registry.py",
+                    "content": """
+from routes.files import router as files_router
+
+registry = RouterRegistry()
+registry.include_router(files_router, prefix="/invented")
+""",
+                },
+                {
+                    "path": "routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/files")
+
+@router.get("/{file_id}")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert route.route_path == "/files/{file_id}"
+    assert gap.route_path == "/files/{file_id}"
+
+
+def test_map_authorized_code_files_composes_static_flask_blueprint_prefixes():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "app.py",
+                    "content": """
+from flask import Flask
+from api.blueprint import bp as api_bp
+
+app = Flask(__name__)
+app.register_blueprint(api_bp, url_prefix="/v1")
+""",
+                },
+                {
+                    "path": "api/blueprint.py",
+                    "content": """
+from flask import Blueprint
+from routes.files import bp as files_bp
+
+bp = Blueprint("api", __name__, url_prefix="/api")
+bp.register_blueprint(files_bp, url_prefix="/files")
+""",
+                },
+                {
+                    "path": "routes/files.py",
+                    "content": """
+from flask import Blueprint, send_file
+
+bp = Blueprint("files", __name__, url_prefix="/exports")
+
+@bp.route("/<file_id>", methods=["GET"])
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = [
+        (fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    ]
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert routes == [("GET", "/v1/api/files/exports/<file_id>")]
+    assert gap.route_path == "/v1/api/files/exports/<file_id>"
+
+
+def test_map_authorized_code_files_does_not_assume_unknown_blueprint_owner():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "registry.py",
+                    "content": """
+from routes.files import bp
+
+registry = BlueprintRegistry()
+registry.register_blueprint(bp, url_prefix="/invented")
+""",
+                },
+                {
+                    "path": "routes/files.py",
+                    "content": """
+from flask import Blueprint, send_file
+
+bp = Blueprint("files", __name__, url_prefix="/files")
+
+@bp.route("/<file_id>", methods=["GET"])
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert route.route_path == "/files/<file_id>"
+    assert gap.route_path == "/files/<file_id>"
+
+
+def test_map_authorized_code_files_composes_static_django_urlconf_prefixes():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": """
+ROOT_URLCONF = "project.urls"
+""",
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [
+    path("v1/", include("api.urls")),
+]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [
+    path("files/", include("routes.urls")),
+]
+""",
+                },
+                {
+                    "path": "routes/urls.py",
+                    "content": """
+from django.urls import path
+from . import views as file_views
+
+urlpatterns = [
+    path("exports/<uuid:file_id>/", file_views.export_file),
+]
+""",
+                },
+                {
+                    "path": "routes/views.py",
+                    "content": """
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    ]
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert [(fact.route_method, fact.route_path) for fact in routes] == [
+        ("ANY", "/v1/files/exports/<uuid:file_id>/"),
+    ]
+    assert routes[0].source_path == "routes/views.py"
+    assert routes[0].symbol_name == "export_file"
+    assert gap.route_path == "/v1/files/exports/<uuid:file_id>/"
+    assert gap.source_path == "routes/views.py"
+
+
+def test_map_authorized_code_files_maps_incremental_django_urlconf_with_namespaced_include():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": """
+ROOT_URLCONF = "project.urls"
+""",
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = []
+urlpatterns += [
+    path("v1/", include(("api.urls", "api"), namespace="api")),
+]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": """
+from django.urls import path
+from .views import export_file
+
+urlpatterns = [
+    path("exports/<uuid:file_id>/", export_file),
+]
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert (route.route_method, route.route_path) == (
+        "ANY",
+        "/v1/exports/<uuid:file_id>/",
+    )
+    assert route.source_path == "api/views.py"
+    assert route.symbol_name == "export_file"
+    assert gap.route_path == "/v1/exports/<uuid:file_id>/"
+
+
+def test_map_authorized_code_files_does_not_keep_overridden_django_urlpatterns():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": """
+ROOT_URLCONF = "project.urls"
+""",
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+
+urlpatterns = [
+    path("stale/<uuid:file_id>/", export_file),
+]
+urlpatterns = []
+
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_only_latest_static_django_root_urlconf():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": """
+ROOT_URLCONF = "stale.urls"
+ROOT_URLCONF = "project.urls"
+""",
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import export_file
+
+urlpatterns = [
+    path("exports/<uuid:file_id>/", export_file),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+                {
+                    "path": "stale/urls.py",
+                    "content": """
+from django.urls import path
+from .views import stale_export
+
+urlpatterns = [
+    path("stale/<uuid:file_id>/", stale_export),
+]
+""",
+                },
+                {
+                    "path": "stale/views.py",
+                    "content": """
+def stale_export(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = [fact for fact in result.facts if fact.fact_type == "route_handler"]
+    gaps = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    ]
+
+    assert [(fact.source_path, fact.route_path) for fact in routes] == [
+        ("project/views.py", "/exports/<uuid:file_id>/"),
+    ]
+    assert [(fact.source_path, fact.route_path) for fact in gaps] == [
+        ("project/views.py", "/exports/<uuid:file_id>/"),
+    ]
+
+
+def test_map_authorized_code_files_keeps_ambiguous_django_roots_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "alternate/settings.py",
+                    "content": 'ROOT_URLCONF = "alternate.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+
+urlpatterns = [path("project/", project_export)]
+
+def project_export():
+    return send_file("project")
+""",
+                },
+                {
+                    "path": "alternate/urls.py",
+                    "content": """
+from django.urls import path
+
+urlpatterns = [path("alternate/", alternate_export)]
+
+def alternate_export():
+    return send_file("alternate")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_dynamic_django_root_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "alternate/settings.py",
+                    "content": """
+ROOT_URLCONF = load_root_urlconf()
+""",
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+
+urlpatterns = [path("project/", project_export)]
+
+def project_export():
+    return send_file("project")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_dynamic_django_include_prefix_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": """
+ROOT_URLCONF = "project.urls"
+""",
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+api_prefix = load_local_prefix()
+urlpatterns = [
+    path(api_prefix, include("routes.urls")),
+]
+""",
+                },
+                {
+                    "path": "routes/urls.py",
+                    "content": """
+from django.urls import path
+from .views import export_file
+
+urlpatterns = [
+    path("exports/<uuid:file_id>/", export_file),
+]
+""",
+                },
+                {
+                    "path": "routes/views.py",
+                    "content": """
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_assume_django_urlconf_root():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "routes/urls.py",
+                    "content": """
+from django.urls import path
+from .views import export_file
+
+urlpatterns = [
+    path("exports/<uuid:file_id>/", export_file),
+]
+""",
+                },
+                {
+                    "path": "routes/views.py",
+                    "content": """
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_assume_unknown_django_view_receiver():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": """
+ROOT_URLCONF = "project.urls"
+""",
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+
+urlpatterns = [
+    path("exports/<uuid:file_id>/", unknown_views.export_file),
+]
+
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
 def test_map_authorized_code_files_preserves_shared_service_edges_for_each_route():
     result = map_authorized_code_files(
         {
@@ -93,6 +784,149 @@ def load_record(record_id: str):
         "read_record_summary",
     }
     assert gap_handlers == {"read_record", "read_record_summary"}
+
+
+def test_map_authorized_code_files_keeps_same_named_handler_authz_in_its_source_path():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str):
+    return send_file(record_id)
+""",
+                },
+                {
+                    "path": "apps/admin/routes.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/admin/records/{record_id}")
+def read_record(record_id: str, current_user):
+    authorize_owner_or_admin(record_id, current_user)
+    return send_file(record_id)
+""",
+                },
+            ]
+        }
+    )
+
+    gaps = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    ]
+
+    assert [(gap.source_path, gap.symbol_name) for gap in gaps] == [
+        ("apps/api/routes.py", "read_record"),
+    ]
+
+
+def test_map_authorized_code_files_keeps_same_source_service_handler_when_names_collide():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str):
+    return load_record(record_id)
+
+def load_record(record_id: str):
+    return send_file(record_id)
+""",
+                },
+                {
+                    "path": "apps/admin/routes.py",
+                    "content": """
+def load_record(record_id: str, current_user):
+    authorize_owner_or_admin(record_id, current_user)
+    return send_file(record_id)
+""",
+                },
+            ]
+        }
+    )
+
+    gaps = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    ]
+
+    assert [(gap.source_path, gap.symbol_name) for gap in gaps] == [
+        ("apps/api/routes.py", "read_record"),
+    ]
+
+
+def test_map_authorized_code_files_keeps_ambiguous_dependency_wrappers_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+from app.dependencies import current_user
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=Depends(current_user)):
+    return send_file(file_id)
+""",
+                },
+                {
+                    "path": "apps/api/dependencies.py",
+                    "content": """
+from fastapi import Depends
+from app.auth import require_user
+
+def current_user(user=Depends(require_user)):
+    return user
+""",
+                },
+                {
+                    "path": "apps/admin/dependencies.py",
+                    "content": """
+def current_user(user):
+    return load_user(user)
+""",
+                },
+            ]
+        }
+    )
+
+    route_authz = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.source_path == "apps/api/routes.py"
+        and fact.payload.get("handler") == "export_file"
+    ]
+    gaps = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    ]
+
+    assert route_authz == []
+    assert [(gap.source_path, gap.symbol_name) for gap in gaps] == [
+        ("apps/api/routes.py", "export_file"),
+    ]
 
 
 def test_map_authorized_code_files_marks_flask_sensitive_route_without_authz_as_gap_candidate():
@@ -3087,6 +3921,8 @@ def run_agent_tool(agent_id: str, tool_name: str, current_user):
     assert "sensitive_sink" in fact_types
     assert gap.route_method == "POST"
     assert gap.route_path == "/agents/{agent_id}/tools/execute"
+    assert gap.authz_hint == "missing_handler_agent_tool_authorization_check"
+    assert gap.payload["root_cause"] == "missing_agent_tool_authorization_check"
 
 
 def test_map_authorized_code_files_marks_agent_tool_dispatch_without_authz_as_gap_candidate():
@@ -3119,6 +3955,8 @@ def dispatch_tool(agent_id: str, tool_name: str, current_user):
     assert sink.symbol_name == "dispatch_agent_tool"
     assert gap.route_method == "POST"
     assert gap.route_path == "/agents/{agent_id}/tools/dispatch"
+    assert gap.authz_hint == "missing_handler_agent_tool_authorization_check"
+    assert gap.payload["root_cause"] == "missing_agent_tool_authorization_check"
 
 
 def test_map_authorized_code_files_treats_agent_id_filter_as_authz_check():
@@ -3151,7 +3989,139 @@ def run_agent_tool(agent_id: str, tool_name: str, current_user):
 
     assert "agent_id_filter" in authz_symbols
     assert "sensitive_sink" in fact_types
-    assert "authorization_gap_candidate" not in fact_types
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+    assert gap.payload["root_cause"] == "missing_agent_tool_authorization_check"
+
+
+def test_map_authorized_code_files_marks_typescript_agent_tool_execution_without_policy():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/agents.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/agents/:agentId/tools/execute", runAgentTool);
+
+async function runAgentTool(req: Request, res: Response) {
+  return executeAgentTool(req.params.agentId, req.body.toolName);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.authz_hint == "missing_handler_agent_tool_authorization_check"
+    assert gap.payload["root_cause"] == "missing_agent_tool_authorization_check"
+    assert "executeAgentTool" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_preserves_job_dispatch_as_object_boundary():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/jobs.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/jobs/:jobId/run", runJob);
+
+async function runJob(req: Request, res: Response) {
+  return dispatchAgentTool(req.params.jobId);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.authz_hint == "missing_handler_authz_check"
+    assert gap.payload["root_cause"] == "missing_object_ownership_check"
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_guard", "expected_sink"),
+    (
+        (
+            "apps/api/routes/agents.py",
+            """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/agents/{agent_id}/tools/execute")
+def run_agent_tool(agent_id: str, tool_name: str):
+    assert_tool_allowed(agent_id, tool_name)
+    return execute_agent_tool(agent_id, tool_name)
+""",
+            "assert_tool_allowed",
+            "execute_agent_tool",
+        ),
+        (
+            "apps/api/routes/agents.ts",
+            """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/agents/:agentId/tools/execute", runAgentTool);
+
+function assertToolAllowed(agentId: string, toolName: string) {
+  return true;
+}
+
+async function runAgentTool(req: Request, res: Response) {
+  assertToolAllowed(req.params.agentId, req.body.toolName);
+  return executeAgentTool(req.params.agentId, req.body.toolName);
+}
+""",
+            "assertToolAllowed",
+            "executeAgentTool",
+        ),
+    ),
+)
+def test_map_authorized_code_files_treats_agent_tool_policy_as_control(
+    source_path,
+    source_code,
+    expected_guard,
+    expected_sink,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "agent_tool_authorization_check"
+    )
+
+    assert authz.symbol_name == expected_guard
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == expected_sink
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
 
 
 def test_map_authorized_code_files_follows_imported_service_alias_to_repository_owner_filter():
@@ -4342,6 +5312,838 @@ def search_campaigns(q: str):
     assert gap.payload["root_cause"] == "missing_injection_validation"
 
 
+def test_map_authorized_code_files_marks_exec_without_command_guard_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/maintenance.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/maintenance/run", run_maintenance);
+
+async function run_maintenance(req: Request, res: Response) {
+  return exec(req.body.command);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "run_maintenance"
+    assert gap.authz_hint == "missing_handler_command_injection_check"
+    assert gap.payload["root_cause"] == "missing_command_injection_validation"
+    assert "exec" in gap.payload["sink_symbols"]
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_guard"),
+    (
+        (
+            "apps/api/routes/maintenance.ts",
+            """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/maintenance/run", run_maintenance);
+
+function commandAllowlist(command: string) {
+  return command;
+}
+
+async function run_maintenance(req: Request, res: Response) {
+  const command = commandAllowlist(req.body.command);
+  return exec(command);
+}
+""",
+            "commandAllowlist",
+        ),
+        (
+            "apps/api/routes/maintenance.py",
+            """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/maintenance/run")
+def run_maintenance(command: str):
+    safe_command = validate_command(command)
+    return system(safe_command)
+""",
+            "validate_command",
+        ),
+    ),
+)
+def test_map_authorized_code_files_treats_command_validation_as_control(
+    source_path,
+    source_code,
+    expected_guard,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "command_injection_validation_check"
+    )
+
+    assert authz.symbol_name == expected_guard
+    assert any(fact.fact_type == "sensitive_sink" for fact in result.facts)
+
+
+def test_map_authorized_code_files_marks_pickle_loads_without_guard_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+import pickle
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return pickle.loads(serialized_payload)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "import_profile"
+    assert gap.authz_hint == "missing_handler_deserialization_check"
+    assert gap.payload["root_cause"] == "missing_unsafe_deserialization_guard"
+    assert "pickle_loads" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_marks_yaml_load_without_safe_loader_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+import yaml
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return yaml.load(serialized_payload)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "import_profile"
+    assert gap.authz_hint == "missing_handler_deserialization_check"
+    assert gap.payload["root_cause"] == "missing_unsafe_deserialization_guard"
+    assert "yaml_load" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_marks_imported_yaml_load_alias_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+from fastapi import APIRouter
+from yaml import load as yaml_load
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return yaml_load(serialized_payload)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "import_profile"
+    assert gap.authz_hint == "missing_handler_deserialization_check"
+    assert gap.payload["root_cause"] == "missing_unsafe_deserialization_guard"
+    assert "yaml_load" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_marks_yaml_module_alias_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+import yaml as config_yaml
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return config_yaml.load(serialized_payload)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "import_profile"
+    assert gap.authz_hint == "missing_handler_deserialization_check"
+    assert gap.payload["root_cause"] == "missing_unsafe_deserialization_guard"
+    assert "yaml_load" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_treats_yaml_safe_loader_as_deserialization_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+import yaml
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return yaml.load(serialized_payload, Loader=yaml.SafeLoader)
+""",
+                }
+            ]
+        }
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "deserialization_validation_check"
+    )
+
+    assert authz.symbol_name == "yaml_safe_loader"
+    assert not any(fact.fact_type == "sensitive_sink" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_treats_imported_yaml_safe_loader_as_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+from fastapi import APIRouter
+from yaml import SafeLoader, load as yaml_load
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return yaml_load(serialized_payload, Loader=SafeLoader)
+""",
+                }
+            ]
+        }
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "deserialization_validation_check"
+    )
+
+    assert authz.symbol_name == "yaml_safe_loader"
+    assert not any(fact.fact_type == "sensitive_sink" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_accept_yaml_safe_loader_comment_as_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+import yaml
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return yaml.load(serialized_payload)  # Loader=yaml.SafeLoader
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.payload["root_cause"] == "missing_unsafe_deserialization_guard"
+
+
+def test_map_authorized_code_files_does_not_accept_unrelated_yaml_safe_loader_as_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+import yaml
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return yaml.load(serialized_payload); audit(Loader=yaml.SafeLoader)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.payload["root_cause"] == "missing_unsafe_deserialization_guard"
+
+
+def test_map_authorized_code_files_requires_qualified_yaml_safe_loader_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": """
+import yaml
+from custom_loader import SafeLoader
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    return yaml.load(serialized_payload, Loader=SafeLoader)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.payload["root_cause"] == "missing_unsafe_deserialization_guard"
+
+
+@pytest.mark.parametrize("parser_call", ("json.loads", "yaml.safe_load"))
+def test_map_authorized_code_files_does_not_treat_standard_parsers_as_unsafe_sinks(
+    parser_call,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/imports.py",
+                    "content": f"""
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/imports/profile\")
+def import_profile(serialized_payload: bytes):
+    return {parser_call}(serialized_payload)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "sensitive_sink" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_guard"),
+    (
+        (
+            "apps/api/routes/imports.py",
+            """
+import pickle
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/imports/profile")
+def import_profile(serialized_payload: bytes):
+    safe_payload = validate_serialized_payload(serialized_payload)
+    return pickle.loads(safe_payload)
+""",
+            "validate_serialized_payload",
+        ),
+        (
+            "apps/api/routes/imports.ts",
+            """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/imports/profile", importProfile);
+
+function validateSerializedPayload(payload: string) {
+  return payload;
+}
+
+async function importProfile(req: Request, res: Response) {
+  const payload = validateSerializedPayload(req.body.payload);
+  return unsafeDeserialize(payload);
+}
+""",
+            "validateSerializedPayload",
+        ),
+    ),
+)
+def test_map_authorized_code_files_treats_deserialization_validation_as_control(
+    source_path,
+    source_code,
+    expected_guard,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "deserialization_validation_check"
+    )
+
+    assert authz.symbol_name == expected_guard
+    assert any(fact.fact_type == "sensitive_sink" for fact in result.facts)
+
+
+def test_map_authorized_code_files_marks_upload_storage_without_guard_as_gap_candidate():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/uploads.py",
+                    "content": """
+from fastapi import APIRouter, UploadFile
+
+router = APIRouter()
+
+@router.post("/uploads")
+def upload_document(document: UploadFile):
+    return save_upload(document)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "upload_document"
+    assert gap.authz_hint == "missing_handler_file_upload_check"
+    assert gap.payload["root_cause"] == "missing_file_upload_validation"
+    assert "save_upload" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_does_not_treat_generic_file_save_as_upload_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/files")
+def save_document(document: bytes):
+    return save_file(document)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "save_file"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_file_upload_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_guard", "expected_sink"),
+    (
+        (
+            "apps/api/routes/uploads.py",
+            """
+from fastapi import APIRouter, UploadFile
+
+router = APIRouter()
+
+@router.post("/uploads")
+def upload_document(document: UploadFile):
+    validated_document = validate_upload(document)
+    return save_upload(validated_document)
+""",
+            "validate_upload",
+            "save_upload",
+        ),
+        (
+            "apps/api/routes/uploads.ts",
+            """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/uploads", uploadDocument);
+
+function validateUpload(upload: unknown) {
+  return upload;
+}
+
+async function uploadDocument(req: Request, res: Response) {
+  const upload = validateUpload(req.file);
+  return storeUpload(upload);
+}
+""",
+            "validateUpload",
+            "storeUpload",
+        ),
+    ),
+)
+def test_map_authorized_code_files_treats_upload_validation_as_control(
+    source_path,
+    source_code,
+    expected_guard,
+    expected_sink,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "file_upload_validation_check"
+    )
+
+    assert authz.symbol_name == expected_guard
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == expected_sink
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_marks_transfer_funds_without_server_amount_guard():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/payments.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/payments/transfers")
+def create_transfer(order_id: str, recipient_id: str, amount: int):
+    return transfer_funds(recipient_id, amount)
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "create_transfer"
+    assert gap.authz_hint == "missing_handler_server_amount_check"
+    assert gap.payload["root_cause"] == "missing_server_authoritative_amount_check"
+    assert "transfer_funds" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_marks_typescript_transfer_funds_without_server_amount_guard():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/payments.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/payments/transfers", createTransfer);
+
+async function createTransfer(req: Request, res: Response) {
+  return transferFunds(req.body.recipientId, req.body.amount);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.symbol_name == "createTransfer"
+    assert gap.authz_hint == "missing_handler_server_amount_check"
+    assert gap.payload["root_cause"] == "missing_server_authoritative_amount_check"
+    assert "transferFunds" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_preserves_camel_blob_access_as_object_boundary():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/capsules.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/capsules/:capsuleId/download", downloadCapsule);
+
+async function downloadCapsule(req: Request, res: Response) {
+  return getBlob(req.params.capsuleId);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert gap.authz_hint == "missing_handler_authz_check"
+    assert gap.payload["root_cause"] == "missing_object_ownership_check"
+
+
+def test_map_authorized_code_files_does_not_treat_generic_transfer_as_money_flow_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/operations.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/operations/transfer")
+def transfer_document(document: bytes):
+    return transfer(document)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause")
+        == "missing_server_authoritative_amount_check"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_guard", "expected_sink"),
+    (
+        (
+            "apps/api/routes/payments.py",
+            """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/payments/transfers")
+def create_transfer(order_id: str, recipient_id: str, amount: int):
+    server_amount = derive_server_amount(order_id)
+    return transfer_funds(recipient_id, server_amount)
+""",
+            "derive_server_amount",
+            "transfer_funds",
+        ),
+        (
+            "apps/api/routes/payments.ts",
+            """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/payments/transfers", createTransfer);
+
+function deriveServerAmount(orderId: string) {
+  return 1;
+}
+
+async function createTransfer(req: Request, res: Response) {
+  const serverAmount = deriveServerAmount(req.body.orderId);
+  return transferFunds(req.body.recipientId, serverAmount);
+}
+""",
+            "deriveServerAmount",
+            "transferFunds",
+        ),
+    ),
+)
+def test_map_authorized_code_files_treats_server_amount_derivation_as_control(
+    source_path,
+    source_code,
+    expected_guard,
+    expected_sink,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    authz = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "server_authoritative_amount_check"
+    )
+
+    assert authz.symbol_name == expected_guard
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == expected_sink
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "source_code",
+    (
+        """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/payments/transfers")
+def create_transfer(order_id: str, recipient_id: str, amount: int):
+    require_user()
+    return transfer_funds(recipient_id, amount)
+""",
+        """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/payments/transfers")
+def create_transfer(order_id: str, recipient_id: str, amount: int):
+    result = transfer_funds(recipient_id, amount)
+    derive_server_amount(order_id)
+    return result
+""",
+    ),
+)
+def test_map_authorized_code_files_keeps_money_flow_gap_without_prior_matching_control(
+    source_code,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "apps/api/routes/payments.py", "content": source_code}
+            ]
+        }
+    )
+
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause")
+        == "missing_server_authoritative_amount_check"
+    )
+
+    assert gap.symbol_name == "create_transfer"
+
+
 def test_map_static_multilang_java_go_rails_ownership_and_role_facts():
     java = """
 @RestController
@@ -4394,6 +6196,226 @@ end
             and f.payload.get("handler") == handler
             for f in authz
         )
+
+
+def test_go_reachable_nested_ownership_check_suppresses_gap_candidate():
+    content = """
+package handlers
+
+func mount(r Router) { r.GET("/records/{recordId}", readRecord) }
+
+func readRecord() {
+  record := loadRecord(recordId)
+  loadRecordForUser(record, user)
+  sendFile(record.Path)
+}
+
+func loadRecordForUser(record Record, user User) {
+  validateAccess(record, user)
+}
+
+func validateAccess(record Record, user User) {
+  if record.OwnerID != user.ID { return }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "handlers.go", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "owner_or_admin_check"
+        and isinstance(fact.payload, dict)
+        and fact.payload.get("handler") == "validateAccess"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_go_unreachable_ownership_check_does_not_suppress_gap_candidate():
+    content = """
+package handlers
+
+func mount(r Router) { r.GET("/records/{recordId}", readRecord) }
+
+func readRecord() {
+  record := loadRecord(recordId)
+  sendFile(record.Path)
+}
+
+func validateAccess(record Record, user User) {
+  if record.OwnerID != user.ID { return }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "handlers.go", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_go_nested_ownership_check_after_sink_keeps_gap_candidate():
+    content = """
+package handlers
+
+func mount(r Router) { r.GET("/records/{recordId}", readRecord) }
+
+func readRecord() {
+  record := loadRecord(recordId)
+  loadRecordForUser(record, user)
+}
+
+func loadRecordForUser(record Record, user User) {
+  sendFile(record.Path)
+  validateAccess(record, user)
+}
+
+func validateAccess(record Record, user User) {
+  if record.OwnerID != user.ID { return }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "handlers.go", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_ruby_reachable_nested_ownership_check_suppresses_gap_candidate():
+    content = """
+get "/records/:record_id", to: "records#read_record"
+
+def read_record
+  record = load_record(params[:record_id])
+  load_record_for_user(record, current_user)
+  send_file record.path
+end
+
+def load_record_for_user(record, user)
+  validate_access(record, user)
+end
+
+def validate_access(record, user)
+  if record.owner_id != user.id
+    deny
+  end
+end
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "records.rb", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "owner_or_admin_check"
+        and isinstance(fact.payload, dict)
+        and fact.payload.get("handler") == "validate_access"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "read_record"
+        for fact in result.facts
+    )
+
+
+def test_ruby_nested_ownership_check_after_sink_keeps_gap_candidate():
+    content = """
+get "/records/:record_id", to: "records#read_record"
+
+def read_record
+  record = load_record(params[:record_id])
+  load_record_for_user(record, current_user)
+end
+
+def load_record_for_user(record, user)
+  send_file record.path
+  validate_access(record, user)
+end
+
+def validate_access(record, user)
+  if record.owner_id != user.id
+    deny
+  end
+end
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "records.rb", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "read_record"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("callback_scope", "protected_handler", "unprotected_handler"),
+    (
+        ("only: :show_record", "show_record", "export_record"),
+        ("except: :export_record", "show_record", "export_record"),
+    ),
+)
+def test_ruby_scoped_before_action_does_not_suppress_other_sensitive_action(
+    callback_scope,
+    protected_handler,
+    unprotected_handler,
+):
+    content = f"""
+get "/records/:record_id", to: "records#show_record"
+get "/records/:record_id/export", to: "records#export_record"
+before_action :verify_record_access, {callback_scope}
+
+def show_record
+  record = load_record(params[:record_id])
+  send_file record.path
+end
+
+def export_record
+  record = load_record(params[:record_id])
+  send_file record.path
+end
+
+def verify_record_access
+  record = load_record(params[:record_id])
+  if record.owner_id != current_user.id
+    deny
+  end
+end
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "records.rb", "content": content}]}
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == protected_handler
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == unprotected_handler
+        for fact in result.facts
+    )
 
 
 def test_map_static_multilang_csharp_php_ownership_and_role_facts():

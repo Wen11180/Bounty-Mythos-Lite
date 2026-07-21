@@ -1225,6 +1225,16 @@ def _is_sensitive_data_sink(sink_symbol: str) -> bool:
 def _gap_vuln_type(fact: CodebaseFactCandidate) -> str:
     payload = fact.payload if isinstance(fact.payload, dict) else {}
     root_cause = str(payload.get("root_cause") or "")
+    if root_cause == "missing_command_injection_validation":
+        return "command_injection"
+    if root_cause == "missing_unsafe_deserialization_guard":
+        return "unsafe_deserialization"
+    if root_cause == "missing_file_upload_validation":
+        return "file_upload"
+    if root_cause == "missing_server_authoritative_amount_check":
+        return "business_logic"
+    if root_cause == "missing_agent_tool_authorization_check":
+        return "agent_tool_authz_gap"
     if root_cause == "missing_ssrf_validation" or "ssrf" in root_cause:
         return "ssrf"
     if root_cause == "missing_path_validation" or "path_validation" in root_cause or "path_traversal" in root_cause:
@@ -1237,6 +1247,31 @@ def _gap_vuln_type(fact: CodebaseFactCandidate) -> str:
 
 
 def _gap_reason(fact: CodebaseFactCandidate, vuln_type: str) -> str:
+    if vuln_type == "command_injection":
+        return (
+            "Mapped route reaches a command execution sink without an obvious "
+            "handler-level command allowlist or argument validation check."
+        )
+    if vuln_type == "unsafe_deserialization":
+        return (
+            "Mapped route reaches an unsafe deserialization sink without an obvious "
+            "handler-level serialized-payload validation or loader policy check."
+        )
+    if vuln_type == "file_upload":
+        return (
+            "Mapped route reaches a file-upload storage sink without an obvious "
+            "handler-level upload validation or storage policy check."
+        )
+    if vuln_type == "business_logic":
+        return (
+            "Mapped route reaches a financial action sink without an obvious "
+            "handler-level server-authoritative amount derivation."
+        )
+    if vuln_type == "agent_tool_authz_gap":
+        return (
+            "Mapped route reaches an agent tool dispatch sink without an obvious "
+            "handler-level tool-policy check."
+        )
     if vuln_type == "ssrf":
         return (
             "Mapped route reaches an outbound HTTP sink without an obvious "
@@ -1264,6 +1299,36 @@ def _gap_reason(fact: CodebaseFactCandidate, vuln_type: str) -> str:
 
 
 def _gap_evidence_needed(vuln_type: str) -> list[str]:
+    if vuln_type == "command_injection":
+        return [
+            "review local command allowlist and argument validation before execution",
+            "confirm only explicitly allowed command identifiers and structured arguments reach the sink",
+            "synthetic command labels only; do not invoke processes from this review",
+        ]
+    if vuln_type == "unsafe_deserialization":
+        return [
+            "review serialized-payload validation and loader policy before deserialization",
+            "confirm type restrictions and safe loader selection reject unsupported serialized inputs",
+            "sanitized local fixtures only; do not deserialize supplied data from this review",
+        ]
+    if vuln_type == "file_upload":
+        return [
+            "review local upload validation and storage policy before file storage",
+            "confirm type, filename, and storage controls reject unsupported fixture uploads",
+            "sanitized local fixture metadata only; do not upload files from this review",
+        ]
+    if vuln_type == "business_logic":
+        return [
+            "review server-side amount derivation from trusted order or account state before financial action",
+            "confirm client-supplied amounts or credits are ignored in favor of trusted state",
+            "sanitized transaction fixture metadata only; do not create payments, refunds, or transfers",
+        ]
+    if vuln_type == "agent_tool_authz_gap":
+        return [
+            "review local user, agent, task-context, and tool-policy checks before dispatch",
+            "confirm disallowed tool labels and resource scopes are rejected before invocation",
+            "sanitized local mock-tool metadata only; do not dispatch tools from this review",
+        ]
     if vuln_type == "ssrf":
         return [
             "review URL validation before outbound fetch",
@@ -1296,6 +1361,36 @@ def _gap_evidence_needed(vuln_type: str) -> list[str]:
 
 
 def _gap_false_positive_checks(vuln_type: str) -> list[str]:
+    if vuln_type == "command_injection":
+        return [
+            "a same-handler command allowlist or argument validation may run before execution",
+            "the execution wrapper may accept only fixed command identifiers and structured arguments",
+            "the mapped command may be a local-only maintenance operation",
+        ]
+    if vuln_type == "unsafe_deserialization":
+        return [
+            "a safe loader or type allowlist may run before deserialization",
+            "the serialized input may be generated exclusively from trusted local state",
+            "the mapped loader may reject unsupported types before object construction",
+        ]
+    if vuln_type == "file_upload":
+        return [
+            "a same-handler upload validation or storage policy check may run before storage",
+            "the upload service may enforce type, filename, and non-executable storage restrictions",
+            "the mapped file may remain inaccessible outside a fixed local upload root",
+        ]
+    if vuln_type == "business_logic":
+        return [
+            "a same-handler server-side amount derivation may run before the financial action",
+            "the service may recompute totals from trusted order or account state",
+            "the mapped action may ignore client-supplied amount and credit values",
+        ]
+    if vuln_type == "agent_tool_authz_gap":
+        return [
+            "a same-handler or dependency tool-policy check may run before dispatch",
+            "the dispatcher may recheck user, agent, task, and resource scope before invocation",
+            "the mapped tool may be restricted to a fixed local-only allowlist",
+        ]
     if vuln_type == "ssrf":
         return [
             "SSRF validation may run before webhook delivery",
@@ -1702,6 +1797,31 @@ def _source_audit_target_model(result: SourceAuditResult) -> dict:
 def _broken_invariant_for_hypothesis(hypothesis: VulnerabilityHypothesis) -> str:
     if hypothesis.vuln_type == "authorization":
         return "Sensitive object access must be constrained by authentication, role, and ownership checks."
+    if hypothesis.vuln_type == "command_injection":
+        return (
+            "Command selection and arguments must be constrained by an explicit local allowlist "
+            "or structured validation before command-execution sinks."
+        )
+    if hypothesis.vuln_type == "unsafe_deserialization":
+        return (
+            "Serialized input must pass an explicit type and loader policy before unsafe "
+            "deserialization sinks."
+        )
+    if hypothesis.vuln_type == "file_upload":
+        return (
+            "Uploaded files must pass explicit type, filename, and storage policy checks "
+            "before upload-storage sinks."
+        )
+    if hypothesis.vuln_type == "business_logic":
+        return (
+            "Financial amounts, credits, and refunds must be derived from trusted server-side "
+            "order or account state before financial action sinks."
+        )
+    if hypothesis.vuln_type == "agent_tool_authz_gap":
+        return (
+            "AI agents may only invoke tools and resources explicitly authorized for the "
+            "current user, agent policy, and task context."
+        )
     if hypothesis.vuln_type == "injection":
         return "User-controlled input must not reach a sink without structured validation."
     if hypothesis.vuln_type == "ssrf":
@@ -1716,17 +1836,42 @@ def _broken_invariant_for_hypothesis(hypothesis: VulnerabilityHypothesis) -> str
 def _validation_mode_for_hypothesis(hypothesis: VulnerabilityHypothesis) -> str:
     if hypothesis.vuln_type == "authorization":
         return "two_account_authorization_check"
+    if hypothesis.vuln_type == "command_injection":
+        return "offline_command_execution_boundary_review"
+    if hypothesis.vuln_type == "unsafe_deserialization":
+        return "offline_deserialization_policy_review"
+    if hypothesis.vuln_type == "file_upload":
+        return "offline_file_upload_policy_review"
+    if hypothesis.vuln_type == "business_logic":
+        return "offline_server_amount_policy_review"
+    if hypothesis.vuln_type == "agent_tool_authz_gap":
+        return "offline_agent_tool_policy_review"
     return "local_code_review"
 
 
 def _source_audit_hunter_assessment(hypothesis: dict, severity: str) -> dict:
     vuln_type = str(hypothesis.get("vuln_type", "source_audit"))
-    playbook_id = "bola_idor" if vuln_type == "authorization" else "generic_logic"
-    playbook_label = (
-        "BOLA / IDOR object boundary"
-        if playbook_id == "bola_idor"
-        else "Generic source audit candidate"
-    )
+    if vuln_type == "authorization":
+        playbook_id = "bola_idor"
+        playbook_label = "BOLA / IDOR object boundary"
+    elif vuln_type == "command_injection":
+        playbook_id = "command_execution_boundary"
+        playbook_label = "Command execution boundary"
+    elif vuln_type == "unsafe_deserialization":
+        playbook_id = "unsafe_deserialization_boundary"
+        playbook_label = "Unsafe deserialization boundary"
+    elif vuln_type == "file_upload":
+        playbook_id = "file_upload_boundary"
+        playbook_label = "File upload boundary"
+    elif vuln_type == "business_logic":
+        playbook_id = "money_flow_tampering"
+        playbook_label = "Server-authoritative money flow"
+    elif vuln_type == "agent_tool_authz_gap":
+        playbook_id = "agent_tool_authorization"
+        playbook_label = "Agent tool authorization"
+    else:
+        playbook_id = "generic_logic"
+        playbook_label = "Generic source audit candidate"
     return {
         "hypothesis": safe_display_text(str(hypothesis.get("hypothesis", "Source audit hypothesis"))),
         "playbook_id": playbook_id,

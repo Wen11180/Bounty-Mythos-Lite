@@ -50,6 +50,11 @@ _RUBY_BEFORE_ACTION = re.compile(
     r"\bbefore_action\s+:(?P<name>[A-Za-z_][A-Za-z0-9_?!]*)",
     re.IGNORECASE,
 )
+_RUBY_BEFORE_ACTION_SCOPE = re.compile(
+    r"\b(?P<scope>only|except)\s*:\s*"
+    r"(?P<actions>\[[^\]]*\]|%i\[[^\]]*\]|:[A-Za-z_][A-Za-z0-9_?!]*|[\"'][^\"']+[\"'])",
+    re.IGNORECASE,
+)
 _RUBY_DEF = re.compile(r"^\s*def\s+(?P<name>[A-Za-z_][A-Za-z0-9_?!]*)", re.MULTILINE)
 
 _COMPARISON = re.compile(
@@ -403,43 +408,37 @@ def _map_go_file(*, source_path: str, content: str) -> list["CodebaseFactCandida
                 )
             )
 
-    # Scan function bodies: route handlers + middleware + service helpers.
+    # Scan only the local call graph reachable from route handlers and middleware.
     scan_targets = set(route_handlers) | {
         mw for mws in middleware_for_handler.values() for mw, _ in mws
     }
-    # Also scan any function called as service from a route handler body.
-    for name, brace_at, body_text in functions.values():
-        if name in scan_targets:
-            facts.extend(
-                _scan_handler_body(
-                    source_path=source_path,
-                    handler=name,
-                    body_text=body_text,
-                    body_start_offset=brace_at + 1,
-                    full_source=content,
-                    local_methods=func_names,
-                )
-            )
-
-    # Second pass: service helpers reachable via service_call facts.
-    reachable = set(scan_targets)
-    for fact in facts:
-        if fact.fact_type == "service_call" and fact.symbol_name:
-            reachable.add(fact.symbol_name)
-    for name, brace_at, body_text in functions.values():
-        if name in scan_targets:
+    pending = list(scan_targets)
+    scanned: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in scanned:
             continue
-        if name not in reachable:
+        function = functions.get(name)
+        if function is None:
             continue
-        facts.extend(
-            _scan_handler_body(
-                source_path=source_path,
-                handler=name,
-                body_text=body_text,
-                body_start_offset=brace_at + 1,
-                full_source=content,
-                local_methods=func_names,
-            )
+        scanned.add(name)
+        _, brace_at, body_text = function
+        scanned_facts = _scan_handler_body(
+            source_path=source_path,
+            handler=name,
+            body_text=body_text,
+            body_start_offset=brace_at + 1,
+            full_source=content,
+            local_methods=func_names,
+        )
+        facts.extend(scanned_facts)
+        pending.extend(
+            fact.symbol_name
+            for fact in scanned_facts
+            if fact.fact_type == "service_call"
+            and isinstance(fact.symbol_name, str)
+            and fact.symbol_name in functions
+            and fact.symbol_name not in scanned
         )
     return facts
 
@@ -529,7 +528,7 @@ def _map_ruby_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
     methods = _ruby_methods(content)
     method_names = set(methods)
     handler_routes: dict[str, list[tuple[str, str, int]]] = {}
-    before_actions = [m.group("name").rstrip("?!") for m in _RUBY_BEFORE_ACTION.finditer(content)]
+    before_actions = _ruby_before_actions(content)
 
     for match in _RUBY_ROUTE.finditer(content):
         method = match.group("method").upper()
@@ -550,9 +549,14 @@ def _map_ruby_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
                 line_number=line,
             )
         )
-        # before_action filters attach to every routed action (controller-style).
-        for ba in before_actions:
-            ba_line = content.count("\n", 0, content.find(f":{ba}")) + 1 if f":{ba}" in content else line
+        # Attach only callback filters that apply to this routed action.
+        for ba, ba_line, only_actions, except_actions in before_actions:
+            if not _ruby_before_action_applies_to(
+                handler,
+                only_actions=only_actions,
+                except_actions=except_actions,
+            ):
+                continue
             facts.append(
                 _fact(
                     fact_type="service_call",
@@ -579,42 +583,88 @@ def _map_ruby_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
                     )
                 )
 
-    scan_names = set(handler_routes) | set(before_actions)
-    for name, body_start, body_text in methods.values():
-        if name not in scan_names:
+    # Scan only the local call graph reachable from routes and before_action filters.
+    pending = list(
+        set(handler_routes) | {name for name, _, _, _ in before_actions}
+    )
+    scanned: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in scanned:
             continue
-        facts.extend(
-            _scan_handler_body(
-                source_path=source_path,
-                handler=name,
-                body_text=body_text,
-                body_start_offset=body_start,
-                full_source=content,
-                local_methods=method_names,
-            )
+        method = methods.get(name)
+        if method is None:
+            continue
+        scanned.add(name)
+        _, body_start, body_text = method
+        scanned_facts = _scan_handler_body(
+            source_path=source_path,
+            handler=name,
+            body_text=body_text,
+            body_start_offset=body_start,
+            full_source=content,
+            local_methods=method_names,
         )
-
-    # Reachable helpers via service_call.
-    reachable = set(scan_names)
-    for fact in facts:
-        if fact.fact_type == "service_call" and fact.symbol_name:
-            reachable.add(fact.symbol_name)
-    for name, body_start, body_text in methods.values():
-        if name in scan_names:
-            continue
-        if name not in reachable:
-            continue
-        facts.extend(
-            _scan_handler_body(
-                source_path=source_path,
-                handler=name,
-                body_text=body_text,
-                body_start_offset=body_start,
-                full_source=content,
-                local_methods=method_names,
-            )
+        facts.extend(scanned_facts)
+        pending.extend(
+            fact.symbol_name
+            for fact in scanned_facts
+            if fact.fact_type == "service_call"
+            and isinstance(fact.symbol_name, str)
+            and fact.symbol_name in methods
+            and fact.symbol_name not in scanned
         )
     return facts
+
+
+def _ruby_before_actions(
+    content: str,
+) -> list[tuple[str, int, set[str] | None, set[str]]]:
+    callbacks: list[tuple[str, int, set[str] | None, set[str]]] = []
+    for match in _RUBY_BEFORE_ACTION.finditer(content):
+        name = match.group("name").rstrip("?!")
+        line_end = content.find("\n", match.start())
+        declaration = content[match.start() : line_end if line_end >= 0 else len(content)]
+        only_actions: set[str] | None = None
+        except_actions: set[str] = set()
+        for scope_match in _RUBY_BEFORE_ACTION_SCOPE.finditer(declaration):
+            action_names = _ruby_before_action_scope_names(
+                scope_match.group("actions")
+            )
+            if scope_match.group("scope").lower() == "only":
+                only_actions = action_names
+            else:
+                except_actions.update(action_names)
+        callbacks.append(
+            (
+                name,
+                content.count("\n", 0, match.start()) + 1,
+                only_actions,
+                except_actions,
+            )
+        )
+    return callbacks
+
+
+def _ruby_before_action_scope_names(value: str) -> set[str]:
+    if value.startswith("%i["):
+        value = value[3:-1]
+    elif value.startswith("["):
+        value = value[1:-1]
+    return {
+        name.rstrip("?!")
+        for name in re.findall(r"[A-Za-z_][A-Za-z0-9_?!]*", value)
+    }
+
+
+def _ruby_before_action_applies_to(
+    handler: str,
+    *,
+    only_actions: set[str] | None,
+    except_actions: set[str],
+) -> bool:
+    action = handler.rstrip("?!")
+    return (only_actions is None or action in only_actions) and action not in except_actions
 
 
 def _ruby_methods(content: str) -> dict[str, tuple[str, int, str]]:

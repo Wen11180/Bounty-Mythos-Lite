@@ -1,8 +1,10 @@
-from dataclasses import dataclass
+import ast
+from dataclasses import dataclass, replace
 from io import StringIO
 import re
 import tokenize
 
+from app.codebase_map.static_multilang import MULTILANG_SOURCE_SUFFIXES
 
 ROUTE_DECORATOR_PATTERN = re.compile(
     r"@\w+\.(get|post|put|patch|delete)\(\s*[\"']([^\"']+)[\"']",
@@ -49,6 +51,12 @@ DEPENDENCY_ALIAS_PATTERN = re.compile(
 IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(.+)$")
 IMPORT_ALIAS_ITEM_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
+YAML_MODULE_IMPORT_PATTERN = re.compile(
+    r"^\s*import\s+yaml(?:\s+as\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*))?\s*(?:#.*)?$"
+)
+YAML_FROM_IMPORT_PATTERN = re.compile(
+    r"^\s*from\s+yaml\s+import\s+(?P<items>[^#]+?)\s*(?:#.*)?$"
 )
 LOCAL_CALL_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
@@ -159,10 +167,46 @@ SENSITIVE_SINK_NAMES = {
     "send_file",
     "send_payload",
     "_send_payload",
+    "exec",
+    "system",
     "transfer",
     "update",
     "update_role",
     "update_user",
+}
+# Explicit deserialization entry points only. Generic parse/load helpers are not sinks.
+UNSAFE_DESERIALIZATION_SINK_NAMES = {
+    "pickle_load",
+    "pickle_loads",
+    "dill_load",
+    "dill_loads",
+    "yaml_load",
+    "unsafe_deserialize",
+    "deserialize_untrusted",
+}
+SENSITIVE_SINK_NAMES.update(UNSAFE_DESERIALIZATION_SINK_NAMES)
+# Explicit upload-storage entry points only. Generic file writes are not upload sinks.
+FILE_UPLOAD_SINK_NAMES = {
+    "save_upload",
+    "save_uploaded_file",
+    "store_upload",
+    "store_uploaded_file",
+}
+SENSITIVE_SINK_NAMES.update(FILE_UPLOAD_SINK_NAMES)
+# Explicit financial action entry points only. Generic transfers remain authorization sinks.
+MONEY_FLOW_SINK_NAMES = {
+    "apply_credit",
+    "capture_payment",
+    "charge_card",
+    "create_refund",
+    "issue_refund",
+    "transfer_funds",
+}
+SENSITIVE_SINK_NAMES.update(MONEY_FLOW_SINK_NAMES)
+# Existing sensitive sinks that require per-tool authorization rather than object access alone.
+AGENT_TOOL_SINK_NAMES = {
+    "dispatch_agent_tool",
+    "execute_agent_tool",
 }
 # Outbound HTTP sinks used for SSRF-family gap root_cause selection.
 OUTBOUND_HTTP_SINK_NAMES = {
@@ -187,6 +231,12 @@ INJECTION_SINK_NAMES = {
     "db_select",
     "execute_query",
     "run_sql",
+}
+# Command execution sinks used for command-injection-family gap root_cause selection.
+# Keep this list explicit; generic helpers such as ``run`` are not command sinks.
+COMMAND_EXECUTION_SINK_NAMES = {
+    "exec",
+    "system",
 }
 # Protective checks that gate user-controlled outbound URLs (SSRF).
 SSRF_GUARD_MARKERS = (
@@ -229,6 +279,54 @@ INJECTION_GUARD_MARKERS = (
     "full_text_query",
     "regex_full_text",
 )
+# Protective checks that constrain command selection or arguments before execution.
+COMMAND_EXECUTION_GUARD_MARKERS = (
+    "command_allowlist",
+    "command_whitelist",
+    "allowed_command",
+    "validate_command",
+    "command_validation",
+    "safe_command",
+)
+# Protective checks that constrain serialized payloads before deserialization.
+DESERIALIZATION_GUARD_MARKERS = (
+    "validate_serialized",
+    "validate_deserialization",
+    "deserialization_allowlist",
+    "safe_deserialize",
+    "safe_loader",
+)
+# Protective checks that constrain uploaded files before storage.
+FILE_UPLOAD_GUARD_MARKERS = (
+    "validate_upload",
+    "validate_uploaded_file",
+    "upload_allowlist",
+    "upload_type_allowlist",
+    "upload_security_check",
+)
+# Protective checks that derive financial amounts from trusted server-side state.
+MONEY_FLOW_GUARD_MARKERS = (
+    "derive_server_amount",
+    "calculate_server_total",
+    "recalculate_order_total",
+    "verify_server_price",
+)
+# Protective checks that bind an agent, user, and task context to a permitted tool.
+AGENT_TOOL_GUARD_MARKERS = (
+    "assert_tool_allowed",
+    "require_tool_permission",
+    "tool_allowlist",
+    "tool_policy_check",
+    "validate_tool_call",
+)
+STATIC_GAP_GUARD_HINTS = {
+    "missing_agent_tool_authorization_check": {
+        "agent_tool_authorization_check",
+    },
+    "missing_server_authoritative_amount_check": {
+        "server_authoritative_amount_check",
+    },
+}
 HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
 CALL_NAME_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 NON_CALL_KEYWORDS = {
@@ -248,6 +346,11 @@ NON_CALL_KEYWORDS = {
     "with",
 }
 TYPESCRIPT_SOURCE_SUFFIXES = (".ts", ".tsx", ".mts", ".cts")
+SUPPORTED_CODE_SOURCE_SUFFIXES = (
+    ".py",
+    *TYPESCRIPT_SOURCE_SUFFIXES,
+    *MULTILANG_SOURCE_SUFFIXES,
+)
 TYPESCRIPT_ROUTE_CALL_PATTERN = re.compile(
     r"\b(?P<receiver>[A-Za-z_$][A-Za-z0-9_$]*)\."
     r"(?P<method>get|post|put|patch|delete)\s*\(",
@@ -349,11 +452,50 @@ class CodebaseMapResult:
         return _count_facts(self.facts, "sensitive_sink")
 
 
+@dataclass(frozen=True)
+class _FastAPIRouterSource:
+    source_path: str
+    module_name: str
+    tree: ast.Module
+    app_names: set[str]
+    router_prefixes: dict[str, str | None]
+    handlers_by_router: dict[str, set[str]]
+
+
+@dataclass(frozen=True)
+class _FlaskBlueprintSource:
+    source_path: str
+    module_name: str
+    tree: ast.Module
+    app_names: set[str]
+    blueprint_prefixes: dict[str, str | None]
+    handlers_by_blueprint: dict[str, set[str]]
+
+
+@dataclass(frozen=True)
+class _DjangoURLSource:
+    source_path: str
+    module_name: str
+    tree: ast.Module
+
+
+@dataclass(frozen=True)
+class _DjangoURLPattern:
+    route_path: str | None
+    line: int
+    view_identity: tuple[str, str] | None
+    include_source_path: str | None
+
+
 def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
     files = payload.get("authorized_code_files")
     if not isinstance(files, list):
         return CodebaseMapResult(facts=[], file_count=0)
 
+    route_prefixes = _merge_static_route_prefixes(
+        _fastapi_route_prefixes(files),
+        _flask_route_prefixes(files),
+    )
     facts: list[CodebaseFactCandidate] = []
     mapped_file_count = 0
     for item in files:
@@ -383,6 +525,8 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
         else:
             facts.extend(_map_file(source_path=source_path, content=content))
 
+    facts.extend(_django_route_facts(files))
+    facts = _apply_static_route_prefixes(facts, route_prefixes)
     facts = _dedupe_handler_authz_facts(
         _dedupe_facts(_resolve_dependency_wrapper_authz(facts))
     )
@@ -390,6 +534,1025 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
         facts=_dedupe_facts([*facts, *_authorization_gap_candidates(facts)]),
         file_count=mapped_file_count,
     )
+
+
+def _fastapi_route_prefixes(files: list[object]) -> dict[tuple[str, str], list[str]]:
+    sources: list[_FastAPIRouterSource] = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        source_path = item.get("path")
+        content = item.get("content")
+        if (
+            not isinstance(source_path, str)
+            or not source_path.lower().endswith(".py")
+            or not isinstance(content, str)
+        ):
+            continue
+        module_name = _python_module_name(source_path)
+        if module_name is None:
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        router_prefixes = _fastapi_router_prefixes_from_tree(tree)
+        sources.append(
+            _FastAPIRouterSource(
+                source_path=source_path,
+                module_name=module_name,
+                tree=tree,
+                app_names=_fastapi_app_names_from_tree(tree),
+                router_prefixes=router_prefixes,
+                handlers_by_router=_fastapi_router_handlers(tree, router_prefixes),
+            )
+        )
+    if not sources:
+        return {}
+
+    source_by_module = _python_source_by_module(sources)
+    nodes = {
+        (source.source_path, router_name): prefix
+        for source in sources
+        for router_name, prefix in source.router_prefixes.items()
+        if prefix is not None
+    }
+    if not nodes:
+        return {}
+
+    edges: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = {}
+    roots: list[tuple[tuple[str, str], str]] = []
+    for source in sources:
+        router_aliases = {
+            router_name: (source.source_path, router_name)
+            for router_name in source.router_prefixes
+            if (source.source_path, router_name) in nodes
+        }
+        for statement in ast.walk(source.tree):
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            module_name = _python_import_module_name(
+                source.module_name,
+                source.source_path,
+                statement,
+            )
+            imported_source_path = (
+                source_by_module.get(module_name) if module_name is not None else None
+            )
+            if imported_source_path is None:
+                continue
+            for imported in statement.names:
+                node = (imported_source_path, imported.name)
+                if node in nodes:
+                    router_aliases[imported.asname or imported.name] = node
+
+        for call in ast.walk(source.tree):
+            if (
+                not isinstance(call, ast.Call)
+                or not isinstance(call.func, ast.Attribute)
+                or call.func.attr != "include_router"
+                or not isinstance(call.func.value, ast.Name)
+                or not call.args
+                or not isinstance(call.args[0], ast.Name)
+            ):
+                continue
+            child = router_aliases.get(call.args[0].id)
+            prefix = _static_fastapi_prefix(call)
+            if child is None or prefix is None:
+                continue
+            parent = router_aliases.get(call.func.value.id)
+            if parent is None and call.func.value.id in source.app_names:
+                roots.append((child, prefix))
+            elif parent is not None:
+                edges.setdefault(parent, []).append((child, prefix))
+
+    resolved = _resolve_static_router_prefixes(nodes, edges, roots)
+
+    route_prefixes: dict[tuple[str, str], set[str]] = {}
+    for source in sources:
+        for router_name, handlers in source.handlers_by_router.items():
+            node = (source.source_path, router_name)
+            local_prefix = nodes.get(node)
+            if local_prefix is None:
+                continue
+            prefixes = resolved.get(node) or {local_prefix}
+            for handler_name in handlers:
+                route_prefixes.setdefault((source.source_path, handler_name), set()).update(
+                    prefixes
+                )
+    return {
+        identity: sorted(prefixes)
+        for identity, prefixes in route_prefixes.items()
+    }
+
+
+def _python_module_name(source_path: str) -> str | None:
+    normalized = source_path.replace("\\", "/").strip("/")
+    if not normalized.endswith(".py"):
+        return None
+    parts = normalized[:-3].split("/")
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    if not parts or any(not part.isidentifier() for part in parts):
+        return None
+    return ".".join(parts)
+
+
+def _python_source_by_module(
+    sources: list[_FastAPIRouterSource | _FlaskBlueprintSource | _DjangoURLSource],
+) -> dict[str, str]:
+    candidates: dict[str, set[str]] = {}
+    for source in sources:
+        parts = source.module_name.split(".")
+        for index in range(len(parts)):
+            candidates.setdefault(".".join(parts[index:]), set()).add(source.source_path)
+    return {
+        module_name: next(iter(paths))
+        for module_name, paths in candidates.items()
+        if len(paths) == 1
+    }
+
+
+def _fastapi_router_prefixes_from_tree(tree: ast.Module) -> dict[str, str | None]:
+    constructor_names = {"APIRouter"}
+    module_names: set[str] = set()
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.ImportFrom) and statement.module == "fastapi":
+            constructor_names.update(
+                imported.asname or imported.name
+                for imported in statement.names
+                if imported.name == "APIRouter"
+            )
+        elif isinstance(statement, ast.Import):
+            module_names.update(
+                imported.asname or imported.name
+                for imported in statement.names
+                if imported.name == "fastapi"
+            )
+
+    prefixes: dict[str, str | None] = {}
+    for statement in ast.walk(tree):
+        value = (
+            statement.value
+            if isinstance(statement, (ast.Assign, ast.AnnAssign))
+            else None
+        )
+        if not isinstance(value, ast.Call) or not _is_fastapi_router_call(
+            value,
+            constructor_names,
+            module_names,
+        ):
+            continue
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        )
+        prefix = _static_fastapi_prefix(value)
+        for target in targets:
+            if isinstance(target, ast.Name):
+                prefixes[target.id] = prefix
+    return prefixes
+
+
+def _fastapi_app_names_from_tree(tree: ast.Module) -> set[str]:
+    constructor_names: set[str] = set()
+    module_names: set[str] = set()
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.ImportFrom) and statement.module == "fastapi":
+            constructor_names.update(
+                imported.asname or imported.name
+                for imported in statement.names
+                if imported.name == "FastAPI"
+            )
+        elif isinstance(statement, ast.Import):
+            module_names.update(
+                imported.asname or imported.name
+                for imported in statement.names
+                if imported.name == "fastapi"
+            )
+
+    app_names: set[str] = set()
+    for statement in ast.walk(tree):
+        value = (
+            statement.value
+            if isinstance(statement, (ast.Assign, ast.AnnAssign))
+            else None
+        )
+        if not isinstance(value, ast.Call) or not _is_fastapi_app_call(
+            value,
+            constructor_names,
+            module_names,
+        ):
+            continue
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        )
+        app_names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return app_names
+
+
+def _is_fastapi_app_call(
+    call: ast.Call,
+    constructor_names: set[str],
+    module_names: set[str],
+) -> bool:
+    if isinstance(call.func, ast.Name):
+        return call.func.id in constructor_names
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "FastAPI"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in module_names
+    )
+
+
+def _is_fastapi_router_call(
+    call: ast.Call,
+    constructor_names: set[str],
+    module_names: set[str],
+) -> bool:
+    if isinstance(call.func, ast.Name):
+        return call.func.id in constructor_names
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "APIRouter"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in module_names
+    )
+
+
+def _static_fastapi_prefix(call: ast.Call) -> str | None:
+    for keyword in call.keywords:
+        if keyword.arg == "prefix":
+            return (
+                keyword.value.value
+                if isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, str)
+                else None
+            )
+    return ""
+
+
+def _fastapi_router_handlers(
+    tree: ast.Module,
+    router_prefixes: dict[str, str | None],
+) -> dict[str, set[str]]:
+    handlers: dict[str, set[str]] = {}
+    for statement in ast.walk(tree):
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in statement.decorator_list:
+            if (
+                not isinstance(decorator, ast.Call)
+                or not isinstance(decorator.func, ast.Attribute)
+                or decorator.func.attr.lower()
+                not in {"get", "post", "put", "patch", "delete"}
+                or not isinstance(decorator.func.value, ast.Name)
+            ):
+                continue
+            router_name = decorator.func.value.id
+            if router_name in router_prefixes:
+                handlers.setdefault(router_name, set()).add(statement.name)
+    return handlers
+
+
+def _python_import_module_name(
+    source_module_name: str,
+    source_path: str,
+    statement: ast.ImportFrom,
+) -> str | None:
+    if not statement.module:
+        return None
+    if statement.level == 0:
+        return statement.module
+    parent_parts = source_module_name.split(".")
+    if not _python_source_is_package(source_path):
+        parent_parts.pop()
+    levels_up = statement.level - 1
+    if levels_up >= len(parent_parts):
+        return None
+    return ".".join(
+        [
+            *parent_parts[: len(parent_parts) - levels_up],
+            *statement.module.split("."),
+        ]
+    )
+
+
+def _python_source_is_package(source_path: str) -> bool:
+    normalized = source_path.replace("\\", "/").strip("/")
+    return normalized == "__init__.py" or normalized.endswith("/__init__.py")
+
+
+def _flask_route_prefixes(files: list[object]) -> dict[tuple[str, str], list[str]]:
+    sources: list[_FlaskBlueprintSource] = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        source_path = item.get("path")
+        content = item.get("content")
+        if (
+            not isinstance(source_path, str)
+            or not source_path.lower().endswith(".py")
+            or not isinstance(content, str)
+        ):
+            continue
+        module_name = _python_module_name(source_path)
+        if module_name is None:
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        blueprint_prefixes = _flask_blueprint_prefixes_from_tree(tree)
+        sources.append(
+            _FlaskBlueprintSource(
+                source_path=source_path,
+                module_name=module_name,
+                tree=tree,
+                app_names=_flask_app_names_from_tree(tree),
+                blueprint_prefixes=blueprint_prefixes,
+                handlers_by_blueprint=_flask_blueprint_handlers(
+                    tree,
+                    blueprint_prefixes,
+                ),
+            )
+        )
+    if not sources:
+        return {}
+
+    source_by_module = _python_source_by_module(sources)
+    nodes = {
+        (source.source_path, blueprint_name): prefix
+        for source in sources
+        for blueprint_name, prefix in source.blueprint_prefixes.items()
+        if prefix is not None
+    }
+    if not nodes:
+        return {}
+
+    edges: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = {}
+    roots: list[tuple[tuple[str, str], str]] = []
+    for source in sources:
+        blueprint_aliases = {
+            blueprint_name: (source.source_path, blueprint_name)
+            for blueprint_name in source.blueprint_prefixes
+            if (source.source_path, blueprint_name) in nodes
+        }
+        for statement in ast.walk(source.tree):
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            module_name = _python_import_module_name(
+                source.module_name,
+                source.source_path,
+                statement,
+            )
+            imported_source_path = (
+                source_by_module.get(module_name) if module_name is not None else None
+            )
+            if imported_source_path is None:
+                continue
+            for imported in statement.names:
+                node = (imported_source_path, imported.name)
+                if node in nodes:
+                    blueprint_aliases[imported.asname or imported.name] = node
+
+        for call in ast.walk(source.tree):
+            if (
+                not isinstance(call, ast.Call)
+                or not isinstance(call.func, ast.Attribute)
+                or call.func.attr != "register_blueprint"
+                or not isinstance(call.func.value, ast.Name)
+                or not call.args
+                or not isinstance(call.args[0], ast.Name)
+            ):
+                continue
+            child = blueprint_aliases.get(call.args[0].id)
+            prefix = _static_flask_prefix(call)
+            if child is None or prefix is None:
+                continue
+            parent = blueprint_aliases.get(call.func.value.id)
+            if parent is None and call.func.value.id in source.app_names:
+                roots.append((child, prefix))
+            elif parent is not None:
+                edges.setdefault(parent, []).append((child, prefix))
+
+    resolved = _resolve_static_router_prefixes(nodes, edges, roots)
+    route_prefixes: dict[tuple[str, str], set[str]] = {}
+    for source in sources:
+        for blueprint_name, handlers in source.handlers_by_blueprint.items():
+            node = (source.source_path, blueprint_name)
+            local_prefix = nodes.get(node)
+            if local_prefix is None:
+                continue
+            prefixes = resolved.get(node) or {local_prefix}
+            for handler_name in handlers:
+                route_prefixes.setdefault((source.source_path, handler_name), set()).update(
+                    prefixes
+                )
+    return {
+        identity: sorted(prefixes)
+        for identity, prefixes in route_prefixes.items()
+    }
+
+
+def _flask_blueprint_prefixes_from_tree(tree: ast.Module) -> dict[str, str | None]:
+    constructor_names, module_names = _flask_constructor_aliases(tree, "Blueprint")
+    prefixes: dict[str, str | None] = {}
+    for statement in ast.walk(tree):
+        value = (
+            statement.value
+            if isinstance(statement, (ast.Assign, ast.AnnAssign))
+            else None
+        )
+        if not isinstance(value, ast.Call) or not _is_flask_constructor_call(
+            value,
+            "Blueprint",
+            constructor_names,
+            module_names,
+        ):
+            continue
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        )
+        prefix = _static_flask_prefix(value)
+        for target in targets:
+            if isinstance(target, ast.Name):
+                prefixes[target.id] = prefix
+    return prefixes
+
+
+def _flask_app_names_from_tree(tree: ast.Module) -> set[str]:
+    constructor_names, module_names = _flask_constructor_aliases(tree, "Flask")
+    app_names: set[str] = set()
+    for statement in ast.walk(tree):
+        value = (
+            statement.value
+            if isinstance(statement, (ast.Assign, ast.AnnAssign))
+            else None
+        )
+        if not isinstance(value, ast.Call) or not _is_flask_constructor_call(
+            value,
+            "Flask",
+            constructor_names,
+            module_names,
+        ):
+            continue
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        )
+        app_names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return app_names
+
+
+def _flask_constructor_aliases(
+    tree: ast.Module,
+    constructor_name: str,
+) -> tuple[set[str], set[str]]:
+    constructor_names: set[str] = set()
+    module_names: set[str] = set()
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.ImportFrom) and statement.module == "flask":
+            constructor_names.update(
+                imported.asname or imported.name
+                for imported in statement.names
+                if imported.name == constructor_name
+            )
+        elif isinstance(statement, ast.Import):
+            module_names.update(
+                imported.asname or imported.name
+                for imported in statement.names
+                if imported.name == "flask"
+            )
+    return constructor_names, module_names
+
+
+def _is_flask_constructor_call(
+    call: ast.Call,
+    constructor_name: str,
+    constructor_names: set[str],
+    module_names: set[str],
+) -> bool:
+    if isinstance(call.func, ast.Name):
+        return call.func.id in constructor_names
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == constructor_name
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in module_names
+    )
+
+
+def _static_flask_prefix(call: ast.Call) -> str | None:
+    for keyword in call.keywords:
+        if keyword.arg == "url_prefix":
+            if isinstance(keyword.value, ast.Constant):
+                if isinstance(keyword.value.value, str):
+                    return keyword.value.value
+                if keyword.value.value is None:
+                    return ""
+            return None
+    return ""
+
+
+def _flask_blueprint_handlers(
+    tree: ast.Module,
+    blueprint_prefixes: dict[str, str | None],
+) -> dict[str, set[str]]:
+    handlers: dict[str, set[str]] = {}
+    for statement in ast.walk(tree):
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in statement.decorator_list:
+            if (
+                not isinstance(decorator, ast.Call)
+                or not isinstance(decorator.func, ast.Attribute)
+                or decorator.func.attr.lower()
+                not in {"route", "get", "post", "put", "patch", "delete"}
+                or not isinstance(decorator.func.value, ast.Name)
+            ):
+                continue
+            blueprint_name = decorator.func.value.id
+            if blueprint_name in blueprint_prefixes:
+                handlers.setdefault(blueprint_name, set()).add(statement.name)
+    return handlers
+
+
+def _apply_static_route_prefixes(
+    facts: list[CodebaseFactCandidate],
+    route_prefixes: dict[tuple[str, str], list[str]],
+) -> list[CodebaseFactCandidate]:
+    rewritten: list[CodebaseFactCandidate] = []
+    for fact in facts:
+        prefixes = (
+            route_prefixes.get((fact.source_path, fact.symbol_name))
+            if fact.fact_type == "route_handler" and isinstance(fact.symbol_name, str)
+            else None
+        )
+        if not prefixes or not isinstance(fact.route_path, str):
+            rewritten.append(fact)
+            continue
+        for prefix in prefixes:
+            route_path = _join_static_route_path(prefix, fact.route_path)
+            rewritten.append(
+                fact if route_path == fact.route_path else replace(fact, route_path=route_path)
+            )
+    return rewritten
+
+
+def _join_static_route_path(prefix: str, route_path: str) -> str:
+    normalized_prefix = "/" + prefix.strip("/") if prefix.strip("/") else ""
+    normalized_route = "/" + route_path.lstrip("/") if route_path else ""
+    if not normalized_prefix:
+        return normalized_route or "/"
+    if not normalized_route or normalized_route == "/":
+        return normalized_prefix + ("/" if normalized_route == "/" else "")
+    return normalized_prefix + normalized_route
+
+
+def _resolve_static_router_prefixes(
+    nodes: dict[tuple[str, str], str],
+    edges: dict[tuple[str, str], list[tuple[tuple[str, str], str]]],
+    roots: list[tuple[tuple[str, str], str]],
+) -> dict[tuple[str, str], set[str]]:
+    resolved: dict[tuple[str, str], set[str]] = {}
+
+    def visit(
+        node: tuple[str, str],
+        parent_prefix: str,
+        lineage: set[tuple[str, str]],
+    ) -> None:
+        if node in lineage:
+            return
+        local_prefix = nodes.get(node)
+        if local_prefix is None:
+            return
+        prefix = _join_static_route_path(parent_prefix, local_prefix)
+        known_prefixes = resolved.setdefault(node, set())
+        if prefix in known_prefixes:
+            return
+        known_prefixes.add(prefix)
+        for child, child_prefix in edges.get(node, []):
+            visit(child, _join_static_route_path(prefix, child_prefix), lineage | {node})
+
+    for node, prefix in roots:
+        visit(node, prefix, set())
+    return resolved
+
+
+def _merge_static_route_prefixes(
+    *prefix_maps: dict[tuple[str, str], list[str]],
+) -> dict[tuple[str, str], list[str]]:
+    merged: dict[tuple[str, str], set[str]] = {}
+    for prefix_map in prefix_maps:
+        for identity, prefixes in prefix_map.items():
+            merged.setdefault(identity, set()).update(prefixes)
+    return {identity: sorted(prefixes) for identity, prefixes in merged.items()}
+
+
+def _django_route_facts(files: list[object]) -> list[CodebaseFactCandidate]:
+    sources: list[_DjangoURLSource] = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        source_path = item.get("path")
+        content = item.get("content")
+        if (
+            not isinstance(source_path, str)
+            or not source_path.lower().endswith(".py")
+            or not isinstance(content, str)
+        ):
+            continue
+        module_name = _python_module_name(source_path)
+        if module_name is None:
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        sources.append(
+            _DjangoURLSource(
+                source_path=source_path,
+                module_name=module_name,
+                tree=tree,
+            )
+        )
+    if not sources:
+        return []
+
+    source_by_module = _python_source_by_module(sources)
+    function_lines = _python_function_lines(sources)
+    patterns_by_source: dict[str, list[_DjangoURLPattern]] = {}
+    for source in sources:
+        patterns = _django_url_patterns(
+            source,
+            source_by_module=source_by_module,
+            function_lines=function_lines,
+        )
+        if patterns is not None:
+            patterns_by_source[source.source_path] = patterns
+    if not patterns_by_source:
+        return []
+
+    roots = _django_root_urlconf_sources(sources, source_by_module)
+    facts: list[CodebaseFactCandidate] = []
+
+    def visit(
+        source_path: str,
+        prefix: str,
+        lineage: set[str],
+    ) -> None:
+        if source_path in lineage:
+            return
+        for pattern in patterns_by_source.get(source_path, []):
+            if pattern.route_path is None:
+                continue
+            route_path = _join_static_route_path(prefix, pattern.route_path)
+            if pattern.include_source_path is not None:
+                visit(
+                    pattern.include_source_path,
+                    route_path,
+                    lineage | {source_path},
+                )
+                continue
+            if pattern.view_identity is None:
+                continue
+            view_source_path, handler_name = pattern.view_identity
+            function_line = function_lines.get(pattern.view_identity)
+            payload = {
+                "handler": handler_name,
+                "line": function_line if function_line is not None else pattern.line,
+                "mapping_mode": "static_code_snippet_analysis",
+                "route_mapping": "static_django_urlconf",
+                "route_source_path": source_path,
+                "route_line": pattern.line,
+            }
+            facts.append(
+                CodebaseFactCandidate(
+                    fact_type="route_handler",
+                    source_path=view_source_path,
+                    symbol_name=handler_name,
+                    route_method="ANY",
+                    route_path=route_path,
+                    authz_hint=None,
+                    sensitivity_label="low",
+                    payload=payload,
+                )
+            )
+
+    for root in roots:
+        visit(root, "", set())
+    return facts
+
+
+def _django_root_urlconf_sources(
+    sources: list[_DjangoURLSource],
+    source_by_module: dict[str, str],
+) -> list[str]:
+    roots: set[str] = set()
+    has_unresolved_root = False
+    for source in sources:
+        root_source_path: str | None = None
+        saw_root_assignment = False
+        for statement in source.tree.body:
+            value = (
+                statement.value
+                if isinstance(statement, (ast.Assign, ast.AnnAssign))
+                else None
+            )
+            targets = (
+                statement.targets
+                if isinstance(statement, ast.Assign)
+                else [statement.target]
+                if isinstance(statement, ast.AnnAssign)
+                else []
+            )
+            if any(
+                isinstance(target, ast.Name) and target.id == "ROOT_URLCONF"
+                for target in targets
+            ):
+                saw_root_assignment = True
+                module_name = _static_string(value) if value is not None else None
+                root_source_path = (
+                    source_by_module.get(module_name)
+                    if module_name is not None
+                    else None
+                )
+                continue
+            if (
+                isinstance(statement, ast.AugAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == "ROOT_URLCONF"
+            ):
+                saw_root_assignment = True
+                root_source_path = None
+                continue
+            if isinstance(statement, ast.Delete) and any(
+                isinstance(target, ast.Name) and target.id == "ROOT_URLCONF"
+                for target in statement.targets
+            ):
+                saw_root_assignment = True
+                root_source_path = None
+        if saw_root_assignment:
+            if root_source_path is None:
+                has_unresolved_root = True
+            else:
+                roots.add(root_source_path)
+    return sorted(roots) if len(roots) == 1 and not has_unresolved_root else []
+
+
+def _python_function_lines(
+    sources: list[_DjangoURLSource],
+) -> dict[tuple[str, str], int]:
+    lines: dict[tuple[str, str], int] = {}
+    for source in sources:
+        for statement in source.tree.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                lines[(source.source_path, statement.name)] = statement.lineno
+    return lines
+
+
+def _django_url_patterns(
+    source: _DjangoURLSource,
+    *,
+    source_by_module: dict[str, str],
+    function_lines: dict[tuple[str, str], int],
+) -> list[_DjangoURLPattern] | None:
+    path_names, include_names, django_module_names = _django_url_import_names(source.tree)
+    if not path_names and not django_module_names:
+        return None
+    urlpatterns_values: list[ast.expr] = []
+    for statement in source.tree.body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "urlpatterns"
+            for target in statement.targets
+        ):
+            urlpatterns_values = [statement.value]
+        elif (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == "urlpatterns"
+        ):
+            urlpatterns_values = [statement.value] if statement.value is not None else []
+        elif (
+            isinstance(statement, ast.AugAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == "urlpatterns"
+        ):
+            if isinstance(statement.op, ast.Add):
+                urlpatterns_values.append(statement.value)
+            else:
+                urlpatterns_values = []
+    if not urlpatterns_values:
+        return None
+
+    view_aliases, module_aliases = _django_view_import_aliases(
+        source,
+        source_by_module=source_by_module,
+        function_lines=function_lines,
+    )
+    patterns: list[_DjangoURLPattern] = []
+    for value in urlpatterns_values:
+        if not isinstance(value, (ast.List, ast.Tuple)):
+            continue
+        for element in value.elts:
+            pattern = _django_url_pattern(
+                element,
+                path_names=path_names,
+                include_names=include_names,
+                django_module_names=django_module_names,
+                source_by_module=source_by_module,
+                function_lines=function_lines,
+                view_aliases=view_aliases,
+                module_aliases=module_aliases,
+            )
+            if pattern is not None:
+                patterns.append(pattern)
+    return patterns
+
+
+def _django_url_import_names(
+    tree: ast.Module,
+) -> tuple[set[str], set[str], set[str]]:
+    path_names: set[str] = set()
+    include_names: set[str] = set()
+    django_module_names: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom) and statement.module == "django.urls":
+            for imported in statement.names:
+                if imported.name == "path":
+                    path_names.add(imported.asname or imported.name)
+                elif imported.name == "include":
+                    include_names.add(imported.asname or imported.name)
+        elif isinstance(statement, ast.Import):
+            for imported in statement.names:
+                if imported.name == "django.urls":
+                    django_module_names.add(imported.asname or imported.name)
+    return path_names, include_names, django_module_names
+
+
+def _django_view_import_aliases(
+    source: _DjangoURLSource,
+    *,
+    source_by_module: dict[str, str],
+    function_lines: dict[tuple[str, str], int],
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    view_aliases: dict[str, tuple[str, str]] = {
+        name: (source.source_path, name)
+        for source_path, name in function_lines
+        if source_path == source.source_path
+    }
+    module_aliases: dict[str, str] = {}
+    for statement in source.tree.body:
+        if isinstance(statement, ast.Import):
+            for imported in statement.names:
+                imported_source_path = source_by_module.get(imported.name)
+                if imported_source_path is not None and imported.asname:
+                    module_aliases[imported.asname] = imported_source_path
+            continue
+        if not isinstance(statement, ast.ImportFrom):
+            continue
+        module_name = _django_import_module_name(source.module_name, statement)
+        if module_name is None:
+            continue
+        imported_source_path = source_by_module.get(module_name)
+        for imported in statement.names:
+            local_name = imported.asname or imported.name
+            nested_source_path = source_by_module.get(
+                f"{module_name}.{imported.name}"
+            )
+            if nested_source_path is not None:
+                module_aliases[local_name] = nested_source_path
+            if (
+                imported_source_path is not None
+                and (imported_source_path, imported.name) in function_lines
+            ):
+                view_aliases[local_name] = (imported_source_path, imported.name)
+    return view_aliases, module_aliases
+
+
+def _django_import_module_name(
+    source_module_name: str,
+    statement: ast.ImportFrom,
+) -> str | None:
+    if statement.level == 0:
+        return statement.module
+    parent_parts = source_module_name.split(".")[:-1]
+    levels_up = statement.level - 1
+    if levels_up > len(parent_parts):
+        return None
+    base_parts = parent_parts[: len(parent_parts) - levels_up]
+    if statement.module:
+        base_parts.extend(statement.module.split("."))
+    return ".".join(base_parts) or None
+
+
+def _django_url_pattern(
+    value: ast.expr,
+    *,
+    path_names: set[str],
+    include_names: set[str],
+    django_module_names: set[str],
+    source_by_module: dict[str, str],
+    function_lines: dict[tuple[str, str], int],
+    view_aliases: dict[str, tuple[str, str]],
+    module_aliases: dict[str, str],
+) -> _DjangoURLPattern | None:
+    if not isinstance(value, ast.Call) or not _is_django_url_call(
+        value,
+        "path",
+        path_names,
+        django_module_names,
+    ):
+        return None
+    if len(value.args) < 2:
+        return None
+    route_path = _static_string(value.args[0])
+    target = value.args[1]
+    if isinstance(target, ast.Call) and _is_django_url_call(
+        target,
+        "include",
+        include_names,
+        django_module_names,
+    ):
+        include_module_name = _django_include_module_name(target)
+        return _DjangoURLPattern(
+            route_path=route_path,
+            line=value.lineno,
+            view_identity=None,
+            include_source_path=(
+                source_by_module.get(include_module_name)
+                if include_module_name is not None
+                else None
+            ),
+        )
+    return _DjangoURLPattern(
+        route_path=route_path,
+        line=value.lineno,
+        view_identity=_django_view_identity(
+            target,
+            function_lines=function_lines,
+            view_aliases=view_aliases,
+            module_aliases=module_aliases,
+        ),
+        include_source_path=None,
+    )
+
+
+def _is_django_url_call(
+    call: ast.Call,
+    name: str,
+    names: set[str],
+    django_module_names: set[str],
+) -> bool:
+    if isinstance(call.func, ast.Name):
+        return call.func.id in names
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == name
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in django_module_names
+    )
+
+
+def _static_string(value: ast.expr) -> str | None:
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return value.value
+    return None
+
+
+def _django_include_module_name(call: ast.Call) -> str | None:
+    if not call.args:
+        return None
+    module_name = _static_string(call.args[0])
+    if module_name is not None:
+        return module_name
+    if isinstance(call.args[0], ast.Tuple) and call.args[0].elts:
+        return _static_string(call.args[0].elts[0])
+    return None
+
+
+def _django_view_identity(
+    target: ast.expr,
+    *,
+    function_lines: dict[tuple[str, str], int],
+    view_aliases: dict[str, tuple[str, str]],
+    module_aliases: dict[str, str],
+) -> tuple[str, str] | None:
+    if isinstance(target, ast.Name):
+        identity = view_aliases.get(target.id)
+        if identity in function_lines:
+            return identity
+        return None
+    if (
+        not isinstance(target, ast.Attribute)
+        or not isinstance(target.value, ast.Name)
+    ):
+        return None
+    source_path = module_aliases.get(target.value.id)
+    identity = (source_path, target.attr) if source_path is not None else None
+    if identity in function_lines:
+        return identity
+    return None
 
 
 def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
@@ -414,6 +1577,9 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
     router_dependency_refs: dict[str, list[tuple[str, int]]] = {}
     router_constructor_aliases: set[str] = set()
     import_aliases: dict[str, str] = {}
+    yaml_module_aliases = {"yaml"}
+    yaml_load_aliases: set[str] = set()
+    yaml_safe_loader_aliases: set[str] = set()
     local_call_aliases: dict[str, dict[str, str]] = {}
     class_call_aliases: dict[str, dict[str, str]] = {}
     principal_id_aliases: dict[str, dict[str, str]] = {}
@@ -695,10 +1861,22 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                 if function_indent < indent
             ]
 
+        if not function_stack:
+            (
+                imported_yaml_modules,
+                imported_yaml_loads,
+                imported_yaml_safe_loaders,
+            ) = _yaml_import_aliases(line)
+            yaml_module_aliases.update(imported_yaml_modules)
+            yaml_load_aliases.update(imported_yaml_loads)
+            yaml_safe_loader_aliases.update(imported_yaml_safe_loaders)
+
         imported_aliases = _imported_aliases(line)
         dependency_imported_aliases = _dependency_imported_aliases(line)
         if (imported_aliases or dependency_imported_aliases) and not function_stack:
             for alias_name, call_name in imported_aliases:
+                if alias_name in yaml_load_aliases:
+                    continue
                 import_aliases[alias_name] = call_name
                 if call_name == "APIRouter":
                     router_constructor_aliases.add(alias_name)
@@ -1135,7 +2313,12 @@ def _map_file(*, source_path: str, content: str) -> list[CodebaseFactCandidate]:
                         kwarg_membership_field,
                         line_number,
                     )
-        for raw_call_name in _called_names(line):
+        for raw_call_name in _called_names(
+            line,
+            yaml_module_aliases=yaml_module_aliases,
+            yaml_load_aliases=yaml_load_aliases,
+            yaml_safe_loader_aliases=yaml_safe_loader_aliases,
+        ):
             call_name = _resolved_call_name(
                 raw_call_name,
                 current_function,
@@ -1890,6 +3073,16 @@ def _is_typescript_authz_call(call_name: str) -> bool:
         return True
     if _is_mass_assign_guard_name(normalized):
         return True
+    if _is_command_execution_guard_name(normalized):
+        return True
+    if _is_deserialization_guard_name(normalized):
+        return True
+    if _is_file_upload_guard_name(normalized):
+        return True
+    if _is_money_flow_guard_name(normalized):
+        return True
+    if _is_agent_tool_guard_name(normalized):
+        return True
     return _is_injection_guard_name(normalized)
 
 
@@ -1901,6 +3094,16 @@ def _typescript_authz_hint(call_name: str) -> str:
         return "path_validation_check"
     if _is_mass_assign_guard_name(normalized):
         return "mass_assignment_check"
+    if _is_command_execution_guard_name(normalized):
+        return "command_injection_validation_check"
+    if _is_deserialization_guard_name(normalized):
+        return "deserialization_validation_check"
+    if _is_file_upload_guard_name(normalized):
+        return "file_upload_validation_check"
+    if _is_money_flow_guard_name(normalized):
+        return "server_authoritative_amount_check"
+    if _is_agent_tool_guard_name(normalized):
+        return "agent_tool_authorization_check"
     if _is_injection_guard_name(normalized):
         return "injection_validation_check"
     if "owner_or_admin" in normalized:
@@ -1954,6 +3157,28 @@ def _is_mass_assign_guard_name(normalized_name: str) -> bool:
 
 def _is_injection_guard_name(normalized_name: str) -> bool:
     return any(marker in normalized_name for marker in INJECTION_GUARD_MARKERS)
+
+
+def _is_command_execution_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in COMMAND_EXECUTION_GUARD_MARKERS)
+
+
+def _is_deserialization_guard_name(normalized_name: str) -> bool:
+    if normalized_name in UNSAFE_DESERIALIZATION_SINK_NAMES:
+        return False
+    return any(marker in normalized_name for marker in DESERIALIZATION_GUARD_MARKERS)
+
+
+def _is_file_upload_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in FILE_UPLOAD_GUARD_MARKERS)
+
+
+def _is_money_flow_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in MONEY_FLOW_GUARD_MARKERS)
+
+
+def _is_agent_tool_guard_name(normalized_name: str) -> bool:
+    return any(marker in normalized_name for marker in AGENT_TOOL_GUARD_MARKERS)
 
 
 def _normalized_typescript_name(name: str) -> str:
@@ -2188,6 +3413,47 @@ def _qualified_method_view_function(
     return function_name
 
 
+def _fact_handler_identity(
+    fact: CodebaseFactCandidate,
+    payload_key: str,
+) -> tuple[str, str] | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    source_path = fact.source_path
+    symbol_name = fact.payload.get(payload_key)
+    if not isinstance(source_path, str) or not isinstance(symbol_name, str):
+        return None
+    if not source_path or not symbol_name:
+        return None
+    return source_path, symbol_name
+
+
+def _handler_identities_by_symbol(
+    facts: list[CodebaseFactCandidate],
+) -> dict[str, set[tuple[str, str]]]:
+    identities_by_symbol: dict[str, set[tuple[str, str]]] = {}
+    for fact in facts:
+        for payload_key in ("handler", "caller"):
+            identity = _fact_handler_identity(fact, payload_key)
+            if identity is not None:
+                identities_by_symbol.setdefault(identity[1], set()).add(identity)
+    return identities_by_symbol
+
+
+def _resolve_handler_identity(
+    source_path: str,
+    symbol_name: str,
+    identities_by_symbol: dict[str, set[tuple[str, str]]],
+) -> tuple[str, str] | None:
+    candidates = identities_by_symbol.get(symbol_name, set())
+    same_source = (source_path, symbol_name)
+    if same_source in candidates:
+        return same_source
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return None
+
+
 def _authorization_gap_candidates(
     facts: list[CodebaseFactCandidate],
 ) -> list[CodebaseFactCandidate]:
@@ -2197,42 +3463,55 @@ def _authorization_gap_candidates(
         handler = route.payload.get("handler") if isinstance(route.payload, dict) else None
         if not isinstance(handler, str):
             continue
-        has_authz = any(
-            fact.fact_type == "authz_check"
-            and isinstance(fact.payload, dict)
-            and fact.payload.get("handler") == handler
+        route_identity = (route.source_path, handler)
+        service_calls = _reachable_service_handlers(
+            facts,
+            route.source_path,
+            handler,
+        )
+        reachable_handlers = {route_identity, *service_calls}
+        sink_facts = [
+            fact
             for fact in facts
-        )
-        if has_authz:
-            continue
-        service_calls = _reachable_service_handlers(facts, handler)
-        has_service_authz = any(
-            fact.fact_type == "authz_check"
-            and isinstance(fact.payload, dict)
-            and fact.payload.get("handler") in service_calls
-            for fact in facts
-        )
-        if has_service_authz and not route.source_path.lower().endswith(
-            TYPESCRIPT_SOURCE_SUFFIXES
-        ):
-            continue
-        sink_symbols = sorted(
-            {
-                fact.symbol_name
-                for fact in facts
-                if fact.fact_type == "sensitive_sink"
-                and isinstance(fact.payload, dict)
-                and isinstance(fact.symbol_name, str)
-                and (
-                    fact.payload.get("handler") == handler
-                    or fact.payload.get("handler") in service_calls
-                )
-            }
-        )
+            if fact.fact_type == "sensitive_sink"
+            and isinstance(fact.symbol_name, str)
+            and _fact_handler_identity(fact, "handler") in reachable_handlers
+        ]
+        sink_symbols = sorted({fact.symbol_name for fact in sink_facts})
         sink_count = len(sink_symbols)
         if sink_count == 0:
             continue
         root_cause, security_invariant, authz_hint = _gap_root_for_sinks(sink_symbols)
+        if (
+            root_cause == "missing_agent_tool_authorization_check"
+            and not _is_agent_tool_route_context(route)
+        ):
+            root_cause, security_invariant, authz_hint = _object_ownership_gap_root()
+        if guard_hints := STATIC_GAP_GUARD_HINTS.get(root_cause):
+            if _has_prior_static_guard(
+                facts,
+                reachable_handlers=reachable_handlers,
+                sink_facts=sink_facts,
+                guard_hints=guard_hints,
+            ):
+                continue
+        else:
+            has_authz = any(
+                fact.fact_type == "authz_check"
+                and _fact_handler_identity(fact, "handler") == route_identity
+                for fact in facts
+            )
+            if has_authz:
+                continue
+            has_service_authz = any(
+                fact.fact_type == "authz_check"
+                and _fact_handler_identity(fact, "handler") in service_calls
+                for fact in facts
+            )
+            if has_service_authz and not route.source_path.lower().endswith(
+                TYPESCRIPT_SOURCE_SUFFIXES
+            ):
+                continue
         candidates.append(
             CodebaseFactCandidate(
                 fact_type="authorization_gap_candidate",
@@ -2256,9 +3535,59 @@ def _authorization_gap_candidates(
     return candidates
 
 
+def _is_agent_tool_route_context(route: CodebaseFactCandidate) -> bool:
+    route_path = route.route_path.lower() if isinstance(route.route_path, str) else ""
+    return "agent" in route_path and "tool" in route_path
+
+
+def _has_prior_static_guard(
+    facts: list[CodebaseFactCandidate],
+    *,
+    reachable_handlers: set[tuple[str, str]],
+    sink_facts: list[CodebaseFactCandidate],
+    guard_hints: set[str],
+) -> bool:
+    earliest_sink_line: dict[tuple[str, str], int] = {}
+    for fact in sink_facts:
+        handler_identity = _fact_handler_identity(fact, "handler")
+        if handler_identity is None or not isinstance(fact.payload, dict):
+            continue
+        line = fact.payload.get("line")
+        if not isinstance(line, int):
+            continue
+        current = earliest_sink_line.get(handler_identity)
+        if current is None or line < current:
+            earliest_sink_line[handler_identity] = line
+
+    for fact in facts:
+        if fact.fact_type != "authz_check" or fact.authz_hint not in guard_hints:
+            continue
+        handler_identity = _fact_handler_identity(fact, "handler")
+        if handler_identity not in reachable_handlers:
+            continue
+        sink_line = earliest_sink_line.get(handler_identity)
+        if sink_line is None:
+            return True
+        if not isinstance(fact.payload, dict):
+            return True
+        line = fact.payload.get("line")
+        if not isinstance(line, int) or line < sink_line:
+            return True
+    return False
+
+
+def _object_ownership_gap_root() -> tuple[str, str, str]:
+    return (
+        "missing_object_ownership_check",
+        "Object-level actions must verify requester ownership or role before sensitive sinks run.",
+        "missing_handler_authz_check",
+    )
+
+
 def _gap_root_for_sinks(sink_symbols: list[str]) -> tuple[str, str, str]:
-    """Pick root_cause/invariant from sink family (SSRF / path / mass-assign / object authz)."""
+    """Pick root_cause/invariant from an explicit sensitive-sink family."""
     normalized = {symbol.lower() for symbol in sink_symbols}
+    canonicalized = {_normalized_typescript_name(symbol) for symbol in sink_symbols}
     if normalized and normalized.issubset(OUTBOUND_HTTP_SINK_NAMES):
         return (
             "missing_ssrf_validation",
@@ -2286,6 +3615,51 @@ def _gap_root_for_sinks(sink_symbols: list[str]) -> tuple[str, str, str]:
             ),
             "missing_handler_mass_assignment_check",
         )
+    if normalized and normalized.issubset(COMMAND_EXECUTION_SINK_NAMES):
+        return (
+            "missing_command_injection_validation",
+            (
+                "Command selection and arguments must be constrained by an explicit "
+                "allowlist or structured validation before command-execution sinks."
+            ),
+            "missing_handler_command_injection_check",
+        )
+    if canonicalized and canonicalized.issubset(UNSAFE_DESERIALIZATION_SINK_NAMES):
+        return (
+            "missing_unsafe_deserialization_guard",
+            (
+                "Serialized input must pass an explicit type and loader policy before "
+                "reaching unsafe deserialization sinks."
+            ),
+            "missing_handler_deserialization_check",
+        )
+    if canonicalized and canonicalized.issubset(FILE_UPLOAD_SINK_NAMES):
+        return (
+            "missing_file_upload_validation",
+            (
+                "Uploaded files must pass explicit type, filename, and storage policy "
+                "checks before upload-storage sinks."
+            ),
+            "missing_handler_file_upload_check",
+        )
+    if canonicalized and canonicalized.issubset(MONEY_FLOW_SINK_NAMES):
+        return (
+            "missing_server_authoritative_amount_check",
+            (
+                "Financial amounts, credits, and refunds must be derived from trusted "
+                "server-side order or account state before financial action sinks."
+            ),
+            "missing_handler_server_amount_check",
+        )
+    if canonicalized and canonicalized.issubset(AGENT_TOOL_SINK_NAMES):
+        return (
+            "missing_agent_tool_authorization_check",
+            (
+                "Agent tool dispatch must verify the current user, agent policy, and "
+                "task context permit the selected tool before invocation."
+            ),
+            "missing_handler_agent_tool_authorization_check",
+        )
     if normalized and normalized.issubset(INJECTION_SINK_NAMES):
         return (
             "missing_injection_validation",
@@ -2295,38 +3669,65 @@ def _gap_root_for_sinks(sink_symbols: list[str]) -> tuple[str, str, str]:
             ),
             "missing_handler_injection_check",
         )
-    return (
-        "missing_object_ownership_check",
-        (
-            "Object-level actions must verify requester ownership or role before sensitive sinks run."
-        ),
-        "missing_handler_authz_check",
-    )
+    return _object_ownership_gap_root()
 
 
 def _reachable_service_handlers(
     facts: list[CodebaseFactCandidate],
+    source_path: str,
     handler: str,
-) -> set[str]:
-    calls_by_handler: dict[str, set[str]] = {}
+) -> set[tuple[str, str]]:
+    calls_by_handler: dict[tuple[str, str], list[CodebaseFactCandidate]] = {}
+    earliest_sink_line: dict[tuple[str, str], int] = {}
+    identities_by_symbol = _handler_identities_by_symbol(facts)
     for fact in facts:
+        if fact.fact_type == "sensitive_sink" and isinstance(fact.payload, dict):
+            sink_handler = _fact_handler_identity(fact, "handler")
+            line = fact.payload.get("line")
+            if sink_handler is not None and isinstance(line, int):
+                previous = earliest_sink_line.get(sink_handler)
+                if previous is None or line < previous:
+                    earliest_sink_line[sink_handler] = line
         if fact.fact_type != "service_call" or not isinstance(fact.payload, dict):
             continue
-        caller = fact.payload.get("caller")
-        callee = fact.symbol_name
-        if not isinstance(caller, str) or not isinstance(callee, str):
+        caller = _fact_handler_identity(fact, "caller")
+        if caller is None or not isinstance(fact.symbol_name, str):
             continue
-        calls_by_handler.setdefault(caller, set()).add(callee)
+        calls_by_handler.setdefault(caller, []).append(fact)
 
-    reachable: set[str] = set()
-    pending = list(calls_by_handler.get(handler, set()))
+    reachable: set[tuple[str, str]] = set()
+    root = (source_path, handler)
+    seen = {root}
+    pending = [root]
     while pending:
-        callee = pending.pop()
-        if callee in reachable:
-            continue
-        reachable.add(callee)
-        pending.extend(calls_by_handler.get(callee, set()) - reachable)
+        caller = pending.pop()
+        for call in calls_by_handler.get(caller, []):
+            if not _service_call_precedes_handler_sink(call, earliest_sink_line):
+                continue
+            callee = call.symbol_name
+            if not isinstance(callee, str):
+                continue
+            callee_identity = _resolve_handler_identity(
+                caller[0],
+                callee,
+                identities_by_symbol,
+            )
+            if callee_identity is None or callee_identity in seen:
+                continue
+            seen.add(callee_identity)
+            reachable.add(callee_identity)
+            pending.append(callee_identity)
     return reachable
+
+
+def _service_call_precedes_handler_sink(
+    fact: CodebaseFactCandidate,
+    earliest_sink_line: dict[tuple[str, str], int],
+) -> bool:
+    caller = _fact_handler_identity(fact, "caller")
+    line = fact.payload.get("line") if isinstance(fact.payload, dict) else None
+    sink_line = earliest_sink_line.get(caller) if caller is not None else None
+    return not isinstance(line, int) or sink_line is None or line < sink_line
 
 
 def _indent_width(line: str) -> int:
@@ -2334,7 +3735,13 @@ def _indent_width(line: str) -> int:
     return len(expanded) - len(expanded.lstrip(" "))
 
 
-def _called_names(line: str) -> list[str]:
+def _called_names(
+    line: str,
+    *,
+    yaml_module_aliases: set[str],
+    yaml_load_aliases: set[str],
+    yaml_safe_loader_aliases: set[str],
+) -> list[str]:
     calls: list[str] = []
     try:
         tokens = [
@@ -2357,8 +3764,92 @@ def _called_names(line: str) -> list[str]:
     for index, token in enumerate(tokens[:-1]):
         next_token = tokens[index + 1]
         if token.type == tokenize.NAME and next_token.string == "(":
+            if token.string in yaml_load_aliases:
+                calls.append(
+                    "yaml_safe_loader"
+                    if _yaml_load_uses_safe_loader(
+                        tokens,
+                        index,
+                        yaml_module_aliases=yaml_module_aliases,
+                        yaml_safe_loader_aliases=yaml_safe_loader_aliases,
+                    )
+                    else "yaml_load"
+                )
+                continue
+            if (
+                index >= 2
+                and tokens[index - 1].string == "."
+                and tokens[index - 2].type == tokenize.NAME
+            ):
+                qualifier = tokens[index - 2].string
+                is_yaml_load = (
+                    token.string == "load" and qualifier in yaml_module_aliases
+                )
+                qualified_name = f"{qualifier}_{token.string}".lower()
+                if (
+                    qualified_name in UNSAFE_DESERIALIZATION_SINK_NAMES
+                    or is_yaml_load
+                ):
+                    calls.append(
+                        "yaml_safe_loader"
+                        if (
+                            is_yaml_load
+                            and _yaml_load_uses_safe_loader(
+                                tokens,
+                                index,
+                                yaml_module_aliases=yaml_module_aliases,
+                                yaml_safe_loader_aliases=yaml_safe_loader_aliases,
+                            )
+                        )
+                        else "yaml_load"
+                        if is_yaml_load
+                        else qualified_name
+                    )
+                    continue
             calls.append(token.string)
     return calls
+
+
+def _yaml_load_uses_safe_loader(
+    tokens: list[tokenize.TokenInfo],
+    call_index: int,
+    *,
+    yaml_module_aliases: set[str],
+    yaml_safe_loader_aliases: set[str],
+) -> bool:
+    depth = 0
+    for index in range(call_index + 1, len(tokens)):
+        token = tokens[index]
+        if token.string == "(":
+            depth += 1
+            continue
+        if token.string == ")":
+            depth -= 1
+            if depth == 0:
+                return False
+            continue
+        if (
+            depth != 1
+            or token.type != tokenize.NAME
+            or token.string != "Loader"
+        ):
+            continue
+        if index + 2 >= len(tokens) or tokens[index + 1].string != "=":
+            continue
+        loader = tokens[index + 2]
+        if loader.type != tokenize.NAME:
+            continue
+        if loader.string in yaml_safe_loader_aliases:
+            return True
+        if (
+            index + 4 < len(tokens)
+            and loader.string in yaml_module_aliases
+            and tokens[index + 3].string == "."
+            and tokens[index + 4].type == tokenize.NAME
+            and tokens[index + 4].string in {"SafeLoader", "CSafeLoader"}
+        ):
+            return True
+    return False
 
 
 def _called_names_from_incomplete_line(line: str) -> list[str]:
@@ -2575,6 +4066,29 @@ def _imported_aliases(line: str) -> list[tuple[str, str]]:
     return aliases
 
 
+def _yaml_import_aliases(line: str) -> tuple[set[str], set[str], set[str]]:
+    module_aliases: set[str] = set()
+    load_aliases: set[str] = set()
+    safe_loader_aliases: set[str] = set()
+    module_match = YAML_MODULE_IMPORT_PATTERN.match(line)
+    if module_match is not None:
+        module_aliases.add(module_match.group("alias") or "yaml")
+
+    from_match = YAML_FROM_IMPORT_PATTERN.match(line)
+    if from_match is None:
+        return module_aliases, load_aliases, safe_loader_aliases
+    for item in from_match.group("items").split(","):
+        item = item.strip()
+        item_match = IMPORT_ALIAS_ITEM_PATTERN.match(item)
+        imported_name = item_match.group(1) if item_match is not None else item
+        local_name = item_match.group(2) if item_match is not None else item
+        if imported_name == "load":
+            load_aliases.add(local_name)
+        elif imported_name in {"SafeLoader", "CSafeLoader"}:
+            safe_loader_aliases.add(local_name)
+    return module_aliases, load_aliases, safe_loader_aliases
+
+
 def _line_references_name(line: str, name: str) -> bool:
     return re.search(rf"\b{re.escape(name)}\b", line) is not None
 
@@ -2602,7 +4116,8 @@ def _resolve_dependency_wrapper_authz(
     facts: list[CodebaseFactCandidate],
 ) -> list[CodebaseFactCandidate]:
     resolved = list(facts)
-    wrapper_authz: dict[str, CodebaseFactCandidate] = {}
+    wrapper_authz: dict[tuple[str, str], CodebaseFactCandidate] = {}
+    handler_identities = _handler_identities_by_symbol(facts)
     seen_authz: set[tuple[str, str, str | None]] = set()
     dependency_calls = [
         fact
@@ -2612,51 +4127,61 @@ def _resolve_dependency_wrapper_authz(
     for fact in facts:
         if fact.fact_type != "authz_check" or not isinstance(fact.payload, dict):
             continue
-        handler = fact.payload.get("handler")
-        if not isinstance(handler, str):
+        handler_identity = _fact_handler_identity(fact, "handler")
+        if handler_identity is None:
             continue
-        seen_authz.add((fact.source_path, handler, fact.symbol_name))
-        existing = wrapper_authz.get(handler)
+        seen_authz.add((*handler_identity, fact.symbol_name))
+        existing = wrapper_authz.get(handler_identity)
         if existing is None or _authz_hint_priority(
             fact.authz_hint
         ) > _authz_hint_priority(existing.authz_hint):
-            wrapper_authz[handler] = fact
+            wrapper_authz[handler_identity] = fact
 
     changed = True
     while changed:
         changed = False
         for fact in dependency_calls:
-            caller = fact.payload.get("caller")
+            caller_identity = _fact_handler_identity(fact, "caller")
             wrapper = fact.symbol_name
-            if not isinstance(caller, str) or not isinstance(wrapper, str):
+            if caller_identity is None or not isinstance(wrapper, str):
                 continue
-            authz = wrapper_authz.get(wrapper)
+            wrapper_identity = _resolve_handler_identity(
+                caller_identity[0],
+                wrapper,
+                handler_identities,
+            )
+            if wrapper_identity is None:
+                continue
+            authz = wrapper_authz.get(wrapper_identity)
             if authz is None:
                 continue
-            seen_key = (fact.source_path, caller, authz.symbol_name)
+            seen_key = (*caller_identity, authz.symbol_name)
             if seen_key in seen_authz:
                 continue
             derived = CodebaseFactCandidate(
                 fact_type="authz_check",
-                source_path=fact.source_path,
+                source_path=caller_identity[0],
                 symbol_name=authz.symbol_name,
                 route_method=None,
                 route_path=None,
                 authz_hint=authz.authz_hint,
                 sensitivity_label="low",
                 payload={
-                    "handler": caller,
+                    "handler": caller_identity[1],
                     "line": fact.payload.get("line"),
                     "mapping_mode": "static_code_snippet_analysis",
                 },
             )
             resolved.append(derived)
             seen_authz.add(seen_key)
-            existing = wrapper_authz.get(caller)
+            existing = wrapper_authz.get(caller_identity)
             if existing is None or _authz_hint_priority(
                 derived.authz_hint
             ) > _authz_hint_priority(existing.authz_hint):
-                wrapper_authz[caller] = derived
+                wrapper_authz[caller_identity] = derived
+            handler_identities.setdefault(caller_identity[1], set()).add(
+                caller_identity
+            )
             changed = True
     return resolved
 
@@ -2913,6 +4438,16 @@ def _is_authz_call(call_name: str) -> bool:
         return True
     if _is_mass_assign_guard_name(normalized):
         return True
+    if _is_command_execution_guard_name(normalized):
+        return True
+    if _is_deserialization_guard_name(normalized):
+        return True
+    if _is_file_upload_guard_name(normalized):
+        return True
+    if _is_money_flow_guard_name(normalized):
+        return True
+    if _is_agent_tool_guard_name(normalized):
+        return True
     return _is_injection_guard_name(normalized)
 
 
@@ -2924,6 +4459,16 @@ def _authz_hint(call_name: str) -> str:
         return "path_validation_check"
     if _is_mass_assign_guard_name(normalized):
         return "mass_assignment_check"
+    if _is_command_execution_guard_name(normalized):
+        return "command_injection_validation_check"
+    if _is_deserialization_guard_name(normalized):
+        return "deserialization_validation_check"
+    if _is_file_upload_guard_name(normalized):
+        return "file_upload_validation_check"
+    if _is_money_flow_guard_name(normalized):
+        return "server_authoritative_amount_check"
+    if _is_agent_tool_guard_name(normalized):
+        return "agent_tool_authorization_check"
     if _is_injection_guard_name(normalized):
         return "injection_validation_check"
     if "owner_or_admin" in normalized:
@@ -3392,6 +4937,16 @@ def _authz_hint_priority(authz_hint: str | None) -> int:
     if authz_hint == "mass_assignment_check":
         return 4
     if authz_hint == "injection_validation_check":
+        return 4
+    if authz_hint == "command_injection_validation_check":
+        return 4
+    if authz_hint == "deserialization_validation_check":
+        return 4
+    if authz_hint == "file_upload_validation_check":
+        return 4
+    if authz_hint == "server_authoritative_amount_check":
+        return 4
+    if authz_hint == "agent_tool_authorization_check":
         return 4
     if authz_hint == "permission_check":
         return 3

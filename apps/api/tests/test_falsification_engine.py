@@ -95,6 +95,25 @@ def test_suppressed_public_and_deduplicated_duplicate_of():
     )
 
 
+def test_public_filter_does_not_kill_non_authorization_candidate():
+    public = "api:GET:/records/{record_id}:public_access"
+    card = build_falsification_card(
+        _base_state(
+            vuln_type="ssrf",
+            public_evidence_ref=public,
+            source_fact_refs=_base_state()["source_fact_refs"] + [public],
+        ),
+        disposition="retained",
+        evidence_refs=_base_state()["source_fact_refs"] + [public],
+    )
+
+    impact = next(
+        attempt for attempt in card["kill_attempts"] if attempt["dimension"] == "impact"
+    )
+    assert impact["status"] == "survived"
+    assert validate_falsification_card(card) == []
+
+
 def test_needs_evidence_lists_gaps_and_is_non_terminal_shape():
     card = build_falsification_card(
         _base_state(gap_evidence_ref=""),
