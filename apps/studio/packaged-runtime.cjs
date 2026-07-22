@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const { randomBytes } = require("node:crypto");
 const path = require("node:path");
 const {
   createStartupDiagnosticError,
@@ -68,6 +69,7 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
   let apiChild = null;
   let activeConfig = null;
   let activePaths = null;
+  let activeAutonomousResearchCapability = null;
   let childEnvironment = null;
   let maintenancePromise = null;
   let shutdownRequested = false;
@@ -92,7 +94,7 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
     return paths;
   }
 
-  function start(config) {
+  function start(config, capability = activeAutonomousResearchCapability || randomBytes(32).toString("base64url")) {
     if (shutdownRequested) {
       throw new Error("packaged_runtime_stopped");
     }
@@ -100,13 +102,17 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
       throw new Error("packaged_runtime_already_started");
     }
     assertLoopbackConfig(config);
+    if (!/^[A-Za-z0-9_-]{43,128}$/u.test(capability)) {
+      throw new Error("packaged_runtime_autonomous_capability_invalid");
+    }
     const paths = preflight();
     startupLiveness = createStartupLiveness();
 
     processObject.env.PLAYWRIGHT_BROWSERS_PATH = paths.playwrightBrowsers;
     processObject.env.MYTHOS_PLAYWRIGHT_CHROMIUM_EXECUTABLE = paths.browserExecutable;
-    childEnvironment = {
-      ...processObject.env,
+    const { AUTONOMOUS_RESEARCH_CAPABILITY: _ignoredCapability, ...baseEnvironment } = processObject.env;
+    const webEnvironment = {
+      ...baseEnvironment,
       API_BASE_URL: config.apiBaseUrl,
       HOSTNAME: "127.0.0.1",
       NEXT_PUBLIC_API_BASE_URL: config.apiBaseUrl,
@@ -115,6 +121,11 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
       PORT: String(config.webPort),
       STUDIO_WORKSPACE_ROOT: paths.workspaceRoot,
     };
+    childEnvironment = {
+      ...webEnvironment,
+      AUTONOMOUS_RESEARCH_CAPABILITY: capability,
+    };
+    activeAutonomousResearchCapability = capability;
 
     apiChild = spawn(
       paths.apiExecutable,
@@ -138,7 +149,7 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
     try {
       webChild = utilityProcess.fork(paths.webServer, [], {
         cwd: paths.webDirectory,
-        env: childEnvironment,
+        env: webEnvironment,
         serviceName: "Mythos Web",
         stdio: "inherit",
       });

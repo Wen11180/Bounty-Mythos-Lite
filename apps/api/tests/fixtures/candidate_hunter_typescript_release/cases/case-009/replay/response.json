@@ -1,30 +1,38 @@
 {
-  "schema_version": "cross_source_candidate_model_v1",
-  "proposals": [
-    {
-      "vulnerability_family": "authorization",
-      "affected_endpoint": {
-        "method": "DELETE",
-        "path": "/local/consoles/d8j4/:consoleId"
-      },
-      "affected_code_path": {
-        "source_path": "code.ts",
-        "symbol_name": "removeConsole"
-      },
-      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
-      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
-      "evidence_requirements": [
-        "Review the cited route and handler boundary."
-      ],
-      "refutation_questions": [
-        "Does an observed upstream control enforce the applicable boundary?"
-      ],
-      "root_cause_summary": "missing_object_ownership_check",
-      "risk_estimate": "high",
-      "cited_fact_refs": [
-        "code:code.ts:removeConsole",
-        "api:DELETE:/local/consoles/d8j4/{consoleId}"
-      ]
-    }
-  ]
+  "schema_version": "cross_source_candidate_fixture_replay_v1",
+  "fact_pack_input_digest": "c5c362d7f8b1eb1283844f8ad0ea1dffd04a8f4e58bca6ce45d84f1c810c6ea7",
+  "provider": "openai",
+  "model": "fixture-replay-v1",
+  "response": {
+    "schema_version": "cross_source_candidate_model_v1",
+    "proposals": [
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "DELETE",
+          "path": "/local/consoles/d8j4/:consoleId"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "removeConsole"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "high",
+        "cited_fact_refs": [
+          "code:code.ts:removeConsole",
+          "api:DELETE:/local/consoles/d8j4/{consoleId}"
+        ]
+      }
+    ]
+  },
+  "response_digest": "8444ac0e59ac62e5a746fbd4042a751fb8070519afc5b46cc8ae5f5280e00781"
 }

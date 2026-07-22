@@ -1,55 +1,64 @@
 {
-  "schema_version": "cross_source_candidate_model_v1",
-  "proposals": [
-    {
-      "vulnerability_family": "authorization",
-      "affected_endpoint": {
-        "method": "GET",
-        "path": "/internal/metrics/s2v6/:metricId/detail"
+  "schema_version": "cross_source_candidate_fixture_replay_v1",
+  "fact_pack_input_digest": "37ba23501c6ce807f662839bd9d99f3174253215a3a825d6d137fdf7ab90ba08",
+  "provider": "openai",
+  "model": "fixture-replay-v1",
+  "response": {
+    "schema_version": "cross_source_candidate_model_v1",
+    "proposals": [
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "GET",
+          "path": "/internal/metrics/s2v6/:metricId/detail"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "readMetricDetail"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "critical",
+        "cited_fact_refs": [
+          "code:code.ts:readMetricDetail",
+          "api:GET:/internal/metrics/s2v6/{metricId}/detail"
+        ]
       },
-      "affected_code_path": {
-        "source_path": "code.ts",
-        "symbol_name": "readMetricDetail"
-      },
-      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
-      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
-      "evidence_requirements": [
-        "Review the cited route and handler boundary."
-      ],
-      "refutation_questions": [
-        "Does an observed upstream control enforce the applicable boundary?"
-      ],
-      "root_cause_summary": "missing_object_ownership_check",
-      "risk_estimate": "critical",
-      "cited_fact_refs": [
-        "code:code.ts:readMetricDetail",
-        "api:GET:/internal/metrics/s2v6/{metricId}/detail"
-      ]
-    },
-    {
-      "vulnerability_family": "authorization",
-      "affected_endpoint": {
-        "method": "GET",
-        "path": "/internal/metrics/s2v6/:metricId/chart"
-      },
-      "affected_code_path": {
-        "source_path": "code.ts",
-        "symbol_name": "readMetricChart"
-      },
-      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
-      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
-      "evidence_requirements": [
-        "Review the cited route and handler boundary."
-      ],
-      "refutation_questions": [
-        "Does an observed upstream control enforce the applicable boundary?"
-      ],
-      "root_cause_summary": "missing_object_ownership_check",
-      "risk_estimate": "high",
-      "cited_fact_refs": [
-        "code:code.ts:readMetricChart",
-        "api:GET:/internal/metrics/s2v6/{metricId}/chart"
-      ]
-    }
-  ]
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "GET",
+          "path": "/internal/metrics/s2v6/:metricId/chart"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "readMetricChart"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "high",
+        "cited_fact_refs": [
+          "code:code.ts:readMetricChart",
+          "api:GET:/internal/metrics/s2v6/{metricId}/chart"
+        ]
+      }
+    ]
+  },
+  "response_digest": "6f135037bcb1afe5495e8ad7f3d459fb9a9a945f5ce5238ea322b6bbb5f5836c"
 }

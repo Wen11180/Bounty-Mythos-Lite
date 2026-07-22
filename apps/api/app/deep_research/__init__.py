@@ -33,6 +33,173 @@ _MAX_CHAINS = 24
 _MAX_VARIANTS = 24
 _MAX_EXPORT_NOTES = 40
 
+_TRUSTED_INTERNAL_ID_RE = re.compile(
+    r"^(?:H|F|C|RC|CH|VA|DCR|KB|P)-[0-9]{1,8}$"
+)
+
+
+@dataclass(frozen=True)
+class _FamilyPlanProfile:
+    stages: tuple[str, ...]
+    invariant: str
+    refutation_steps: tuple[str, ...]
+
+
+_DEFAULT_FAMILY_PLAN_PROFILE = _FamilyPlanProfile(
+    stages=("entrypoint", "trust_boundary", "state_change", "impact_review"),
+    invariant=(
+        "Every promoted finding needs a local evidence trace and an explicit refutation attempt."
+    ),
+    refutation_steps=(
+        "find explicit guard or ownership check in local code",
+        "map service-layer authorization before validation planning",
+        "require redacted evidence and human review before promotion",
+    ),
+)
+_FAMILY_PLAN_PROFILES = {
+    "authorization": _FamilyPlanProfile(
+        stages=(
+            "entrypoint",
+            "authorization_boundary",
+            "object_access",
+            "impact_review",
+        ),
+        invariant="Every sensitive object access must be constrained by role and ownership checks.",
+        refutation_steps=(
+            "find explicit guard or ownership check in local code",
+            "map service-layer authorization before validation planning",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "injection": _FamilyPlanProfile(
+        stages=("entrypoint", "input_boundary", "sink", "impact_review"),
+        invariant=(
+            "Untrusted input must be parameterized or structurally constrained before "
+            "reaching query execution sinks."
+        ),
+        refutation_steps=(
+            "trace query parameterization or structural input validation before the execution sink",
+            "confirm untrusted input cannot control executable query structure",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "static-analysis": _FamilyPlanProfile(
+        stages=("entrypoint", "input_boundary", "sink", "impact_review"),
+        invariant=_DEFAULT_FAMILY_PLAN_PROFILE.invariant,
+        refutation_steps=_DEFAULT_FAMILY_PLAN_PROFILE.refutation_steps,
+    ),
+    "ssrf": _FamilyPlanProfile(
+        stages=("entrypoint", "url_policy", "egress_sink", "impact_review"),
+        invariant=(
+            "Outbound requests to user-controlled URLs must validate the target against "
+            "private networks, metadata endpoints, and unsafe schemes."
+        ),
+        refutation_steps=(
+            "trace local URL normalization and egress policy before the outbound sink",
+            "confirm the policy rejects private, metadata, and unsafe scheme target classes",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "path_traversal": _FamilyPlanProfile(
+        stages=(
+            "entrypoint",
+            "path_canonicalization",
+            "filesystem_sink",
+            "impact_review",
+        ),
+        invariant=(
+            "User-controlled file paths must be sanitized before reaching filesystem read sinks."
+        ),
+        refutation_steps=(
+            "trace local path canonicalization or safe-join before the filesystem sink",
+            "confirm the boundary remains inside the intended local root",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "mass_assignment": _FamilyPlanProfile(
+        stages=("entrypoint", "field_allowlist", "state_update", "impact_review"),
+        invariant=(
+            "User-controlled update payloads must not set privilege or tenancy fields "
+            "without an allowlist."
+        ),
+        refutation_steps=(
+            "trace the local schema or field allowlist before the update sink",
+            "confirm privilege and tenancy fields remain outside the writable set",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "command_injection": _FamilyPlanProfile(
+        stages=("entrypoint", "command_policy", "command_sink", "impact_review"),
+        invariant=(
+            "Command selection and arguments must be constrained by an explicit local "
+            "allowlist or structured validation before command-execution sinks."
+        ),
+        refutation_steps=(
+            "trace command identifier and argument validation before the execution sink",
+            "confirm an explicit local allowlist constrains the mapped command path",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "unsafe_deserialization": _FamilyPlanProfile(
+        stages=(
+            "entrypoint",
+            "loader_policy",
+            "deserialization_sink",
+            "impact_review",
+        ),
+        invariant=(
+            "Serialized input must pass an explicit type and loader policy before unsafe "
+            "deserialization sinks."
+        ),
+        refutation_steps=(
+            "trace serialized-input validation and loader policy before deserialization",
+            "confirm local type and format restrictions run before object construction",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "file_upload": _FamilyPlanProfile(
+        stages=("entrypoint", "upload_policy", "storage_sink", "impact_review"),
+        invariant=(
+            "Uploaded files must pass explicit type, filename, and storage policy checks "
+            "before upload-storage sinks."
+        ),
+        refutation_steps=(
+            "trace type, filename, and storage policy checks before upload storage",
+            "confirm unsupported fixture metadata is rejected before storage",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "business_logic": _FamilyPlanProfile(
+        stages=(
+            "entrypoint",
+            "server_amount_derivation",
+            "financial_action",
+            "impact_review",
+        ),
+        invariant=(
+            "Financial amounts, credits, and refunds must be derived from trusted "
+            "server-side order or account state before financial action sinks."
+        ),
+        refutation_steps=(
+            "trace server-side amount or credit derivation before the financial action",
+            "confirm trusted order or account state overrides client-supplied values",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+    "agent_tool_authz_gap": _FamilyPlanProfile(
+        stages=("entrypoint", "agent_tool_policy", "tool_dispatch", "impact_review"),
+        invariant=(
+            "Agent tool dispatch must verify the current user, agent policy, and task "
+            "context permit the selected tool before invocation."
+        ),
+        refutation_steps=(
+            "trace current-user, agent-policy, and task-context checks before tool dispatch",
+            "confirm selected tool and resource scope are rechecked before invocation",
+            "require redacted evidence and human review before promotion",
+        ),
+    ),
+}
+
 
 @dataclass(frozen=True)
 class PermissionModel:
@@ -215,7 +382,14 @@ def build_deep_research_plan(context: dict) -> DeepResearchPlan:
     parser_candidates = _dicts(_dict_value(crs_fuzzing).get("parser_candidates"))
     chains = _vulnerability_chains(source_hypotheses)
     variants = _variant_candidates(source_hypotheses)
-    patch_diff_learner = _patch_diff_learner(patch_diff)
+    trusted_source_ids = {
+        _hypothesis_source_id(hypothesis, index)
+        for index, hypothesis in enumerate(source_hypotheses, start=1)
+    }
+    patch_diff_learner = _patch_diff_learner(
+        patch_diff,
+        trusted_source_ids=trusted_source_ids,
+    )
 
     return DeepResearchPlan(
         stage="v4_deep_vulnerability_research",
@@ -310,18 +484,14 @@ def _cross_file_reasoning(
     source_hypotheses: list[dict],
 ) -> list[CrossFileReasoningItem]:
     items: list[CrossFileReasoningItem] = []
-    for hypothesis in source_hypotheses:
+    for index, hypothesis in enumerate(source_hypotheses, start=1):
         focus = _safe_text(hypothesis.get("vuln_type"), "unknown")
         items.append(
             CrossFileReasoningItem(
                 focus=focus,
-                evidence_refs=[_safe_text(hypothesis.get("hypothesis_id"), "unknown")],
+                evidence_refs=[_hypothesis_source_id(hypothesis, index)],
                 invariant=_invariant_for(focus),
-                refutation_steps=[
-                    "find explicit guard or ownership check in local code",
-                    "map service-layer authorization before validation planning",
-                    "require redacted evidence and human review before promotion",
-                ],
+                refutation_steps=_refutation_steps_for(focus),
             )
         )
     if not items:
@@ -339,7 +509,7 @@ def _cross_file_reasoning(
 def _vulnerability_chains(source_hypotheses: list[dict]) -> list[VulnerabilityChain]:
     chains: list[VulnerabilityChain] = []
     for index, hypothesis in enumerate(source_hypotheses, start=1):
-        hypothesis_id = _safe_text(hypothesis.get("hypothesis_id"), f"H-{index:03d}")
+        hypothesis_id = _hypothesis_source_id(hypothesis, index)
         vuln_type = _safe_text(hypothesis.get("vuln_type"), "unknown")
         chains.append(
             VulnerabilityChain(
@@ -383,7 +553,7 @@ def _refutation_matrix(chains: list[VulnerabilityChain]) -> list[RefutationMatri
 def _variant_candidates(source_hypotheses: list[dict]) -> list[VariantCandidate]:
     variants: list[VariantCandidate] = []
     for index, hypothesis in enumerate(source_hypotheses, start=1):
-        hypothesis_id = _safe_text(hypothesis.get("hypothesis_id"), f"H-{index:03d}")
+        hypothesis_id = _hypothesis_source_id(hypothesis, index)
         vuln_type = _safe_text(hypothesis.get("vuln_type"), "unknown")
         location = _safe_text(hypothesis.get("location"), "unknown")
         status = (
@@ -435,7 +605,11 @@ def _protocol_fuzzing_plans(
     ]
 
 
-def _patch_diff_learner(patch_diff: dict) -> PatchDiffLearner:
+def _patch_diff_learner(
+    patch_diff: dict,
+    *,
+    trusted_source_ids: set[str],
+) -> PatchDiffLearner:
     if not patch_diff:
         return PatchDiffLearner(
             status="waiting_for_patch_diff",
@@ -446,7 +620,10 @@ def _patch_diff_learner(patch_diff: dict) -> PatchDiffLearner:
             ],
         )
 
-    source_ref = _safe_text(patch_diff.get("linked_hypothesis_id"), "patch_diff")
+    source_ref = _trusted_patch_source_ref(
+        patch_diff,
+        trusted_source_ids=trusted_source_ids,
+    )
     changed_files = [
         _safe_text(path, "unknown")
         for path in patch_diff.get("changed_files", [])
@@ -484,26 +661,26 @@ def _knowledge_updates(
             KnowledgeUpdate(
                 topic="negative_signal",
                 status="advisory_only",
-                source_ref="none",
+                source_ref="system:no_authorized_hypotheses",
                 applicability_boundary="authorized_local_artifacts_only",
                 retained_fields=["why_no_chain_was_promoted"],
             )
         ]
     else:
         updates = [
-        KnowledgeUpdate(
-            topic=_safe_text(hypothesis.get("vuln_type"), "unknown"),
-            status="advisory_only",
-            source_ref=_safe_text(hypothesis.get("hypothesis_id"), "unknown"),
-            applicability_boundary="authorized_local_artifacts_only",
-            retained_fields=[
-                "vuln_type",
-                "root_cause_summary",
-                "refutation_result",
-                "variant_search_pattern",
-            ],
-        )
-        for hypothesis in source_hypotheses
+            KnowledgeUpdate(
+                topic=_safe_text(hypothesis.get("vuln_type"), "unknown"),
+                status="advisory_only",
+                source_ref=_hypothesis_source_id(hypothesis, index),
+                applicability_boundary="authorized_local_artifacts_only",
+                retained_fields=[
+                    "vuln_type",
+                    "root_cause_summary",
+                    "refutation_result",
+                    "variant_search_pattern",
+                ],
+            )
+            for index, hypothesis in enumerate(source_hypotheses, start=1)
         ]
     updates.extend(
         KnowledgeUpdate(
@@ -531,8 +708,8 @@ def _evidence_graph(
 ) -> EvidenceGraph:
     nodes: list[EvidenceNode] = []
     edges: list[EvidenceEdge] = []
-    for hypothesis in source_hypotheses:
-        hypothesis_id = _safe_text(hypothesis.get("hypothesis_id"), "unknown")
+    for index, hypothesis in enumerate(source_hypotheses, start=1):
+        hypothesis_id = _hypothesis_source_id(hypothesis, index)
         nodes.append(
             EvidenceNode(
                 node_id=hypothesis_id,
@@ -595,7 +772,7 @@ def _knowledge_queue(source_hypotheses: list[dict]) -> list[KnowledgeQueueItem]:
     if not source_hypotheses:
         return [
             KnowledgeQueueItem(
-                source_ref="none",
+                source_ref="system:no_authorized_hypotheses",
                 topic="negative_signal",
                 retained_fields=["missing_evidence_reason"],
                 human_review_required=True,
@@ -603,7 +780,7 @@ def _knowledge_queue(source_hypotheses: list[dict]) -> list[KnowledgeQueueItem]:
         ]
     return [
         KnowledgeQueueItem(
-            source_ref=_safe_text(hypothesis.get("hypothesis_id"), "unknown"),
+            source_ref=_hypothesis_source_id(hypothesis, index),
             topic=_safe_text(hypothesis.get("vuln_type"), "unknown"),
             retained_fields=[
                 "invariant",
@@ -613,29 +790,24 @@ def _knowledge_queue(source_hypotheses: list[dict]) -> list[KnowledgeQueueItem]:
             ],
             human_review_required=True,
         )
-        for hypothesis in source_hypotheses
+        for index, hypothesis in enumerate(source_hypotheses, start=1)
     ]
 
 
 def _chain_stages(vuln_type: str) -> list[str]:
-    if vuln_type == "authorization":
-        return [
-            "entrypoint",
-            "authorization_boundary",
-            "object_access",
-            "impact_review",
-        ]
-    if vuln_type in {"injection", "static-analysis"}:
-        return ["entrypoint", "input_boundary", "sink", "impact_review"]
-    return ["entrypoint", "trust_boundary", "state_change", "impact_review"]
+    return list(_family_plan_for(vuln_type).stages)
 
 
 def _invariant_for(vuln_type: str) -> str:
-    if vuln_type == "authorization":
-        return "Every sensitive object access must be constrained by role and ownership checks."
-    if vuln_type == "injection":
-        return "User-controlled input must not reach a sink without structured validation."
-    return "Every promoted finding needs a local evidence trace and an explicit refutation attempt."
+    return _family_plan_for(vuln_type).invariant
+
+
+def _refutation_steps_for(vuln_type: str) -> list[str]:
+    return list(_family_plan_for(vuln_type).refutation_steps)
+
+
+def _family_plan_for(vuln_type: str) -> _FamilyPlanProfile:
+    return _FAMILY_PLAN_PROFILES.get(vuln_type, _DEFAULT_FAMILY_PLAN_PROFILE)
 
 
 def _dict_value(value: object) -> dict:
@@ -652,6 +824,36 @@ def _safe_text(value: object, default: str) -> str:
     if not isinstance(value, str):
         return default
     return value.strip()[:180] or default
+
+
+def _hypothesis_source_id(hypothesis: dict, index: int) -> str:
+    source_id = _trusted_internal_id(
+        hypothesis.get("hypothesis_id")
+        or hypothesis.get("candidate_id")
+        or hypothesis.get("finding_id")
+    )
+    if source_id:
+        return source_id
+    return f"generated:hypothesis-{index:03d}"
+
+
+def _trusted_internal_id(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if _TRUSTED_INTERNAL_ID_RE.fullmatch(text) else ""
+
+
+def _trusted_patch_source_ref(
+    patch_diff: dict,
+    *,
+    trusted_source_ids: set[str],
+) -> str:
+    for key in ("linked_hypothesis_id", "source_ref"):
+        value = patch_diff.get(key)
+        if isinstance(value, str) and value.strip() in trusted_source_ids:
+            return value.strip()
+    return "unattributed_patch_diff"
 
 
 def _safe_advisory_text(value: object, default: str) -> str:

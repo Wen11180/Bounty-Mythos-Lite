@@ -14,11 +14,16 @@ from typing import Any
 from app.mythos_triage import (
     ReportDraftCandidate,
     RefutationResult,
+    SAFE_VALIDATION_METHODS,
     ValidationPlan,
     build_report_draft,
     build_validation_plan,
 )
 from app.validation_workspace import build_validation_workspace
+from app.falsification_engine import (
+    project_falsification_summary,
+    validate_falsification_card,
+)
 from app.advisory_static_engines import (
     ENGINE_CODEQL,
     ENGINE_SEMGREP,
@@ -31,6 +36,13 @@ from app.patch_suggestion import build_patch_suggestion
 
 class CandidateReportBridgeError(ValueError):
     pass
+
+
+def _falsification_summary_for_report_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    card = candidate.get("falsification_card")
+    if isinstance(card, dict) and not validate_falsification_card(card):
+        return project_falsification_summary(card)
+    return project_falsification_summary(None)
 
 
 def retained_candidates_from_normalized_output(
@@ -87,6 +99,22 @@ def candidate_to_hypothesis(candidate: dict[str, Any]) -> dict[str, Any]:
         why_still_alive = card["decision"].get("why_still_alive")
     if not isinstance(why_still_alive, list):
         why_still_alive = []
+    validation_mode = str(
+        candidate.get("validation_mode") or "non_destructive_request_review"
+    ).strip()
+    if validation_mode not in SAFE_VALIDATION_METHODS:
+        validation_mode = "non_destructive_request_review"
+    evidence_needed = candidate.get("evidence_needed")
+    if not isinstance(evidence_needed, list):
+        evidence_needed = list(candidate.get("source_fact_refs") or [])[:12]
+    impact_rationale = str(candidate.get("impact_rationale") or "").strip()
+    if not impact_rationale:
+        impact_rationale = (
+            f"Potential {vuln_type} impact requires human review of the cited local evidence."
+        )
+    impact_score = candidate.get("impact_score")
+    if not isinstance(impact_score, (int, float)) or isinstance(impact_score, bool):
+        impact_score = 0
     return {
         "hypothesis": (
             f"Possible {vuln_type} issue on {route_label} "
@@ -95,13 +123,17 @@ def candidate_to_hypothesis(candidate: dict[str, Any]) -> dict[str, Any]:
         "vuln_type": vuln_type,
         "broken_invariant": broken_invariant,
         "why_still_alive": [str(item) for item in why_still_alive if str(item).strip()],
+        "impact_rationale": impact_rationale,
+        "impact_score": impact_score,
         "risk_level": "medium",
-        "validation_mode": "non_destructive_request_review",
+        "validation_mode": validation_mode,
         "self_impact_only": False,
         "best_practice_only": False,
         "requires_real_user_data": False,
         "policy_risk": "low",
-        "evidence_needed": list(candidate.get("source_fact_refs") or [])[:12],
+        "evidence_needed": [str(item) for item in evidence_needed if str(item).strip()][
+            :12
+        ],
         "affected_route": route_label,
         "affected_code_path": code_path,
         "root_cause_id": root,
@@ -121,6 +153,15 @@ def build_submission_blocked_report_bundle(
     """
     if not isinstance(candidate, dict):
         raise CandidateReportBridgeError("candidate_must_be_object")
+    affected_code_path = str(candidate.get("affected_code_path") or "").strip()
+    source_fact_refs = candidate.get("source_fact_refs")
+    if (
+        affected_code_path.count(":") < 2
+        or not affected_code_path.startswith("code:")
+        or not isinstance(source_fact_refs, list)
+        or affected_code_path not in source_fact_refs
+    ):
+        raise CandidateReportBridgeError("affected_code_path_must_be_cited_source_fact")
 
     hypothesis = candidate_to_hypothesis(candidate)
     refutation = RefutationResult(
@@ -190,6 +231,7 @@ def build_submission_blocked_report_bundle(
         scope_allowed=True,
         advisory_bundle=advisory_bundle,
     )
+    falsification_summary = _falsification_summary_for_report_candidate(candidate)
 
     patch_suggestion = build_patch_suggestion(
         package_id=package_id,
@@ -213,6 +255,11 @@ def build_submission_blocked_report_bundle(
         "route": hypothesis["affected_route"],
         "affected_code_path": hypothesis["affected_code_path"],
         "vuln_type": hypothesis["vuln_type"],
+        "broken_invariant": hypothesis["broken_invariant"],
+        "validation_mode": hypothesis["validation_mode"],
+        "evidence_needed": hypothesis["evidence_needed"],
+        "impact_rationale": hypothesis["impact_rationale"],
+        "impact_score": hypothesis["impact_score"],
         "status": "unverified_hypothesis",
         "human_review_required": True,
         "submission_blocked": True,
@@ -230,9 +277,12 @@ def build_submission_blocked_report_bundle(
         "validation_plan": validation_plan.model_dump(),
         "validation_workspace": workspace_payload,
         "multi_engine_verdict": multi_engine,
+        "falsification_summary": falsification_summary,
         "patch_suggestion": patch_suggestion,
         "report_draft": {
             **draft.model_dump(),
+            "impact_rationale": hypothesis["impact_rationale"],
+            "falsification_summary": dict(falsification_summary),
             "safety_notes": safety_notes,
             "actual_result": (
                 "Not filled. No live validation was executed. "

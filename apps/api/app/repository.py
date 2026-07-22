@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 import re
+from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -10,6 +12,7 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.bounded_result_claims import TrustedBoundedResultClaim
 from app.db_models import (
     AgentRunRecord,
     ApprovalRecord,
@@ -86,7 +89,23 @@ _PROGRAM_RULE_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 AUTONOMOUS_RESEARCH_WAKEUP_PAGE_SIZE = 20
 AUTONOMOUS_RESEARCH_WAKEUP_LEASE_SECONDS = 120
+AUTONOMOUS_RESEARCH_WAKEUP_INTERVAL_SECONDS = 60
+AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS = 900
+_AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA = "autonomous_research_v1"
+_CANDIDATE_HUNTER_EVIDENCE_TASK_TYPE = "candidate_hunter_evidence_inspection"
+_CANDIDATE_HUNTER_EVIDENCE_TASK_SCHEMA = "candidate_hunter_evidence_task_v1"
 _AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID = "autonomous_research_wakeup"
+_AUTONOMOUS_RESEARCH_WAKEUP_FINAL_STATUSES = frozenset({"completed", "failed"})
+_AUTONOMOUS_RESEARCH_WAKEUP_STOP_REASONS = frozenset(
+    {
+        "wakeup_candidate_invalid",
+        "wakeup_candidate_query_failed",
+        "wakeup_campaign_tick_failed",
+    }
+)
+_AUTONOMOUS_RESEARCH_WAKEUP_OUTCOME_STATUS_PATTERN = re.compile(
+    r"^[a-z][a-z0-9_:-]{0,127}$"
+)
 _PROGRAM_RULE_RAW_HTML_PATTERN = re.compile(
     r"<!doctype\s+html|</?html(?:\s|>)|</?body(?:\s|>)",
     re.IGNORECASE,
@@ -128,6 +147,17 @@ _PROGRAM_RULE_FORBIDDEN_KEYS = {
     "username",
     "userphone",
 }
+
+
+def _campaign_task_requires_execution_lease(
+    record: CampaignTaskRecord,
+    payload: dict,
+) -> bool:
+    return payload.get("runtime_schema") == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA or (
+        record.task_type == _CANDIDATE_HUNTER_EVIDENCE_TASK_TYPE
+        and payload.get("schema_version") == _CANDIDATE_HUNTER_EVIDENCE_TASK_SCHEMA
+        and payload.get("execution_lease_required") is True
+    )
 
 
 class DatabaseRepository:
@@ -991,6 +1021,28 @@ class DatabaseRepository:
     def get_pipeline_run(self, run_id: str) -> PipelineRunRecord | None:
         return self.session.get(PipelineRunRecord, run_id)
 
+    def load_trusted_bounded_result_claims(
+        self,
+        pipeline_run_id: str,
+    ) -> tuple[TrustedBoundedResultClaim, ...]:
+        pipeline_run = self.get_pipeline_run(pipeline_run_id)
+        if pipeline_run is None:
+            return ()
+        claims = [
+            claim
+            for stage in self.list_pipeline_stages_for_run(pipeline_run_id)
+            if stage.stage_key == "studio_black_box_bounded_result"
+            and (
+                claim := _trusted_bounded_result_claim(
+                    session=self.session,
+                    pipeline_run=pipeline_run,
+                    stage=stage,
+                )
+            )
+            is not None
+        ]
+        return tuple(claims[:5])
+
     def append_claim_review_decision(
         self,
         *,
@@ -1076,53 +1128,232 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
-    def append_studio_black_box_bounded_result(
+    def record_studio_black_box_bounded_result_atomic(
         self,
         *,
-        run_id: str,
         validation_run_id: str,
-        result: dict,
-    ) -> PipelineRunRecord | None:
-        record = self.get_pipeline_run(run_id)
-        if record is None:
-            return None
-        safe_result = _safe_display_value(result)
-        if (
-            not isinstance(safe_result, dict)
-            or safe_result.get("validation_run_id") != validation_run_id
-            or not isinstance(safe_result.get("result_digest"), str)
-            or safe_result.get("execution_allowed") is not False
-            or safe_result.get("report_submission_allowed") is not False
-            or safe_result.get("submission_blocked") is not True
-            or safe_result.get("human_review_required") is not True
-        ):
-            return None
-
-        payload = dict(record.payload)
-        existing_results = payload.get("studio_black_box_bounded_results", [])
-        results = existing_results if isinstance(existing_results, list) else []
-        matching_result = next(
-            (
-                item
-                for item in results
-                if isinstance(item, dict)
-                and item.get("validation_run_id") == validation_run_id
-            ),
-            None,
+        pipeline_run_id: str,
+        result_digest: str,
+        bounded_projection: dict,
+        failure_injector: Callable[[str], None] | None = None,
+    ) -> tuple[ValidationRunRecord, PipelineRunRecord, PipelineStageRecord]:
+        projection = _studio_bounded_result_projection(bounded_projection)
+        if not _studio_bounded_result_digest(result_digest):
+            raise ValueError("bounded_result_digest_invalid")
+        stage_id = _studio_bounded_result_stage_id(
+            pipeline_run_id,
+            validation_run_id,
         )
-        if matching_result is not None:
-            return (
-                record
-                if matching_result.get("result_digest") == safe_result["result_digest"]
-                else None
-            )
+        dialect = self.session.get_bind().dialect.name
+        hook = failure_injector or (lambda _point: None)
 
-        payload["studio_black_box_bounded_results"] = results + [safe_result]
-        record.payload = payload
-        self.session.add(record)
-        self.session.commit()
-        self.session.refresh(record)
-        return record
+        for _attempt in range(3):
+            try:
+                pipeline_query = select(PipelineRunRecord).where(
+                    PipelineRunRecord.id == pipeline_run_id
+                )
+                validation_query = select(ValidationRunRecord).where(
+                    ValidationRunRecord.id == validation_run_id
+                )
+                if dialect == "postgresql":
+                    pipeline_query = pipeline_query.with_for_update()
+                    validation_query = validation_query.with_for_update()
+                pipeline_run = self.session.scalar(pipeline_query)
+                validation_run = self.session.scalar(validation_query)
+                if pipeline_run is None or validation_run is None:
+                    raise ValueError("bounded_result_binding_invalid")
+                validation_payload = (
+                    validation_run.payload
+                    if isinstance(validation_run.payload, dict)
+                    else {}
+                )
+                approval_query = select(ApprovalRecord).where(
+                    ApprovalRecord.id == validation_run.approval_id
+                )
+                if dialect == "postgresql":
+                    approval_query = approval_query.with_for_update()
+                approval = (
+                    self.session.scalar(approval_query)
+                    if validation_run.approval_id
+                    else None
+                )
+                if (
+                    approval is None
+                    or validation_run.campaign_id != approval.campaign_id
+                    or validation_run.task_id != approval.task_id
+                    or approval.run_id != pipeline_run.id
+                    or validation_payload.get("pipeline_run_id") != pipeline_run.id
+                ):
+                    raise ValueError("bounded_result_binding_invalid")
+
+                provenance_refs = [
+                    f"approval:{approval.id}",
+                    f"pipeline_run:{pipeline_run.id}",
+                    f"validation_run:{validation_run.id}",
+                ]
+                result_payload = {
+                    "schema_version": "studio_black_box_bounded_result_v1",
+                    "request_digest": result_digest,
+                    **projection,
+                    "provenance_refs": provenance_refs,
+                    "human_review_required": True,
+                    "submission_blocked": True,
+                    "execution_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                }
+                pipeline_result = {
+                    "schema_version": "studio_black_box_bounded_result_v1",
+                    "approval_id": approval.id,
+                    "validation_run_id": validation_run.id,
+                    "result_digest": result_digest,
+                    **projection,
+                    "provenance_refs": provenance_refs,
+                    "human_review_required": True,
+                    "submission_blocked": True,
+                    "execution_allowed": False,
+                    "report_submission_allowed": False,
+                }
+                stage_payload = {
+                    **pipeline_result,
+                    "pipeline_run_id": pipeline_run.id,
+                    "raw_payload_processed": False,
+                }
+                stage = self.session.get(PipelineStageRecord, stage_id)
+                replay_state = _studio_bounded_result_replay_state(
+                    validation_run=validation_run,
+                    pipeline_run=pipeline_run,
+                    stage=stage,
+                    result_payload=result_payload,
+                    pipeline_result=pipeline_result,
+                    stage_payload=stage_payload,
+                )
+                if replay_state == "match":
+                    assert stage is not None
+                    self.session.rollback()
+                    stored_validation = self.get_validation_run(validation_run_id)
+                    stored_pipeline = self.get_pipeline_run(pipeline_run_id)
+                    stored_stage = self.session.get(PipelineStageRecord, stage_id)
+                    assert stored_validation is not None
+                    assert stored_pipeline is not None
+                    assert stored_stage is not None
+                    return stored_validation, stored_pipeline, stored_stage
+                if replay_state == "partial":
+                    raise ValueError("bounded_result_partial_state")
+                if replay_state == "mismatch":
+                    raise ValueError("bounded_result_request_mismatch")
+                if (
+                    validation_run.status != "preflight_passed"
+                    or validation_run.allowed_to_execute is not True
+                    or approval.status != "approved"
+                    or not approval_record_is_active(approval)
+                ):
+                    raise ValueError("fresh_complete_local_plan_preflight_required")
+
+                pipeline_payload = (
+                    pipeline_run.payload if isinstance(pipeline_run.payload, dict) else {}
+                )
+                existing_results = pipeline_payload.get(
+                    "studio_black_box_bounded_results",
+                    [],
+                )
+                if not isinstance(existing_results, list):
+                    raise ValueError("bounded_result_partial_state")
+                next_pipeline_payload = dict(pipeline_payload)
+                next_pipeline_payload["studio_black_box_bounded_results"] = [
+                    *existing_results,
+                    pipeline_result,
+                ]
+                if dialect == "sqlite":
+                    pipeline_update = self.session.execute(
+                        update(PipelineRunRecord)
+                        .where(
+                            PipelineRunRecord.id == pipeline_run.id,
+                            PipelineRunRecord.payload == pipeline_payload,
+                        )
+                        .values(payload=next_pipeline_payload)
+                        .execution_options(synchronize_session=False)
+                    )
+                    if pipeline_update.rowcount != 1:
+                        self.session.rollback()
+                        continue
+                    self.session.expire(pipeline_run)
+                else:
+                    pipeline_run.payload = next_pipeline_payload
+                    self.session.add(pipeline_run)
+                    self.session.flush()
+                hook("pipeline_run")
+
+                recorded_at = datetime.now(UTC)
+                next_validation_payload = dict(validation_payload)
+                next_validation_payload["black_box_bounded_result"] = {
+                    "audit_digest": result_digest,
+                    "decision_status": "observed",
+                    "evidence_refs": ["sanitized_cross_account_diff"],
+                    "execution_started": False,
+                    "result_payload": result_payload,
+                    "recorded_at": recorded_at.isoformat(),
+                }
+                validation_update = self.session.execute(
+                    update(ValidationRunRecord)
+                    .where(
+                        ValidationRunRecord.id == validation_run.id,
+                        ValidationRunRecord.status == "preflight_passed",
+                        ValidationRunRecord.allowed_to_execute.is_(True),
+                    )
+                    .values(
+                        status="needs_evidence",
+                        safety_gate_state="black_box_needs_evidence",
+                        allowed_to_execute=False,
+                        evidence_ref_count=1,
+                        summary="Bounded black-box result recorded: observed",
+                        finished_at=recorded_at,
+                        payload=next_validation_payload,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if validation_update.rowcount != 1:
+                    self.session.rollback()
+                    continue
+                self.session.expire(validation_run)
+                hook("validation_run")
+
+                stage = PipelineStageRecord(
+                    id=stage_id,
+                    pipeline_run_id=pipeline_run.id,
+                    campaign_id=validation_run.campaign_id,
+                    task_id=validation_run.task_id,
+                    stage_key="studio_black_box_bounded_result",
+                    stage_order=len(self.list_pipeline_stages_for_run(pipeline_run.id)),
+                    status="needs_evidence",
+                    input_refs=[
+                        f"approval:{approval.id}",
+                        f"validation_run:{validation_run.id}",
+                    ],
+                    output_refs=["sanitized_cross_account_diff"],
+                    safety_gate_state="human_review_required",
+                    stop_reason=None,
+                    payload=stage_payload,
+                )
+                self.session.add(stage)
+                self.session.flush()
+                hook("pipeline_stage")
+                self.session.commit()
+                self.session.expire_all()
+                stored_validation = self.get_validation_run(validation_run_id)
+                stored_pipeline = self.get_pipeline_run(pipeline_run_id)
+                stored_stage = self.session.get(PipelineStageRecord, stage_id)
+                if (
+                    stored_validation is None
+                    or stored_pipeline is None
+                    or stored_stage is None
+                ):
+                    raise ValueError("bounded_result_partial_state")
+                return stored_validation, stored_pipeline, stored_stage
+            except Exception:
+                self.session.rollback()
+                raise
+        raise ValueError("bounded_result_concurrent_update")
 
     def list_pipeline_runs_for_program(self, program_id: str) -> list[PipelineRunRecord]:
         return self.session.scalars(
@@ -1247,30 +1478,46 @@ class DatabaseRepository:
                 AutonomousResearchWakeupStateRecord.lease_expires_at <= timestamp,
             ),
         )
+        due = or_(
+            AutonomousResearchWakeupStateRecord.next_due_at.is_(None),
+            AutonomousResearchWakeupStateRecord.next_due_at <= timestamp,
+        )
         result = self.session.execute(
             update(AutonomousResearchWakeupStateRecord)
             .where(
                 AutonomousResearchWakeupStateRecord.id
                 == _AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID,
                 claimable,
+                due,
             )
             .values(
                 lease_token_digest=claim_token_digest,
                 lease_started_at=timestamp,
                 lease_expires_at=timestamp
                 + timedelta(seconds=AUTONOMOUS_RESEARCH_WAKEUP_LEASE_SECONDS),
+                next_due_at=timestamp
+                + timedelta(seconds=AUTONOMOUS_RESEARCH_WAKEUP_INTERVAL_SECONDS),
                 updated_at=timestamp,
             )
             .execution_options(synchronize_session=False)
         )
         self.session.commit()
         if result.rowcount != 1:
-            return None
+            self.session.expire_all()
+            state = self.get_autonomous_research_wakeup_state()
+            if (
+                state is not None
+                and state.lease_token_digest is None
+                and state.next_due_at is not None
+                and _as_utc(state.next_due_at) > timestamp
+            ):
+                return {"status": "not_due", "after_campaign_id": None}
+            return {"status": "lease_held", "after_campaign_id": None}
         self.session.expire_all()
         state = self.get_autonomous_research_wakeup_state()
         if state is None or state.lease_token_digest != claim_token_digest:
-            return None
-        return {"after_campaign_id": state.after_campaign_id}
+            return {"status": "lease_held", "after_campaign_id": None}
+        return {"status": "claimed", "after_campaign_id": state.after_campaign_id}
 
     def finish_autonomous_research_wakeup(
         self,
@@ -1278,6 +1525,10 @@ class DatabaseRepository:
         claim_token_digest: str,
         after_campaign_id: str | None,
         now: datetime,
+        last_cycle_status: str | None = None,
+        last_cycle_stop_reason: str | None = None,
+        last_cycle_processed_count: int | None = None,
+        last_cycle_outcome_counts: dict[str, int] | None = None,
     ) -> bool:
         if (
             _SHA256_PATTERN.fullmatch(claim_token_digest) is None
@@ -1291,7 +1542,38 @@ class DatabaseRepository:
             )
         ):
             return False
+        cycle_summary = _autonomous_research_wakeup_cycle_summary(
+            status=last_cycle_status,
+            stop_reason=last_cycle_stop_reason,
+            processed_count=last_cycle_processed_count,
+            outcome_counts=last_cycle_outcome_counts,
+        )
+        if cycle_summary is None and any(
+            value is not None
+            for value in (
+                last_cycle_status,
+                last_cycle_stop_reason,
+                last_cycle_processed_count,
+                last_cycle_outcome_counts,
+            )
+        ):
+            return False
         timestamp = _as_utc(now)
+        values: dict[str, Any] = {
+            "after_campaign_id": after_campaign_id,
+            "lease_token_digest": None,
+            "lease_started_at": None,
+            "lease_expires_at": None,
+            "updated_at": timestamp,
+        }
+        if cycle_summary is not None:
+            values.update(
+                last_cycle_completed_at=timestamp,
+                last_cycle_status=cycle_summary["status"],
+                last_cycle_stop_reason=cycle_summary["stop_reason"],
+                last_cycle_processed_count=cycle_summary["processed_count"],
+                last_cycle_outcome_counts=cycle_summary["outcome_counts"],
+            )
         result = self.session.execute(
             update(AutonomousResearchWakeupStateRecord)
             .where(
@@ -1302,19 +1584,12 @@ class DatabaseRepository:
                 AutonomousResearchWakeupStateRecord.lease_expires_at.is_not(None),
                 AutonomousResearchWakeupStateRecord.lease_expires_at > timestamp,
             )
-            .values(
-                after_campaign_id=after_campaign_id,
-                lease_token_digest=None,
-                lease_started_at=None,
-                lease_expires_at=None,
-                updated_at=timestamp,
-            )
+            .values(**values)
             .execution_options(synchronize_session=False)
         )
         self.session.commit()
         self.session.expire_all()
         return result.rowcount == 1
-
     def renew_autonomous_research_wakeup(
         self,
         *,
@@ -1420,6 +1695,58 @@ class DatabaseRepository:
                 status=safe_status,
                 payload=_safe_display_value(payload),
             )
+            .execution_options(synchronize_session=False)
+        )
+        self.session.commit()
+        if result.rowcount != 1:
+            self.session.expire_all()
+            return None
+        self.session.expire_all()
+        return self.get_campaign(campaign_id)
+
+    def refresh_completed_campaign_snapshot(
+        self,
+        *,
+        campaign_id: str,
+        expected_source_snapshot_digest: str,
+        payload: dict,
+    ) -> CampaignRecord | None:
+        record = self.get_campaign(campaign_id)
+        current_payload = record.payload if record is not None else None
+        if (
+            record is None
+            or record.status != "completed"
+            or not isinstance(current_payload, dict)
+            or current_payload.get("source_snapshot_digest")
+            != expected_source_snapshot_digest
+        ):
+            return None
+
+        updated_payload = _safe_display_value(payload)
+        if not isinstance(updated_payload, dict):
+            return None
+        now = datetime.now(UTC)
+        updated_payload.setdefault("budget_started_at", now.isoformat())
+        paused_at = _payload_datetime(updated_payload.get("budget_paused_at"))
+        if paused_at is not None:
+            paused_seconds = updated_payload.get("budget_paused_seconds", 0)
+            if not isinstance(paused_seconds, (int, float)) or isinstance(
+                paused_seconds, bool
+            ):
+                paused_seconds = 0
+            updated_payload["budget_paused_seconds"] = max(
+                0,
+                paused_seconds + (now - paused_at).total_seconds(),
+            )
+            updated_payload.pop("budget_paused_at", None)
+
+        result = self.session.execute(
+            update(CampaignRecord)
+            .where(
+                CampaignRecord.id == campaign_id,
+                CampaignRecord.status == "completed",
+            )
+            .values(status="running", payload=updated_payload)
             .execution_options(synchronize_session=False)
         )
         self.session.commit()
@@ -1541,7 +1868,36 @@ class DatabaseRepository:
         status: str,
         *,
         output_refs: list[str] | None = None,
+        execution_claim_id: str | None = None,
+        expected_execution_statuses: set[str] | None = None,
     ) -> CampaignTaskRecord | None:
+        if execution_claim_id is not None:
+            values: dict[str, Any] = {
+                "status": _safe_display_value(status),
+                "execution_claim_id": None,
+                "execution_lease_expires_at": None,
+            }
+            if output_refs is not None:
+                values["output_refs"] = _safe_display_value(output_refs)
+            result = self.session.execute(
+                update(CampaignTaskRecord)
+                .where(CampaignTaskRecord.id == task_id)
+                .where(
+                    CampaignTaskRecord.status.in_(
+                        expected_execution_statuses or {"running"}
+                    )
+                )
+                .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
+                .values(**values)
+            )
+            if result.rowcount != 1:
+                self.session.commit()
+                self.session.expire_all()
+                return None
+            self.session.commit()
+            self.session.expire_all()
+            return self.session.get(CampaignTaskRecord, task_id)
+
         record = self.session.get(CampaignTaskRecord, task_id)
         if record is None:
             return None
@@ -1552,6 +1908,146 @@ class DatabaseRepository:
         self.session.commit()
         self.session.refresh(record)
         return record
+
+    def mark_campaign_task_dispatched(
+        self,
+        task_id: str,
+        *,
+        execution_claim_id: str,
+        now: datetime | None = None,
+    ) -> CampaignTaskRecord | None:
+        timestamp = now or datetime.now(UTC)
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(CampaignTaskRecord.status.in_({"queued", "ready"}))
+            .values(
+                status="dispatched",
+                execution_claim_id=_safe_display_value(execution_claim_id),
+                execution_heartbeat_at=timestamp,
+                execution_lease_expires_at=(
+                    timestamp + timedelta(seconds=AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS)
+                ),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            self.session.commit()
+            self.session.expire_all()
+            return None
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, task_id)
+
+    def claim_failed_campaign_task_retry(
+        self,
+        task_id: str,
+    ) -> CampaignTaskRecord | None:
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(CampaignTaskRecord.status == "failed")
+            .where(CampaignTaskRecord.execution_claim_id.is_(None))
+            .where(CampaignTaskRecord.execution_lease_expires_at.is_(None))
+            .values(
+                status="queued",
+                execution_heartbeat_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        self.session.commit()
+        self.session.expire_all()
+        if result.rowcount != 1:
+            return None
+        return self.session.get(CampaignTaskRecord, task_id)
+
+    def fail_unclaimed_campaign_task(
+        self,
+        task_id: str,
+        *,
+        stop_reason: str,
+        now: datetime | None = None,
+    ) -> CampaignTaskRecord | None:
+        timestamp = now or datetime.now(UTC)
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(CampaignTaskRecord.status.in_({"queued", "ready"}))
+            .where(CampaignTaskRecord.execution_claim_id.is_(None))
+            .values(
+                status="failed",
+                execution_heartbeat_at=None,
+                execution_lease_expires_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            self.session.commit()
+            self.session.expire_all()
+            return None
+        self.session.execute(
+            update(AgentRunRecord)
+            .where(AgentRunRecord.task_id == task_id)
+            .where(
+                AgentRunRecord.status.in_(
+                    ("dispatched", "running", "awaiting_approval")
+                )
+            )
+            .values(
+                status="failed",
+                safety_gate_state="blocked",
+                stop_reason=_safe_display_value(stop_reason),
+                finished_at=timestamp,
+            )
+        )
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, task_id)
+
+    def fail_incomplete_campaign_task_execution(
+        self,
+        task_id: str,
+        *,
+        stop_reason: str,
+        now: datetime | None = None,
+    ) -> CampaignTaskRecord | None:
+        timestamp = now or datetime.now(UTC)
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(CampaignTaskRecord.status.in_({"dispatched", "running"}))
+            .where(
+                or_(
+                    CampaignTaskRecord.execution_claim_id.is_(None),
+                    CampaignTaskRecord.execution_lease_expires_at.is_(None),
+                )
+            )
+            .values(
+                status="failed",
+                execution_claim_id=None,
+                execution_heartbeat_at=None,
+                execution_lease_expires_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            self.session.commit()
+            self.session.expire_all()
+            return None
+        self.session.execute(
+            update(AgentRunRecord)
+            .where(AgentRunRecord.task_id == task_id)
+            .where(AgentRunRecord.status.in_(("dispatched", "running")))
+            .values(
+                status="failed",
+                safety_gate_state="blocked",
+                stop_reason=_safe_display_value(stop_reason),
+                finished_at=timestamp,
+            )
+        )
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, task_id)
 
     def complete_autonomous_validation_handoff_review(
         self,
@@ -1752,7 +2248,23 @@ class DatabaseRepository:
             return None
         return reviewed_task, reviewed_stage, reviewed_approval, reviewed_validation_run
 
-    def claim_campaign_task_execution(self, task_id: str) -> CampaignTaskRecord | None:
+    def claim_campaign_task_execution(
+        self,
+        task_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> CampaignTaskRecord | None:
+        self.session.expire_all()
+        record = self.session.get(CampaignTaskRecord, task_id)
+        if record is None:
+            return None
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        if _campaign_task_requires_execution_lease(record, payload):
+            return self._claim_autonomous_research_task_execution(
+                record=record,
+                now=now,
+            )
+
         result = self.session.execute(
             update(CampaignTaskRecord)
             .where(
@@ -1791,6 +2303,244 @@ class DatabaseRepository:
         self.session.commit()
         self.session.refresh(record)
         return record
+
+    def _claim_autonomous_research_task_execution(
+        self,
+        *,
+        record: CampaignTaskRecord,
+        now: datetime | None,
+    ) -> CampaignTaskRecord | None:
+        timestamp = now or datetime.now(UTC)
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        agent_payload = (
+            {
+                "worker_execution_claim": True,
+                "raw_payload_processed": False,
+            }
+            if record.task_type == _CANDIDATE_HUNTER_EVIDENCE_TASK_TYPE
+            else {
+                "runtime_execution_claim": True,
+                "raw_payload_processed": False,
+            }
+        )
+        active_run = self.find_active_agent_run_for_task(record.id)
+        if (
+            record.execution_claim_id is not None
+            and active_run is not None
+            and active_run.id != record.execution_claim_id
+        ):
+            return None
+        if record.execution_claim_id is not None:
+            execution_claim_id = record.execution_claim_id
+        elif active_run is not None:
+            execution_claim_id = active_run.id
+        else:
+            execution_claim_id = f"agent_run_{uuid4().hex}"
+        claimable_status = or_(
+            CampaignTaskRecord.status.in_(("queued", "ready")),
+            and_(
+                CampaignTaskRecord.status == "dispatched",
+                CampaignTaskRecord.execution_lease_expires_at > timestamp,
+            ),
+        )
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == record.id)
+            .where(claimable_status)
+            .values(
+                status="running",
+                execution_claim_id=execution_claim_id,
+                execution_heartbeat_at=timestamp,
+                execution_lease_expires_at=(
+                    timestamp + timedelta(seconds=AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS)
+                ),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            self.session.commit()
+            self.session.expire_all()
+            return None
+        if active_run is None:
+            self.session.add(
+                AgentRunRecord(
+                    id=execution_claim_id,
+                    campaign_id=record.campaign_id,
+                    task_id=record.id,
+                    agent_type=record.agent_type,
+                    status="running",
+                    input_refs=[f"campaign_task:{record.id}"],
+                    output_refs=[],
+                    tool_calls=[],
+                    safety_gate_state="allowed",
+                    stop_reason=None,
+                    payload=agent_payload,
+                )
+            )
+        else:
+            self.session.execute(
+                update(AgentRunRecord)
+                .where(AgentRunRecord.id == active_run.id)
+                .where(AgentRunRecord.status == "dispatched")
+                .values(status="running")
+            )
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, record.id)
+
+    def renew_campaign_task_execution_lease(
+        self,
+        task_id: str,
+        *,
+        execution_claim_id: str | None,
+        now: datetime | None = None,
+    ) -> CampaignTaskRecord | None:
+        if not execution_claim_id:
+            return None
+        timestamp = now or datetime.now(UTC)
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(CampaignTaskRecord.status == "running")
+            .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
+            .where(CampaignTaskRecord.execution_lease_expires_at > timestamp)
+            .values(
+                execution_heartbeat_at=timestamp,
+                execution_lease_expires_at=(
+                    timestamp + timedelta(seconds=AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS)
+                ),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            self.session.commit()
+            self.session.expire_all()
+            return None
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, task_id)
+
+    def expire_campaign_task_execution(
+        self,
+        task_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> CampaignTaskRecord | None:
+        timestamp = now or datetime.now(UTC)
+        self.session.expire_all()
+        record = self.session.get(CampaignTaskRecord, task_id)
+        if (
+            record is None
+            or record.status not in {"dispatched", "running"}
+            or not record.execution_claim_id
+            or record.execution_lease_expires_at is None
+            or _as_utc(record.execution_lease_expires_at) > _as_utc(timestamp)
+        ):
+            return None
+        execution_claim_id = record.execution_claim_id
+        output_refs = list(record.output_refs) if isinstance(record.output_refs, list) else []
+        agent_run_ref = f"agent_run:{execution_claim_id}"
+        if agent_run_ref not in output_refs:
+            output_refs.append(agent_run_ref)
+        result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(CampaignTaskRecord.status.in_(("dispatched", "running")))
+            .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
+            .where(CampaignTaskRecord.execution_lease_expires_at <= timestamp)
+            .values(
+                status="failed",
+                output_refs=_safe_display_value(output_refs),
+                execution_claim_id=None,
+                execution_lease_expires_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            self.session.commit()
+            self.session.expire_all()
+            return None
+        self.session.execute(
+            update(AgentRunRecord)
+            .where(AgentRunRecord.id == execution_claim_id)
+            .where(AgentRunRecord.task_id == task_id)
+            .where(AgentRunRecord.status.in_(("dispatched", "running")))
+            .values(
+                status="failed",
+                safety_gate_state="blocked",
+                stop_reason="execution_lease_expired",
+                finished_at=timestamp,
+            )
+        )
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, task_id)
+
+    def finish_campaign_task_execution(
+        self,
+        *,
+        task_id: str,
+        execution_claim_id: str | None,
+        task_status: str,
+        task_output_refs: list[str],
+        agent_status: str,
+        agent_output_refs: list[str],
+        safety_gate_state: str,
+        stop_reason: str | None,
+        payload: dict,
+        expected_execution_statuses: set[str] | None = None,
+        additional_records: list[object] | None = None,
+    ) -> tuple[CampaignTaskRecord, AgentRunRecord] | None:
+        if not execution_claim_id:
+            return None
+        timestamp = datetime.now(UTC)
+        agent_result = self.session.execute(
+            update(AgentRunRecord)
+            .where(AgentRunRecord.id == execution_claim_id)
+            .where(AgentRunRecord.task_id == task_id)
+            .where(AgentRunRecord.status.in_(("dispatched", "running")))
+            .values(
+                status=_safe_display_value(agent_status),
+                output_refs=_safe_display_value(agent_output_refs),
+                safety_gate_state=_safe_display_value(safety_gate_state),
+                stop_reason=_safe_display_value(stop_reason),
+                payload=_safe_display_value(payload),
+                finished_at=timestamp,
+            )
+        )
+        if agent_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+        task_result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(
+                CampaignTaskRecord.status.in_(
+                    expected_execution_statuses or {"running"}
+                )
+            )
+            .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
+            .values(
+                status=_safe_display_value(task_status),
+                output_refs=_safe_display_value(task_output_refs),
+                execution_claim_id=None,
+                execution_lease_expires_at=None,
+            )
+        )
+        if task_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+        if additional_records:
+            self.session.add_all(additional_records)
+        self.session.commit()
+        self.session.expire_all()
+        task = self.session.get(CampaignTaskRecord, task_id)
+        agent_run = self.session.get(AgentRunRecord, execution_claim_id)
+        if task is None or agent_run is None:
+            return None
+        return task, agent_run
 
     def save_agent_run(
         self,
@@ -2141,6 +2891,7 @@ class DatabaseRepository:
         pipeline_run_id: str | None,
         campaign_id: str | None,
         task_id: str | None,
+        stage_id: str | None = None,
         stage_key: str,
         stage_order: int,
         status: str,
@@ -2149,8 +2900,31 @@ class DatabaseRepository:
         safety_gate_state: str,
         stop_reason: str | None,
         payload: dict | None = None,
+        strict_idempotency: bool = False,
     ) -> PipelineStageRecord:
         safe_payload = _safe_display_value(payload or {})
+        safe_stage_key = _safe_display_value(stage_key)
+        safe_status = _safe_display_value(status)
+        safe_input_refs = _safe_display_value(input_refs or [])
+        safe_output_refs = _safe_display_value(output_refs or [])
+        safe_safety_gate_state = _safe_display_value(safety_gate_state)
+        safe_stop_reason = _safe_display_value(stop_reason)
+        if strict_idempotency and stage_id is None:
+            raise ValueError("pipeline_stage_id_required")
+        record_id = stage_id or f"pipeline_stage_{uuid4().hex}"
+        match_kwargs = {
+            "pipeline_run_id": pipeline_run_id,
+            "campaign_id": campaign_id,
+            "task_id": task_id,
+            "stage_key": safe_stage_key,
+            "stage_order": stage_order,
+            "status": safe_status,
+            "input_refs": safe_input_refs,
+            "output_refs": safe_output_refs,
+            "safety_gate_state": safe_safety_gate_state,
+            "stop_reason": safe_stop_reason,
+            "payload": safe_payload,
+        }
         existing = _existing_pipeline_stage_for_idempotency_key(
             self.session,
             pipeline_run_id=pipeline_run_id,
@@ -2160,23 +2934,42 @@ class DatabaseRepository:
             payload=safe_payload,
         )
         if existing is not None:
+            if strict_idempotency and (
+                existing.id != record_id
+                or not _pipeline_stage_matches_save_request(existing, **match_kwargs)
+            ):
+                raise ValueError("pipeline_stage_id_conflict")
+            return existing
+        existing = self.session.get(PipelineStageRecord, record_id)
+        if existing is not None:
+            if not _pipeline_stage_matches_save_request(existing, **match_kwargs):
+                raise ValueError("pipeline_stage_id_conflict")
             return existing
         record = PipelineStageRecord(
-            id=f"pipeline_stage_{uuid4().hex}",
+            id=record_id,
             pipeline_run_id=pipeline_run_id,
             campaign_id=campaign_id,
             task_id=task_id,
-            stage_key=_safe_display_value(stage_key),
+            stage_key=safe_stage_key,
             stage_order=stage_order,
-            status=_safe_display_value(status),
-            input_refs=_safe_display_value(input_refs or []),
-            output_refs=_safe_display_value(output_refs or []),
-            safety_gate_state=_safe_display_value(safety_gate_state),
-            stop_reason=_safe_display_value(stop_reason),
+            status=safe_status,
+            input_refs=safe_input_refs,
+            output_refs=safe_output_refs,
+            safety_gate_state=safe_safety_gate_state,
+            stop_reason=safe_stop_reason,
             payload=safe_payload,
         )
         self.session.add(record)
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.get(PipelineStageRecord, record_id)
+            if existing is None:
+                raise
+            if not _pipeline_stage_matches_save_request(existing, **match_kwargs):
+                raise ValueError("pipeline_stage_id_conflict")
+            return existing
         self.session.refresh(record)
         return record
 
@@ -2812,6 +3605,36 @@ def _existing_pipeline_stage_for_idempotency_key(
     ).first()
 
 
+def _pipeline_stage_matches_save_request(
+    stage: PipelineStageRecord,
+    *,
+    pipeline_run_id: str | None,
+    campaign_id: str | None,
+    task_id: str | None,
+    stage_key: str,
+    stage_order: int,
+    status: str,
+    input_refs: list[str],
+    output_refs: list[str],
+    safety_gate_state: str,
+    stop_reason: str | None,
+    payload: dict,
+) -> bool:
+    return (
+        stage.pipeline_run_id == pipeline_run_id
+        and stage.campaign_id == campaign_id
+        and stage.task_id == task_id
+        and stage.stage_key == stage_key
+        and stage.stage_order == stage_order
+        and stage.status == status
+        and stage.input_refs == input_refs
+        and stage.output_refs == output_refs
+        and stage.safety_gate_state == safety_gate_state
+        and stage.stop_reason == stop_reason
+        and stage.payload == payload
+    )
+
+
 def _existing_validation_run_for_idempotency_key(
     session: Session,
     *,
@@ -3348,6 +4171,317 @@ def _safe_display_value(value: Any) -> Any:
     return value
 
 
+def _studio_bounded_result_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and _SHA256_PATTERN.fullmatch(value.removeprefix("sha256:")) is not None
+    )
+
+
+def _studio_bounded_result_projection(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != {
+        "aliases",
+        "response_schema_fingerprint",
+        "status_class",
+        "timing_bucket",
+        "difference_labels",
+        "safe_counters",
+    }:
+        raise ValueError("bounded_result_projection_invalid")
+    aliases = value.get("aliases")
+    counters = value.get("safe_counters")
+    differences = value.get("difference_labels")
+    if (
+        not isinstance(aliases, dict)
+        or set(aliases) != {"account", "objects", "role", "runner", "workflow"}
+        or not isinstance(aliases.get("objects"), list)
+        or not aliases["objects"]
+        or any(not _studio_bounded_result_alias(item) for item in aliases["objects"])
+        or any(
+            not _studio_bounded_result_alias(aliases.get(key))
+            for key in ("account", "role", "runner", "workflow")
+        )
+        or not _studio_bounded_result_digest(value.get("response_schema_fingerprint"))
+        or value.get("status_class") not in {"1xx", "2xx", "3xx", "4xx", "5xx"}
+        or value.get("timing_bucket")
+        not in {"under_100ms", "under_500ms", "under_2s", "over_2s"}
+        or not isinstance(differences, list)
+        or not differences
+        or any(
+            item not in {"response_schema_changed", "response_schema_unchanged"}
+            for item in differences
+        )
+        or not isinstance(counters, dict)
+        or set(counters)
+        != {"difference_count", "object_alias_count", "parameter_count"}
+        or any(
+            not isinstance(item, int) or isinstance(item, bool) or item < 0
+            for item in counters.values()
+        )
+        or counters["difference_count"] != len(differences)
+        or counters["object_alias_count"] != len(aliases["objects"])
+        or _safe_display_value(value) != value
+    ):
+        raise ValueError("bounded_result_projection_invalid")
+    return deepcopy(value)
+
+
+def _studio_bounded_result_alias(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 64
+        and value[0].isalpha()
+        and all(character.isalnum() or character in {"_", "-"} for character in value)
+        and not any(
+            marker in value.lower()
+            for marker in (
+                "authorization",
+                "cookie",
+                "credential",
+                "password",
+                "secret",
+                "token",
+            )
+        )
+    )
+
+
+def _studio_bounded_result_stage_id(
+    pipeline_run_id: str,
+    validation_run_id: str,
+) -> str:
+    identity = (
+        f"{pipeline_run_id}|{validation_run_id}|studio_black_box_bounded_result"
+    )
+    digest = sha256(identity.encode("utf-8")).hexdigest()[:48]
+    return f"pipeline_stage_bounded_{digest}"
+
+
+def _trusted_bounded_result_claim(
+    *,
+    session: Session,
+    pipeline_run: PipelineRunRecord,
+    stage: PipelineStageRecord,
+) -> TrustedBoundedResultClaim | None:
+    if (
+        stage.stage_key != "studio_black_box_bounded_result"
+        or not isinstance(stage.input_refs, list)
+        or len(stage.input_refs) != 2
+        or not all(isinstance(ref, str) for ref in stage.input_refs)
+        or not stage.input_refs[0].startswith("approval:")
+        or not stage.input_refs[1].startswith("validation_run:")
+    ):
+        return None
+    approval_id = stage.input_refs[0].removeprefix("approval:")
+    validation_run_id = stage.input_refs[1].removeprefix("validation_run:")
+    validation_run = session.get(ValidationRunRecord, validation_run_id)
+    approval = session.get(ApprovalRecord, approval_id)
+    if validation_run is None or approval is None:
+        return None
+
+    pipeline_payload = (
+        pipeline_run.payload if isinstance(pipeline_run.payload, dict) else {}
+    )
+    validation_payload = (
+        validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    )
+    bounded_result = validation_payload.get("black_box_bounded_result")
+    result_payload = (
+        bounded_result.get("result_payload")
+        if isinstance(bounded_result, dict)
+        else None
+    )
+    stage_payload = stage.payload if isinstance(stage.payload, dict) else {}
+    result_digest = stage_payload.get("result_digest")
+    if not isinstance(result_payload, dict) or not _studio_bounded_result_digest(
+        result_digest
+    ):
+        return None
+    try:
+        projection = _studio_bounded_result_projection(
+            {
+                key: stage_payload.get(key)
+                for key in (
+                    "aliases",
+                    "response_schema_fingerprint",
+                    "status_class",
+                    "timing_bucket",
+                    "difference_labels",
+                    "safe_counters",
+                )
+            }
+        )
+    except ValueError:
+        return None
+
+    provenance_refs = (
+        f"approval:{approval.id}",
+        f"pipeline_run:{pipeline_run.id}",
+        f"validation_run:{validation_run.id}",
+    )
+    pipeline_result = {
+        "schema_version": "studio_black_box_bounded_result_v1",
+        "approval_id": approval.id,
+        "validation_run_id": validation_run.id,
+        "result_digest": result_digest,
+        **projection,
+        "provenance_refs": list(provenance_refs),
+        "human_review_required": True,
+        "submission_blocked": True,
+        "execution_allowed": False,
+        "report_submission_allowed": False,
+    }
+    expected_result_payload = {
+        "schema_version": "studio_black_box_bounded_result_v1",
+        "request_digest": result_digest,
+        **projection,
+        "provenance_refs": list(provenance_refs),
+        "human_review_required": True,
+        "submission_blocked": True,
+        "execution_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+    }
+    expected_stage_payload = {
+        **pipeline_result,
+        "pipeline_run_id": pipeline_run.id,
+        "raw_payload_processed": False,
+    }
+    recorded_at = (
+        bounded_result.get("recorded_at")
+        if isinstance(bounded_result, dict)
+        else None
+    )
+    recorded_datetime = _payload_datetime(recorded_at)
+    if (
+        pipeline_run.scope_status != "in_scope"
+        or pipeline_payload.get("campaign_id") != validation_run.campaign_id
+        or validation_run.approval_id != approval.id
+        or validation_run.campaign_id != approval.campaign_id
+        or validation_run.task_id != approval.task_id
+        or validation_run.validation_mode != approval.validation_mode
+        or validation_run.plan_digest != approval.plan_digest
+        or validation_run.approval_required is not True
+        or validation_run.safety_gate_state != "black_box_needs_evidence"
+        or validation_payload.get("pipeline_run_id") != pipeline_run.id
+        or approval.run_id != pipeline_run.id
+        or approval.status != "approved"
+        or approval.decided_at is None
+        or validation_run.finished_at is None
+        or recorded_datetime is None
+        or stage.id
+        != _studio_bounded_result_stage_id(pipeline_run.id, validation_run.id)
+        or stage.pipeline_run_id != pipeline_run.id
+        or stage.campaign_id != validation_run.campaign_id
+        or stage.task_id != validation_run.task_id
+        or result_payload != expected_result_payload
+        or _studio_bounded_result_replay_state(
+            validation_run=validation_run,
+            pipeline_run=pipeline_run,
+            stage=stage,
+            result_payload=expected_result_payload,
+            pipeline_result=pipeline_result,
+            stage_payload=expected_stage_payload,
+        )
+        != "match"
+        or not (
+            _as_utc(pipeline_run.created_at)
+            <= _as_utc(approval.created_at)
+            <= _as_utc(approval.decided_at)
+            <= recorded_datetime
+            == _as_utc(validation_run.finished_at)
+            <= _as_utc(stage.created_at)
+        )
+        or (
+            approval.expires_at is not None
+            and _as_utc(approval.expires_at) < recorded_datetime
+        )
+    ):
+        return None
+
+    return TrustedBoundedResultClaim(
+        claim_id=f"claim_bounded_result_{result_digest.removeprefix('sha256:')}",
+        text=(
+            "Bounded local-lab result "
+            f"({projection['status_class']}, {projection['timing_bucket']}) was recorded; "
+            "human review remains required."
+        ),
+        provenance_refs=provenance_refs,
+    )
+
+
+def _studio_bounded_result_replay_state(
+    *,
+    validation_run: ValidationRunRecord,
+    pipeline_run: PipelineRunRecord,
+    stage: PipelineStageRecord | None,
+    result_payload: dict,
+    pipeline_result: dict,
+    stage_payload: dict,
+) -> str:
+    validation_payload = (
+        validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    )
+    validation_result = validation_payload.get("black_box_bounded_result")
+    pipeline_payload = (
+        pipeline_run.payload if isinstance(pipeline_run.payload, dict) else {}
+    )
+    raw_results = pipeline_payload.get("studio_black_box_bounded_results", [])
+    if not isinstance(raw_results, list):
+        return "partial"
+    matching_results = [
+        item
+        for item in raw_results
+        if isinstance(item, dict)
+        and item.get("validation_run_id") == validation_run.id
+    ]
+    present = [
+        isinstance(validation_result, dict),
+        bool(matching_results),
+        stage is not None,
+    ]
+    if not any(present):
+        return "fresh"
+    if not all(present) or len(matching_results) != 1:
+        return "partial"
+    recorded_at = validation_result.get("recorded_at")
+    expected_validation_result = {
+        "audit_digest": result_payload["request_digest"],
+        "decision_status": "observed",
+        "evidence_refs": ["sanitized_cross_account_diff"],
+        "execution_started": False,
+        "result_payload": result_payload,
+        "recorded_at": recorded_at,
+    }
+    if (
+        not isinstance(recorded_at, str)
+        or validation_result != expected_validation_result
+        or matching_results[0] != pipeline_result
+        or stage is None
+        or stage.pipeline_run_id != pipeline_run.id
+        or stage.campaign_id != validation_run.campaign_id
+        or stage.task_id != validation_run.task_id
+        or stage.stage_key != "studio_black_box_bounded_result"
+        or stage.status != "needs_evidence"
+        or stage.input_refs
+        != [
+            f"approval:{pipeline_result['approval_id']}",
+            f"validation_run:{validation_run.id}",
+        ]
+        or stage.output_refs != ["sanitized_cross_account_diff"]
+        or stage.safety_gate_state != "human_review_required"
+        or stage.stop_reason is not None
+        or stage.payload != stage_payload
+        or validation_run.status != "needs_evidence"
+        or validation_run.allowed_to_execute is not False
+        or validation_run.evidence_ref_count != 1
+    ):
+        return "mismatch"
+    return "match"
+
+
 def _safe_display_key(value: Any) -> Any:
     if isinstance(value, str) and (
         _is_secret_like(value) or _contains_real_user_data_risk(value)
@@ -3704,3 +4838,47 @@ def _report_from_record(record: ReportRecord) -> ReportDraft:
         title=record.title,
         draft=record.draft,
     )
+
+
+def _autonomous_research_wakeup_cycle_summary(
+    *,
+    status: str | None,
+    stop_reason: str | None,
+    processed_count: int | None,
+    outcome_counts: dict[str, int] | None,
+) -> dict[str, Any] | None:
+    if status is None:
+        return None
+    if (
+        status not in _AUTONOMOUS_RESEARCH_WAKEUP_FINAL_STATUSES
+        or stop_reason not in {None, *_AUTONOMOUS_RESEARCH_WAKEUP_STOP_REASONS}
+        or not isinstance(processed_count, int)
+        or isinstance(processed_count, bool)
+        or processed_count < 0
+        or processed_count > AUTONOMOUS_RESEARCH_WAKEUP_PAGE_SIZE
+        or not isinstance(outcome_counts, dict)
+    ):
+        return None
+    normalized_counts: dict[str, int] = {}
+    for outcome_status, count in outcome_counts.items():
+        if (
+            not isinstance(outcome_status, str)
+            or _AUTONOMOUS_RESEARCH_WAKEUP_OUTCOME_STATUS_PATTERN.fullmatch(
+                outcome_status
+            )
+            is None
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 0
+            or count > AUTONOMOUS_RESEARCH_WAKEUP_PAGE_SIZE
+        ):
+            return None
+        normalized_counts[outcome_status] = count
+    if sum(normalized_counts.values()) != processed_count:
+        return None
+    return {
+        "status": status,
+        "stop_reason": stop_reason,
+        "processed_count": processed_count,
+        "outcome_counts": dict(sorted(normalized_counts.items())),
+    }

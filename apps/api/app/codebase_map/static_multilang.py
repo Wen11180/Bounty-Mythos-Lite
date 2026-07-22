@@ -6,7 +6,8 @@ layer, middleware, before_action) and retain invalid role/status/guard-after-sin
 patterns outside Python and TypeScript.
 
 Scope remains falsify-first leadership across common server languages
-(ownership + high-signal gap families: SSRF / path / injection / mass-assign),
+(ownership + high-signal gap families: SSRF / path / injection / mass-assign /
+explicit transactional state transitions),
 not a full multi-language SAST engine. Breadth expands language×pattern coverage
 for held-outs and production-shaped probes.
 """
@@ -25,9 +26,60 @@ _JAVA_MAPPING = re.compile(
     r"@(?P<method>Get|Post|Put|Patch|Delete)Mapping\s*\(\s*(?:value\s*=\s*)?[\"'](?P<path>[^\"']+)[\"']",
     re.IGNORECASE,
 )
+_JAVA_REQUEST_MAPPING = re.compile(
+    r"@(?:[A-Za-z_][A-Za-z0-9_]*\.)*RequestMapping\s*\(\s*"
+    r"(?:(?:value|path)\s*=\s*)?[\"'](?P<path>[^\"']+)[\"']\s*\)",
+    re.IGNORECASE,
+)
+_JAVA_REQUEST_MAPPING_MARKER = re.compile(
+    r"@(?:[A-Za-z_][A-Za-z0-9_]*\.)*RequestMapping\b",
+    re.IGNORECASE,
+)
+_JAVA_REQUEST_MAPPING_ANNOTATION = re.compile(
+    r"@(?:[A-Za-z_][A-Za-z0-9_]*\.)*RequestMapping\s*\("
+    r"(?P<arguments>[^)]*)\)",
+    re.IGNORECASE | re.DOTALL,
+)
+_JAVA_REQUEST_MAPPING_PATH_ARGUMENT = re.compile(
+    r"(?:^|,)\s*(?:(?:value|path)\s*=\s*)?[\"'](?P<path>[^\"']+)[\"']",
+    re.IGNORECASE,
+)
+_JAVA_REQUEST_MAPPING_METHOD_ARGUMENT = re.compile(
+    r"\bmethod\s*=\s*(?P<methods>\{[^}]*\}|"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*RequestMethod\.(?:GET|POST|PUT|PATCH|DELETE))",
+    re.IGNORECASE | re.DOTALL,
+)
+_JAVA_REQUEST_METHOD = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*RequestMethod\."
+    r"(?P<method>GET|POST|PUT|PATCH|DELETE)\b",
+    re.IGNORECASE,
+)
 _JAVA_METHOD = re.compile(
     r"(?:public|protected|private|static|\s)+\S+\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*?\)\s*(?:throws\s+[^{]+)?\{",
     re.MULTILINE,
+)
+_JAVA_TRANSACTIONAL_ANNOTATION = re.compile(
+    r"@(?:[A-Za-z_][A-Za-z0-9_]*\.)*Transactional\b"
+    r"(?P<arguments>\s*\([^)]*\))?"
+)
+_JAVA_NON_TRANSACTIONAL_PROPAGATION = re.compile(
+    r"\bpropagation\s*=\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)*"
+    r"(?:NOT_SUPPORTED|NEVER)\b",
+    re.IGNORECASE,
+)
+_JAVA_DECLARATIVE_AUTHZ_ANNOTATION = re.compile(
+    r"@(?:[A-Za-z_][A-Za-z0-9_]*\.)*"
+    r"(?P<name>PreAuthorize|Secured|RolesAllowed)\b(?:\s*\([^)]*\))?",
+    re.IGNORECASE,
+)
+_JAVA_CLASS_ANNOTATION_TAIL = re.compile(
+    r"\s*(?:@(?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\s*\([^)]*\))?\s*)*"
+    r"(?:(?:public|protected|private|abstract|final|static)\s*)*$",
+    re.DOTALL,
+)
+_JAVA_CLASS = re.compile(
+    r"\b(?:class|interface|enum)\s+[A-Za-z_][A-Za-z0-9_]*[^\{]*\{"
 )
 
 # Go: r.GET("/path", mw1, mw2, handler)
@@ -149,9 +201,27 @@ _SENSITIVE_SINKS = {
     "execute_query",
     "run_sql",
     "db_select",
+    "advance_one_time_state",
+    "claim_limited_resource",
+    "consume_one_time_code",
+    "consume_one_time_token",
+    "consume_quota",
+    "decrement_quota",
+    "redeem_one_time_code",
+    "redeem_one_time_token",
     "file",  # ASP.NET File()
     "physicalfile",
     "download",  # Laravel response download helper leaf
+}
+_STATE_TRANSITION_SINKS = {
+    "advance_one_time_state",
+    "claim_limited_resource",
+    "consume_one_time_code",
+    "consume_one_time_token",
+    "consume_quota",
+    "decrement_quota",
+    "redeem_one_time_code",
+    "redeem_one_time_token",
 }
 
 # Gap-family protective check markers (mirrored from codebase_map names).
@@ -191,6 +261,23 @@ _INJECTION_GUARD_MARKERS = (
     "sql_sanitize",
     "full_text_query",
     "regex_full_text",
+)
+_STATE_TRANSITION_GUARD_MARKERS = (
+    "transactional_guard",
+    "transactional_state",
+    "with_transaction",
+    "in_transaction",
+    "select_for_update",
+    "lock_for_update",
+    "compare_and_set",
+    "conditional_update",
+    "optimistic_lock",
+)
+_GO_TRANSACTION_CALLBACK = re.compile(
+    r"\b(?P<callee>(?:db|database)\.Transaction)\s*\(\s*func\b"
+)
+_RUBY_TRANSACTION_BLOCK = re.compile(
+    r"\b(?P<callee>ApplicationRecord\.transaction)\b\s+(?P<block>do\b|\{)"
 )
 
 # Common non-service calls (noise).
@@ -265,21 +352,81 @@ def _map_java_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
     methods = _java_methods(content)
     method_names = {name for name, _, _, _ in methods}
     route_handlers: set[str] = set()
+    class_transactional_ranges = _java_transactional_class_ranges(content)
+    class_route_prefixes = _java_class_route_prefixes(content)
 
-    mapping_hits = list(_JAVA_MAPPING.finditer(content))
-    for mapping in mapping_hits:
+    for method_name, declaration_start, _, _ in methods:
+        direct_class_body_start = _java_direct_class_body_start(
+            declaration_start,
+            class_transactional_ranges,
+        )
+        annotation_line = _java_transactional_annotation_line(
+            content,
+            declaration_start=declaration_start,
+            class_body_start=direct_class_body_start,
+        )
+        if annotation_line is None:
+            annotation_line = _java_class_transactional_annotation_line(
+                declaration_start,
+                class_transactional_ranges,
+            )
+        if annotation_line is not None:
+            facts.append(
+                _fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name="Transactional",
+                    route_method=None,
+                    route_path=None,
+                    handler=method_name,
+                    line_number=annotation_line,
+                    authz_hint="transactional_state_guard",
+                )
+            )
+        declarative_authz = _java_method_declarative_authz_annotation(
+            content,
+            declaration_start=declaration_start,
+            class_body_start=direct_class_body_start,
+        )
+        if declarative_authz is not None:
+            annotation_name, annotation_line = declarative_authz
+            facts.append(
+                _fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=annotation_name,
+                    route_method=None,
+                    route_path=None,
+                    handler=method_name,
+                    line_number=annotation_line,
+                    authz_hint="role_check",
+                )
+            )
+
+    scanned_route_handlers: set[str] = set()
+    for (
+        mapping_start,
+        mapping_end,
+        route_method,
+        mapping_path,
+    ) in _java_route_mappings(content):
         method_meta = None
         for meta in methods:
             name, decl_start, brace_at, body_text = meta
-            if decl_start > mapping.end():
+            if decl_start >= mapping_end:
                 method_meta = meta
                 break
         if method_meta is None:
             continue
-        method_name, _, brace_at, body_text = method_meta
-        route_method = mapping.group("method").upper()
-        route_path = mapping.group("path")
-        route_line = content.count("\n", 0, mapping.start()) + 1
+        method_name, declaration_start, brace_at, body_text = method_meta
+        route_path = _join_static_route_path(
+            _java_class_route_prefix_for_method(
+                declaration_start,
+                class_route_prefixes,
+            ),
+            mapping_path,
+        )
+        route_line = content.count("\n", 0, mapping_start) + 1
         route_handlers.add(method_name)
         facts.append(
             _fact(
@@ -292,6 +439,9 @@ def _map_java_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
                 line_number=route_line,
             )
         )
+        if method_name in scanned_route_handlers:
+            continue
+        scanned_route_handlers.add(method_name)
         facts.extend(
             _scan_handler_body(
                 source_path=source_path,
@@ -320,6 +470,69 @@ def _map_java_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
     return facts
 
 
+def _java_route_mappings(content: str) -> list[tuple[int, int, str, str]]:
+    masked_content = _mask_multilang_non_code(content)
+    mappings: list[tuple[int, int, str, str]] = []
+    for mapping in _JAVA_MAPPING.finditer(content):
+        if masked_content[mapping.start() : mapping.start() + 1] != "@":
+            continue
+        mappings.append(
+            (
+                mapping.start(),
+                mapping.end(),
+                mapping.group("method").upper(),
+                mapping.group("path"),
+            )
+        )
+    for mapping in _JAVA_REQUEST_MAPPING_ANNOTATION.finditer(content):
+        if (
+            masked_content[mapping.start() : mapping.start() + 1] != "@"
+            or _java_request_mapping_is_class_annotation(
+                masked_content,
+                annotation_end=mapping.end(),
+            )
+        ):
+            continue
+        path_match = _JAVA_REQUEST_MAPPING_PATH_ARGUMENT.search(
+            mapping.group("arguments")
+        )
+        method_match = _JAVA_REQUEST_MAPPING_METHOD_ARGUMENT.search(
+            mapping.group("arguments")
+        )
+        if path_match is None or method_match is None:
+            continue
+        for method in {
+            request_method.group("method").upper()
+            for request_method in _JAVA_REQUEST_METHOD.finditer(
+                method_match.group("methods")
+            )
+        }:
+            mappings.append(
+                (
+                    mapping.start(),
+                    mapping.end(),
+                    method,
+                    path_match.group("path"),
+                )
+            )
+    return sorted(mappings)
+
+
+def _java_request_mapping_is_class_annotation(
+    masked_content: str,
+    *,
+    annotation_end: int,
+) -> bool:
+    class_match = _JAVA_CLASS.search(masked_content, annotation_end)
+    return (
+        class_match is not None
+        and _JAVA_CLASS_ANNOTATION_TAIL.fullmatch(
+            masked_content[annotation_end : class_match.start()]
+        )
+        is not None
+    )
+
+
 def _java_methods(content: str) -> list[tuple[str, int, int, str]]:
     methods: list[tuple[str, int, int, str]] = []
     for match in _JAVA_METHOD.finditer(content):
@@ -337,6 +550,211 @@ def _java_methods(content: str) -> list[tuple[str, int, int, str]]:
         body_text, _ = body
         methods.append((name, match.start(), brace_at, body_text))
     return methods
+
+
+def _java_class_route_prefixes(content: str) -> list[tuple[int, int, str]]:
+    masked_content = _mask_multilang_non_code(content)
+    ranges: list[tuple[int, int, str]] = []
+    for match in _JAVA_CLASS.finditer(masked_content):
+        brace_index = masked_content.rfind("{", match.start(), match.end())
+        if brace_index < 0:
+            continue
+        body = _extract_brace_body(masked_content, brace_index)
+        if body is None:
+            continue
+        _, body_end = body
+        prefix = _java_class_route_prefix(
+            source=content,
+            masked_content=masked_content,
+            class_start=match.start(),
+        )
+        if prefix is not None:
+            ranges.append((brace_index, body_end, prefix))
+    return ranges
+
+
+def _java_class_route_prefix(
+    *,
+    source: str,
+    masked_content: str,
+    class_start: int,
+) -> str | None:
+    candidates = [
+        match
+        for match in _JAVA_REQUEST_MAPPING.finditer(source, 0, class_start)
+        if _JAVA_REQUEST_MAPPING_MARKER.match(masked_content, match.start())
+        and _JAVA_CLASS_ANNOTATION_TAIL.fullmatch(
+            source[match.end() : class_start]
+        )
+    ]
+    return candidates[-1].group("path") if candidates else None
+
+
+def _java_class_route_prefix_for_method(
+    declaration_start: int,
+    prefixes: list[tuple[int, int, str]],
+) -> str | None:
+    matching = [
+        (body_start, prefix)
+        for body_start, body_end, prefix in prefixes
+        if body_start < declaration_start < body_end
+    ]
+    return max(matching)[1] if matching else None
+
+
+def _join_static_route_path(prefix: str | None, path: str) -> str:
+    normalized_path = path.strip()
+    if prefix is None or not prefix.strip("/"):
+        return normalized_path if normalized_path.startswith("/") else f"/{normalized_path}"
+    normalized_prefix = prefix.strip()
+    if not normalized_prefix.startswith("/"):
+        normalized_prefix = f"/{normalized_prefix}"
+    normalized_prefix = normalized_prefix.rstrip("/")
+    normalized_path = normalized_path.lstrip("/")
+    return (
+        normalized_prefix
+        if not normalized_path
+        else f"{normalized_prefix}/{normalized_path}"
+    )
+
+
+def _java_transactional_annotation_line(
+    content: str,
+    *,
+    declaration_start: int,
+    class_body_start: int | None,
+) -> int | None:
+    masked_prefix = _mask_multilang_non_code(content[:declaration_start])
+    if class_body_start is None:
+        annotation_start = masked_prefix.rfind("}") + 1
+    else:
+        annotation_start = max(
+            class_body_start + 1,
+            masked_prefix.rfind("}", class_body_start, declaration_start) + 1,
+        )
+    annotation_source = masked_prefix[annotation_start:]
+    match = _supported_java_transactional_annotation(annotation_source)
+    if match is None:
+        return None
+    return content.count("\n", 0, annotation_start + match.start()) + 1
+
+
+def _supported_java_transactional_annotation(source: str) -> re.Match[str] | None:
+    for match in _JAVA_TRANSACTIONAL_ANNOTATION.finditer(source):
+        arguments = match.group("arguments") or ""
+        if not _JAVA_NON_TRANSACTIONAL_PROPAGATION.search(arguments):
+            return match
+    return None
+
+
+def _java_method_declarative_authz_annotation(
+    content: str,
+    *,
+    declaration_start: int,
+    class_body_start: int | None,
+) -> tuple[str, int] | None:
+    masked_prefix = _mask_multilang_non_code(content[:declaration_start])
+    if class_body_start is None:
+        annotation_start = masked_prefix.rfind("}") + 1
+    else:
+        annotation_start = max(
+            class_body_start + 1,
+            masked_prefix.rfind("}", class_body_start, declaration_start) + 1,
+        )
+    annotation_source = masked_prefix[annotation_start:]
+    candidates = [
+        match
+        for match in _JAVA_DECLARATIVE_AUTHZ_ANNOTATION.finditer(annotation_source)
+        if _JAVA_CLASS_ANNOTATION_TAIL.fullmatch(
+            annotation_source[match.end() :]
+        )
+    ]
+    if not candidates:
+        return None
+    annotation = candidates[-1]
+    return (
+        annotation.group("name"),
+        content.count("\n", 0, annotation_start + annotation.start()) + 1,
+    )
+
+
+def _java_class_transactional_annotation(
+    masked_content: str,
+    *,
+    class_start: int,
+) -> re.Match[str] | None:
+    candidates = [
+        match
+        for match in _JAVA_TRANSACTIONAL_ANNOTATION.finditer(
+            masked_content,
+            0,
+            class_start,
+        )
+        if not _JAVA_NON_TRANSACTIONAL_PROPAGATION.search(
+            match.group("arguments") or ""
+        )
+        and _JAVA_CLASS_ANNOTATION_TAIL.fullmatch(
+            masked_content[match.end() : class_start]
+        )
+    ]
+    return candidates[-1] if candidates else None
+
+
+def _java_transactional_class_ranges(
+    content: str,
+) -> list[tuple[int, int, int | None]]:
+    masked_content = _mask_multilang_non_code(content)
+    ranges: list[tuple[int, int, int | None]] = []
+    for match in _JAVA_CLASS.finditer(masked_content):
+        brace_index = masked_content.rfind("{", match.start(), match.end())
+        if brace_index < 0:
+            continue
+        body = _extract_brace_body(masked_content, brace_index)
+        if body is None:
+            continue
+        _, body_end = body
+        annotation = _java_class_transactional_annotation(
+            masked_content,
+            class_start=match.start(),
+        )
+        annotation_line = (
+            content.count(
+                "\n",
+                0,
+                annotation.start(),
+            )
+            + 1
+            if annotation is not None
+            else None
+        )
+        ranges.append((brace_index, body_end, annotation_line))
+    return ranges
+
+
+def _java_class_transactional_annotation_line(
+    declaration_start: int,
+    ranges: list[tuple[int, int, int | None]],
+) -> int | None:
+    matching = [
+        (body_start, annotation_line)
+        for body_start, body_end, annotation_line in ranges
+        if body_start < declaration_start < body_end
+    ]
+    if not matching:
+        return None
+    return max(matching)[1]
+
+
+def _java_direct_class_body_start(
+    declaration_start: int,
+    ranges: list[tuple[int, int, int | None]],
+) -> int | None:
+    containing_classes = [
+        body_start
+        for body_start, body_end, _ in ranges
+        if body_start < declaration_start < body_end
+    ]
+    return max(containing_classes) if containing_classes else None
 
 
 def _map_go_file(*, source_path: str, content: str) -> list["CodebaseFactCandidate"]:
@@ -690,7 +1108,9 @@ def _scan_handler_body(
 ) -> list["CodebaseFactCandidate"]:
     facts: list[CodebaseFactCandidate] = []
     local_methods = local_methods or set()
-    for line_offset, line in enumerate(body_text.splitlines()):
+    code_body = _mask_multilang_non_code(body_text)
+    scoped_transaction_controls = _scoped_transactional_state_controls(code_body)
+    for line_offset, line in enumerate(code_body.splitlines()):
         line_number = full_source.count("\n", 0, body_start_offset) + line_offset + 1
         boundary = _boundary_field_from_line(line)
         if boundary is not None:
@@ -722,18 +1142,34 @@ def _scan_handler_body(
             )
             continue
 
-        sink_names: set[str] = set()
+        sink_columns: dict[str, int] = {}
         service_names: set[str] = set()
-        gap_guard_names: dict[str, str] = {}
+        gap_guard_names: dict[str, tuple[str, int]] = {}
+        for callee, column in scoped_transaction_controls.get(line_offset, []):
+            _record_gap_guard(
+                gap_guard_names,
+                name=callee,
+                authz_hint="transactional_state_guard",
+                column=column,
+            )
         for call in _CALL.finditer(line):
             callee = call.group("callee")
             leaf = callee.rsplit(".", 1)[-1]
-            gap_hint = _gap_guard_hint(leaf)
+            gap_hint = _gap_guard_hint(callee)
             if gap_hint is not None:
-                gap_guard_names[leaf] = gap_hint
+                _record_gap_guard(
+                    gap_guard_names,
+                    name=leaf,
+                    authz_hint=gap_hint,
+                    column=call.start("callee"),
+                )
                 continue
             if _is_sensitive_sink(leaf):
-                sink_names.add(leaf)
+                _record_sink_column(
+                    sink_columns,
+                    name=leaf,
+                    column=call.start("callee"),
+                )
                 continue
             # Local / service helper calls (ownership helpers, service methods).
             if leaf in local_methods and leaf != handler:
@@ -741,16 +1177,26 @@ def _scan_handler_body(
                 continue
             if _looks_like_service_or_authz_call(leaf, callee):
                 service_names.add(leaf)
-        for token in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", line):
+        for token_match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", line):
+            token = token_match.group(1)
             gap_hint = _gap_guard_hint(token)
             if gap_hint is not None:
-                gap_guard_names[token] = gap_hint
+                _record_gap_guard(
+                    gap_guard_names,
+                    name=token,
+                    authz_hint=gap_hint,
+                    column=token_match.start(1),
+                )
             elif _is_sensitive_sink(token):
-                sink_names.add(token)
+                _record_sink_column(
+                    sink_columns,
+                    name=token,
+                    column=token_match.start(1),
+                )
             elif token in local_methods and token != handler:
                 service_names.add(token)
 
-        for leaf, gap_hint in sorted(gap_guard_names.items()):
+        for leaf, (gap_hint, column) in sorted(gap_guard_names.items()):
             facts.append(
                 _fact(
                     fact_type="authz_check",
@@ -761,9 +1207,10 @@ def _scan_handler_body(
                     handler=handler,
                     line_number=line_number,
                     authz_hint=gap_hint,
+                    column_number=column,
                 )
             )
-        for leaf in sorted(sink_names):
+        for leaf, column in sorted(sink_columns.items()):
             facts.append(
                 _fact(
                     fact_type="sensitive_sink",
@@ -773,6 +1220,7 @@ def _scan_handler_body(
                     route_path=None,
                     handler=handler,
                     line_number=line_number,
+                    column_number=column,
                 )
             )
         for leaf in sorted(service_names):
@@ -874,7 +1322,221 @@ def _gap_guard_hint(name: str) -> str | None:
         return "mass_assignment_check"
     if any(marker in snake for marker in _INJECTION_GUARD_MARKERS):
         return "injection_validation_check"
+    if _is_state_transition_guard_name(snake):
+        return "transactional_state_guard"
     return None
+
+
+def _is_state_transition_guard_name(snake: str) -> bool:
+    return snake == "transactional" or any(
+        marker in snake for marker in _STATE_TRANSITION_GUARD_MARKERS
+    )
+
+
+def _scoped_transactional_state_controls(
+    code_body: str,
+) -> dict[int, list[tuple[str, int]]]:
+    state_sink_positions = _state_transition_sink_positions(code_body)
+    if not state_sink_positions:
+        return {}
+
+    controls: dict[int, list[tuple[str, int]]] = {}
+    for match in _GO_TRANSACTION_CALLBACK.finditer(code_body):
+        scope = _go_transaction_callback_scope(code_body, match.end())
+        if scope is None:
+            continue
+        _record_scoped_transactional_control(
+            controls,
+            code_body=code_body,
+            callee=match.group("callee"),
+            control_start=match.start("callee"),
+            scope=scope,
+            state_sink_positions=state_sink_positions,
+        )
+    for match in _RUBY_TRANSACTION_BLOCK.finditer(code_body):
+        scope = _ruby_transaction_block_scope(
+            code_body,
+            transaction_start=match.start("callee"),
+            block_start=match.start("block"),
+            block=match.group("block"),
+        )
+        if scope is None:
+            continue
+        _record_scoped_transactional_control(
+            controls,
+            code_body=code_body,
+            callee=match.group("callee"),
+            control_start=match.start("callee"),
+            scope=scope,
+            state_sink_positions=state_sink_positions,
+        )
+    return controls
+
+
+def _state_transition_sink_positions(code_body: str) -> list[int]:
+    return [
+        match.start("callee")
+        for match in _CALL.finditer(code_body)
+        if _to_snake(match.group("callee").rsplit(".", 1)[-1])
+        in _STATE_TRANSITION_SINKS
+    ]
+
+
+def _go_transaction_callback_scope(
+    code_body: str,
+    callback_start: int,
+) -> tuple[int, int] | None:
+    brace_index = code_body.find("{", callback_start)
+    if brace_index < 0:
+        return None
+    body = _extract_brace_body(code_body, brace_index)
+    if body is None:
+        return None
+    _, body_end = body
+    return brace_index + 1, body_end
+
+
+def _ruby_transaction_block_scope(
+    code_body: str,
+    *,
+    transaction_start: int,
+    block_start: int,
+    block: str,
+) -> tuple[int, int] | None:
+    if block == "{":
+        body = _extract_brace_body(code_body, block_start)
+        if body is None:
+            return None
+        _, body_end = body
+        return block_start + 1, body_end
+
+    line_end = code_body.find("\n", transaction_start)
+    if line_end < 0:
+        return None
+    scope_start = line_end + 1
+    depth = 1
+    cursor = scope_start
+    openers = re.compile(
+        r"^\s*(?:def|if|unless|while|until|for|begin|case|class|module|do)\b"
+    )
+    do_suffix = re.compile(r"\bdo\b\s*(?:\|.*\|)?\s*$")
+    closer = re.compile(r"^\s*end\b")
+    for line in code_body[scope_start:].splitlines(keepends=True):
+        if closer.search(line):
+            depth -= 1
+            if depth == 0:
+                return scope_start, cursor
+        elif openers.search(line) or do_suffix.search(line):
+            depth += 1
+        cursor += len(line)
+    return None
+
+
+def _record_scoped_transactional_control(
+    controls: dict[int, list[tuple[str, int]]],
+    *,
+    code_body: str,
+    callee: str,
+    control_start: int,
+    scope: tuple[int, int],
+    state_sink_positions: list[int],
+) -> None:
+    scope_start, scope_end = scope
+    if not all(scope_start <= position < scope_end for position in state_sink_positions):
+        return
+    line_offset = code_body.count("\n", 0, control_start)
+    line_start = code_body.rfind("\n", 0, control_start) + 1
+    controls.setdefault(line_offset, []).append((callee, control_start - line_start))
+
+
+def _record_gap_guard(
+    guards: dict[str, tuple[str, int]],
+    *,
+    name: str,
+    authz_hint: str,
+    column: int,
+) -> None:
+    existing = guards.get(name)
+    if existing is None or column < existing[1]:
+        guards[name] = (authz_hint, column)
+
+
+def _record_sink_column(
+    sink_columns: dict[str, int],
+    *,
+    name: str,
+    column: int,
+) -> None:
+    existing = sink_columns.get(name)
+    if existing is None or column < existing:
+        sink_columns[name] = column
+
+
+def _mask_multilang_non_code(source: str) -> str:
+    masked: list[str] = []
+    quote: str | None = None
+    block_comment = False
+    line_comment = False
+    escaped = False
+    index = 0
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+        if line_comment:
+            if char in "\r\n":
+                line_comment = False
+                masked.append(char)
+            else:
+                masked.append(" ")
+            index += 1
+            continue
+        if block_comment:
+            if char == "*" and next_char == "/":
+                masked.extend((" ", " "))
+                block_comment = False
+                index += 2
+            else:
+                masked.append(char if char in "\r\n" else " ")
+                index += 1
+            continue
+        if quote is not None:
+            if char in "\r\n" and quote != "`":
+                quote = None
+                escaped = False
+                masked.append(char)
+            else:
+                masked.append(" ")
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+            index += 1
+            continue
+        if char == "/" and next_char == "/":
+            masked.extend((" ", " "))
+            line_comment = True
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            masked.extend((" ", " "))
+            block_comment = True
+            index += 2
+            continue
+        if char == "#":
+            masked.append(" ")
+            line_comment = True
+            index += 1
+            continue
+        if char in {"'", '"', "`"}:
+            masked.append(" ")
+            quote = char
+            index += 1
+            continue
+        masked.append(char)
+        index += 1
+    return "".join(masked)
 
 
 def _boundary_field_from_line(line: str) -> str | None:
@@ -1551,6 +2213,7 @@ def _fact(
     line_number: int,
     authz_hint: str | None = None,
     caller: str | None = None,
+    column_number: int | None = None,
 ) -> "CodebaseFactCandidate":
     from app.codebase_map import CodebaseFactCandidate
 
@@ -1558,6 +2221,8 @@ def _fact(
         "line": line_number,
         "mapping_mode": "static_multilang_analysis",
     }
+    if column_number is not None:
+        payload["column"] = column_number
     if fact_type == "service_call":
         payload["caller"] = caller or handler
         # Also set handler for reachability helpers that only look at handler.

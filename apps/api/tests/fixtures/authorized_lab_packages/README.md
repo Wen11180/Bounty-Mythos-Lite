@@ -16,7 +16,7 @@ user-supplied authorized local package
 1. Local / user-authorized artifacts only. No public target scanning.
 2. `contains_real_user_data: false` and `contains_secrets: false` required.
 3. Authorization flag required: `authorized_for_local_research` or `authorized_for_local_benchmark`.
-4. Code currently must be TypeScript (`.ts`) for the mapper surface used by A+B.
+4. Code must use a supported source suffix: `.py`, `.ts`, `.tsx`, `.mts`, `.cts`, `.java`, `.go`, `.rb`, `.cs`, `.php`, `.kt`, `.rs`, or `.scala`.
 5. Scope must use `${STAGED_CODE_ROOT}` for `allowed_repos`.
 6. Do not register packages into `suite-manifest.json`.
 7. Avoid literal text `real user data`, bearer/cookie/token shapes, or external `http(s)://` URLs in package files (fail-closed fixture sanitizer).

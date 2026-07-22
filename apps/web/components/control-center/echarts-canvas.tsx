@@ -46,7 +46,7 @@ export default function EChartsCanvas({ option, className, label }: EChartsCanva
       ref={containerRef}
       role="img"
       aria-label={label}
-      className={cn("h-60 min-h-60 w-full min-w-0", className)}
+      className={cn("h-60 min-h-60 w-full min-w-0 overflow-hidden", className)}
     />
   );
 }

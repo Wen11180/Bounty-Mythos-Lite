@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 const runId = "studio-e2e-run";
 const workspacePath = "C:/authorized/mythos-workspace";
+const mockApiPort = Number(process.env.E2E_MOCK_API_PORT ?? 46087);
 
 async function installStudioBridge(page: Page) {
   await page.addInitScript(() => {
@@ -21,32 +22,89 @@ async function installStudioBridge(page: Page) {
 
 async function mockStudioApi(
   page: Page,
-  options: { candidatesUnavailable?: boolean; startProjectionUnavailable?: boolean } = {},
+  options: {
+    candidatesUnavailable?: boolean;
+    queuedInvalidations?: boolean;
+    startProjectionUnavailable?: boolean;
+  } = {},
 ) {
   const requests = { candidates: 0, manifest: 0, mission: 0 };
   let researchStarted = false;
   let invalidated = false;
+  let failNextCandidates = false;
+  let queuedInvalidations = 0;
+  let eventSequence = 0;
   let releaseInvalidation: (() => void) | null = null;
   const invalidationReady = new Promise<void>((resolve) => {
     releaseInvalidation = resolve;
   });
   let eventSent = false;
+
+  function emitInvalidation() {
+    invalidated = true;
+    if (options.queuedInvalidations) {
+      queuedInvalidations += 1;
+    } else {
+      releaseInvalidation?.();
+    }
+  }
+
   await page.route("**/mythos/control-center/events**", async (route) => {
-    if (!eventSent) {
-      await invalidationReady;
-      eventSent = true;
+    if (!options.queuedInvalidations) {
+      if (!eventSent) {
+        await invalidationReady;
+        eventSent = true;
+        await route.fulfill({
+          body: `event: control-center-invalidated\nid: ${"a".repeat(64)}\ndata: {"changed":["overview"]}\n\n`,
+          contentType: "text/event-stream",
+          headers: { "Cache-Control": "no-cache" },
+          status: 200,
+        });
+        return;
+      }
       await route.fulfill({
-        body: `event: control-center-invalidated\nid: ${"a".repeat(64)}\ndata: {"changed":["overview"]}\n\n`,
+        body: ": keepalive\n\n",
         contentType: "text/event-stream",
         headers: { "Cache-Control": "no-cache" },
         status: 200,
       });
       return;
     }
+    if (queuedInvalidations === 0) {
+      await route.fulfill({
+        body: ": keepalive\nretry: 500\n\n",
+        contentType: "text/event-stream",
+        headers: { "Cache-Control": "no-cache" },
+        status: 200,
+      });
+      return;
+    }
+    queuedInvalidations -= 1;
+    eventSequence += 1;
     await route.fulfill({
-      body: ": keepalive\n\n",
+      body: `event: control-center-invalidated\nid: ${eventSequence.toString(16).padStart(64, "0")}\nretry: 500\ndata: {"changed":["overview"]}\n\n`,
       contentType: "text/event-stream",
       headers: { "Cache-Control": "no-cache" },
+      status: 200,
+    });
+  });
+  await page.route("**/mythos/studio/black-box-lab/runs/bounded-result", async (route) => {
+    emitInvalidation();
+    await route.fulfill({
+      json: {
+        campaign_id: "campaign-e2e",
+        difference_labels: ["response_schema_changed"],
+        evidence_ref_count: 1,
+        execution_allowed: false,
+        human_review_required: true,
+        pipeline_run_id: runId,
+        report_preview_refreshed: true,
+        report_submission_allowed: false,
+        result_digest: `sha256:${"e".repeat(64)}`,
+        submission_blocked: true,
+        validation_run_id: "validation-e2e",
+        validation_status: "needs_evidence",
+      },
       status: 200,
     });
   });
@@ -91,6 +149,11 @@ async function mockStudioApi(
   });
   await page.route("**/mythos/studio/workspaces/candidates**", async (route) => {
     requests.candidates += 1;
+    if (failNextCandidates) {
+      failNextCandidates = false;
+      await route.fulfill({ json: { detail: "candidate projection unavailable" }, status: 503 });
+      return;
+    }
     if (options.candidatesUnavailable || (options.startProjectionUnavailable && researchStarted)) {
       await route.fulfill({ json: { detail: "candidate projection unavailable" }, status: 503 });
       return;
@@ -184,17 +247,36 @@ async function mockStudioApi(
     });
   });
   return {
-    emitInvalidation() {
-      invalidated = true;
-      releaseInvalidation?.();
+    async recordBoundedResult() {
+      await page.evaluate(async ({ port }) => {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/mythos/studio/black-box-lab/runs/bounded-result`,
+          {
+            body: JSON.stringify({ normalized_result: true }),
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+          },
+        );
+        if (!response.ok) {
+          throw new Error("bounded_result_post_failed");
+        }
+      }, { port: mockApiPort });
+    },
+    emitInvalidation,
+    failNextRefresh() {
+      failNextCandidates = true;
+      emitInvalidation();
     },
     requests,
   };
 }
 
-async function openWorkspace(page: Page) {
+async function openWorkspace(
+  page: Page,
+  options: Parameters<typeof mockStudioApi>[1] = {},
+) {
   await installStudioBridge(page);
-  const mock = await mockStudioApi(page);
+  const mock = await mockStudioApi(page, options);
   await page.goto("/studio");
   const workspaceInput = page.getByLabel("Workspace path");
   await expect(workspaceInput).toHaveCount(1);
@@ -239,6 +321,38 @@ test("Studio desktop keeps three columns and candidate selection preserves conve
   await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button", { name: /H-003/ })).toBeVisible();
   await page.getByRole("tab", { name: "报告草稿" }).click();
   await expect(page.getByText("C:/drafts/studio-e2e-run-v2.md", { exact: true })).toBeVisible();
+});
+
+test("bounded result invalidation refreshes the report inspector and preserves LKG on failure", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const mock = await openWorkspace(page, { queuedInvalidations: true });
+  await page.getByRole("tab", { name: "报告草稿" }).click();
+  await expect(page.getByText("C:/drafts/studio-e2e-run-v2.md", { exact: true })).toHaveCount(0);
+
+  const beforeBoundedResult = { ...mock.requests };
+  await mock.recordBoundedResult();
+
+  await expect.poll(() => mock.requests.manifest).toBeGreaterThan(beforeBoundedResult.manifest);
+  await expect.poll(() => mock.requests.mission).toBeGreaterThan(beforeBoundedResult.mission);
+  await expect.poll(() => mock.requests.candidates).toBeGreaterThan(beforeBoundedResult.candidates);
+  await expect(page.getByText("C:/drafts/studio-e2e-run-v2.md", { exact: true })).toBeVisible();
+  await expect(
+    page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button", { name: /H-003/ }),
+  ).toBeVisible();
+  await expect(page.getByText("实时连接：live", { exact: true })).toBeVisible();
+
+  const beforeFailure = { ...mock.requests };
+  mock.failNextRefresh();
+
+  await expect.poll(() => mock.requests.candidates).toBeGreaterThan(beforeFailure.candidates);
+  await expect(page.getByText("实时连接：degraded", { exact: true })).toBeVisible();
+  await expect(page.getByText("C:/drafts/studio-e2e-run-v2.md", { exact: true })).toBeVisible();
+  await expect(
+    page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button", { name: /H-003/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /submit report/i })).toHaveCount(0);
 });
 
 test("Studio below 1100 uses an accessible inspector drawer", async ({ page }) => {

@@ -2771,6 +2771,79 @@ async function runMaintenance(req: Request, res: Response) {
     assert result["candidate_decisions"][0]["disposition"] == "retained"
 
 
+def test_typescript_validation_after_service_sink_does_not_refute_ssrf_candidate():
+    route = "/webhooks/test"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-ssrf-after-sink-001",
+                "vuln_type": "ssrf",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "testWebhook",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_ssrf_validation",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/test", testWebhook);
+
+async function testWebhook(req: Request, res: Response) {
+  await fetchRemote(req.body.url);
+  validateUrlForSSRF(req.body.url);
+  return res.sendStatus(204);
+}
+
+async function fetchRemote(url: string) {
+  return fetch(url);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
 def test_typescript_deserialization_validation_refutes_deserialization_candidate():
     route = "/imports/profile"
     observations = build_candidate_hunter_observations(

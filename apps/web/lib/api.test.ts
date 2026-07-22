@@ -1528,6 +1528,11 @@ test("studio research API helper sends only the explicit candidate model opt-in"
           model: "gpt-4.1-mini",
           model_failure_reason: null,
           model_latency_ms: 3,
+          model_reasoner: "replay",
+          model_replay_binding: "bound",
+          model_request_key: "a".repeat(64),
+          model_response_digest: "b".repeat(64),
+          model_response_schema: "cross_source_candidate_model_v1",
           model_requested: true,
           model_status: "completed",
           prompt_hash: "prompt-hash",
@@ -1535,6 +1540,7 @@ test("studio research API helper sends only the explicit candidate model opt-in"
           provider: "openai",
           rejected_count: 0,
           report_submission_allowed: false,
+          raw_payload_processed: false,
           validation_allowed: false,
           working_candidate_count: 1,
         },
@@ -1559,6 +1565,7 @@ test("studio research API helper sends only the explicit candidate model opt-in"
     });
 
     assert.equal(run?.candidate_generation.model_status, "completed");
+    assert.equal(run?.candidate_generation.model_replay_binding, "bound");
     assert.deepEqual(requestBody, {
       candidate_model: {
         enabled: true,

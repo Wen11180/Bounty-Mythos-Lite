@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
+from hashlib import sha256
 from threading import Barrier
 
 from fastapi.testclient import TestClient
@@ -12,7 +14,12 @@ from sqlalchemy.pool import StaticPool
 
 from app import main
 from app.db import Base, get_session
-from app.db_models import ApprovalRecord, CampaignRecord, ValidationRunRecord
+from app.db_models import (
+    ApprovalRecord,
+    CampaignRecord,
+    PipelineStageRecord,
+    ValidationRunRecord,
+)
 from app.repository import DatabaseRepository
 
 
@@ -428,6 +435,126 @@ def _bounded_result_payload(approval_response: dict, **updates):
     }
     payload.update(updates)
     return payload
+
+
+def _atomic_bounded_projection(fingerprint: str = "b"):
+    return {
+        "aliases": {
+            "account": "account_b",
+            "objects": ["widget_a"],
+            "role": "member",
+            "runner": "session_b",
+            "workflow": "read_widget_a",
+        },
+        "response_schema_fingerprint": f"sha256:{fingerprint * 64}",
+        "status_class": "2xx",
+        "timing_bucket": "under_100ms",
+        "difference_labels": ["response_schema_changed"],
+        "safe_counters": {
+            "difference_count": 1,
+            "object_alias_count": 1,
+            "parameter_count": 1,
+        },
+    }
+
+
+def _bounded_stage_id(pipeline_run_id: str, validation_run_id: str) -> str:
+    identity = f"{pipeline_run_id}|{validation_run_id}|studio_black_box_bounded_result"
+    return f"pipeline_stage_bounded_{sha256(identity.encode('utf-8')).hexdigest()[:48]}"
+
+
+def _seed_atomic_bounded_result_database(database_path, validation_count: int = 1):
+    engine = create_engine(
+        f"sqlite:///{database_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    with testing_session() as session:
+        repository = DatabaseRepository(session)
+        campaign = repository.create_campaign(
+            program_id=None,
+            name="Atomic bounded result",
+            autonomy_level="level_2_test_account_validation",
+            scope_status="in_scope",
+            policy_text="Authorized local atomic result test.",
+            default_asset="127.0.0.1:43110",
+            created_by="operator",
+        )
+        pipeline_run = repository.save_pipeline_run(
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=0,
+            blocked_count=0,
+            report_title="Atomic result",
+            payload={
+                "campaign_id": campaign.id,
+                "unrelated_fact": {"preserved": True},
+                "report_draft": {
+                    "scope_status": "in_scope",
+                    "severity": "unconfirmed",
+                    "title": "Atomic result preview",
+                },
+                "validation_gate": {"status": "awaiting_human_review"},
+            },
+        )
+        validation_ids = []
+        for index in range(validation_count):
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="validation",
+                agent_type="local_lab",
+                title=f"Atomic bounded result {index}",
+            )
+            approval = repository.create_approval_record(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                run_id=pipeline_run.id,
+                approval_type="validation_batch",
+                actor="operator",
+                reason="Approve atomic bounded result.",
+                scope_reference=f"scope_{index}",
+                requested_action="local_black_box_differential",
+                asset=campaign.default_asset,
+                validation_mode="black_box_differential",
+                plan_digest=f"plan_{index}",
+                autonomy_level=campaign.autonomy_level,
+                expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            )
+            validation_run = repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                approval_id=approval.id,
+                validation_mode="black_box_differential",
+                target_ref=f"campaign:{campaign.id}",
+                status="awaiting_approval",
+                safety_gate_state="awaiting_approval",
+                plan_digest=f"plan_{index}",
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=0,
+                summary="Awaiting atomic result.",
+                payload={"pipeline_run_id": pipeline_run.id},
+            )
+            assert repository.decide_approval_record(
+                approval_id=approval.id,
+                decision="approved",
+                actor="operator",
+                reason="Approved.",
+            ) is not None
+            validation_run.status = "preflight_passed"
+            validation_run.safety_gate_state = "scope_guard_preflight_passed"
+            validation_run.allowed_to_execute = True
+            session.add(validation_run)
+            session.commit()
+            validation_ids.append(validation_run.id)
+    return engine, testing_session, pipeline_run.id, validation_ids
 
 
 def _concurrent_complete_plan_digest_bindings(tmp_path, digests):
@@ -864,6 +991,8 @@ def test_studio_black_box_lab_bounded_result_persists_only_safe_fields_and_refre
         "Bounded local-lab result" in line
         for line in before.json()["sections"]["unverified_claims"]
     )
+    before_overview = client.get("/mythos/control-center/overview")
+    assert before_overview.status_code == 200, before_overview.text
 
     response = client.post(
         "/mythos/studio/black-box-lab/runs/bounded-result",
@@ -896,6 +1025,14 @@ def test_studio_black_box_lab_bounded_result_persists_only_safe_fields_and_refre
         "Bounded local-lab result" in line
         for line in after.json()["sections"]["unverified_claims"]
     )
+    after_overview = client.get("/mythos/control-center/overview")
+    assert after_overview.status_code == 200, after_overview.text
+    assert after_overview.json()["snapshot_version"] != before_overview.json()[
+        "snapshot_version"
+    ]
+    assert after_overview.json()["report_readiness"]["human_review_required"] is True
+    assert after_overview.json()["report_readiness"]["submission_blocked"] is True
+    assert after_overview.json()["report_readiness"]["report_submission_allowed"] is False
 
     replay = client.post(
         "/mythos/studio/black-box-lab/runs/bounded-result",
@@ -903,6 +1040,14 @@ def test_studio_black_box_lab_bounded_result_persists_only_safe_fields_and_refre
     )
     assert replay.status_code == 200, replay.text
     assert replay.json()["result_digest"] == response.json()["result_digest"]
+    changed_duplicate = _bounded_result_payload(approval_response.json())
+    changed_duplicate["trace"]["response_schema_fingerprint"] = f"sha256:{'c' * 64}"
+    mismatch = client.post(
+        "/mythos/studio/black-box-lab/runs/bounded-result",
+        json=changed_duplicate,
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"] == "bounded_result_request_mismatch"
 
     with approved_lab_validation_run.testing_session() as session:
         repository = DatabaseRepository(session)
@@ -917,23 +1062,471 @@ def test_studio_black_box_lab_bounded_result_persists_only_safe_fields_and_refre
         assert validation_run.allowed_to_execute is False
         assert validation_run.evidence_ref_count == 1
         assert validation_run.payload["black_box_bounded_result"]["execution_started"] is False
-        assert pipeline_run.payload["studio_black_box_bounded_results"] == [
-            pipeline_run.payload["studio_black_box_bounded_results"][0]
+        stored_result = validation_run.payload["black_box_bounded_result"][
+            "result_payload"
+        ]
+        assert "trace" not in stored_result
+        assert stored_result["aliases"] == {
+            "account": "account_b",
+            "objects": ["widget_a"],
+            "role": "member",
+            "runner": "session_b",
+            "workflow": "read_widget_a",
+        }
+        assert stored_result["response_schema_fingerprint"] == f"sha256:{'b' * 64}"
+        assert stored_result["status_class"] == "2xx"
+        assert stored_result["timing_bucket"] == "under_100ms"
+        assert stored_result["difference_labels"] == ["response_schema_changed"]
+        assert stored_result["safe_counters"] == {
+            "difference_count": 1,
+            "object_alias_count": 1,
+            "parameter_count": 1,
+        }
+        assert stored_result["provenance_refs"] == [
+            f"approval:{validation_run.approval_id}",
+            f"pipeline_run:{pipeline_run.id}",
+            f"validation_run:{validation_run.id}",
+        ]
+        pipeline_results = pipeline_run.payload["studio_black_box_bounded_results"]
+        assert len(pipeline_results) == 1
+        assert pipeline_results[0]["aliases"] == stored_result["aliases"]
+        assert pipeline_results[0]["response_schema_fingerprint"] == stored_result[
+            "response_schema_fingerprint"
         ]
         assert "raw_body" not in str(validation_run.payload)
         assert "raw_body" not in str(pipeline_run.payload)
+        for forbidden_key in ("method", "parameters", "route_template"):
+            assert forbidden_key not in stored_result
+            assert forbidden_key not in pipeline_results[0]
         stages = [
             stage
             for stage in repository.list_pipeline_stages_for_run(pipeline_run.id)
             if stage.stage_key == "studio_black_box_bounded_result"
         ]
         assert len(stages) == 1
+        assert stages[0].id == _bounded_stage_id(pipeline_run.id, validation_run.id)
         assert stages[0].payload["human_review_required"] is True
         assert stages[0].payload["report_submission_allowed"] is False
+        pure_preview = main.build_report_preview_response(pipeline_run)
+        assert not any(
+            "Bounded local-lab result" in claim.text
+            for claim in pure_preview.claim_ledger
+        )
+
+    bounded_claims = [
+        claim
+        for claim in after.json()["claim_ledger"]
+        if "Bounded local-lab result" in claim["text"]
+    ]
+    assert len(bounded_claims) == 1
+    assert bounded_claims[0]["claim_id"] == (
+        f"claim_bounded_result_{response.json()['result_digest'].removeprefix('sha256:')}"
+    )
+    assert bounded_claims[0]["provenance_refs"] == [
+        f"approval:{approved_lab_validation_run.approval_id}",
+        f"pipeline_run:{approved_lab_validation_run.pipeline_run_id}",
+        f"validation_run:{approved_lab_validation_run.validation_run_id}",
+    ]
 
 
+
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("approval_id", "approval_forged"),
+        ("validation_run_id", "validation_run_forged"),
+        ("result_digest", f"sha256:{'f' * 64}"),
+        ("provenance_refs", ["approval:forged"]),
+    ],
+)
+def test_report_preview_rejects_pipeline_bounded_result_forgery(
+    approved_lab_validation_run,
+    field,
+    forged_value,
+):
+    approval_response = client.post(
+        "/mythos/studio/black-box-lab/runs/approve",
+        json=_run_approval_payload(approved_lab_validation_run.validation_run_id),
+    )
+    assert approval_response.status_code == 200, approval_response.text
+    result_response = client.post(
+        "/mythos/studio/black-box-lab/runs/bounded-result",
+        json=_bounded_result_payload(approval_response.json()),
+    )
+    assert result_response.status_code == 200, result_response.text
+
+    with approved_lab_validation_run.testing_session() as session:
+        pipeline_run = DatabaseRepository(session).get_pipeline_run(
+            approved_lab_validation_run.pipeline_run_id
+        )
+        assert pipeline_run is not None
+        payload = dict(pipeline_run.payload)
+        results = [dict(item) for item in payload["studio_black_box_bounded_results"]]
+        results[0][field] = forged_value
+        payload["studio_black_box_bounded_results"] = results
+        pipeline_run.payload = payload
+        session.add(pipeline_run)
+        session.commit()
+
+    preview = client.get(
+        f"/mythos/pipeline/runs/{approved_lab_validation_run.pipeline_run_id}/report-preview"
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["human_review_required"] is True
+    assert preview.json()["submission_blocked"] is True
+    assert not any(
+        "Bounded local-lab result" in claim["text"]
+        for claim in preview.json()["claim_ledger"]
+    )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_stage",
+        "missing_validation",
+        "missing_approval",
+        "missing_digest",
+        "stage_binding",
+        "validation_binding",
+        "approval_binding",
+        "approval_timing",
+        "digest_mismatch",
+    ],
+)
+def test_report_preview_requires_complete_database_backed_bounded_result_provenance(
+    approved_lab_validation_run,
+    corruption,
+):
+    approval_response = client.post(
+        "/mythos/studio/black-box-lab/runs/approve",
+        json=_run_approval_payload(approved_lab_validation_run.validation_run_id),
+    )
+    assert approval_response.status_code == 200, approval_response.text
+    result_response = client.post(
+        "/mythos/studio/black-box-lab/runs/bounded-result",
+        json=_bounded_result_payload(approval_response.json()),
+    )
+    assert result_response.status_code == 200, result_response.text
+
+    with approved_lab_validation_run.testing_session() as session:
+        repository = DatabaseRepository(session)
+        validation_run = repository.get_validation_run(
+            approved_lab_validation_run.validation_run_id
+        )
+        stage = repository.get_pipeline_stage(
+            _bounded_stage_id(
+                approved_lab_validation_run.pipeline_run_id,
+                approved_lab_validation_run.validation_run_id,
+            )
+        )
+        assert validation_run is not None
+        assert stage is not None
+        approval = session.get(ApprovalRecord, validation_run.approval_id)
+        assert approval is not None
+        if corruption == "missing_stage":
+            session.delete(stage)
+        elif corruption == "missing_validation":
+            session.delete(validation_run)
+        elif corruption == "missing_approval":
+            session.delete(approval)
+        elif corruption == "missing_digest":
+            stage_payload = dict(stage.payload)
+            stage_payload.pop("result_digest")
+            stage.payload = stage_payload
+        elif corruption == "stage_binding":
+            stage.task_id = "task_forged"
+        elif corruption == "validation_binding":
+            validation_run.task_id = "task_forged"
+        elif corruption == "approval_binding":
+            approval.run_id = "pipeline_run_forged"
+        elif corruption == "approval_timing":
+            approval.decided_at = validation_run.finished_at + timedelta(seconds=1)
+        else:
+            stage_payload = dict(stage.payload)
+            stage_payload["result_digest"] = f"sha256:{'e' * 64}"
+            stage.payload = stage_payload
+        session.commit()
+
+    preview = client.get(
+        f"/mythos/pipeline/runs/{approved_lab_validation_run.pipeline_run_id}/report-preview"
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["human_review_required"] is True
+    assert preview.json()["submission_blocked"] is True
+    assert not any(
+        "Bounded local-lab result" in claim["text"]
+        for claim in preview.json()["claim_ledger"]
+    )
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["pipeline_run", "validation_run", "pipeline_stage"],
+)
+def test_studio_bounded_result_atomic_write_rolls_back_every_internal_failure(
+    approved_lab_validation_run,
+    failure_point,
+):
+    with approved_lab_validation_run.testing_session() as session:
+        repository = DatabaseRepository(session)
+        pipeline_before = deepcopy(
+            repository.get_pipeline_run(
+                approved_lab_validation_run.pipeline_run_id
+            ).payload
+        )
+
+        def fail_after(point: str) -> None:
+            if point == failure_point:
+                raise RuntimeError(f"injected_{point}_failure")
+
+        with pytest.raises(RuntimeError, match=f"injected_{failure_point}_failure"):
+            repository.record_studio_black_box_bounded_result_atomic(
+                validation_run_id=approved_lab_validation_run.validation_run_id,
+                pipeline_run_id=approved_lab_validation_run.pipeline_run_id,
+                result_digest=f"sha256:{'e' * 64}",
+                bounded_projection=_atomic_bounded_projection(),
+                failure_injector=fail_after,
+            )
+
+    with approved_lab_validation_run.testing_session() as session:
+        repository = DatabaseRepository(session)
+        validation_run = repository.get_validation_run(
+            approved_lab_validation_run.validation_run_id
+        )
+        pipeline_run = repository.get_pipeline_run(
+            approved_lab_validation_run.pipeline_run_id
+        )
+        assert validation_run is not None
+        assert pipeline_run is not None
+        assert validation_run.status == "preflight_passed"
+        assert validation_run.allowed_to_execute is True
+        assert "black_box_bounded_result" not in validation_run.payload
+        assert pipeline_run.payload == pipeline_before
+        assert session.get(
+            PipelineStageRecord,
+            _bounded_stage_id(pipeline_run.id, validation_run.id),
+        ) is None
+
+
+@pytest.mark.parametrize("partial_piece", ["validation_run", "pipeline_run", "pipeline_stage"])
+def test_studio_bounded_result_partial_replay_fails_closed(
+    approved_lab_validation_run,
+    partial_piece,
+):
+    result_digest = f"sha256:{'e' * 64}"
+    with approved_lab_validation_run.testing_session() as session:
+        validation_run = session.get(
+            ValidationRunRecord,
+            approved_lab_validation_run.validation_run_id,
+        )
+        assert validation_run is not None
+        pipeline_run = DatabaseRepository(session).get_pipeline_run(
+            approved_lab_validation_run.pipeline_run_id
+        )
+        assert pipeline_run is not None
+        if partial_piece == "validation_run":
+            validation_run.status = "needs_evidence"
+            validation_run.allowed_to_execute = False
+            payload = dict(validation_run.payload)
+            payload["black_box_bounded_result"] = {
+                "audit_digest": result_digest,
+                "decision_status": "observed",
+                "evidence_refs": ["sanitized_cross_account_diff"],
+                "execution_started": False,
+                "result_payload": {
+                    "schema_version": "studio_black_box_bounded_result_v1",
+                    "request_digest": result_digest,
+                    **_atomic_bounded_projection(),
+                    "provenance_refs": [
+                        f"approval:{approved_lab_validation_run.approval_id}",
+                        f"pipeline_run:{approved_lab_validation_run.pipeline_run_id}",
+                        f"validation_run:{approved_lab_validation_run.validation_run_id}",
+                    ],
+                    "human_review_required": True,
+                    "submission_blocked": True,
+                    "execution_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            }
+            validation_run.payload = payload
+        elif partial_piece == "pipeline_run":
+            pipeline_payload = dict(pipeline_run.payload)
+            pipeline_payload["studio_black_box_bounded_results"] = [
+                {
+                    "validation_run_id": validation_run.id,
+                    "result_digest": result_digest,
+                }
+            ]
+            pipeline_run.payload = pipeline_payload
+        else:
+            session.add(
+                PipelineStageRecord(
+                    id=_bounded_stage_id(pipeline_run.id, validation_run.id),
+                    pipeline_run_id=pipeline_run.id,
+                    campaign_id=validation_run.campaign_id,
+                    task_id=validation_run.task_id,
+                    stage_key="studio_black_box_bounded_result",
+                    stage_order=0,
+                    status="needs_evidence",
+                    input_refs=[],
+                    output_refs=[],
+                    safety_gate_state="human_review_required",
+                    stop_reason=None,
+                    payload={"result_digest": result_digest},
+                )
+            )
+        session.commit()
+
+    with approved_lab_validation_run.testing_session() as session:
+        repository = DatabaseRepository(session)
+        with pytest.raises(ValueError, match="bounded_result_partial_state"):
+            repository.record_studio_black_box_bounded_result_atomic(
+                validation_run_id=approved_lab_validation_run.validation_run_id,
+                pipeline_run_id=approved_lab_validation_run.pipeline_run_id,
+                result_digest=result_digest,
+                bounded_projection=_atomic_bounded_projection(),
+            )
+
+        pipeline_run = repository.get_pipeline_run(
+            approved_lab_validation_run.pipeline_run_id
+        )
+        assert pipeline_run is not None
+        if partial_piece != "pipeline_run":
+            assert "studio_black_box_bounded_results" not in pipeline_run.payload
+        if partial_piece != "pipeline_stage":
+            assert session.get(
+                PipelineStageRecord,
+                _bounded_stage_id(
+                    approved_lab_validation_run.pipeline_run_id,
+                    approved_lab_validation_run.validation_run_id,
+                ),
+            ) is None
+
+
+@pytest.mark.parametrize("same_digest", [True, False])
+def test_studio_bounded_result_concurrent_writes_are_coherent(
+    tmp_path,
+    same_digest,
+):
+    engine, testing_session, pipeline_run_id, validation_ids = (
+        _seed_atomic_bounded_result_database(tmp_path / "bounded-concurrent.db")
+    )
+    validation_run_id = validation_ids[0]
+    barrier = Barrier(2)
+    digests = [f"sha256:{'e' * 64}", f"sha256:{('e' if same_digest else 'f') * 64}"]
+
+    def record(digest: str):
+        with testing_session() as session:
+            barrier.wait()
+            try:
+                result = DatabaseRepository(
+                    session
+                ).record_studio_black_box_bounded_result_atomic(
+                    validation_run_id=validation_run_id,
+                    pipeline_run_id=pipeline_run_id,
+                    result_digest=digest,
+                    bounded_projection=_atomic_bounded_projection(
+                        "b" if digest == digests[0] else "c"
+                    ),
+                )
+                return "ok", result[1].payload
+            except ValueError as exc:
+                return str(exc), None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(record, digests))
+
+    with testing_session() as session:
+        repository = DatabaseRepository(session)
+        pipeline_run = repository.get_pipeline_run(pipeline_run_id)
+        validation_run = repository.get_validation_run(validation_run_id)
+        stages = [
+            stage
+            for stage in repository.list_pipeline_stages_for_run(pipeline_run_id)
+            if stage.stage_key == "studio_black_box_bounded_result"
+        ]
+        assert pipeline_run is not None
+        assert validation_run is not None
+        assert len(pipeline_run.payload["studio_black_box_bounded_results"]) == 1
+        assert len(stages) == 1
+        assert stages[0].id == _bounded_stage_id(pipeline_run_id, validation_run_id)
+        assert validation_run.status == "needs_evidence"
+        assert pipeline_run.payload["unrelated_fact"] == {"preserved": True}
+    engine.dispose()
+
+    if same_digest:
+        assert [outcome[0] for outcome in outcomes] == ["ok", "ok"]
+    else:
+        assert sorted(outcome[0] for outcome in outcomes) == [
+            "bounded_result_request_mismatch",
+            "ok",
+        ]
+
+
+def test_studio_bounded_result_concurrent_pipeline_appends_preserve_unrelated_payload(
+    tmp_path,
+):
+    engine, testing_session, pipeline_run_id, validation_ids = (
+        _seed_atomic_bounded_result_database(
+            tmp_path / "bounded-pipeline-concurrent.db",
+            validation_count=2,
+        )
+    )
+    barrier = Barrier(2)
+
+    def record(item: tuple[int, str]):
+        index, validation_run_id = item
+        with testing_session() as session:
+            barrier.wait()
+            DatabaseRepository(
+                session
+            ).record_studio_black_box_bounded_result_atomic(
+                validation_run_id=validation_run_id,
+                pipeline_run_id=pipeline_run_id,
+                result_digest=f"sha256:{('e' if index == 0 else 'f') * 64}",
+                bounded_projection=_atomic_bounded_projection(
+                    "b" if index == 0 else "c"
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(record, enumerate(validation_ids)))
+
+    with testing_session() as session:
+        repository = DatabaseRepository(session)
+        pipeline_run = repository.get_pipeline_run(pipeline_run_id)
+        assert pipeline_run is not None
+        assert pipeline_run.payload["unrelated_fact"] == {"preserved": True}
+        assert {
+            result["validation_run_id"]
+            for result in pipeline_run.payload["studio_black_box_bounded_results"]
+        } == set(validation_ids)
+        assert len(
+            [
+                stage
+                for stage in repository.list_pipeline_stages_for_run(pipeline_run_id)
+                if stage.stage_key == "studio_black_box_bounded_result"
+            ]
+        ) == 2
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("raw_body", "synthetic body"),
+        ("request_headers", {"authorization": "Bearer synthetic"}),
+        ("response_body", {"password": "synthetic"}),
+        ("cookies", {"session": "synthetic"}),
+        ("credentials", {"token": "synthetic"}),
+    ],
+)
 def test_studio_black_box_lab_bounded_result_rejects_raw_trace_material_without_mutation(
     approved_lab_validation_run,
+    field,
+    value,
 ):
     approval_response = client.post(
         "/mythos/studio/black-box-lab/runs/approve",
@@ -941,7 +1534,48 @@ def test_studio_black_box_lab_bounded_result_rejects_raw_trace_material_without_
     )
     assert approval_response.status_code == 200, approval_response.text
     payload = _bounded_result_payload(approval_response.json())
-    payload["trace"]["raw_body"] = "synthetic-secret"
+    payload["trace"][field] = value
+
+    before = client.get(
+        f"/mythos/pipeline/runs/{approved_lab_validation_run.pipeline_run_id}/report-preview"
+    )
+    assert before.status_code == 200, before.text
+
+    response = client.post(
+        "/mythos/studio/black-box-lab/runs/bounded-result",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    with approved_lab_validation_run.testing_session() as session:
+        validation_run = DatabaseRepository(session).get_validation_run(
+            approved_lab_validation_run.validation_run_id
+        )
+        assert validation_run is not None
+        assert validation_run.status == "preflight_passed"
+        assert "black_box_bounded_result" not in validation_run.payload
+    after = client.get(
+        f"/mythos/pipeline/runs/{approved_lab_validation_run.pipeline_run_id}/report-preview"
+    )
+    assert after.status_code == 200, after.text
+    assert after.json() == before.json()
+
+
+@pytest.mark.parametrize(
+    "secret_alias",
+    ["token_value", "cookie_value", "password_value", "secret_value"],
+)
+def test_studio_black_box_lab_bounded_result_rejects_secret_shaped_aliases_without_mutation(
+    approved_lab_validation_run,
+    secret_alias,
+):
+    approval_response = client.post(
+        "/mythos/studio/black-box-lab/runs/approve",
+        json=_run_approval_payload(approved_lab_validation_run.validation_run_id),
+    )
+    assert approval_response.status_code == 200, approval_response.text
+    payload = _bounded_result_payload(approval_response.json())
+    payload["trace"]["aliases"]["account_alias"] = secret_alias
 
     response = client.post(
         "/mythos/studio/black-box-lab/runs/bounded-result",

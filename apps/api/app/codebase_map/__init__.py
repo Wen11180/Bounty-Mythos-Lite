@@ -203,6 +203,19 @@ MONEY_FLOW_SINK_NAMES = {
     "transfer_funds",
 }
 SENSITIVE_SINK_NAMES.update(MONEY_FLOW_SINK_NAMES)
+# Explicit one-time, quota, and limited-resource transitions only. Generic writes
+# remain object-authorization sinks and must not be inferred as race conditions.
+STATE_TRANSITION_SINK_NAMES = {
+    "advance_one_time_state",
+    "claim_limited_resource",
+    "consume_one_time_code",
+    "consume_one_time_token",
+    "consume_quota",
+    "decrement_quota",
+    "redeem_one_time_code",
+    "redeem_one_time_token",
+}
+SENSITIVE_SINK_NAMES.update(STATE_TRANSITION_SINK_NAMES)
 # Existing sensitive sinks that require per-tool authorization rather than object access alone.
 AGENT_TOOL_SINK_NAMES = {
     "dispatch_agent_tool",
@@ -311,6 +324,18 @@ MONEY_FLOW_GUARD_MARKERS = (
     "recalculate_order_total",
     "verify_server_price",
 )
+# Explicit transactional, lock, or conditional-write controls for one-time and quota transitions.
+STATE_TRANSITION_GUARD_MARKERS = (
+    "transactional_guard",
+    "transactional_state",
+    "with_transaction",
+    "in_transaction",
+    "select_for_update",
+    "lock_for_update",
+    "compare_and_set",
+    "conditional_update",
+    "optimistic_lock",
+)
 # Protective checks that bind an agent, user, and task context to a permitted tool.
 AGENT_TOOL_GUARD_MARKERS = (
     "assert_tool_allowed",
@@ -325,6 +350,9 @@ STATIC_GAP_GUARD_HINTS = {
     },
     "missing_server_authoritative_amount_check": {
         "server_authoritative_amount_check",
+    },
+    "missing_transactional_state_guard": {
+        "transactional_state_guard",
     },
 }
 HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
@@ -2421,6 +2449,10 @@ def _map_typescript_express_file(
 
     searchable_source = _mask_typescript_strings(source)
     router_authz_refs = _typescript_router_authz_refs(source, express_objects)
+    router_mount_prefixes = _typescript_router_mount_prefixes(
+        source,
+        express_objects,
+    )
     for match in TYPESCRIPT_ROUTE_CALL_PATTERN.finditer(searchable_source):
         receiver = match.group("receiver")
         if receiver not in express_objects:
@@ -2437,22 +2469,23 @@ def _map_typescript_express_file(
             continue
         handler_name = handler_ref.rsplit(".", 1)[-1]
         route_line = _source_line_number(source, match.start())
-        facts.append(
-            CodebaseFactCandidate(
-                fact_type="route_handler",
-                source_path=source_path,
-                symbol_name=handler_name,
-                route_method=match.group("method").upper(),
-                route_path=route_path,
-                authz_hint=None,
-                sensitivity_label="low",
-                payload={
-                    "handler": handler_name,
-                    "line": route_line,
-                    "mapping_mode": "static_code_snippet_analysis",
-                },
+        for mount_prefix in router_mount_prefixes.get(receiver, [""]):
+            facts.append(
+                CodebaseFactCandidate(
+                    fact_type="route_handler",
+                    source_path=source_path,
+                    symbol_name=handler_name,
+                    route_method=match.group("method").upper(),
+                    route_path=_join_static_route_path(mount_prefix, route_path),
+                    authz_hint=None,
+                    sensitivity_label="low",
+                    payload={
+                        "handler": handler_name,
+                        "line": route_line,
+                        "mapping_mode": "static_code_snippet_analysis",
+                    },
+                )
             )
-        )
 
         authz_refs = [
             (name, line)
@@ -2509,7 +2542,8 @@ def _typescript_express_objects(source: str) -> set[str]:
     express_aliases = set(
         match.group(1)
         for match in _typescript_code_matches(
-            r"(?m)^\s*import\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*[\"']express[\"']",
+            r"(?m)^\s*import\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+            r"(?:\s*,\s*\{[^}]*\})?\s+from\s*[\"']express[\"']",
             source,
             masked_source,
         )
@@ -2535,7 +2569,8 @@ def _typescript_express_objects(source: str) -> set[str]:
 
     router_aliases: set[str] = set()
     for match in _typescript_code_matches(
-        r"(?m)^\s*import\s*\{([^}]*)\}\s*from\s*[\"']express[\"']",
+        r"(?m)^\s*import\s+(?:[A-Za-z_$][A-Za-z0-9_$]*\s*,\s*)?"
+        r"\{([^}]*)\}\s*from\s*[\"']express[\"']",
         source,
         masked_source,
     ):
@@ -2566,6 +2601,55 @@ def _typescript_express_objects(source: str) -> set[str]:
         if namespace in express_aliases and constructor == "Router":
             objects.add(match.group("name"))
     return objects
+
+
+def _typescript_router_mount_prefixes(
+    source: str,
+    express_objects: set[str],
+) -> dict[str, list[str]]:
+    mounts_by_parent: dict[str, list[tuple[str, str]]] = {}
+    child_objects: set[str] = set()
+    for match in TYPESCRIPT_USE_CALL_PATTERN.finditer(_mask_typescript_strings(source)):
+        parent = match.group("receiver")
+        if parent not in express_objects:
+            continue
+        call = _typescript_call_arguments(source, match.end() - 1)
+        if call is None:
+            continue
+        arguments, _ = call
+        if len(arguments) < 2:
+            continue
+        mount_path = _typescript_static_string(arguments[0])
+        child = _typescript_callable_name(arguments[-1])
+        if (
+            mount_path is None
+            or child is None
+            or child not in express_objects
+            or child == parent
+        ):
+            continue
+        mounts_by_parent.setdefault(parent, []).append((child, mount_path))
+        child_objects.add(child)
+
+    prefixes_by_router: dict[str, set[str]] = {}
+
+    def visit(parent: str, prefix: str, lineage: set[str]) -> None:
+        prefixes_by_router.setdefault(parent, set()).add(prefix)
+        for child, mount_path in mounts_by_parent.get(parent, []):
+            if child in lineage:
+                continue
+            visit(
+                child,
+                _join_static_route_path(prefix, mount_path),
+                {*lineage, child},
+            )
+
+    for root in sorted(express_objects - child_objects):
+        visit(root, "", {root})
+    return {
+        router: sorted(prefixes)
+        for router, prefixes in prefixes_by_router.items()
+    }
 
 
 def _typescript_code_matches(
@@ -3081,6 +3165,8 @@ def _is_typescript_authz_call(call_name: str) -> bool:
         return True
     if _is_money_flow_guard_name(normalized):
         return True
+    if _is_transactional_state_guard_name(normalized):
+        return True
     if _is_agent_tool_guard_name(normalized):
         return True
     return _is_injection_guard_name(normalized)
@@ -3102,6 +3188,8 @@ def _typescript_authz_hint(call_name: str) -> str:
         return "file_upload_validation_check"
     if _is_money_flow_guard_name(normalized):
         return "server_authoritative_amount_check"
+    if _is_transactional_state_guard_name(normalized):
+        return "transactional_state_guard"
     if _is_agent_tool_guard_name(normalized):
         return "agent_tool_authorization_check"
     if _is_injection_guard_name(normalized):
@@ -3175,6 +3263,12 @@ def _is_file_upload_guard_name(normalized_name: str) -> bool:
 
 def _is_money_flow_guard_name(normalized_name: str) -> bool:
     return any(marker in normalized_name for marker in MONEY_FLOW_GUARD_MARKERS)
+
+
+def _is_transactional_state_guard_name(normalized_name: str) -> bool:
+    return normalized_name == "transactional" or any(
+        marker in normalized_name for marker in STATE_TRANSITION_GUARD_MARKERS
+    )
 
 
 def _is_agent_tool_guard_name(normalized_name: str) -> bool:
@@ -3490,15 +3584,24 @@ def _authorization_gap_candidates(
         if guard_hints := STATIC_GAP_GUARD_HINTS.get(root_cause):
             if _has_prior_static_guard(
                 facts,
+                entry_handler=route_identity,
                 reachable_handlers=reachable_handlers,
                 sink_facts=sink_facts,
                 guard_hints=guard_hints,
+                require_all_sink_handlers=(
+                    root_cause == "missing_transactional_state_guard"
+                ),
             ):
                 continue
         else:
             has_authz = any(
                 fact.fact_type == "authz_check"
                 and _fact_handler_identity(fact, "handler") == route_identity
+                and not has_reachable_sink_before_control(
+                    facts,
+                    control=fact,
+                    entry_handlers={route_identity},
+                )
                 for fact in facts
             )
             if has_authz:
@@ -3506,6 +3609,11 @@ def _authorization_gap_candidates(
             has_service_authz = any(
                 fact.fact_type == "authz_check"
                 and _fact_handler_identity(fact, "handler") in service_calls
+                and not has_reachable_sink_before_control(
+                    facts,
+                    control=fact,
+                    entry_handlers={route_identity},
+                )
                 for fact in facts
             )
             if has_service_authz and not route.source_path.lower().endswith(
@@ -3543,37 +3651,200 @@ def _is_agent_tool_route_context(route: CodebaseFactCandidate) -> bool:
 def _has_prior_static_guard(
     facts: list[CodebaseFactCandidate],
     *,
+    entry_handler: tuple[str, str],
     reachable_handlers: set[tuple[str, str]],
     sink_facts: list[CodebaseFactCandidate],
     guard_hints: set[str],
+    require_all_sink_handlers: bool = False,
 ) -> bool:
-    earliest_sink_line: dict[tuple[str, str], int] = {}
+    earliest_sink_position: dict[tuple[str, str], tuple[int, int]] = {}
     for fact in sink_facts:
         handler_identity = _fact_handler_identity(fact, "handler")
-        if handler_identity is None or not isinstance(fact.payload, dict):
+        position = _fact_position(fact)
+        if handler_identity is None or position is None:
             continue
-        line = fact.payload.get("line")
-        if not isinstance(line, int):
-            continue
-        current = earliest_sink_line.get(handler_identity)
-        if current is None or line < current:
-            earliest_sink_line[handler_identity] = line
+        current = earliest_sink_position.get(handler_identity)
+        if current is None or position < current:
+            earliest_sink_position[handler_identity] = position
 
+    guarded_handlers: set[tuple[str, str]] = set()
     for fact in facts:
         if fact.fact_type != "authz_check" or fact.authz_hint not in guard_hints:
             continue
         handler_identity = _fact_handler_identity(fact, "handler")
         if handler_identity not in reachable_handlers:
             continue
-        sink_line = earliest_sink_line.get(handler_identity)
-        if sink_line is None:
+        if has_reachable_sink_before_control(
+            facts,
+            control=fact,
+            entry_handlers={entry_handler},
+        ):
+            continue
+        sink_position = earliest_sink_position.get(handler_identity)
+        if sink_position is None:
+            if require_all_sink_handlers:
+                continue
             return True
-        if not isinstance(fact.payload, dict):
+        control_position = _fact_position(fact)
+        if control_position is None:
+            if require_all_sink_handlers:
+                continue
             return True
-        line = fact.payload.get("line")
-        if not isinstance(line, int) or line < sink_line:
+        if control_position < sink_position:
+            if require_all_sink_handlers:
+                guarded_handlers.add(handler_identity)
+                continue
             return True
+    if require_all_sink_handlers:
+        return bool(earliest_sink_position) and set(earliest_sink_position).issubset(
+            guarded_handlers
+        )
     return False
+
+
+def has_reachable_sink_before_control(
+    facts: list[CodebaseFactCandidate],
+    *,
+    control: CodebaseFactCandidate,
+    entry_handlers: set[tuple[str, str]] | None = None,
+) -> bool:
+    """Return whether an observed sink can run before a proposed control."""
+    control_handler = _fact_handler_identity(control, "handler")
+    control_line = _fact_line(control)
+    if control_handler is None or control_line is None:
+        return False
+
+    identities_by_symbol = _handler_identities_by_symbol(facts)
+    calls_by_handler: dict[
+        tuple[str, str], list[CodebaseFactCandidate]
+    ] = {}
+    sink_lines_by_handler: dict[tuple[str, str], list[int]] = {}
+    for fact in facts:
+        if fact.fact_type == "service_call":
+            caller = _fact_handler_identity(fact, "caller")
+            if caller is not None:
+                calls_by_handler.setdefault(caller, []).append(fact)
+        elif fact.fact_type == "sensitive_sink":
+            handler = _fact_handler_identity(fact, "handler")
+            line = _fact_line(fact)
+            if handler is not None and line is not None:
+                sink_lines_by_handler.setdefault(handler, []).append(line)
+
+    roots = entry_handlers or {
+        identity
+        for fact in facts
+        if fact.fact_type == "route_handler"
+        if (identity := _fact_handler_identity(fact, "handler")) is not None
+    }
+    if not roots:
+        roots = {control_handler}
+
+    def callee_identity(
+        caller: tuple[str, str],
+        call: CodebaseFactCandidate,
+    ) -> tuple[str, str] | None:
+        callee = call.symbol_name
+        if not isinstance(callee, str):
+            return None
+        return _resolve_handler_identity(
+            caller[0],
+            callee,
+            identities_by_symbol,
+        )
+
+    sink_cache: dict[tuple[str, str], bool] = {}
+    control_cache: dict[tuple[str, str], bool] = {}
+
+    def reaches_sink(
+        handler: tuple[str, str],
+        visiting: set[tuple[str, str]],
+    ) -> bool:
+        if handler in sink_cache:
+            return sink_cache[handler]
+        if handler in visiting:
+            return False
+        if sink_lines_by_handler.get(handler):
+            sink_cache[handler] = True
+            return True
+        next_visiting = {*visiting, handler}
+        result = any(
+            next_handler is not None and reaches_sink(next_handler, next_visiting)
+            for call in calls_by_handler.get(handler, [])
+            if (next_handler := callee_identity(handler, call)) is not None
+        )
+        sink_cache[handler] = result
+        return result
+
+    def reaches_control(
+        handler: tuple[str, str],
+        visiting: set[tuple[str, str]],
+    ) -> bool:
+        if handler == control_handler:
+            return True
+        if handler in control_cache:
+            return control_cache[handler]
+        if handler in visiting:
+            return False
+        next_visiting = {*visiting, handler}
+        result = any(
+            next_handler is not None
+            and reaches_control(next_handler, next_visiting)
+            for call in calls_by_handler.get(handler, [])
+            if (next_handler := callee_identity(handler, call)) is not None
+        )
+        control_cache[handler] = result
+        return result
+
+    def sink_precedes_control(
+        handler: tuple[str, str],
+        visiting: set[tuple[str, str]],
+    ) -> bool:
+        if handler in visiting:
+            return False
+        if not reaches_sink(handler, set()) or not reaches_control(handler, set()):
+            return False
+        sink_lines = list(sink_lines_by_handler.get(handler, []))
+        control_lines = [control_line] if handler == control_handler else []
+        next_visiting = {*visiting, handler}
+        for call in calls_by_handler.get(handler, []):
+            line = _fact_line(call)
+            next_handler = callee_identity(handler, call)
+            if line is None or next_handler is None:
+                continue
+            reaches_a_sink = reaches_sink(next_handler, set())
+            reaches_the_control = reaches_control(next_handler, set())
+            if reaches_a_sink:
+                sink_lines.append(line)
+            if reaches_the_control:
+                control_lines.append(line)
+            if (
+                reaches_a_sink
+                and reaches_the_control
+                and sink_precedes_control(next_handler, next_visiting)
+            ):
+                return True
+        return bool(sink_lines and control_lines and min(sink_lines) < min(control_lines))
+
+    return any(
+        sink_precedes_control(root, set())
+        for root in roots
+        if reaches_sink(root, set()) and reaches_control(root, set())
+    )
+
+
+def _fact_line(fact: CodebaseFactCandidate) -> int | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    line = fact.payload.get("line")
+    return line if isinstance(line, int) else None
+
+
+def _fact_position(fact: CodebaseFactCandidate) -> tuple[int, int] | None:
+    line = _fact_line(fact)
+    if line is None:
+        return None
+    column = fact.payload.get("column") if isinstance(fact.payload, dict) else None
+    return line, column if isinstance(column, int) else 0
 
 
 def _object_ownership_gap_root() -> tuple[str, str, str]:
@@ -3651,6 +3922,15 @@ def _gap_root_for_sinks(sink_symbols: list[str]) -> tuple[str, str, str]:
             ),
             "missing_handler_server_amount_check",
         )
+    if canonicalized and canonicalized.issubset(STATE_TRANSITION_SINK_NAMES):
+        return (
+            "missing_transactional_state_guard",
+            (
+                "One-time, quota, and limited-resource state transitions must use an "
+                "explicit transactional or conditional-write guard before the transition sink."
+            ),
+            "missing_handler_transactional_state_check",
+        )
     if canonicalized and canonicalized.issubset(AGENT_TOOL_SINK_NAMES):
         return (
             "missing_agent_tool_authorization_check",
@@ -3718,6 +3998,21 @@ def _reachable_service_handlers(
             reachable.add(callee_identity)
             pending.append(callee_identity)
     return reachable
+
+
+def reachable_service_source_paths(
+    facts: list[CodebaseFactCandidate],
+    *,
+    source_path: str,
+    handler: str,
+) -> set[str]:
+    """Return source files reached through statically unambiguous local calls."""
+    if not source_path or not handler:
+        return set()
+    return {
+        source_path,
+        *(path for path, _ in _reachable_service_handlers(facts, source_path, handler)),
+    }
 
 
 def _service_call_precedes_handler_sink(
@@ -4446,6 +4741,8 @@ def _is_authz_call(call_name: str) -> bool:
         return True
     if _is_money_flow_guard_name(normalized):
         return True
+    if _is_transactional_state_guard_name(normalized):
+        return True
     if _is_agent_tool_guard_name(normalized):
         return True
     return _is_injection_guard_name(normalized)
@@ -4467,6 +4764,8 @@ def _authz_hint(call_name: str) -> str:
         return "file_upload_validation_check"
     if _is_money_flow_guard_name(normalized):
         return "server_authoritative_amount_check"
+    if _is_transactional_state_guard_name(normalized):
+        return "transactional_state_guard"
     if _is_agent_tool_guard_name(normalized):
         return "agent_tool_authorization_check"
     if _is_injection_guard_name(normalized):
@@ -4945,6 +5244,8 @@ def _authz_hint_priority(authz_hint: str | None) -> int:
     if authz_hint == "file_upload_validation_check":
         return 4
     if authz_hint == "server_authoritative_amount_check":
+        return 4
+    if authz_hint == "transactional_state_guard":
         return 4
     if authz_hint == "agent_tool_authorization_check":
         return 4

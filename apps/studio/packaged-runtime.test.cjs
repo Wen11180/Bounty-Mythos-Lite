@@ -162,17 +162,22 @@ test("packaged runtime starts only frozen API and bundled Next, then stops both"
     },
   });
 
+  const capability = "a".repeat(43);
   const paths = runtime.start({
     apiBaseUrl: "http://127.0.0.1:48123",
     apiPort: 48123,
     studioUrl: "http://127.0.0.1:48124/studio",
     webPort: 48124,
-  });
+  }, capability);
 
   assert.equal(calls.api.length, 1);
   assert.equal(calls.api[0].command, paths.apiExecutable);
   assert.equal(calls.api[0].options.shell, false);
   assert.equal(calls.api[0].options.windowsHide, true);
+  assert.equal(
+    calls.api[0].options.env.AUTONOMOUS_RESEARCH_CAPABILITY,
+    capability,
+  );
   assert.deepEqual(calls.api[0].args, [
     "--host", "127.0.0.1",
     "--port", "48123",
@@ -186,6 +191,8 @@ test("packaged runtime starts only frozen API and bundled Next, then stops both"
   assert.equal(calls.web[0].options.env.HOSTNAME, "127.0.0.1");
   assert.equal(calls.web[0].options.env.PORT, "48124");
   assert.equal(calls.web[0].options.env.API_BASE_URL, "http://127.0.0.1:48123");
+  assert.equal(calls.web[0].options.env.AUTONOMOUS_RESEARCH_CAPABILITY, undefined);
+  assert.equal(processObject.env.AUTONOMOUS_RESEARCH_CAPABILITY, undefined);
   assert.equal(processObject.env.PLAYWRIGHT_BROWSERS_PATH, paths.playwrightBrowsers);
   assert.equal(processObject.env.MYTHOS_PLAYWRIGHT_CHROMIUM_EXECUTABLE, paths.browserExecutable);
 

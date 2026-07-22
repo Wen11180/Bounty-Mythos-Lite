@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
+from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
 from app.db_models import AgentRunRecord, CampaignTaskRecord, PipelineStageRecord
 from app.studio_workspace import (
     StudioWorkspaceAccessError,
@@ -27,17 +28,9 @@ TASK_SCHEMA_VERSION = "candidate_hunter_evidence_task_v1"
 RESULT_SCHEMA_VERSION = "candidate_hunter_evidence_result_v1"
 ATTEMPT_SCHEMA_VERSION = "candidate_hunter_evidence_attempt_v1"
 INSPECTOR_TOOL = "candidate_hunter_local_evidence_inspector"
-AUTHORIZED_SOURCE_SUFFIXES = {
-    ".py",
+AUTHORIZED_SOURCE_SUFFIXES = set(SUPPORTED_CODE_SOURCE_SUFFIXES) | {
     ".js",
     ".jsx",
-    ".ts",
-    ".tsx",
-    ".go",
-    ".java",
-    ".kt",
-    ".rb",
-    ".php",
 }
 MAX_AUTHORIZED_SOURCE_FILES = 20
 MAX_AUTHORIZED_SOURCE_CHARS = 20_000
@@ -110,8 +103,14 @@ def materialize_evidence_inspection_task(
         state_digest=state_digest,
     )
     task_id = f"campaign_task_{idempotency_key}"
+    owner_payload = _safe_payload(getattr(owner_task, "payload", {}))
+    runtime_owner = (
+        getattr(owner_task, "task_type", "") == "candidate_refutation"
+        and owner_payload.get("runtime_schema") == "autonomous_research_v1"
+    )
     payload = {
         "schema_version": TASK_SCHEMA_VERSION,
+        "execution_lease_required": runtime_owner,
         "pipeline_run_id": pipeline_run_id,
         "evidence_request_stage_id": stage_id,
         "owner_task_id": owner_task_id,
@@ -133,7 +132,16 @@ def materialize_evidence_inspection_task(
         evidence_request_stage_id=stage_id,
         payload=payload,
     )
-    repository.update_campaign_task_status(owner_task_id, "needs_evidence", output_refs=[])
+    if not (
+        runtime_owner
+        and isinstance(getattr(owner_task, "execution_claim_id", None), str)
+        and owner_task.execution_claim_id
+    ):
+        repository.update_campaign_task_status(
+            owner_task_id,
+            "needs_evidence",
+            output_refs=[],
+        )
     return task
 
 
@@ -154,11 +162,16 @@ def run_evidence_inspection_task(*, repository: Any, task_id: str) -> dict[str, 
                 task=task,
                 stop_reason="result_stage_integrity_invalid",
             )
-        repository.update_campaign_task_status(
-            task.id,
-            "completed",
-            output_refs=[f"pipeline_stage:{existing_result.id}"],
-        )
+        if not _complete_existing_evidence_result(
+            repository=repository,
+            task=task,
+            result_stage=existing_result,
+        ):
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
         return {
             "status": "completed",
             "task_id": task.id,
@@ -208,6 +221,13 @@ def run_evidence_inspection_task(*, repository: Any, task_id: str) -> dict[str, 
         context=context,
         payload=result_payload,
     )
+    if result_stage is None:
+        return {
+            "status": "running",
+            "task_id": task.id,
+            "agent_run_id": agent_run.id,
+            "stop_reason": "execution_lease_lost",
+        }
     return {
         "status": "completed",
         "task_id": task.id,
@@ -215,6 +235,44 @@ def run_evidence_inspection_task(*, repository: Any, task_id: str) -> dict[str, 
         "result_stage_id": result_stage.id,
         "stop_reason": None,
     }
+
+
+def _complete_existing_evidence_result(
+    *,
+    repository: Any,
+    task: CampaignTaskRecord,
+    result_stage: PipelineStageRecord,
+) -> bool:
+    execution_claim_id = task.execution_claim_id
+    if execution_claim_id is None:
+        repository.update_campaign_task_status(
+            task.id,
+            "completed",
+            output_refs=[f"pipeline_stage:{result_stage.id}"],
+        )
+        return True
+    renewed_task = repository.renew_campaign_task_execution_lease(
+        task.id,
+        execution_claim_id=execution_claim_id,
+    )
+    if renewed_task is None:
+        return False
+    agent_run = repository.session.get(AgentRunRecord, execution_claim_id)
+    completed_execution = repository.finish_campaign_task_execution(
+        task_id=renewed_task.id,
+        execution_claim_id=execution_claim_id,
+        task_status="completed",
+        task_output_refs=[
+            f"agent_run:{execution_claim_id}",
+            f"pipeline_stage:{result_stage.id}",
+        ],
+        agent_status="completed",
+        agent_output_refs=[f"pipeline_stage:{result_stage.id}"],
+        safety_gate_state="safe",
+        stop_reason=None,
+        payload=_safe_payload(getattr(agent_run, "payload", {})),
+    )
+    return completed_execution is not None
 
 
 def resume_candidate_hunter_after_evidence(
@@ -247,6 +305,33 @@ def resume_candidate_hunter_after_evidence(
         CampaignTaskRecord,
         _text(task_payload.get("owner_task_id")),
     )
+    linked_owner_task = _linked_runtime_owner_for_evidence_block(
+        repository=repository,
+        task=task,
+    )
+    if linked_owner_task is not None and campaign is not None:
+        runtime_stop_reason = _runtime_owner_stop_reason(
+            repository=repository,
+            campaign=campaign,
+            owner_task=linked_owner_task,
+        )
+        if runtime_stop_reason is not None:
+            repository.update_campaign_task_status(
+                linked_owner_task.id,
+                "blocked",
+                output_refs=[],
+            )
+            return {
+                "status": "blocked",
+                "pipeline_run_id": pipeline_run_id,
+                "round_count": 0,
+                "stage_refs": [],
+                "state_digest": "",
+                "stop_reason": runtime_stop_reason,
+                "final_candidates": [],
+                "candidate_decisions": [],
+                **_false_safety_fields(),
+            }
     if (
         result_stage is None
         or pipeline_run is None
@@ -310,6 +395,21 @@ def resume_candidate_hunter_after_evidence(
             "initial_candidate_states": candidate_states,
             **_false_safety_fields(),
         },
+    )
+
+
+def _runtime_owner_stop_reason(
+    *,
+    repository: Any,
+    campaign: Any,
+    owner_task: CampaignTaskRecord,
+) -> str | None:
+    from app.autonomous_research_runtime import autonomous_research_task_stop_reason
+
+    return autonomous_research_task_stop_reason(
+        task=owner_task,
+        campaign=campaign,
+        repository=repository,
     )
 
 
@@ -563,6 +663,14 @@ def _inspection_context(
         return None, "scope_not_in_scope"
     if campaign.policy_text_hash != pipeline_run.policy_text_hash:
         return None, "policy_changed"
+
+    runtime_stop_reason = _runtime_owner_stop_reason(
+        repository=repository,
+        campaign=campaign,
+        owner_task=owner_task,
+    )
+    if runtime_stop_reason is not None:
+        return None, runtime_stop_reason
 
     campaign_payload = _safe_payload(campaign.payload)
     owner_payload = _safe_payload(owner_task.payload)
@@ -1188,7 +1296,7 @@ def _commit_evidence_result(
     agent_run: AgentRunRecord,
     context: dict[str, Any],
     payload: dict[str, Any],
-) -> PipelineStageRecord:
+) -> PipelineStageRecord | None:
     idempotency_key = _text(payload.get("idempotency_key"))
     stage_id = f"pipeline_stage_{idempotency_key}"
     existing = repository.session.get(PipelineStageRecord, stage_id)
@@ -1210,6 +1318,31 @@ def _commit_evidence_result(
         stop_reason=None,
         payload=payload,
     )
+    if task.execution_claim_id is not None:
+        if task.execution_claim_id != agent_run.id:
+            return None
+        renewed_task = repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=agent_run.id,
+        )
+        if renewed_task is None:
+            return None
+        completed_execution = repository.finish_campaign_task_execution(
+            task_id=renewed_task.id,
+            execution_claim_id=agent_run.id,
+            task_status="completed",
+            task_output_refs=[f"agent_run:{agent_run.id}", f"pipeline_stage:{stage.id}"],
+            agent_status="completed",
+            agent_output_refs=[f"pipeline_stage:{stage.id}"],
+            safety_gate_state="safe",
+            stop_reason=None,
+            payload=_safe_payload(agent_run.payload),
+            additional_records=[stage],
+        )
+        if completed_execution is None:
+            return None
+        return repository.session.get(PipelineStageRecord, stage.id)
+
     agent_run.status = "completed"
     agent_run.output_refs = [f"pipeline_stage:{stage.id}"]
     agent_run.safety_gate_state = "safe"
@@ -1244,6 +1377,28 @@ def _record_failed_inspection(
     ).hexdigest()
     stage_id = f"pipeline_stage_{idempotency_key}"
     stage = repository.session.get(PipelineStageRecord, stage_id)
+    stage_is_new = stage is None
+    execution_claim_id = task.execution_claim_id
+    if execution_claim_id is not None:
+        if execution_claim_id != agent_run.id:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "agent_run_id": agent_run.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        renewed_task = repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=execution_claim_id,
+        )
+        if renewed_task is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "agent_run_id": agent_run.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        task = renewed_task
     if stage is None:
         stage = PipelineStageRecord(
             id=stage_id,
@@ -1269,22 +1424,12 @@ def _record_failed_inspection(
                 **_false_safety_fields(),
             },
         )
-        repository.session.add(stage)
-    agent_run.status = "failed"
-    agent_run.safety_gate_state = "blocked"
-    agent_run.stop_reason = stop_reason
-    agent_run.finished_at = datetime.now(UTC)
-    task.status = "blocked"
-    task.output_refs = [f"agent_run:{agent_run.id}", f"pipeline_stage:{stage.id}"]
-    owner_task = repository.session.get(
-        CampaignTaskRecord,
-        _text(task_payload.get("owner_task_id")),
+    owner_task = _linked_runtime_owner_for_evidence_block(
+        repository=repository,
+        task=task,
+        validated_context=context,
     )
-    if owner_task is not None and owner_task.status in {
-        "awaiting_evidence",
-        "needs_evidence",
-        "running",
-    }:
+    if owner_task is not None:
         owner_output_refs = [
             ref for ref in owner_task.output_refs if isinstance(ref, str)
         ]
@@ -1293,7 +1438,48 @@ def _record_failed_inspection(
             owner_output_refs.append(evidence_ref)
         owner_task.status = "blocked"
         owner_task.output_refs = owner_output_refs
+        owner_task.payload = {
+            **_safe_payload(owner_task.payload),
+            "blocked_by_evidence_task_id": task.id,
+            "blocked_stop_reason": stop_reason,
+        }
         repository.session.add(owner_task)
+
+    if execution_claim_id is not None:
+        finished_execution = repository.finish_campaign_task_execution(
+            task_id=task.id,
+            execution_claim_id=execution_claim_id,
+            task_status="blocked",
+            task_output_refs=[f"agent_run:{agent_run.id}", f"pipeline_stage:{stage.id}"],
+            agent_status="failed",
+            agent_output_refs=[],
+            safety_gate_state="blocked",
+            stop_reason=stop_reason,
+            payload=_safe_payload(agent_run.payload),
+            additional_records=[stage] if stage_is_new else None,
+        )
+        if finished_execution is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "agent_run_id": agent_run.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        return {
+            "status": "blocked",
+            "task_id": task.id,
+            "agent_run_id": agent_run.id,
+            "stop_reason": stop_reason,
+        }
+
+    if stage_is_new:
+        repository.session.add(stage)
+    agent_run.status = "failed"
+    agent_run.safety_gate_state = "blocked"
+    agent_run.stop_reason = stop_reason
+    agent_run.finished_at = datetime.now(UTC)
+    task.status = "blocked"
+    task.output_refs = [f"agent_run:{agent_run.id}", f"pipeline_stage:{stage.id}"]
     repository.session.add_all([agent_run, task])
     repository.session.commit()
     return {
@@ -1346,19 +1532,82 @@ def _result_stage_is_valid(stage: PipelineStageRecord, task: CampaignTaskRecord)
     )
 
 
+def completed_evidence_result_is_valid(
+    *,
+    repository: Any,
+    task: CampaignTaskRecord,
+) -> bool:
+    if (
+        task.task_type != "candidate_hunter_evidence_inspection"
+        or task.status != "completed"
+    ):
+        return False
+    result_stage = _canonical_result_stage(repository, task)
+    return result_stage is not None and _result_stage_is_valid(result_stage, task)
+
+
 def _block_evidence_task(
     *,
     repository: Any,
     task: CampaignTaskRecord,
     stop_reason: str,
 ) -> dict[str, Any]:
-    active_run = repository.find_active_agent_run_for_task(task.id)
+    execution_claim_id = task.execution_claim_id
+    active_run = (
+        repository.session.get(AgentRunRecord, execution_claim_id)
+        if execution_claim_id is not None
+        else repository.find_active_agent_run_for_task(task.id)
+    )
+    if execution_claim_id is not None:
+        if active_run is None or active_run.task_id != task.id:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        renewed_task = repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=execution_claim_id,
+        )
+        if renewed_task is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        task = renewed_task
     output_refs: list[str] = []
-    if active_run is not None:
-        blocked_run = repository.finish_agent_run(
-            active_run.id,
-            status="blocked",
-            output_refs=[],
+    if active_run is not None and active_run.campaign_id == task.campaign_id:
+        output_refs.append(f"agent_run:{active_run.id}")
+
+    owner_task = _linked_runtime_owner_for_evidence_block(
+        repository=repository,
+        task=task,
+    )
+    if owner_task is not None:
+        owner_output_refs = [
+            ref for ref in owner_task.output_refs if isinstance(ref, str)
+        ]
+        evidence_ref = f"campaign_task:{task.id}"
+        if evidence_ref not in owner_output_refs:
+            owner_output_refs.append(evidence_ref)
+        owner_task.status = "blocked"
+        owner_task.output_refs = owner_output_refs
+        owner_task.payload = {
+            **_safe_payload(owner_task.payload),
+            "blocked_by_evidence_task_id": task.id,
+            "blocked_stop_reason": stop_reason,
+        }
+        repository.session.add(owner_task)
+
+    if execution_claim_id is not None:
+        finished_execution = repository.finish_campaign_task_execution(
+            task_id=task.id,
+            execution_claim_id=execution_claim_id,
+            task_status="blocked",
+            task_output_refs=output_refs,
+            agent_status="blocked",
+            agent_output_refs=[],
             safety_gate_state="blocked",
             stop_reason=stop_reason,
             payload={
@@ -1367,33 +1616,113 @@ def _block_evidence_task(
                 **_false_safety_fields(),
             },
         )
-        if blocked_run is not None:
-            output_refs.append(f"agent_run:{blocked_run.id}")
-    repository.update_campaign_task_status(task.id, "blocked", output_refs=output_refs)
+        if finished_execution is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        return {
+            "status": "blocked",
+            "task_id": task.id,
+            "stop_reason": stop_reason,
+        }
 
-    owner_task_id = _text(_safe_payload(task.payload).get("owner_task_id"))
-    owner_task = repository.session.get(CampaignTaskRecord, owner_task_id)
-    if owner_task is not None and owner_task.status in {
-        "awaiting_evidence",
-        "needs_evidence",
-        "running",
-    }:
-        owner_output_refs = [
-            ref for ref in owner_task.output_refs if isinstance(ref, str)
-        ]
-        evidence_ref = f"campaign_task:{task.id}"
-        if evidence_ref not in owner_output_refs:
-            owner_output_refs.append(evidence_ref)
-        repository.update_campaign_task_status(
-            owner_task.id,
-            "blocked",
-            output_refs=owner_output_refs,
-        )
+    if active_run is not None and active_run.campaign_id == task.campaign_id:
+        active_run.status = "blocked"
+        active_run.output_refs = []
+        active_run.safety_gate_state = "blocked"
+        active_run.stop_reason = stop_reason
+        active_run.payload = {
+            "schema_version": "candidate_hunter_evidence_agent_run_v1",
+            "token_usage": {"total_tokens": 0},
+            **_false_safety_fields(),
+        }
+        active_run.finished_at = datetime.now(UTC)
+        repository.session.add(active_run)
+    task.status = "blocked"
+    task.output_refs = output_refs
+    repository.session.add(task)
+    repository.session.commit()
     return {
         "status": "blocked",
         "task_id": task.id,
         "stop_reason": stop_reason,
     }
+
+
+def _linked_runtime_owner_for_evidence_block(
+    *,
+    repository: Any,
+    task: CampaignTaskRecord,
+    validated_context: dict[str, Any] | None = None,
+) -> CampaignTaskRecord | None:
+    task_payload = _safe_payload(task.payload)
+    owner_task_id = _text(task_payload.get("owner_task_id"))
+    context_owner = (
+        validated_context.get("owner_task")
+        if isinstance(validated_context, dict)
+        else None
+    )
+    owner_task = (
+        context_owner
+        if isinstance(context_owner, CampaignTaskRecord)
+        and context_owner.id == owner_task_id
+        else repository.session.get(CampaignTaskRecord, owner_task_id)
+    )
+    if owner_task is None:
+        return None
+    owner_payload = _safe_payload(owner_task.payload)
+    task_snapshot_digest = _bare_source_snapshot_digest(
+        task_payload.get("source_snapshot_digest")
+    )
+    owner_snapshot_digest = _bare_source_snapshot_digest(
+        owner_payload.get("source_snapshot_digest")
+    )
+    if validated_context is not None:
+        context_campaign = validated_context.get("campaign")
+        context_pipeline_run = validated_context.get("pipeline_run")
+        pipeline_run_id = _text(getattr(context_pipeline_run, "id", ""))
+        if (
+            _text(getattr(context_campaign, "id", "")) != task.campaign_id
+            or task_payload.get("pipeline_run_id") != pipeline_run_id
+            or (
+                owner_payload.get("pipeline_run_id") != pipeline_run_id
+                and f"pipeline_run:{pipeline_run_id}" not in owner_task.input_refs
+            )
+        ):
+            return None
+        task_snapshot_digest = owner_snapshot_digest
+    if (
+        (
+            validated_context is None
+            and (
+                task_payload.get("schema_version") != TASK_SCHEMA_VERSION
+                or not _has_false_safety_fields(task_payload)
+            )
+        )
+        or owner_task.campaign_id != task.campaign_id
+        or owner_task.task_type != "candidate_refutation"
+        or owner_task.status
+        not in {"awaiting_evidence", "needs_evidence", "running", "blocked"}
+        or owner_payload.get("runtime_schema") != "autonomous_research_v1"
+        or not _has_false_safety_fields(owner_payload)
+        or owner_payload.get("raw_payload_in_dispatch") is not False
+        or (
+            validated_context is None
+            and task_payload.get("pipeline_run_id")
+            != owner_payload.get("pipeline_run_id")
+        )
+        or not task_snapshot_digest
+        or task_snapshot_digest != owner_snapshot_digest
+    ):
+        return None
+    if owner_task.status == "blocked" and (
+        owner_payload.get("blocked_by_evidence_task_id") != task.id
+        or not _text(owner_payload.get("blocked_stop_reason"))
+    ):
+        return None
+    return owner_task
 
 
 def _safe_source_manifest(value: object) -> list[dict[str, str]] | None:
@@ -1722,6 +2051,7 @@ def _text(value: object) -> str:
 
 
 __all__ = [
+    "completed_evidence_result_is_valid",
     "materialize_evidence_inspection_task",
     "resume_candidate_hunter_after_evidence",
     "run_evidence_inspection_task",

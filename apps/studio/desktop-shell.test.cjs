@@ -84,13 +84,13 @@ test("desktop shell derives the workspace root after Electron is ready unless ex
     main,
     /process\.env\.STUDIO_WORKSPACE_ROOT\s*\|\|\s*path\.join\(app\.getPath\("userData"\),\s*"workspaces"\)/,
   );
-  assert.match(main, /startServices\(config,\s*workspaceRoot\)/);
+  assert.match(main, /startServices\(config,\s*workspaceRoot,\s*capability\)/);
 });
 
 test("desktop shell gives child services the derived workspace root and local Studio origin", async () => {
   const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
 
-  assert.match(main, /function startServices\(config,\s*workspaceRoot\)/);
+  assert.match(main, /function startServices\(config,\s*workspaceRoot,\s*capability\)/);
   assert.match(main, /const studioWebOrigin\s*=\s*new URL\(config\.studioUrl\)\.origin/);
   assert.match(main, /STUDIO_WORKSPACE_ROOT:\s*workspaceRoot/);
   assert.match(main, /NEXT_PUBLIC_STUDIO_WORKSPACE_ROOT:\s*workspaceRoot/);
@@ -150,7 +150,7 @@ test("desktop startup preflights local services and cleans up before rendering a
   );
   assert.match(
     main,
-    /const startupController = startServices\(config,\s*workspaceRoot\);\s*await waitForApiHealth\(config\.apiBaseUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*await waitForStudio\(config\.studioUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*startupController\.markStartupReady\(\);/s,
+    /autonomousResearchCapability\s*=\s*randomBytes\(32\)\.toString\("base64url"\);\s*studioApiBaseUrl\s*=\s*config\.apiBaseUrl;\s*const startupController = startServices\(\s*config,\s*workspaceRoot,\s*autonomousResearchCapability,\s*\);\s*await waitForApiHealth\(config\.apiBaseUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*await waitForStudio\(config\.studioUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*startupController\.markStartupReady\(\);/s,
   );
   assert.match(
     main,
@@ -166,11 +166,13 @@ test("desktop startup preflights local services and cleans up before rendering a
 test("desktop shell wakes only the local read-only research runtime after startup", async () => {
   const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
   const wakeup = await fs.readFile(path.join(__dirname, "local-research-wakeup.cjs"), "utf8");
+  const preload = await fs.readFile(path.join(__dirname, "preload.cjs"), "utf8");
 
   assert.match(main, /createLocalResearchWakeup/);
+  assert.match(main, /randomBytes\(32\)\.toString\("base64url"\)/);
   assert.match(
     main,
-    /const localResearchWakeup = createLocalResearchWakeup\(\{\s*getBaseUrl:\s*\(\) => studioApiBaseUrl,\s*\}\);/s,
+    /const localResearchWakeup = createLocalResearchWakeup\(\{\s*getBaseUrl:\s*\(\) => studioApiBaseUrl,\s*getCapability:\s*\(\) => autonomousResearchCapability,\s*\}\);/s,
   );
   assert.match(
     main,
@@ -181,6 +183,7 @@ test("desktop shell wakes only the local read-only research runtime after startu
     /closeSessions:\s*async \(reason\) => \{\s*await programRulePump\.close\(reason\);\s*await localResearchWakeup\.stop\(\);\s*await blackBoxRunner\.closeSessions\(reason\);\s*\}/s,
   );
   assert.doesNotMatch(wakeup, /blackBoxRunner|BrowserWindow|createRemoteLeaseApiClient/);
+  assert.doesNotMatch(preload, /AUTONOMOUS_RESEARCH_CAPABILITY/);
 });
 
 test("desktop shell starts the bounded program-rule pump only after local services are ready", async () => {

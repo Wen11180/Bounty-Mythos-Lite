@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, utilityProcess } = require("electron");
 const { execFile, spawn } = require("node:child_process");
+const { randomBytes } = require("node:crypto");
 const path = require("node:path");
 const { promisify } = require("node:util");
 
@@ -44,8 +45,10 @@ let packagedRuntime = null;
 let developmentStartupLiveness = null;
 let studioApiBaseUrl = null;
 let studioLaunchConfig = null;
+let autonomousResearchCapability = null;
 const localResearchWakeup = createLocalResearchWakeup({
   getBaseUrl: () => studioApiBaseUrl,
+  getCapability: () => autonomousResearchCapability,
 });
 const remoteLeaseApi = createRemoteLeaseApiClient({
   getBaseUrl: () => studioApiBaseUrl,
@@ -67,12 +70,13 @@ const dispatchBlackBoxLine = createLocalLabDispatchHandler({
 });
 
 function spawnChild(command, args, cwd, env = {}) {
+  const { AUTONOMOUS_RESEARCH_CAPABILITY: _ignoredCapability, ...baseEnvironment } = process.env;
   const child = spawn(command, args, {
     cwd,
     shell: true,
     stdio: "inherit",
     env: {
-      ...process.env,
+      ...baseEnvironment,
       DATABASE_URL: process.env.DATABASE_URL || "sqlite:///./bounty_mythos_studio.db",
       REDIS_URL: process.env.REDIS_URL || "redis://localhost:6379/0",
       WORKER_DISPATCH_MODE: process.env.WORKER_DISPATCH_MODE || "inline",
@@ -84,7 +88,7 @@ function spawnChild(command, args, cwd, env = {}) {
   return child;
 }
 
-function startDevelopmentServices(config, workspaceRoot) {
+function startDevelopmentServices(config, workspaceRoot, capability) {
   preflightDevelopmentRuntime({
     apiDirectory: path.join(root, "apps", "api"),
     dataDirectory: resolveDevelopmentDataDirectory(
@@ -111,6 +115,7 @@ function startDevelopmentServices(config, workspaceRoot) {
     {
       STUDIO_WORKSPACE_ROOT: workspaceRoot,
       STUDIO_WEB_ORIGIN: studioWebOrigin,
+      AUTONOMOUS_RESEARCH_CAPABILITY: capability,
     },
   );
   developmentStartupLiveness.watch(apiChild, "api_exited");
@@ -128,7 +133,7 @@ function startDevelopmentServices(config, workspaceRoot) {
   return developmentStartupLiveness;
 }
 
-function startServices(config, workspaceRoot) {
+function startServices(config, workspaceRoot, capability) {
   if (app.isPackaged) {
     packagedRuntime = createPackagedRuntime({
       app,
@@ -138,10 +143,10 @@ function startServices(config, workspaceRoot) {
       utilityProcess,
     });
     packagedRuntime.preflight();
-    packagedRuntime.start(config);
+    packagedRuntime.start(config, capability);
     return packagedRuntime;
   }
-  return startDevelopmentServices(config, workspaceRoot);
+  return startDevelopmentServices(config, workspaceRoot, capability);
 }
 
 async function killChildren() {
@@ -289,8 +294,13 @@ app.whenReady().then(async () => {
     window = createWindow(config.apiBaseUrl);
     const workspaceRoot =
       process.env.STUDIO_WORKSPACE_ROOT || path.join(app.getPath("userData"), "workspaces");
+    autonomousResearchCapability = randomBytes(32).toString("base64url");
     studioApiBaseUrl = config.apiBaseUrl;
-    const startupController = startServices(config, workspaceRoot);
+    const startupController = startServices(
+      config,
+      workspaceRoot,
+      autonomousResearchCapability,
+    );
     await waitForApiHealth(config.apiBaseUrl, {
       getStartupFailure: () => startupController.getStartupFailure(),
     });

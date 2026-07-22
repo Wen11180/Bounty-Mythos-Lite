@@ -60,6 +60,16 @@ def _all_cases(fixture_root: Path):
     return {case.case_id: case for case in cases}
 
 
+def _evaluation_scope_fields(evaluation: dict, *, default_scope: str) -> dict:
+    metrics = evaluation.get("metrics", {})
+    metric_names = list(metrics) if isinstance(metrics, dict) else []
+    return {
+        "evaluation_scope": evaluation.get("evaluation_scope", default_scope),
+        "applicable_metrics": evaluation.get("applicable_metrics", metric_names),
+        "not_applicable_metrics": evaluation.get("not_applicable_metrics", []),
+    }
+
+
 def _summarize_package(package, result: dict) -> dict:
     gold = load_authorized_lab_package_gold(package) or {"expected_roots": []}
     decisions = result.get("normalized_output", {}).get("candidate_decisions", [])
@@ -74,6 +84,10 @@ def _summarize_package(package, result: dict) -> dict:
         "gold_present": result.get("gold_present", bool(gold.get("expected_roots"))),
         "loop_audit_status": result.get("loop_audit", {}).get("status"),
         "evaluation_status": evaluation.get("status"),
+        **_evaluation_scope_fields(
+            evaluation,
+            default_scope="authorized_lab_package",
+        ),
         "events": result.get("events", []),
         "final_candidates": finals,
         "candidate_decisions": decisions,
@@ -83,6 +97,7 @@ def _summarize_package(package, result: dict) -> dict:
         "missed_retained_roots": evaluation.get("missed_retained_roots", []),
         "invalid_refutations": evaluation.get("invalid_refutations", []),
         "invalid_deduplications": evaluation.get("invalid_deduplications", []),
+        "invalid_suppressions": evaluation.get("invalid_suppressions", []),
         "safety_failures": evaluation.get("safety_failures", []),
         "schema_failures": evaluation.get("schema_failures", []),
         "stage_audit_failures": evaluation.get("stage_audit_failures", []),
@@ -101,6 +116,10 @@ def _summarize_case(case, result: dict) -> dict:
         "expected_disposition": case.expected_disposition,
         "loop_audit_status": result.get("loop_audit", {}).get("status"),
         "evaluation_status": evaluation.get("status"),
+        **_evaluation_scope_fields(
+            evaluation,
+            default_scope="locked_release_fixture",
+        ),
         "events": result.get("events", []),
         "final_candidates": finals,
         "candidate_decisions": decisions,
@@ -110,6 +129,7 @@ def _summarize_case(case, result: dict) -> dict:
         "missed_retained_roots": evaluation.get("missed_retained_roots", []),
         "invalid_refutations": evaluation.get("invalid_refutations", []),
         "invalid_deduplications": evaluation.get("invalid_deduplications", []),
+        "invalid_suppressions": evaluation.get("invalid_suppressions", []),
         "safety_failures": evaluation.get("safety_failures", []),
         "schema_failures": evaluation.get("schema_failures", []),
         "stage_audit_failures": evaluation.get("stage_audit_failures", []),
@@ -228,6 +248,13 @@ def _md_escape(text: object) -> str:
 
 
 def _render_markdown(summaries: list[dict], generated_at: str, mode: str = "fixture-trial") -> str:
+    evaluation_note = (
+        "Note: locked release fixtures fail closed when any required metric has a "
+        "zero denominator. The full release suite must cover every metric family."
+        if mode == "fixture-trial"
+        else "Note: authorized local lab packages list metrics with no applicable "
+        "denominator separately; every applicable metric must still meet its threshold."
+    )
     lines = [
         "# A+B Operator Trial Scorecard",
         "",
@@ -237,14 +264,12 @@ def _render_markdown(summaries: list[dict], generated_at: str, mode: str = "fixt
         "",
         "Safety: local fixtures only; no live validation; no report submission.",
         "",
-        "Note: per-case `evaluation_status=failed` often means metric zero-denominator "
-        "on a single disposition family (e.g. retain-only case has no refute/dedupe "
-        "denominator). Decision quality and suite-level metrics are authoritative.",
+        evaluation_note,
         "",
         "## Trial matrix",
         "",
-        "| Trial | case_id | expected | eval | loop | finals | decisions |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Trial | case_id | expected | eval | scope | applicable metrics | n/a metrics | loop | finals | decisions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     trial_labels = {
         "dev-001": "T1 retain",
@@ -255,11 +280,14 @@ def _render_markdown(summaries: list[dict], generated_at: str, mode: str = "fixt
     }
     for item in summaries:
         lines.append(
-            "| {trial} | {case_id} | {expected} | {eval_status} | {loop} | {finals} | {decisions} |".format(
+            "| {trial} | {case_id} | {expected} | {eval_status} | {scope} | {applicable} | {not_applicable} | {loop} | {finals} | {decisions} |".format(
                 trial=trial_labels.get(item["case_id"], item["case_id"]),
                 case_id=item["case_id"],
                 expected=item["expected_disposition"],
                 eval_status=item["evaluation_status"],
+                scope=item["evaluation_scope"],
+                applicable=", ".join(item["applicable_metrics"]) or "-",
+                not_applicable=", ".join(item["not_applicable_metrics"]) or "-",
                 loop=item["loop_audit_status"],
                 finals=len(item["final_candidates"]),
                 decisions=len(item["candidate_decisions"]),
@@ -277,15 +305,35 @@ def _render_markdown(summaries: list[dict], generated_at: str, mode: str = "fixt
     )
     for item in summaries:
         quality = _decision_quality(item)
-        note = (
-            "single-case metric zero_denominator is expected; use suite for thresholds"
-            if item.get("evaluation_status") == "failed"
+        schema_failures = item.get("schema_failures") or []
+        only_zero_denominators = bool(schema_failures) and all(
+            isinstance(failure, dict)
+            and failure.get("reason") == "zero_denominator"
+            for failure in schema_failures
+        )
+        if (
+            item.get("evaluation_scope") == "authorized_lab_package"
+            and item.get("evaluation_status") == "passed"
+        ):
+            note = (
+                "authorized lab applicability recorded"
+                if item.get("not_applicable_metrics")
+                else "inspect evaluator notes"
+            )
+        elif (
+            item.get("evaluation_status") == "failed"
+            and only_zero_denominators
             and not item.get("false_positives")
+            and not item.get("missed_retained_roots")
             and not item.get("invalid_refutations")
             and not item.get("invalid_deduplications")
+            and not item.get("invalid_suppressions")
             and not item.get("safety_failures")
-            else "inspect evaluator notes"
-        )
+            and not item.get("stage_audit_failures")
+        ):
+            note = "locked fixture failed closed; suite must cover all metric families"
+        else:
+            note = "inspect evaluator notes"
         lines.append(
             f"| {item['case_id']} | {item['expected_disposition']} | {quality} | {note} |"
         )
@@ -315,6 +363,9 @@ def _render_markdown(summaries: list[dict], generated_at: str, mode: str = "fixt
                 "",
                 f"- expected disposition: `{item['expected_disposition']}`",
                 f"- evaluation: `{item['evaluation_status']}`",
+                f"- evaluation scope: `{item['evaluation_scope']}`",
+                f"- applicable metrics: `{item['applicable_metrics']}`",
+                f"- not applicable metrics: `{item['not_applicable_metrics']}`",
                 f"- loop audit: `{item['loop_audit_status']}`",
                 f"- events: `{', '.join(item['events'])}`",
                 "",
@@ -386,6 +437,7 @@ def _render_markdown(summaries: list[dict], generated_at: str, mode: str = "fixt
             ("missed_retained_roots", item["missed_retained_roots"]),
             ("invalid_refutations", item["invalid_refutations"]),
             ("invalid_deduplications", item["invalid_deduplications"]),
+            ("invalid_suppressions", item["invalid_suppressions"]),
             ("safety_failures", item["safety_failures"]),
             ("schema_failures", item["schema_failures"]),
             ("stage_audit_failures", item["stage_audit_failures"]),
@@ -528,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     for item in summaries:
         print(
             f"{item['case_id']}: eval={item['evaluation_status']} "
+            f"scope={item['evaluation_scope']} "
             f"loop={item['loop_audit_status']} "
             f"finals={len(item['final_candidates'])} "
             f"decisions={len(item['candidate_decisions'])}"

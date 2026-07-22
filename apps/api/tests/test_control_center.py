@@ -266,6 +266,59 @@ def test_overview_empty_live_state_does_not_fabricate_quality_metrics():
     assert ControlCenterOverviewResponse.model_config["extra"] == "forbid"
 
 
+def test_overview_includes_safe_autonomous_wakeup_health_without_lease_digest():
+    testing_session = build_testing_session()
+    lease_digest = "a" * 64
+    with testing_session() as session:
+        repository = DatabaseRepository(session)
+        assert repository.claim_autonomous_research_wakeup(
+            claim_token_digest=lease_digest,
+            now=NOW,
+        ) is not None
+
+        overview = build_control_center_overview(repository, now=NOW)
+
+    health = overview.autonomous_wakeup
+    assert health is not None
+    assert health.status == "active"
+    assert health.last_heartbeat_at == NOW
+    assert health.heartbeat_age_seconds == 0
+    assert health.lease_active is True
+    assert health.has_more_campaigns is False
+    assert health.scheduled_interval_seconds == 60
+    assert health.execution_allowed is False
+    assert health.dispatch_allowed is False
+    assert health.validation_allowed is False
+    assert health.candidate_promotion_allowed is False
+    assert health.report_submission_allowed is False
+    assert lease_digest not in overview.model_dump_json()
+
+
+def test_snapshot_version_ignores_elapsed_wakeup_age_between_heartbeats():
+    testing_session = build_testing_session()
+    with testing_session() as session:
+        repository = DatabaseRepository(session)
+        assert repository.claim_autonomous_research_wakeup(
+            claim_token_digest="b" * 64,
+            now=NOW,
+        ) is not None
+
+        first = build_control_center_overview(
+            repository,
+            now=NOW + timedelta(seconds=2),
+        )
+        second = build_control_center_overview(
+            repository,
+            now=NOW + timedelta(seconds=4),
+        )
+
+    assert first.autonomous_wakeup is not None
+    assert second.autonomous_wakeup is not None
+    assert first.autonomous_wakeup.heartbeat_age_seconds == 2
+    assert second.autonomous_wakeup.heartbeat_age_seconds == 4
+    assert first.snapshot_version == second.snapshot_version
+
+
 def test_overview_quality_uses_generated_and_challenged_candidate_denominators():
     testing_session = build_testing_session()
     with testing_session() as session:

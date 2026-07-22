@@ -524,11 +524,17 @@ Implemented foundation in the current repository:
 
 Remaining gaps:
 
-- The orchestrator is still a safe campaign skeleton, not a fully autonomous long-running research crew.
+- The orchestrator now has a bounded durable read-only research loop, but it is not a fully autonomous long-running research crew with independent specialist tool workflows.
+- Runtime campaign observation now persists a snapshot-bound, redacted target-intake projection with language/framework signals plus source and entrypoint counts, all behind false safety gates rather than an empty completion marker; it does not retain raw code, API/HAR payloads, credentials, routes, or local paths.
 - Agent execution is recorded and surfaced, but specialist agents are not yet fully wired to independent tool workflows.
-- Codebase maps exist as a product surface and persistence layer, but extraction depth still needs route/handler/authz/sink enrichment.
-- Scanner run persistence and SARIF/SBOM-to-target-model merge are incomplete.
-- Exploit-chain reasoning is not yet a first-class workflow with primitive extraction, preconditions, and refutation questions.
+- Codebase maps exist as a product surface and persistence layer, including static FastAPI `APIRouter`/nested `include_router`, Flask `Blueprint`/nested `register_blueprint`, and Django `ROOT_URLCONF`/`path`/local `include` composition for unambiguous authorized function views; broader route/handler/authz/sink extraction depth still needs enrichment.
+- Attack-surface mapping now requires one completed same-snapshot observation and binds its checksummed redacted target-intake summary into the snapshot-bound target-model projection and runtime hypothesis target model, which limits runtime invariant and hypothesis inputs to traceable code, API, HAR, SARIF, and directly imported SBOM fact references; scanner correlation remains advisory and cannot independently create a candidate validation target.
+- Static root-cause labels for outbound URL handling, filesystem paths, writable sensitive fields, and query execution now produce matching snapshot-bound security invariants, profile-specific potential-impact rationale, refutation questions, and offline-only validation plans. Those fields remain attached through candidate refutation, ranking, and submission-blocked report drafts; broader semantic coverage and impact calibration remain incomplete.
+- Snapshot-bound exploit-chain reasoning now runs as a plan-only workflow before candidate refutation, persisting normalized source references, primitives, preconditions, and refutation questions; missing or tampered plans block refutation.
+- Variant Analysis and Deep Code Reasoning now persist compact, snapshot-bound advisory projections alongside exploit-chain reasoning. Finding Dedup Risk persists after ranking and binds its candidate-input and ranking digests before it can appear in report review. These specialist projections never create candidates by themselves, never retain raw plan contents, and keep all execution, validation, promotion, and submission flags false.
+- Runtime Candidate Hunter completion now emits a same-snapshot projection with stage references, state digest, and candidate/decision digests; deduplication and submission-blocked report review revalidate that projection before consuming refutation output, including after local evidence recovery.
+- Submission-blocked report provenance now binds each runtime draft's allowed multi-engine verdict status and canonical digest; historical deduplication ignores missing, unsafe, or tampered verdicts.
+- Report drafts now carry the retained candidate's safe falsification summary, and runtime provenance binds its retained status and canonical digest before historical deduplication can trust it.
 - Validation remains deliberately constrained to plans, approval records, preflight state, and manual observations; no autonomous live validation harness should be added without stronger gates.
 - Structured LLM workflows need tighter schemas, replayability, and campaign-stage wiring.
 - Production authentication, tenant/workspace isolation, and secret management remain required before multi-user or hosted use.
@@ -550,7 +556,7 @@ Remaining gaps:
 3. Add scanner run persistence for authorized local/static tools, SARIF, and SBOM.
 4. Merge target models across artifacts, code maps, scanner facts, and manual notes.
 5. Run hypothesis/refutation loops over multiple candidates with duplicate and policy-risk scoring.
-6. Add exploit-chain reasoning output schemas.
+6. Keep exploit-chain reasoning schemas replayable and surface their plan-only provenance in review workflows.
 7. Expand validation harness records for allowed local and explicitly approved test-account validation modes.
 
 ### P2: Reportable Finding Loop

@@ -42,6 +42,25 @@ test("control center refetches after a safe SSE invalidation without navigation"
           data_mode: "live",
           empty_state: true,
           generated_at: new Date().toISOString(),
+          autonomous_wakeup: {
+            status: "healthy",
+            last_heartbeat_at: new Date().toISOString(),
+            heartbeat_age_seconds: 1,
+            lease_active: false,
+            lease_expires_at: null,
+            has_more_campaigns: false,
+            scheduled_interval_seconds: 60,
+            last_cycle_completed_at: null,
+            last_cycle_status: "not_finished",
+            last_cycle_stop_reason: null,
+            last_cycle_processed_count: 0,
+            last_cycle_outcome_counts: {},
+            execution_allowed: false,
+            dispatch_allowed: false,
+            validation_allowed: false,
+            candidate_promotion_allowed: false,
+            report_submission_allowed: false,
+          },
           metrics: {
             approval_pressure_count: 1,
             retained_high_value_candidate_count: 3,
@@ -83,6 +102,10 @@ test("control center refetches after a safe SSE invalidation without navigation"
     "live",
   );
   await expect(page.getByText("7", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("control-center-wakeup-state")).toHaveAttribute(
+    "data-state",
+    "healthy",
+  );
   await expect.poll(() => eventReads).toBeGreaterThan(0);
   await expect.poll(() => overviewReads).toBeGreaterThan(0);
   await expect(

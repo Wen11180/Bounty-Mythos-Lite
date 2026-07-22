@@ -252,6 +252,18 @@ def build_multi_engine_verdict(
             continue
         engines.append(_normalize_engine(name, raw))
 
+    # Knowledge-base entries remain visible for explanation and ranking, but do
+    # not prove or refute a current candidate.
+    candidate_decision_engines = [
+        engine for engine in engines if engine.engine != ENGINE_KNOWLEDGE_BASE
+    ]
+    blocking_engines = [
+        engine
+        for engine in engines
+        if engine.engine != ENGINE_KNOWLEDGE_BASE
+        or "knowledge_base_unsafe_flags_forced_block" in engine.notes
+    ]
+
     if not engines:
         return MultiEngineVerdict(
             status=VERDICT_NEEDS_VERIFICATION,
@@ -272,7 +284,7 @@ def build_multi_engine_verdict(
             candidate_id=candidate_id,
             root_cause_id=root_cause_id,
             engines=engines,
-            agreement_score=_agreement_score(engines),
+            agreement_score=_agreement_score(candidate_decision_engines),
             blocked_reasons=blocked,
             review_questions=[
                 "Resolve safety/scope blockers before any human-controlled validation planning.",
@@ -280,15 +292,15 @@ def build_multi_engine_verdict(
             next_allowed_action="Stop. Clear blockers under Scope Guard; no execution.",
         )
 
-    supports = [e for e in engines if e.supports_candidate is True]
-    opposes = [e for e in engines if e.supports_candidate is False]
-    unknown = [e for e in engines if e.supports_candidate is None]
-    agreement = _agreement_score(engines)
+    supports = [e for e in candidate_decision_engines if e.supports_candidate is True]
+    opposes = [e for e in candidate_decision_engines if e.supports_candidate is False]
+    unknown = [e for e in candidate_decision_engines if e.supports_candidate is None]
+    agreement = _agreement_score(candidate_decision_engines)
 
-    if any(e.status in {"blocked", "error"} for e in engines):
+    if any(e.status in {"blocked", "error"} for e in blocking_engines):
         status = (
             VERDICT_BLOCKED
-            if any(e.status == "blocked" for e in engines)
+            if any(e.status == "blocked" for e in blocking_engines)
             else VERDICT_NEEDS_HUMAN_REVIEW
         )
         return MultiEngineVerdict(
@@ -299,7 +311,7 @@ def build_multi_engine_verdict(
             agreement_score=agreement,
             blocked_reasons=[
                 f"engine_{e.engine}_{e.status}"
-                for e in engines
+                for e in blocking_engines
                 if e.status in {"blocked", "error"}
             ],
             review_questions=_default_questions(candidate),
@@ -1743,7 +1755,7 @@ def signal_from_knowledge_base(
     status_raw = str(knowledge_base.get("status") or "")
     pattern_n = int(knowledge_base.get("pattern_count") or 0)
     if "missing" in status_raw:
-        status = "blocked"
+        status = "needs_human_review"
     elif pattern_n or "ready" in status_raw or "written" in status_raw:
         status = "ready"
     elif "waiting" in status_raw or "empty" in status_raw:

@@ -1542,7 +1542,7 @@ export function StudioWorkbench() {
   ] as const;
   const studioInspector = (
     <Tabs
-      className="gap-0"
+      className="!block w-full gap-0"
       data-testid="studio-inspector"
       onValueChange={(value) =>
         setInspectorTab(value as "candidate" | "evidence" | "report" | "validation")
@@ -1551,12 +1551,12 @@ export function StudioWorkbench() {
     >
       <TabsList
         aria-label="候选检查器"
-        className="grid h-10 w-full grid-cols-4 rounded-none border-b border-[var(--line)] bg-transparent p-0"
+        className="!grid h-10 !w-full grid-cols-4 rounded-none border-b border-[var(--line)] bg-transparent p-0"
         variant="line"
       >
         {inspectorTabs.map((tab) => (
           <TabsTrigger
-            className="rounded-none px-1 text-xs"
+            className="min-w-0 whitespace-nowrap rounded-none px-1 text-xs"
             key={tab.id}
             tabIndex={tab.id === inspectorTab ? 0 : -1}
             value={tab.id}
@@ -1963,8 +1963,8 @@ export function StudioWorkbench() {
         </details>
       </section>
 
-      <div className="mt-6 grid gap-5">
-        <section className="border-b border-[var(--line)] pb-5">
+      <div className="mt-6 grid min-w-0 gap-5">
+        <section className="min-w-0 border-b border-[var(--line)] pb-5">
           <SectionHeader title="Authorized materials / evaluation" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -2192,7 +2192,7 @@ export function StudioWorkbench() {
           </div>
         </section>
 
-        <section className="border-b border-[var(--line)] pb-5" data-testid="studio-mission-details">
+        <section className="min-w-0 border-b border-[var(--line)] pb-5" data-testid="studio-mission-details">
           <SectionHeader title="Mission details" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="border-t border-[var(--line)] pt-4">
@@ -2429,11 +2429,11 @@ function TextField({
   value: string;
 }) {
   return (
-    <label className="grid gap-1 text-sm">
+    <label className="grid min-w-0 gap-1 text-sm">
       <span className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</span>
-      <span className="grid gap-2">
+      <span className="grid min-w-0 gap-2">
         <input
-          className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
+          className="min-h-10 min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
           onChange={(event) => onChange(event.target.value)}
           value={value}
         />

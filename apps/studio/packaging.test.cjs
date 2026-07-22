@@ -4,7 +4,21 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { validateStagedRuntime } = require("./package-runtime.cjs");
+const { resolveDesktopPython, validateStagedRuntime } = require("./package-runtime.cjs");
+
+test("packaging selects an existing API virtual environment and honors an explicit Python override", () => {
+  const expected = path.join(
+    __dirname,
+    "..",
+    "api",
+    ".venv",
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
+
+  assert.equal(resolveDesktopPython({}), fs.existsSync(expected) ? expected : "python");
+  assert.equal(resolveDesktopPython({ MYTHOS_DESKTOP_PYTHON: "C:\\tools\\python.exe" }), "C:\\tools\\python.exe");
+});
 
 test("Forge packages an ASAR shell with real external runtime resources and Squirrel x64", () => {
   const config = require("./forge.config.cjs");

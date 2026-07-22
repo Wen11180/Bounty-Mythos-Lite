@@ -151,6 +151,137 @@ test("authorized asset scope mapping fails closed for review and blocked states"
   );
 });
 
+test("mapControlCenterOverview displays safe wakeup health and blocks hostile permissions", async () => {
+  const { mapControlCenterOverview } = await import("./control-center-data.ts");
+  const active = mapControlCenterOverview(
+    overview({
+      autonomous_wakeup: {
+        status: "active",
+        last_heartbeat_at: "2026-07-18T04:00:00Z",
+        heartbeat_age_seconds: 0,
+        lease_active: true,
+        lease_expires_at: "2026-07-18T04:02:00Z",
+        has_more_campaigns: false,
+        scheduled_interval_seconds: 60,
+        last_cycle_completed_at: null,
+        last_cycle_status: "not_finished",
+        last_cycle_stop_reason: null,
+        last_cycle_processed_count: 0,
+        last_cycle_outcome_counts: {},
+        execution_allowed: false,
+        dispatch_allowed: false,
+        validation_allowed: false,
+        candidate_promotion_allowed: false,
+        report_submission_allowed: false,
+      },
+    }),
+    new Date("2026-07-18T04:00:20Z"),
+  );
+
+  assert.deepEqual(active.autonomousWakeup, {
+    status: "active",
+    label: "调度执行中",
+    detail: "持久化 wakeup lease 正在处理授权只读任务。",
+    tone: "safe",
+  });
+
+  const invalidLease = mapControlCenterOverview(
+    overview({
+      autonomous_wakeup: {
+        status: "invalid_lease",
+        last_heartbeat_at: "2026-07-18T04:00:00Z",
+        heartbeat_age_seconds: 0,
+        lease_active: false,
+        lease_expires_at: "2026-07-18T04:02:00Z",
+        has_more_campaigns: false,
+        scheduled_interval_seconds: 60,
+        last_cycle_completed_at: null,
+        last_cycle_status: "not_finished",
+        last_cycle_stop_reason: null,
+        last_cycle_processed_count: 0,
+        last_cycle_outcome_counts: {},
+        execution_allowed: false,
+        dispatch_allowed: false,
+        validation_allowed: false,
+        candidate_promotion_allowed: false,
+        report_submission_allowed: false,
+      },
+    }),
+    new Date("2026-07-18T04:00:20Z"),
+  );
+
+  assert.deepEqual(invalidLease.autonomousWakeup, {
+    status: "invalid_lease",
+    label: "调度 lease 状态无效",
+    detail: "持久化 wakeup lease 状态不完整或不一致。",
+    tone: "danger",
+  });
+
+  const unsafe = mapControlCenterOverview(
+    overview({
+      autonomous_wakeup: {
+        status: "healthy",
+        last_heartbeat_at: "2026-07-18T04:00:00Z",
+        heartbeat_age_seconds: 10,
+        lease_active: false,
+        lease_expires_at: null,
+        has_more_campaigns: false,
+        scheduled_interval_seconds: 60,
+        last_cycle_completed_at: null,
+        last_cycle_status: "not_finished",
+        last_cycle_stop_reason: null,
+        last_cycle_processed_count: 0,
+        last_cycle_outcome_counts: {},
+        execution_allowed: true as unknown as false,
+        dispatch_allowed: false,
+        validation_allowed: false,
+        candidate_promotion_allowed: false,
+        report_submission_allowed: false,
+      },
+    }),
+    new Date("2026-07-18T04:00:20Z"),
+  );
+
+  assert.deepEqual(unsafe.autonomousWakeup, {
+    status: "blocked",
+    label: "调度状态已阻止",
+    detail: "健康摘要的安全字段不满足只读约束。",
+    tone: "danger",
+  });
+
+  const degraded = mapControlCenterOverview(
+    overview({
+      autonomous_wakeup: {
+        status: "degraded",
+        last_heartbeat_at: "2026-07-18T04:00:00Z",
+        heartbeat_age_seconds: 10,
+        lease_active: false,
+        lease_expires_at: null,
+        has_more_campaigns: false,
+        scheduled_interval_seconds: 60,
+        last_cycle_completed_at: "2026-07-18T03:59:55Z",
+        last_cycle_status: "failed",
+        last_cycle_stop_reason: "wakeup_candidate_query_failed",
+        last_cycle_processed_count: 0,
+        last_cycle_outcome_counts: {},
+        execution_allowed: false,
+        dispatch_allowed: false,
+        validation_allowed: false,
+        candidate_promotion_allowed: false,
+        report_submission_allowed: false,
+      },
+    }),
+    new Date("2026-07-18T04:00:20Z"),
+  );
+
+  assert.deepEqual(degraded.autonomousWakeup, {
+    status: "degraded",
+    label: "调度最近运行失败",
+    detail: "最近一轮调度未完成；请检查 Beat、Worker 和持久化 wakeup 状态。",
+    tone: "danger",
+  });
+});
+
 test("mapControlCenterOverview marks old snapshots stale and preserves absent quality metrics", async () => {
   const { mapControlCenterOverview } = await import("./control-center-data.ts");
   const snapshot = mapControlCenterOverview(

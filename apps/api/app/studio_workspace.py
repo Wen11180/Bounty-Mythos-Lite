@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
+from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
 
 
 WORKSPACE_DIRS = (
@@ -24,20 +25,24 @@ WORKSPACE_DIRS = (
     "reports",
     "runs",
 )
-CAMPAIGN_SNAPSHOT_SCHEMA_VERSION = "authorized_workspace_campaign_snapshot_v1"
+CAMPAIGN_SNAPSHOT_SCHEMA_VERSION = "authorized_workspace_campaign_snapshot_v3"
+CAMPAIGN_LEGACY_SNAPSHOT_SCHEMA_VERSIONS = frozenset(
+    {
+        "authorized_workspace_campaign_snapshot_v1",
+        "authorized_workspace_campaign_snapshot_v2",
+    }
+)
 CAMPAIGN_REQUIRED_ARTIFACT_KINDS = ("scope", "policy", "code", "api", "har")
+CAMPAIGN_OPTIONAL_ADVISORY_ARTIFACT_KINDS = ("sarif", "sbom")
+CAMPAIGN_ADVISORY_ARTIFACT_KINDS_BY_SCHEMA = {
+    "authorized_workspace_campaign_snapshot_v1": (),
+    "authorized_workspace_campaign_snapshot_v2": ("sarif",),
+    CAMPAIGN_SNAPSHOT_SCHEMA_VERSION: CAMPAIGN_OPTIONAL_ADVISORY_ARTIFACT_KINDS,
+}
 CAMPAIGN_READY_REDACTION_STATUSES = frozenset({"not_required", "redacted"})
-CAMPAIGN_CODE_SUFFIXES = {
-    ".py",
+CAMPAIGN_CODE_SUFFIXES = set(SUPPORTED_CODE_SOURCE_SUFFIXES) | {
     ".js",
     ".jsx",
-    ".ts",
-    ".tsx",
-    ".go",
-    ".java",
-    ".kt",
-    ".rb",
-    ".php",
 }
 MAX_CAMPAIGN_CODE_FILES = 20
 MAX_CAMPAIGN_CODE_BYTES = 20_000
@@ -141,10 +146,16 @@ def build_authorized_campaign_snapshot(workspace_path: str | Path) -> dict[str, 
     workspace = _workspace_directory(workspace_path)
     manifest = load_workspace_manifest(workspace)
     selected = _campaign_artifact_sources(workspace, manifest)
+    selected.update(_campaign_optional_advisory_artifact_sources(workspace, manifest))
     artifact_refs: list[dict[str, str]] = []
     source_manifest: list[dict[str, str]] = []
 
-    for kind in CAMPAIGN_REQUIRED_ARTIFACT_KINDS:
+    for kind in (
+        *CAMPAIGN_REQUIRED_ARTIFACT_KINDS,
+        *CAMPAIGN_OPTIONAL_ADVISORY_ARTIFACT_KINDS,
+    ):
+        if kind not in selected:
+            continue
         source = selected[kind]
         relative_path = source.relative_to(workspace).as_posix()
         if kind == "code":
@@ -201,9 +212,28 @@ def load_authorized_campaign_inputs(snapshot: object) -> dict[str, Any]:
         if content_digest != expected["content_digest"]:
             raise ValueError("workspace_snapshot_changed")
 
+    advisory_kinds = _campaign_advisory_artifact_kinds(validated["schema_version"])
+    advisory_sources = _campaign_optional_advisory_artifact_sources(
+        workspace,
+        manifest,
+        artifact_kinds=advisory_kinds,
+    )
+    expected_advisory_kinds = [kind for kind in advisory_kinds if kind in artifact_refs]
+    if list(advisory_sources) != expected_advisory_kinds:
+        raise ValueError("workspace_snapshot_changed")
+    for kind in expected_advisory_kinds:
+        source = advisory_sources[kind]
+        expected = artifact_refs[kind]
+        if source.relative_to(workspace).as_posix() != expected["relative_path"]:
+            raise ValueError("workspace_snapshot_changed")
+        if _campaign_file_digest(source, max_bytes=MAX_CAMPAIGN_JSON_BYTES) != expected[
+            "content_digest"
+        ]:
+            raise ValueError("workspace_snapshot_changed")
+
     if _campaign_snapshot_digest(
         {
-            "schema_version": CAMPAIGN_SNAPSHOT_SCHEMA_VERSION,
+            "schema_version": validated["schema_version"],
             "workspace_name": workspace.name,
             "artifact_refs": validated["artifact_refs"],
             "source_manifest": source_manifest,
@@ -230,12 +260,32 @@ def load_authorized_campaign_inputs(snapshot: object) -> dict[str, Any]:
             }
         )
 
+    advisory_artifacts = []
+    for kind in expected_advisory_kinds:
+        source = advisory_sources[kind]
+        try:
+            payload = json.loads(
+                _read_campaign_text(source, max_bytes=MAX_CAMPAIGN_JSON_BYTES)
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError("workspace_snapshot_invalid") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("workspace_snapshot_invalid")
+        advisory_artifacts.append(
+            {
+                "kind": kind,
+                "source_name": artifact_refs[kind]["relative_path"],
+                "payload": payload,
+            }
+        )
+
     return {
         "source_snapshot_digest": validated["source_snapshot_digest"],
         "source_manifest": source_manifest,
         "authorized_local_root": str(code_root),
         "code_files": code_files,
         "api_artifacts": api_artifacts,
+        "advisory_artifacts": advisory_artifacts,
     }
 
 
@@ -428,6 +478,38 @@ def _campaign_artifact_sources(workspace: Path, manifest: dict[str, Any]) -> dic
     return selected
 
 
+def _campaign_optional_advisory_artifact_sources(
+    workspace: Path,
+    manifest: dict[str, Any],
+    *,
+    artifact_kinds: tuple[str, ...] = CAMPAIGN_OPTIONAL_ADVISORY_ARTIFACT_KINDS,
+) -> dict[str, Path]:
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("workspace_snapshot_invalid")
+    selected: dict[str, Path] = {}
+    for kind in artifact_kinds:
+        for artifact in reversed(artifacts):
+            if not isinstance(artifact, dict) or artifact.get("kind") != kind:
+                continue
+            if artifact.get("redaction_status") not in CAMPAIGN_READY_REDACTION_STATUSES:
+                break
+            source_path = artifact.get("source_path")
+            if not isinstance(source_path, str):
+                break
+            source = _authorized_artifact_source(
+                workspace,
+                StudioArtifactImport(kind=kind, source_path=source_path),
+            )
+            if not source.is_file():
+                raise ValueError("workspace_snapshot_invalid")
+            if artifact.get("source_hash") != _sha256(source):
+                raise ValueError("workspace_snapshot_changed")
+            selected[kind] = source
+            break
+    return selected
+
+
 def _campaign_code_files(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     resolved_root = root.resolve(strict=True)
     code_files: list[dict[str, str]] = []
@@ -488,12 +570,18 @@ def _campaign_snapshot_digest(snapshot: dict[str, object]) -> str:
 def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         raise ValueError("workspace_snapshot_invalid")
+    schema_version = snapshot.get("schema_version")
     workspace_name = snapshot.get("workspace_name")
     source_snapshot_digest = snapshot.get("source_snapshot_digest")
     artifact_refs = snapshot.get("artifact_refs")
     source_manifest = snapshot.get("source_manifest")
     if (
-        snapshot.get("schema_version") != CAMPAIGN_SNAPSHOT_SCHEMA_VERSION
+        not isinstance(schema_version, str)
+        or schema_version
+        not in {
+            CAMPAIGN_SNAPSHOT_SCHEMA_VERSION,
+            *CAMPAIGN_LEGACY_SNAPSHOT_SCHEMA_VERSIONS,
+        }
         or not isinstance(workspace_name, str)
         or workspace_name != _safe_name(workspace_name)
         or _secret_like_text(workspace_name)
@@ -502,9 +590,16 @@ def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
         or not isinstance(source_manifest, list)
     ):
         raise ValueError("workspace_snapshot_invalid")
-    if [item.get("kind") if isinstance(item, dict) else None for item in artifact_refs] != list(
-        CAMPAIGN_REQUIRED_ARTIFACT_KINDS
-    ):
+    artifact_kinds = [
+        item.get("kind") if isinstance(item, dict) else None for item in artifact_refs
+    ]
+    required_kinds = list(CAMPAIGN_REQUIRED_ARTIFACT_KINDS)
+    optional_kinds = [
+        kind
+        for kind in _campaign_advisory_artifact_kinds(schema_version)
+        if kind in artifact_kinds
+    ]
+    if artifact_kinds != [*required_kinds, *optional_kinds]:
         raise ValueError("workspace_snapshot_invalid")
     safe_artifact_refs = []
     for item in artifact_refs:
@@ -538,11 +633,16 @@ def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
             {"source_path": source_path, "content_digest": content_digest.lower()}
         )
     return {
+        "schema_version": schema_version,
         "workspace_name": workspace_name,
         "source_snapshot_digest": source_snapshot_digest.lower(),
         "artifact_refs": safe_artifact_refs,
         "source_manifest": safe_source_manifest,
     }
+
+
+def _campaign_advisory_artifact_kinds(schema_version: str) -> tuple[str, ...]:
+    return CAMPAIGN_ADVISORY_ARTIFACT_KINDS_BY_SCHEMA.get(schema_version, ())
 
 
 def _safe_campaign_relative_path(value: object) -> str:

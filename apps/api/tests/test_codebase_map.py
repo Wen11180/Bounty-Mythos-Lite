@@ -4483,6 +4483,78 @@ async function exportFileForUser(fileId: string) {
     )
 
 
+def test_map_authorized_code_files_composes_static_express_router_mount_prefixes():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/records.ts",
+                    "content": '''
+import express, { Router } from "express";
+
+const app = express();
+const apiRouter = Router();
+const recordsRouter = Router();
+
+app.use("/api/v1", apiRouter);
+apiRouter.use("/records", recordsRouter);
+recordsRouter.get("/:recordId/export", requireUser, exportRecord);
+
+function exportRecord(req: Request, res: Response) {
+  return sendFile(req.params.recordId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+
+    assert route.symbol_name == "exportRecord"
+    assert route.route_method == "GET"
+    assert route.route_path == "/api/v1/records/:recordId/export"
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == "requireUser"
+        and fact.payload["handler"] == "exportRecord"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_invent_dynamic_express_router_mount_prefixes():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "src/routes/records.ts",
+                    "content": '''
+import express, { Router } from "express";
+
+const app = express();
+const recordsRouter = Router();
+const prefix = loadAuthorizedPrefix();
+
+app.use(prefix, recordsRouter);
+recordsRouter.get("/:recordId/export", requireUser, exportRecord);
+
+function exportRecord(req: Request, res: Response) {
+  return sendFile(req.params.recordId);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+
+    assert route.route_path == "/:recordId/export"
+
+
 def test_map_authorized_code_files_maps_express_missing_authz_through_one_hop_service():
     result = map_authorized_code_files(
         {
@@ -4978,6 +5050,44 @@ async function deliver_webhook(req: Request, res: Response) {
     assert authz.symbol_name == "validateUrlForSSRF"
     assert authz.payload["handler"] == "verify_subscriber_url"
     assert gaps  # emitted for route-level review; hunter refutes via control evidence
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_when_guard_follows_service_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  await dispatch_webhook(req.body.subscriberUrl);
+  validateUrlForSSRF(req.body.subscriberUrl);
+  return res.sendStatus(204);
+}
+
+async function dispatch_webhook(target: string) {
+  return fetch(target);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gaps = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    ]
+
+    assert len(gaps) == 1
+    assert gaps[0].payload["root_cause"] == "missing_ssrf_validation"
 
 
 def test_map_authorized_code_files_python_fetch_without_ssrf_guard_is_ssrf_gap():
@@ -6142,6 +6252,857 @@ def test_map_authorized_code_files_keeps_money_flow_gap_without_prior_matching_c
     )
 
     assert gap.symbol_name == "create_transfer"
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_sink"),
+    (
+        (
+            "apps/api/routes/redemptions.py",
+            """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/redemptions/{token_id}")
+def redeem_token(token_id: str):
+    return consume_one_time_token(token_id)
+""",
+            "consume_one_time_token",
+        ),
+        (
+            "apps/api/routes/redemptions.ts",
+            """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/redemptions/:tokenId", redeemToken);
+
+async function redeemToken(req: Request, res: Response) {
+  return consumeOneTimeToken(req.params.tokenId);
+}
+""",
+            "consumeOneTimeToken",
+        ),
+    ),
+)
+def test_map_authorized_code_files_marks_explicit_state_transition_without_guard(
+    source_path,
+    source_code,
+    expected_sink,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+    )
+
+    assert gap.authz_hint == "missing_handler_transactional_state_check"
+    assert expected_sink in gap.payload["sink_symbols"]
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_guard", "expected_sink"),
+    (
+        (
+            "apps/api/routes/redemptions.py",
+            """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/redemptions/{token_id}")
+def redeem_token(token_id: str):
+    with_transactional_state_guard()
+    return consume_one_time_token(token_id)
+""",
+            "with_transactional_state_guard",
+            "consume_one_time_token",
+        ),
+        (
+            "apps/api/routes/redemptions.py",
+            """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/redemptions/{token_id}")
+@transactional
+def redeem_token(token_id: str):
+    return consume_one_time_token(token_id)
+""",
+            "transactional",
+            "consume_one_time_token",
+        ),
+        (
+            "apps/api/routes/redemptions.ts",
+            """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/redemptions/:tokenId", redeemToken);
+
+function withTransactionalStateGuard() {
+  return true;
+}
+
+async function redeemToken(req: Request, res: Response) {
+  withTransactionalStateGuard();
+  return consumeOneTimeToken(req.params.tokenId);
+}
+""",
+            "withTransactionalStateGuard",
+            "consumeOneTimeToken",
+        ),
+    ),
+)
+def test_map_authorized_code_files_treats_transactional_state_guard_as_control(
+    source_path,
+    source_code,
+    expected_guard,
+    expected_sink,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == expected_guard
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == expected_sink
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_infer_generic_update_as_state_transition():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/records.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/records/{record_id}")
+def update_record(record_id: str, body: dict):
+    return update(record_id, body)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_state_transition_gap_for_unrelated_name():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/redemptions.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/redemptions/{token_id}")
+def redeem_token(token_id: str):
+    transactional_email_receipt(token_id)
+    return consume_one_time_token(token_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_treats_transactional_state_guard_as_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "RedemptionController.java",
+                    "content": """
+@RestController
+public class RedemptionController {
+  @PostMapping("/redemptions/{tokenId}")
+  public Object redeemToken(String tokenId) {
+    withTransactionalStateGuard();
+    return consumeOneTimeToken(tokenId);
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "sensitive_sink"
+        and fact.symbol_name == "consumeOneTimeToken"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code"),
+    (
+        (
+            "RedemptionController.java",
+            """
+import org.springframework.transaction.annotation.Transactional;
+
+@RestController
+public class RedemptionController {
+  @Transactional
+  @PostMapping("/redemptions/{tokenId}")
+  public Object redeemToken(String tokenId) {
+    return consumeOneTimeToken(tokenId);
+  }
+}
+""",
+        ),
+        (
+            "handlers.go",
+            """
+package handlers
+
+func mount(r Router) { r.POST("/redemptions/{tokenId}", redeemToken) }
+
+func redeemToken() {
+  db.Transaction(func(tx *DB) error {
+    consumeOneTimeToken(tokenId)
+    return nil
+  })
+}
+""",
+        ),
+        (
+            "redemptions.rb",
+            """
+post "/redemptions/:token_id", to: "redemptions#redeem_token"
+
+def redeem_token
+  ApplicationRecord.transaction do
+    consume_one_time_token(params[:token_id])
+  end
+end
+""",
+        ),
+    ),
+)
+def test_map_static_multilang_recognizes_framework_transaction_controls(
+    source_path,
+    source_code,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code"),
+    (
+        (
+            "RedemptionController.java",
+            """
+@RestController
+public class RedemptionController {
+  @PostMapping("/redemptions/{tokenId}")
+  public Object redeemToken(String tokenId) {
+    // withTransactionalStateGuard();
+    String note = "withTransactionalStateGuard()";
+    /* withTransactionalStateGuard(); */
+    return consumeOneTimeToken(tokenId);
+  }
+}
+""",
+        ),
+        (
+            "handlers.go",
+            """
+package handlers
+
+func mount(r Router) { r.POST("/redemptions/{tokenId}", redeemToken) }
+
+func redeemToken() {
+  // withTransactionalStateGuard()
+  note := "withTransactionalStateGuard()"
+  return consumeOneTimeToken(tokenId)
+}
+""",
+        ),
+        (
+            "redemptions.rb",
+            """
+post "/redemptions/:token_id", to: "redemptions#redeem_token"
+
+def redeem_token
+  # with_transactional_state_guard
+  note = "with_transactional_state_guard()"
+  consume_one_time_token(params[:token_id])
+end
+""",
+        ),
+    ),
+)
+def test_map_static_multilang_ignores_transactional_markers_in_non_code_text(
+    source_path,
+    source_code,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_requires_transaction_call_context():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "redemptions.rb",
+                    "content": """
+post "/redemptions/:token_id", to: "redemptions#redeem_token"
+
+def redeem_token
+  transaction_runner = ApplicationRecord.transaction
+  consume_one_time_token(params[:token_id])
+end
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code"),
+    (
+        (
+            "handlers.go",
+            """
+package handlers
+
+func mount(r Router) { r.POST("/redemptions/{tokenId}", redeemToken) }
+
+func redeemToken() {
+  db.Transaction(func(tx *DB) error {
+    recordAudit()
+    return nil
+  })
+  return consumeOneTimeToken(tokenId)
+}
+""",
+        ),
+        (
+            "redemptions.rb",
+            """
+post "/redemptions/:token_id", to: "redemptions#redeem_token"
+
+def redeem_token
+  ApplicationRecord.transaction do
+    record_audit
+  end
+  consume_one_time_token(params[:token_id])
+end
+""",
+        ),
+    ),
+)
+def test_map_static_multilang_keeps_gap_when_transaction_scope_ends_before_sink(
+    source_path,
+    source_code,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code"),
+    (
+        (
+            "handlers.go",
+            """
+package handlers
+
+func mount(r Router) { r.POST("/redemptions/{tokenId}", redeemToken) }
+
+func redeemToken() {
+  db.Transaction(func(tx *DB) error {
+    consumeOneTimeToken(firstTokenId)
+    return nil
+  })
+  return consumeOneTimeToken(secondTokenId)
+}
+""",
+        ),
+        (
+            "redemptions.rb",
+            """
+post "/redemptions/:token_id", to: "redemptions#redeem_token"
+
+def redeem_token
+  ApplicationRecord.transaction do
+    consume_one_time_token(first_token_id)
+  end
+  consume_one_time_token(second_token_id)
+end
+""",
+        ),
+    ),
+)
+def test_map_static_multilang_keeps_gap_when_transaction_scope_misses_a_sink(
+    source_path,
+    source_code,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_code"),
+    (
+        (
+            "handlers.go",
+            """
+package handlers
+
+func mount(r Router) { r.POST("/redemptions/{tokenId}", redeemToken) }
+
+func redeemToken() { return db.Transaction(func(tx *DB) error { return consumeOneTimeToken(tokenId) }) }
+""",
+        ),
+        (
+            "redemptions.rb",
+            """
+post "/redemptions/:token_id", to: "redemptions#redeem_token"
+
+def redeem_token
+  ApplicationRecord.transaction { consume_one_time_token(params[:token_id]) }
+end
+""",
+        ),
+    ),
+)
+def test_map_static_multilang_treats_same_line_transaction_scope_as_control(
+    source_path,
+    source_code,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_propagates_java_class_transactional_annotation():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "RedemptionController.java",
+                    "content": """
+import org.springframework.transaction.annotation.Transactional;
+
+@Transactional
+@RestController
+public class RedemptionController {
+  @PostMapping("/redemptions/{tokenId}")
+  public Object redeemToken(String tokenId) {
+    return consumeOneTimeToken(tokenId);
+  }
+
+  @PostMapping("/redemptions/{tokenId}/retry")
+  public Object retryRedemption(String tokenId) {
+    return consumeOneTimeToken(tokenId);
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    guarded_handlers = {
+        fact.payload.get("handler")
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+    }
+
+    assert guarded_handlers == {"redeemToken", "retryRedemption"}
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "source_code",
+    (
+        """
+import org.springframework.transaction.annotation.Transactional;
+
+@RestController
+public class RedemptionController {
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  @PostMapping("/redemptions/{tokenId}")
+  public Object redeemToken(String tokenId) {
+    return consumeOneTimeToken(tokenId);
+  }
+}
+""",
+        """
+import org.springframework.transaction.annotation.Transactional;
+
+@Transactional(propagation = Propagation.NEVER)
+@RestController
+public class RedemptionController {
+  @PostMapping("/redemptions/{tokenId}")
+  public Object redeemToken(String tokenId) {
+    return consumeOneTimeToken(tokenId);
+  }
+}
+""",
+    ),
+)
+def test_map_static_multilang_keeps_gap_for_nontransactional_propagation(
+    source_code,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RedemptionController.java", "content": source_code}
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_does_not_inherit_outer_class_transactional_annotation():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "OuterController.java",
+                    "content": """
+import org.springframework.transaction.annotation.Transactional;
+
+@Transactional
+public class OuterController {
+  @RestController
+  public static class RedemptionController {
+    @PostMapping("/redemptions/{tokenId}")
+    public Object redeemToken(String tokenId) {
+      return consumeOneTimeToken(tokenId);
+    }
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "transactional_state_guard"
+        and fact.payload.get("handler") == "redeemToken"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "redeemToken"
+        and fact.payload.get("root_cause") == "missing_transactional_state_guard"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_combines_spring_controller_prefix_and_method_route():
+    content = """
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping(path = "/api/v1/records/")
+public class RecordsController {
+  @GetMapping("/{recordId}")
+  public Object readRecord(String recordId) {
+    Record record = loadRecord(recordId);
+    return sendFile(record.getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "route_handler"
+        and fact.symbol_name == "readRecord"
+        and fact.route_method == "GET"
+        and fact.route_path == "/api/v1/records/{recordId}"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_maps_explicit_spring_request_mapping_methods():
+    content = """
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/v1")
+public class RecordsController {
+  // @RequestMapping(path = "/comment-only", method = RequestMethod.DELETE)
+  @RequestMapping(
+      method = {RequestMethod.GET, RequestMethod.POST},
+      path = "/records/{recordId}"
+  )
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+    route_methods = {
+        fact.route_method
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+        and fact.symbol_name == "readRecord"
+        and fact.route_path == "/api/v1/records/{recordId}"
+    }
+
+    assert route_methods == {"GET", "POST"}
+    assert not any(
+        fact.fact_type == "route_handler" and fact.route_method == "DELETE"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("annotation", "symbol_name"),
+    (
+        ('@PreAuthorize("hasRole(\'RECORD_READER\')")', "PreAuthorize"),
+        ('@Secured("ROLE_RECORD_READER")', "Secured"),
+        ('@RolesAllowed("RECORD_READER")', "RolesAllowed"),
+    ),
+)
+def test_map_static_multilang_maps_spring_declarative_method_authz(
+    annotation,
+    symbol_name,
+):
+    content = f"""
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RecordsController {{
+  {annotation}
+  @GetMapping("/records/{{recordId}}")
+  public Object readRecord(String recordId) {{
+    return sendFile(loadRecord(recordId).getPath());
+  }}
+}}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == symbol_name
+        and fact.authz_hint == "role_check"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_ignores_commented_spring_declarative_authz():
+    content = """
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RecordsController {
+  // @PreAuthorize("hasRole('RECORD_READER')")
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check" and fact.symbol_name == "PreAuthorize"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_ignores_commented_spring_controller_prefix():
+    content = """
+// @RequestMapping("/comment-only")
+@RestController
+public class RecordsController {
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "route_handler"
+        and fact.symbol_name == "readRecord"
+        and fact.route_path == "/records/{recordId}"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "route_handler"
+        and fact.route_path == "/comment-only/records/{recordId}"
+        for fact in result.facts
+    )
 
 
 def test_map_static_multilang_java_go_rails_ownership_and_role_facts():

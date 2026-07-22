@@ -11,6 +11,7 @@ from app.codebase_map import (
     CodebaseFactCandidate,
     SENSITIVE_SINK_NAMES,
     SUPPORTED_CODE_SOURCE_SUFFIXES,
+    has_reachable_sink_before_control,
     map_authorized_code_files,
 )
 from app.falsification_engine import (
@@ -432,6 +433,8 @@ def _typescript_control_fact(
             and fact.authz_hint in decisive_hints
             and fact.source_path.lower().endswith(SUPPORTED_CODE_SOURCE_SUFFIXES)
         ):
+            if has_reachable_sink_before_control(facts, control=fact):
+                continue
             if isinstance(fact.payload, dict):
                 handler = _safe_text(fact.payload.get("handler"))
                 line = fact.payload.get("line")
@@ -3018,7 +3021,8 @@ def _persisted_loop_result(
         pipeline_run_id=run_id,
     )
     if projection.get("status") != "ready":
-        repository.update_campaign_task_status(task.id, "blocked", output_refs=[])
+        if not _runtime_task_execution_owns_status(task):
+            repository.update_campaign_task_status(task.id, "blocked", output_refs=[])
         return {
             "status": "blocked",
             "pipeline_run_id": run_id,
@@ -3036,11 +3040,12 @@ def _persisted_loop_result(
     stop_reason = stop_reason_override or _text(audit.get("stop_reason"))
     status = _task_status_for_stop(stop_reason)
     stage_refs = [item["stage_id"] for item in audit["stage_refs"]]
-    repository.update_campaign_task_status(
-        task.id,
-        status,
-        output_refs=stage_refs,
-    )
+    if not _runtime_task_execution_owns_status(task):
+        repository.update_campaign_task_status(
+            task.id,
+            status,
+            output_refs=stage_refs,
+        )
     return {
         "status": status,
         "pipeline_run_id": run_id,
@@ -3062,6 +3067,16 @@ def _task_status_for_stop(stop_reason: str) -> str:
     if stop_reason in {"safety_invariant_failed", "invalid_stage_sequence"}:
         return "blocked"
     return "needs_evidence"
+
+
+def _runtime_task_execution_owns_status(task: Any) -> bool:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    return (
+        task.task_type == "candidate_refutation"
+        and payload.get("runtime_schema") == "autonomous_research_v1"
+        and isinstance(task.execution_claim_id, str)
+        and bool(task.execution_claim_id)
+    )
 
 
 def _find_candidate_hunter_owners(repository: Any, run_id: str) -> list[tuple[Any, Any]]:

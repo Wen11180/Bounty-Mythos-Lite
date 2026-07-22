@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
+from weakref import WeakSet
 
 from alembic import command
 from alembic.config import Config
@@ -15,7 +16,7 @@ class Base(DeclarativeBase):
     pass
 
 
-_initialized_engine_ids: set[int] = set()
+_initialized_engines: WeakSet[Engine] = WeakSet()
 
 
 def _engine_kwargs(database_url: str) -> dict:
@@ -56,8 +57,7 @@ def ensure_database_schema(engine: Engine) -> None:
 
 def initialize_database(engine: Engine | None = None) -> None:
     engine = engine or get_engine()
-    engine_id = id(engine)
-    if engine_id in _initialized_engine_ids:
+    if engine in _initialized_engines:
         return
 
     ensure_database_schema(engine)
@@ -67,7 +67,7 @@ def initialize_database(engine: Engine | None = None) -> None:
             from app.repository import seed_sample_data
 
             seed_sample_data(session)
-    _initialized_engine_ids.add(engine_id)
+    _initialized_engines.add(engine)
 
 
 def _alembic_config(engine: Engine) -> Config:
@@ -162,7 +162,30 @@ def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
                     "report_submission_allowed",
                 }.issubset(wakeup_columns):
                     raise RuntimeError("database_schema_unversioned")
-                revision = "0014_autonomous_research_wakeup"
+                campaign_task_columns = {
+                    column["name"]
+                    for column in inspector.get_columns("campaign_tasks")
+                }
+                if {
+                    "execution_claim_id",
+                    "execution_heartbeat_at",
+                    "execution_lease_expires_at",
+                }.issubset(campaign_task_columns):
+                    wakeup_cycle_columns = {
+                        "last_cycle_completed_at",
+                        "last_cycle_status",
+                        "last_cycle_stop_reason",
+                        "last_cycle_processed_count",
+                        "last_cycle_outcome_counts",
+                    }
+                    if not wakeup_cycle_columns.issubset(wakeup_columns):
+                        revision = "0015_campaign_task_execution_lease"
+                    elif "next_due_at" not in wakeup_columns:
+                        revision = "0016_autonomous_research_wakeup_cycle_summary"
+                    else:
+                        revision = "0017_autonomous_research_wakeup_cadence"
+                else:
+                    revision = "0014_autonomous_research_wakeup"
             else:
                 revision = "0013_program_rule_intake"
         else:

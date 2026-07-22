@@ -47,8 +47,8 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Review gates, stage order, stop reasons, and ref counts without exposing raw
-          payloads, prompts, or evidence refs.
+          Review gates, stage order, durations, controlled failure summaries, and ref counts without
+          exposing raw payloads, prompts, or evidence refs.
         </p>
       </header>
 
@@ -74,11 +74,13 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
       </section>
 
       <section className="border border-[var(--line)] bg-white">
-        <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[90px_minmax(0,1fr)_150px_150px_110px_110px]">
+        <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[70px_minmax(0,1fr)_110px_150px_90px_minmax(0,1fr)_80px_80px]">
           <span>Order</span>
           <span>Stage</span>
           <span>Status</span>
           <span>Review gate</span>
+          <span>Duration</span>
+          <span>Error</span>
           <span>Input refs</span>
           <span>Output refs</span>
         </div>
@@ -89,7 +91,7 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
             {timeline.map((stage) => (
               <article
                 key={stage.id}
-                className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[90px_minmax(0,1fr)_150px_150px_110px_110px]"
+                className="grid gap-3 px-5 py-4 text-sm lg:grid-cols-[70px_minmax(0,1fr)_110px_150px_90px_minmax(0,1fr)_80px_80px]"
               >
                 <p className="font-semibold tabular-nums">{stage.stageOrder}</p>
                 <div className="min-w-0">
@@ -203,6 +205,8 @@ export default async function CampaignTimelinePage({ params }: PageProps) {
                   <ShieldCheck size={16} className="mt-0.5 text-[var(--accent)]" aria-hidden="true" />
                   {stage.safetyGateState}
                 </p>
+                <p className="font-semibold tabular-nums">{formatDuration(stage.durationSeconds)}</p>
+                <p className="break-words text-[var(--warning)]">{stage.errorSummary ?? "—"}</p>
                 <p className="font-semibold tabular-nums">{stage.inputRefCount}</p>
                 <p className="font-semibold tabular-nums">{stage.outputRefCount}</p>
               </article>
@@ -244,4 +248,18 @@ function StatusText({ value }: { value: string }) {
         : "";
 
   return <span className={`break-words font-semibold ${valueClass}`}>{value}</span>;
+}
+
+function formatDuration(seconds: number | undefined): string {
+  if (seconds === undefined) {
+    return "Not recorded";
+  }
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ${seconds % 60}s`;
+  }
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }

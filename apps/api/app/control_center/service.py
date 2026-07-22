@@ -12,11 +12,13 @@ from app.candidate_hunter_loop import (
     STAGE_KEYS as CANDIDATE_HUNTER_STAGE_KEYS,
     load_candidate_hunter_projection,
 )
+from app.autonomous_research_wakeup import build_autonomous_research_wakeup_health
 from app.mythos_report import build_report_preview_response, safe_preview_text
 from app.repository import DatabaseRepository
 
 from .contracts import (
     AgentStageSummary,
+    AutonomousWakeupHealthSummary,
     AuthorizedAssetSummary,
     CampaignOverviewSummary,
     CandidateQueueSummary,
@@ -144,6 +146,12 @@ def build_control_center_overview(
             median_human_review_seconds=(
                 float(median(review_seconds)) if review_seconds else None
             ),
+        ),
+        autonomous_wakeup=AutonomousWakeupHealthSummary(
+            **build_autonomous_research_wakeup_health(
+                repository.get_autonomous_research_wakeup_state(),
+                now=generated_at,
+            )
         ),
         report_readiness=_latest_report_readiness(repository, pipeline_run_campaigns),
         recent_events=_recent_events(tasks, stages),
@@ -282,7 +290,12 @@ def _latest_report_readiness(
     records.sort(key=lambda record: (record.created_at, record.id), reverse=True)
     for record in records:
         try:
-            preview = build_report_preview_response(record)
+            preview = build_report_preview_response(
+                record,
+                trusted_bounded_result_claims=(
+                    repository.load_trusted_bounded_result_claims(record.id)
+                ),
+            )
         except ValueError:
             continue
         return ReportReadinessSummary(
@@ -431,6 +444,10 @@ def _snapshot_version(overview: ControlCenterOverviewResponse) -> str:
     safe_projection = overview.model_dump(mode="json")
     safe_projection.pop("generated_at", None)
     safe_projection.pop("snapshot_version", None)
+    wakeup = safe_projection.get("autonomous_wakeup")
+    if isinstance(wakeup, dict):
+        # Display-only elapsed age must not trigger a fresh SSE invalidation every poll.
+        wakeup.pop("heartbeat_age_seconds", None)
     canonical = json.dumps(
         safe_projection,
         ensure_ascii=True,

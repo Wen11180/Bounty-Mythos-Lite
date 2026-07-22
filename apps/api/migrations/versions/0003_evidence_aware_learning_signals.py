@@ -17,7 +17,20 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _widen_alembic_version_identifier() -> None:
+    if op.get_bind().dialect.name != "postgresql":
+        return
+    op.alter_column(
+        "alembic_version",
+        "version_num",
+        existing_nullable=False,
+        existing_type=sa.String(length=32),
+        type_=sa.String(length=64),
+    )
+
+
 def upgrade() -> None:
+    _widen_alembic_version_identifier()
     with op.batch_alter_table("learning_signals") as batch_op:
         batch_op.add_column(sa.Column("bounty_amount", sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column("severity_delta", sa.String(length=50), nullable=True))

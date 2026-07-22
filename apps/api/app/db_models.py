@@ -429,6 +429,31 @@ class AutonomousResearchWakeupStateRecord(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_cycle_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_cycle_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_cycle_stop_reason: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    last_cycle_processed_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    last_cycle_outcome_counts: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
     execution_allowed: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -490,6 +515,15 @@ class CampaignTaskRecord(Base):
     input_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     output_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    execution_claim_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    execution_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

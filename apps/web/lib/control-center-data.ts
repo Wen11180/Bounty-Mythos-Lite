@@ -85,6 +85,12 @@ export interface ControlCenterSnapshot {
     reportSubmissionAllowed: false;
   }>;
   quality: ControlCenterQuality;
+  autonomousWakeup: {
+    status: string;
+    label: string;
+    detail: string;
+    tone: "safe" | "approval" | "danger";
+  } | null;
   report: {
     available: boolean;
     status: string;
@@ -137,6 +143,74 @@ function scopeDisplay(value: string): {
     return { label: "等待范围复核", tone: "approval" };
   }
   return { label: value === "out_of_scope" ? "范围外" : "已阻止", tone: "danger" };
+}
+
+function autonomousWakeupDisplay(
+  wakeup: ControlCenterOverviewResponse["autonomous_wakeup"],
+): ControlCenterSnapshot["autonomousWakeup"] {
+  if (!wakeup) {
+    return null;
+  }
+  const safetyBounded =
+    wakeup.execution_allowed === false &&
+    wakeup.dispatch_allowed === false &&
+    wakeup.validation_allowed === false &&
+    wakeup.candidate_promotion_allowed === false &&
+    wakeup.report_submission_allowed === false;
+  if (!safetyBounded) {
+    return {
+      status: "blocked",
+      label: "调度状态已阻止",
+      detail: "健康摘要的安全字段不满足只读约束。",
+      tone: "danger",
+    };
+  }
+  if (wakeup.status === "active") {
+    return {
+      status: wakeup.status,
+      label: "调度执行中",
+      detail: "持久化 wakeup lease 正在处理授权只读任务。",
+      tone: "safe",
+    };
+  }
+  if (wakeup.status === "healthy") {
+    return {
+      status: wakeup.status,
+      label: "调度正常",
+      detail: `最近心跳 ${wakeup.heartbeat_age_seconds ?? 0} 秒前。`,
+      tone: "safe",
+    };
+  }
+  if (wakeup.status === "degraded") {
+    return {
+      status: wakeup.status,
+      label: "调度最近运行失败",
+      detail: "最近一轮调度未完成；请检查 Beat、Worker 和持久化 wakeup 状态。",
+      tone: "danger",
+    };
+  }
+  if (wakeup.status === "not_started") {
+    return {
+      status: wakeup.status,
+      label: "调度未启动",
+      detail: "尚未记录持久化 wakeup 心跳。",
+      tone: "approval",
+    };
+  }
+  return {
+    status: wakeup.status,
+    label:
+      wakeup.status === "invalid_lease"
+        ? "调度 lease 状态无效"
+        : wakeup.status === "expired_lease"
+          ? "调度 lease 已过期"
+          : "调度心跳过期",
+    detail:
+      wakeup.status === "invalid_lease"
+        ? "持久化 wakeup lease 状态不完整或不一致。"
+        : "请检查 Beat、Worker 和持久化 wakeup 状态。",
+    tone: "danger",
+  };
 }
 
 export function isControlCenterSnapshotStale(generatedAt: string, now = new Date()): boolean {
@@ -225,6 +299,7 @@ export function mapControlCenterOverview(
       evidenceCompleteness: response.research_quality.evidence_completeness,
       medianHumanReviewSeconds: response.research_quality.median_human_review_seconds,
     },
+    autonomousWakeup: autonomousWakeupDisplay(response.autonomous_wakeup),
     report: {
       available: response.report_readiness.available,
       status: response.report_readiness.status,
@@ -274,6 +349,7 @@ export function createOfflineControlCenterSnapshot(message: string): ControlCent
       evidenceCompleteness: null,
       medianHumanReviewSeconds: null,
     },
+    autonomousWakeup: null,
     report: {
       available: false,
       status: "unavailable",

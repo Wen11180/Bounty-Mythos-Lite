@@ -79,6 +79,8 @@ export type CampaignControlCenter = {
   pipeline_stages: {
     campaign_id: string | null;
     created_at: string;
+    duration_seconds?: number | null;
+    error_summary?: string | null;
     id: string;
     input_refs: string[];
     output_refs: string[];
@@ -664,9 +666,11 @@ export type CampaignTimelineSummary = {
   blockedActionCount?: number;
   candidateStatus?: string;
   decision?: string;
+  durationSeconds?: number;
   evidenceFocusCount?: number;
   evidenceStepCount?: number;
   executionAllowed?: boolean;
+  errorSummary?: string;
   findingConfirmationAllowed?: boolean;
   hasAuthorizationGapCandidate?: boolean;
   hunterOperatingAction?: string;
@@ -1932,6 +1936,11 @@ export function toCampaignTimelineSummaries(
     const isValidationFeedbackReview =
       stage.stage_key === "research_task_validation_feedback_review";
     const payload = stage.payload ?? {};
+    const durationSeconds = safeCount(stage.duration_seconds);
+    const errorSummary =
+      typeof stage.error_summary === "string" && stage.error_summary.trim()
+        ? reviewGateLanguage(safeReasonText(stage.error_summary))
+        : undefined;
     const promotionProvenanceRefCount = isFindingPromotion
       ? safeCountOrListLength(payload.claim_provenance_ref_count, payload.claim_provenance_refs)
       : undefined;
@@ -1969,6 +1978,7 @@ export function toCampaignTimelineSummaries(
       ...(isResearchRefutationDecision
         ? { approvalCreated: payload.approval_created === true }
         : {}),
+      ...(durationSeconds !== undefined ? { durationSeconds } : {}),
       ...(isResearchQueueMaterialized
         ? { blockedActionCount: safeCount(payload.blocked_action_count) ?? 0 }
         : {}),
@@ -1992,6 +2002,7 @@ export function toCampaignTimelineSummaries(
             validationAllowed: false,
           }
         : {}),
+      ...(errorSummary ? { errorSummary } : {}),
       ...(isResearchPlan
         ? { evidenceStepCount: safeCount(payload.evidence_step_count) ?? 0 }
         : {}),

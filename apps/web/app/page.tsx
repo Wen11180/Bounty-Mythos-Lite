@@ -25,6 +25,9 @@ export default async function RootPage({ searchParams }: RootPageProps) {
   }
 
   return (
-    <ControlCenterOverview initialSnapshot={filterControlCenterSnapshot(initialSnapshot, query?.q)} />
+    <ControlCenterOverview
+      initialSnapshot={filterControlCenterSnapshot(initialSnapshot, query?.q)}
+      campaignId={campaignId}
+    />
   );
 }

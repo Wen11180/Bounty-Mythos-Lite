@@ -31,6 +31,7 @@ import { ReportReadiness } from "@/components/control-center/report-readiness";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { ControlCenterLiveState } from "@/lib/control-center-live";
+import { statusToneClassName } from "@/lib/control-center-display";
 import {
   CONTROL_CENTER_STALE_AFTER_MS,
   isControlCenterSnapshotStale,
@@ -160,6 +161,18 @@ export function ControlCenterOverview({ initialSnapshot, campaignId }: ControlCe
           actions={
             <>
               <DataModeBadge mode={resolveControlCenterDataMode(snapshot.dataMode, isStale)} />
+              {snapshot.autonomousWakeup ? (
+                <Badge
+                  data-testid="control-center-wakeup-state"
+                  data-state={snapshot.autonomousWakeup.status}
+                  title={snapshot.autonomousWakeup.detail}
+                  variant="outline"
+                  className={`gap-1.5 whitespace-nowrap ${statusToneClassName(snapshot.autonomousWakeup.tone)}`}
+                >
+                  <Activity aria-hidden="true" className="size-3" />
+                  {snapshot.autonomousWakeup.label}
+                </Badge>
+              ) : null}
               <Badge
                 data-testid="control-center-live-state"
                 data-state={connectionState}

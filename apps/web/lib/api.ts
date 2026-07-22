@@ -160,6 +160,36 @@ export type ControlCenterOverviewResponse = {
     evidence_completeness: number | null;
     median_human_review_seconds: number | null;
   };
+  autonomous_wakeup?: {
+    status:
+      | "not_started"
+      | "active"
+      | "healthy"
+      | "degraded"
+      | "expired_lease"
+      | "invalid_lease"
+      | "stale";
+    last_heartbeat_at: string | null;
+    heartbeat_age_seconds: number | null;
+    lease_active: boolean;
+    lease_expires_at: string | null;
+    has_more_campaigns: boolean;
+    scheduled_interval_seconds: number;
+    last_cycle_completed_at: string | null;
+    last_cycle_status: "not_finished" | "completed" | "failed";
+    last_cycle_stop_reason:
+      | "wakeup_candidate_invalid"
+      | "wakeup_candidate_query_failed"
+      | "wakeup_campaign_tick_failed"
+      | null;
+    last_cycle_processed_count: number;
+    last_cycle_outcome_counts: Record<string, number>;
+    execution_allowed: false;
+    dispatch_allowed: false;
+    validation_allowed: false;
+    candidate_promotion_allowed: false;
+    report_submission_allowed: false;
+  } | null;
   report_readiness: {
     available: boolean;
     status: string;
@@ -854,6 +884,22 @@ export type StudioCandidateGenerationSummary = {
   model_failure_reason: string | null;
   prompt_hash: string;
   model_latency_ms: number | null;
+  model_request_key: string;
+  model_response_digest: string;
+  model_response_schema: "" | "cross_source_candidate_model_v1";
+  model_reasoner:
+    | "not_requested"
+    | "registry"
+    | "replay"
+    | "custom"
+    | "unavailable";
+  model_replay_binding:
+    | "not_requested"
+    | "not_applicable"
+    | "bound"
+    | "mismatch"
+    | "legacy_unbound"
+    | "invalid";
   baseline_count: number;
   proposed_count: number;
   accepted_count: number;
@@ -864,6 +910,7 @@ export type StudioCandidateGenerationSummary = {
   validation_allowed: false;
   candidate_promotion_allowed: false;
   report_submission_allowed: false;
+  raw_payload_processed: false;
 };
 
 export type StudioWorkspaceRunResponse = {

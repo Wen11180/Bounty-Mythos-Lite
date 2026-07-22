@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import hmac
 import json
 from pathlib import Path
 import re
@@ -18,7 +19,7 @@ from sqlalchemy import JSON, String, cast, func, update
 from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.orm import Session
 
-from app.artifact_ingestion import normalize_artifact
+from app.artifact_ingestion import extract_sbom_dependency_signals, normalize_artifact
 from app.black_box_hunter import BlackBoxExecutionLease, BlackBoxStop, LeaseApproval
 from app.black_box_hunter.audit import (
     BlackBoxAuditError,
@@ -51,6 +52,7 @@ from app.control_center import (
     build_control_center_overview,
 )
 from app.control_center.events import stream_control_center_events
+from app.control_center.contracts import AutonomousWakeupHealthSummary
 from app.db import get_session
 from app.db_models import (
     AgentRunRecord,
@@ -73,7 +75,15 @@ from app.campaign_orchestrator import (
     campaign_token_used_from_runs,
     tick_campaign,
 )
-from app.autonomous_research_runtime import tick_autonomous_research_campaign
+from app.autonomous_research_runtime import (
+    AUTONOMOUS_RESEARCH_SNAPSHOT_REFRESH_STAGE_KEY,
+    build_autonomous_research_snapshot_refresh_payload,
+    retry_autonomous_research_task,
+    tick_autonomous_research_campaign,
+)
+from app.autonomous_research_wakeup import (
+    build_autonomous_research_wakeup_health,
+)
 from app.candidate_hunter_loop import (
     build_candidate_hunter_observations,
     load_candidate_hunter_projection,
@@ -194,6 +204,7 @@ from app.studio_workspace import (
     build_authorized_campaign_snapshot,
     create_workspace,
     import_workspace_artifact,
+    load_authorized_campaign_inputs,
     load_workspace_manifest,
     record_workspace_benchmark_result,
     record_workspace_benchmark_template,
@@ -205,7 +216,10 @@ from app.studio_workspace import (
     resolve_configured_workspace_artifact,
     resolve_workspace_file,
 )
-from app.worker.tasks import dispatch_agent_task
+from app.worker.tasks import (
+    dispatch_agent_task,
+    start_autonomous_research_wakeup_in_background,
+)
 from app.residual_patch_decision_api import (
     ResidualPatchDecisionApiError,
     ResidualPatchDecisionApply,
@@ -1165,14 +1179,15 @@ def _studio_black_box_local_auto_dispatch_facts(
 def _studio_black_box_local_bounded_result_details(
     *,
     request: StudioBlackBoxLabBoundedResultRequest,
-    preflight: StudioBlackBoxLabRunPreflightResponse,
+    approved_session_alias: str,
+    approved_workflow_alias: str,
 ) -> dict[str, Any]:
     complete_plan = request.exact_preflight.complete_plan
     workflow = next(
         (
             item
             for item in complete_plan.lease_preview.workflows
-            if item.workflow_alias == preflight.approved_workflow_alias
+            if item.workflow_alias == approved_workflow_alias
         ),
         None,
     )
@@ -1180,7 +1195,7 @@ def _studio_black_box_local_bounded_result_details(
         (
             item
             for item in complete_plan.lease_preview.sessions
-            if item.session_alias == preflight.approved_session_alias
+            if item.session_alias == approved_session_alias
         ),
         None,
     )
@@ -1319,6 +1334,12 @@ class StudioCampaignLaunchRequest(BaseModel):
     default_asset: str | None = Field(default=None, max_length=255)
 
 
+class StudioCampaignSnapshotRefreshRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class StudioMissionExportRequest(BaseModel):
     workspace_path: str = Field(min_length=1)
     run_id: str | None = None
@@ -1445,6 +1466,33 @@ class AutonomousWakeupCampaignResponse(BaseModel):
     status: str
 
 
+class AutonomousWakeupRunResponse(BaseModel):
+    status: Literal[
+        "accepted",
+        "completed",
+        "failed",
+        "lease_held",
+        "lease_lost",
+        "not_due",
+    ]
+    stop_reason: Literal[
+        "wakeup_accepted",
+        "wakeup_candidate_invalid",
+        "wakeup_candidate_query_failed",
+        "wakeup_campaign_tick_failed",
+        "wakeup_lease_held",
+        "wakeup_lease_lost",
+        "wakeup_not_due",
+    ] | None = None
+    processed_count: int = Field(ge=0, le=20)
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    execution_allowed: Literal[False] = False
+    dispatch_allowed: Literal[False] = False
+    validation_allowed: Literal[False] = False
+    candidate_promotion_allowed: Literal[False] = False
+    report_submission_allowed: Literal[False] = False
+
+
 class CampaignControlCampaignResponse(BaseModel):
     id: str
     program_id: str | None = None
@@ -1497,6 +1545,8 @@ class PipelineStageResponse(BaseModel):
     output_refs: list[str] = Field(default_factory=list)
     safety_gate_state: str
     stop_reason: str | None = None
+    duration_seconds: int | None = None
+    error_summary: str | None = None
     payload: dict = Field(default_factory=dict)
     created_at: str
 
@@ -2073,6 +2123,42 @@ def _has_pending_autonomous_validation_handoff(
     )
 
 
+def _has_unsettled_campaign_validation_runs(
+    repository: DatabaseRepository,
+    campaign_id: str,
+) -> bool:
+    terminal_statuses = {
+        "blocked",
+        "evidence_recorded",
+        "refuted",
+        "needs_evidence",
+    }
+    return any(
+        validation_run.allowed_to_execute
+        or validation_run.status not in terminal_statuses
+        for validation_run in repository.list_campaign_validation_runs(campaign_id)
+    )
+
+
+def _has_active_campaign_task(
+    repository: DatabaseRepository,
+    campaign_id: str,
+) -> bool:
+    return any(
+        task.status
+        in {
+            "queued",
+            "ready",
+            "dispatched",
+            "running",
+            "awaiting_evidence",
+            "awaiting_approval",
+            "needs_evidence",
+        }
+        for task in repository.list_campaign_tasks(campaign_id)
+    )
+
+
 def _is_safe_autonomous_validation_handoff(
     repository: DatabaseRepository,
     campaign: CampaignRecord,
@@ -2083,12 +2169,16 @@ def _is_safe_autonomous_validation_handoff(
     pipeline_run_id = payload.get("pipeline_run_id")
     report_review_task_id = payload.get("report_review_task_id")
     source_snapshot_digest = payload.get("source_snapshot_digest")
+    candidate_ids = _safe_autonomous_validation_candidate_ids(
+        payload.get("candidate_ids")
+    )
     if (
         task.task_type != "validation_handoff"
         or payload.get("schema_version") != "autonomous_validation_handoff_v1"
         or not isinstance(pipeline_run_id, str)
         or not isinstance(report_review_task_id, str)
-        or not isinstance(source_snapshot_digest, str)
+        or not _is_source_snapshot_digest(source_snapshot_digest)
+        or candidate_ids is None
         or source_snapshot_digest != campaign_payload.get("source_snapshot_digest")
         or payload.get("submission_blocked") is not True
         or payload.get("human_review_required") is not True
@@ -2117,6 +2207,7 @@ def _is_safe_autonomous_validation_handoff(
         pipeline_run is not None
         and pipeline_run.asset == campaign.default_asset
         and pipeline_run.scope_status == "in_scope"
+        and pipeline_run.policy_text_hash == campaign.policy_text_hash
         and isinstance(pipeline_payload, dict)
         and pipeline_payload.get("campaign_id") == campaign.id
         and report_review_task is not None
@@ -2126,6 +2217,29 @@ def _is_safe_autonomous_validation_handoff(
         and f"pipeline_run:{pipeline_run_id}" in task.input_refs
         and f"campaign_task:{report_review_task_id}" in task.input_refs
     )
+
+
+def _is_source_snapshot_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
+
+
+def _safe_autonomous_validation_candidate_ids(value: object) -> list[str] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 100:
+        return None
+    candidate_ids: list[str] = []
+    for candidate_id in value:
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or safe_preview_text(candidate_id) != candidate_id
+            or candidate_id in candidate_ids
+        ):
+            return None
+        candidate_ids.append(candidate_id)
+    return candidate_ids
 
 
 @app.get("/mythos/campaigns", response_model=list[CampaignResponse])
@@ -2155,6 +2269,72 @@ def list_mythos_autonomous_wakeup_campaigns(
         AutonomousWakeupCampaignResponse(**campaign)
         for campaign in repository.list_autonomous_wakeup_campaigns(after_id=after_id)
     ]
+
+
+@app.post(
+    "/mythos/campaigns/autonomous-wakeup",
+    response_model=AutonomousWakeupRunResponse,
+    status_code=202,
+)
+def run_mythos_autonomous_research_wakeup(
+    x_mythos_autonomous_research_capability: str | None = Header(
+        default=None,
+        alias="X-Mythos-Autonomous-Research-Capability",
+        max_length=128,
+    ),
+) -> AutonomousWakeupRunResponse:
+    _require_autonomous_research_capability(
+        x_mythos_autonomous_research_capability
+    )
+    try:
+        start_autonomous_research_wakeup_in_background()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="local_autonomous_wakeup_unavailable",
+        ) from exc
+    return AutonomousWakeupRunResponse(
+        status="accepted",
+        stop_reason="wakeup_accepted",
+        processed_count=0,
+        outcome_counts={},
+        execution_allowed=False,
+        dispatch_allowed=False,
+        validation_allowed=False,
+        candidate_promotion_allowed=False,
+        report_submission_allowed=False,
+    )
+
+
+def _has_autonomous_research_capability(value: str | None) -> bool:
+    configured = get_settings().autonomous_research_capability
+    return (
+        isinstance(value, str)
+        and isinstance(configured, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{43,128}", value) is not None
+        and re.fullmatch(r"[A-Za-z0-9_-]{43,128}", configured) is not None
+        and hmac.compare_digest(value, configured)
+    )
+
+
+def _require_autonomous_research_capability(value: str | None) -> None:
+    if not _has_autonomous_research_capability(value):
+        raise HTTPException(status_code=403, detail="local_autonomous_capability_required")
+
+
+@app.get(
+    "/mythos/campaigns/autonomous-wakeup-health",
+    response_model=AutonomousWakeupHealthSummary,
+)
+def get_mythos_autonomous_wakeup_health(
+    session: Session = Depends(get_session),
+) -> AutonomousWakeupHealthSummary:
+    repository = DatabaseRepository(session)
+    return AutonomousWakeupHealthSummary(
+        **build_autonomous_research_wakeup_health(
+            repository.get_autonomous_research_wakeup_state()
+        )
+    )
 
 
 @app.get("/mythos/campaigns/{campaign_id}", response_model=CampaignResponse)
@@ -2287,13 +2467,48 @@ def resume_mythos_campaign(
 @app.post("/mythos/campaigns/{campaign_id}/autonomous-research/tick")
 def tick_mythos_autonomous_research_campaign(
     campaign_id: str,
+    x_mythos_autonomous_research_capability: str | None = Header(
+        default=None,
+        alias="X-Mythos-Autonomous-Research-Capability",
+        max_length=128,
+    ),
     session: Session = Depends(get_session),
 ) -> dict:
+    _require_autonomous_research_capability(
+        x_mythos_autonomous_research_capability
+    )
     repository = DatabaseRepository(session)
     if repository.get_campaign(campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
     return tick_autonomous_research_campaign(
         campaign_id,
+        repository=repository,
+        dispatcher=dispatch_agent_task,
+    )
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/autonomous-research/tasks/{task_id}/retry"
+)
+def retry_mythos_autonomous_research_task(
+    campaign_id: str,
+    task_id: str,
+    x_mythos_autonomous_research_capability: str | None = Header(
+        default=None,
+        alias="X-Mythos-Autonomous-Research-Capability",
+        max_length=128,
+    ),
+    session: Session = Depends(get_session),
+) -> dict:
+    _require_autonomous_research_capability(
+        x_mythos_autonomous_research_capability
+    )
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return retry_autonomous_research_task(
+        campaign_id,
+        task_id,
         repository=repository,
         dispatcher=dispatch_agent_task,
     )
@@ -2905,8 +3120,15 @@ def list_mythos_campaign_pipeline_stages(
     repository = DatabaseRepository(session)
     if repository.get_campaign(campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    agent_runs_by_id, agent_runs_by_task_id = _agent_run_timeline_indexes(
+        repository.list_campaign_agent_runs(campaign_id)
+    )
     return [
-        _pipeline_stage_response(record)
+        _pipeline_stage_response(
+            record,
+            agent_runs_by_id=agent_runs_by_id,
+            agent_runs_by_task_id=agent_runs_by_task_id,
+        )
         for record in repository.list_campaign_pipeline_stages(campaign_id)
     ]
 
@@ -2943,7 +3165,7 @@ def revise_autonomous_report_with_validation_evidence(
 
     payload = stage.payload
     raw_candidate_ids = payload.get("candidate_ids")
-    candidate_ids = safe_string_list(raw_candidate_ids)
+    candidate_ids = _safe_autonomous_validation_candidate_ids(raw_candidate_ids)
     evidence_ref_count = _safe_non_negative_int(payload.get("evidence_ref_count"))
     if (
         payload.get("schema_version") != "autonomous_validation_evidence_import_v1"
@@ -2953,15 +3175,8 @@ def revise_autonomous_report_with_validation_evidence(
         or payload.get("outcome") != "observed"
         or payload.get("submission_blocked") is not True
         or payload.get("human_review_completed") is not True
-        or not isinstance(raw_candidate_ids, list)
-        or not 1 <= len(candidate_ids) <= 100
-        or len(candidate_ids) != len(set(candidate_ids))
-        or any(
-            not isinstance(candidate_id, str)
-            or not candidate_id
-            or safe_preview_text(candidate_id) != candidate_id
-            for candidate_id in raw_candidate_ids
-        )
+        or candidate_ids is None
+        or not _is_source_snapshot_digest(payload.get("source_snapshot_digest"))
         or evidence_ref_count < 1
         or any(
             payload.get(field) is not False
@@ -2987,7 +3202,10 @@ def revise_autonomous_report_with_validation_evidence(
         or handoff.status != "completed"
         or not _is_safe_autonomous_validation_handoff(repository, campaign, handoff)
         or not isinstance(handoff_payload, dict)
-        or safe_string_list(handoff_payload.get("candidate_ids")) != candidate_ids
+        or _safe_autonomous_validation_candidate_ids(
+            handoff_payload.get("candidate_ids")
+        )
+        != candidate_ids
         or payload.get("source_snapshot_digest")
         != handoff_payload.get("source_snapshot_digest")
         or f"pipeline_run:{stage.pipeline_run_id}" not in stage.input_refs
@@ -2996,6 +3214,148 @@ def revise_autonomous_report_with_validation_evidence(
     ):
         raise HTTPException(status_code=409, detail="validation_evidence_provenance_invalid")
 
+    validation_run_id = payload.get("validation_run_id")
+    approval_id = payload.get("approval_id")
+    validation_run = (
+        repository.get_validation_run(validation_run_id)
+        if isinstance(validation_run_id, str)
+        else None
+    )
+    approval = (
+        repository.session.get(ApprovalRecord, approval_id)
+        if isinstance(approval_id, str)
+        else None
+    )
+    validation_payload = (
+        validation_run.payload
+        if validation_run is not None and isinstance(validation_run.payload, dict)
+        else {}
+    )
+    manual_result = validation_payload.get("manual_result")
+    evidence_input_refs = safe_string_list(stage.input_refs)
+    if (
+        not isinstance(validation_run_id, str)
+        or not validation_run_id
+        or safe_preview_text(validation_run_id) != validation_run_id
+        or not isinstance(approval_id, str)
+        or not approval_id
+        or safe_preview_text(approval_id) != approval_id
+        or f"validation_run:{validation_run_id}" not in evidence_input_refs
+        or f"approval:{approval_id}" not in evidence_input_refs
+        or validation_run is None
+        or validation_run.campaign_id != campaign_id
+        or validation_run.task_id != handoff.id
+        or validation_run.approval_id != approval_id
+        or validation_run.status != "evidence_recorded"
+        or validation_run.safety_gate_state != "manual_evidence_recorded"
+        or validation_run.approval_required is not True
+        or validation_run.allowed_to_execute is not False
+        or validation_run.evidence_ref_count != evidence_ref_count
+        or validation_payload.get("source") != "autonomous_validation_handoff"
+        or validation_payload.get("pipeline_run_id") != pipeline_run.id
+        or validation_payload.get("handoff_task_id") != handoff.id
+        or validation_payload.get("source_snapshot_digest")
+        != payload.get("source_snapshot_digest")
+        or validation_payload.get("approval_record_id") != approval_id
+        or _safe_autonomous_validation_candidate_ids(
+            validation_payload.get("candidate_ids")
+        )
+        != candidate_ids
+        or validation_payload.get("approval_required") is not True
+        or not isinstance(manual_result, dict)
+        or safe_preview_text(manual_result.get("outcome", "")) != "observed"
+        or manual_result.get("execution_started") is not False
+        or any(
+            validation_payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+        or approval is None
+        or approval.run_id != pipeline_run.id
+        or not _validation_run_approval_matches(
+            approval=approval,
+            validation_run=validation_run,
+            campaign=campaign,
+            asset=_validation_run_scope_asset(validation_run, campaign),
+        )
+    ):
+        raise HTTPException(status_code=409, detail="validation_evidence_provenance_invalid")
+
+    report_review_task_id = handoff_payload.get("report_review_task_id")
+    report_review_stages = [
+        record
+        for record in repository.list_pipeline_stages_for_run(pipeline_run.id)
+        if record.campaign_id == campaign_id
+        and record.task_id == report_review_task_id
+        and record.stage_key == "autonomous_report_review"
+        and record.status == "completed"
+    ]
+    if len(report_review_stages) != 1:
+        raise HTTPException(status_code=409, detail="autonomous_report_review_missing")
+
+    report_review = report_review_stages[0]
+    report_payload = (
+        report_review.payload if isinstance(report_review.payload, dict) else {}
+    )
+    raw_report_drafts = report_payload.get("report_drafts")
+    if (
+        report_review.safety_gate_state != "awaiting_review"
+        or report_review.stop_reason != "human_review_required"
+        or report_payload.get("schema_version") != "autonomous_report_review_v1"
+        or report_payload.get("pipeline_run_id") != pipeline_run.id
+        or report_payload.get("submission_blocked") is not True
+        or report_payload.get("human_review_required") is not True
+        or not isinstance(raw_report_drafts, list)
+        or f"pipeline_run:{pipeline_run.id}" not in report_review.input_refs
+        or f"campaign_task:{handoff.id}" not in report_review.output_refs
+        or any(
+            report_payload.get(field) is not False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        raise HTTPException(status_code=409, detail="autonomous_report_review_invalid")
+
+    report_candidate_ids: list[str] = []
+    for report_draft in raw_report_drafts:
+        candidate_id = (
+            report_draft.get("candidate_id")
+            if isinstance(report_draft, dict)
+            else None
+        )
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or safe_preview_text(candidate_id) != candidate_id
+            or candidate_id in report_candidate_ids
+            or not isinstance(report_draft, dict)
+            or report_draft.get("submission_blocked") is not True
+            or report_draft.get("human_review_required") is not True
+            or report_draft.get("execution_allowed") is not False
+            or report_draft.get("validation_allowed") is not False
+            or report_draft.get("report_submission_allowed") is not False
+            or report_draft.get("confirmed_vulnerability") is not False
+        ):
+            raise HTTPException(status_code=409, detail="autonomous_report_review_invalid")
+        report_candidate_ids.append(candidate_id)
+    if not set(candidate_ids).issubset(report_candidate_ids):
+        raise HTTPException(status_code=409, detail="autonomous_report_review_invalid")
+
+    validation_outcome = safe_preview_text(manual_result.get("outcome", "unknown"))
+    validation_result_review = _validation_result_review_payload(validation_run)
     revision = repository.save_pipeline_stage(
         pipeline_run_id=pipeline_run.id,
         campaign_id=campaign_id,
@@ -3007,6 +3367,8 @@ def revise_autonomous_report_with_validation_evidence(
             f"pipeline_run:{pipeline_run.id}",
             f"campaign_task:{handoff.id}",
             f"pipeline_stage:{stage.id}",
+            f"approval:{approval_id}",
+            f"validation_run:{validation_run_id}",
         ],
         output_refs=[],
         safety_gate_state="submission_blocked_human_review",
@@ -3020,9 +3382,12 @@ def revise_autonomous_report_with_validation_evidence(
             "reviewer": safe_preview_text(request.reviewer),
             "rationale": safe_preview_text(request.rationale),
             "status": "submission_blocked_human_review",
-            "report_draft_count": len(candidate_ids),
+            "report_draft_count": len(report_candidate_ids),
             "candidate_count": len(candidate_ids),
+            "candidate_ids": candidate_ids,
             "validation_evidence_ref_count": evidence_ref_count,
+            "validation_outcome": validation_outcome,
+            "validation_result_review": validation_result_review,
             "submission_blocked": True,
             "human_review_required": True,
             "allowed_to_execute": False,
@@ -3541,6 +3906,7 @@ def _campaign_control_center_response(
     approvals = repository.list_campaign_approval_records(campaign.id)
     validation_runs = repository.list_campaign_validation_runs(campaign.id)
     stages = repository.list_campaign_pipeline_stages(campaign.id)
+    agent_runs_by_id, agent_runs_by_task_id = _agent_run_timeline_indexes(agent_runs)
     blocked_reasons = _campaign_control_center_blocked_reasons(
         campaign=campaign,
         budget=budget,
@@ -3559,7 +3925,14 @@ def _campaign_control_center_response(
             _validation_run_response(record, repository=repository)
             for record in validation_runs
         ],
-        pipeline_stages=[_pipeline_stage_response(record) for record in stages],
+        pipeline_stages=[
+            _pipeline_stage_response(
+                record,
+                agent_runs_by_id=agent_runs_by_id,
+                agent_runs_by_task_id=agent_runs_by_task_id,
+            )
+            for record in stages
+        ],
         safe_next_action=_campaign_control_center_safe_next_action(
             campaign=campaign,
             budget=budget,
@@ -4848,79 +5221,59 @@ def record_mythos_studio_black_box_lab_bounded_result(
 ) -> StudioBlackBoxLabBoundedResultResponse:
     repository = DatabaseRepository(session)
     result_digest = _studio_black_box_local_bounded_result_digest(request)
-    requested_validation_run = repository.get_validation_run(
+    validation_run = repository.get_validation_run(
         request.exact_preflight.complete_plan.validation_run_id
     )
     existing_result = (
-        requested_validation_run.payload.get("black_box_bounded_result")
-        if requested_validation_run is not None
-        and isinstance(requested_validation_run.payload, dict)
+        validation_run.payload.get("black_box_bounded_result")
+        if validation_run is not None and isinstance(validation_run.payload, dict)
         else None
     )
     if isinstance(existing_result, dict):
         existing_payload = existing_result.get("result_payload")
-        validation_payload = requested_validation_run.payload
-        pipeline_run_id = validation_payload.get("pipeline_run_id")
-        pipeline_run = (
-            repository.get_pipeline_run(pipeline_run_id)
-            if isinstance(pipeline_run_id, str)
-            else None
-        )
-        difference_labels = (
-            existing_payload.get("difference_labels")
-            if isinstance(existing_payload, dict)
-            else None
-        )
         if (
             not isinstance(existing_payload, dict)
             or existing_payload.get("request_digest") != result_digest
-            or not isinstance(difference_labels, list)
-            or any(
-                item
-                not in {"response_schema_changed", "response_schema_unchanged"}
-                for item in difference_labels
-            )
-            or pipeline_run is None
+            or validation_run.approval_id != request.exact_preflight.approval_id
         ):
             raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
-        campaign = _validation_run_campaign_or_404_in_scope(
-            repository,
-            requested_validation_run,
-        )
-        return StudioBlackBoxLabBoundedResultResponse(
-            campaign_id=campaign.id,
-            difference_labels=difference_labels,
-            evidence_ref_count=requested_validation_run.evidence_ref_count,
-            pipeline_run_id=pipeline_run.id,
-            report_preview_refreshed=isinstance(
-                pipeline_run.payload.get("report_draft"),
-                dict,
+        approved_workflow = request.exact_preflight.complete_plan.lease_preview.workflows[0]
+        approved_session = next(
+            (
+                item
+                for item in request.exact_preflight.complete_plan.lease_preview.sessions
+                if item.session_alias != approved_workflow.session_alias
             ),
-            result_digest=result_digest,
-            validation_run_id=requested_validation_run.id,
-            validation_status=requested_validation_run.status,
+            None,
         )
-    try:
-        preflight = preflight_mythos_studio_black_box_lab_run(
-            request.exact_preflight,
-            session,
-        )
-    except HTTPException as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="fresh_complete_local_plan_preflight_required",
-        ) from exc
+        if approved_session is None:
+            raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+        approved_session_alias = approved_session.session_alias
+        approved_workflow_alias = approved_workflow.workflow_alias
+    else:
+        try:
+            preflight = preflight_mythos_studio_black_box_lab_run(
+                request.exact_preflight,
+                session,
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="fresh_complete_local_plan_preflight_required",
+            ) from exc
+        validation_run = repository.get_validation_run(preflight.validation_run_id)
+        if validation_run is None:
+            raise HTTPException(
+                status_code=409,
+                detail="fresh_complete_local_plan_preflight_required",
+            )
+        approved_session_alias = preflight.approved_session_alias
+        approved_workflow_alias = preflight.approved_workflow_alias
 
-    validation_run = repository.get_validation_run(preflight.validation_run_id)
-    if validation_run is None:
-        raise HTTPException(
-            status_code=409,
-            detail="fresh_complete_local_plan_preflight_required",
-        )
     campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
     approval = (
         repository.session.get(ApprovalRecord, validation_run.approval_id)
-        if validation_run.approval_id == preflight.approval_id
+        if validation_run.approval_id == request.exact_preflight.approval_id
         else None
     )
     validation_payload = (
@@ -4947,56 +5300,21 @@ def record_mythos_studio_black_box_lab_bounded_result(
     try:
         details = _studio_black_box_local_bounded_result_details(
             request=request,
-            preflight=preflight,
+            approved_session_alias=approved_session_alias,
+            approved_workflow_alias=approved_workflow_alias,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    result_payload = {
-        "schema_version": "studio_black_box_bounded_result_v1",
-        "request_digest": result_digest,
-        "trace": details["trace"],
-        "difference_labels": details["difference_labels"],
-        "safe_counters": details["safe_counters"],
-        "provenance_refs": [
-            f"approval:{approval.id}",
-            f"pipeline_run:{pipeline_run.id}",
-            f"validation_run:{validation_run.id}",
-        ],
-        "human_review_required": True,
-        "submission_blocked": True,
-        "execution_allowed": False,
-        "report_submission_allowed": False,
-        "raw_payload_processed": False,
-    }
-    existing_result = validation_payload.get("black_box_bounded_result")
-    if isinstance(existing_result, dict):
-        existing_payload = existing_result.get("result_payload")
-        if (
-            not isinstance(existing_payload, dict)
-            or existing_payload.get("request_digest") != result_digest
-        ):
-            raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
-        updated_validation_run = validation_run
-    else:
-        updated_validation_run = repository.record_validation_run_bounded_result(
-            validation_run.id,
-            audit_digest=result_digest,
-            decision_status="observed",
-            evidence_refs=["sanitized_cross_account_diff"],
-            payload=result_payload,
-        )
-        if updated_validation_run is None:
-            raise HTTPException(
-                status_code=409,
-                detail="fresh_complete_local_plan_preflight_required",
-            )
-
-    pipeline_result = {
-        "schema_version": "studio_black_box_bounded_result_v1",
-        "validation_run_id": validation_run.id,
-        "result_digest": result_digest,
-        "aliases": details["trace"]["aliases"],
+    trace_aliases = details["trace"]["aliases"]
+    bounded_projection = {
+        "aliases": {
+            "account": trace_aliases["account_alias"],
+            "objects": trace_aliases["object_aliases"],
+            "role": trace_aliases["role_alias"],
+            "runner": trace_aliases["session_alias"],
+            "workflow": trace_aliases["workflow_alias"],
+        },
         "response_schema_fingerprint": details["trace"][
             "response_schema_fingerprint"
         ],
@@ -5004,55 +5322,18 @@ def record_mythos_studio_black_box_lab_bounded_result(
         "timing_bucket": details["trace"]["timing_bucket"],
         "difference_labels": details["difference_labels"],
         "safe_counters": details["safe_counters"],
-        "provenance_refs": result_payload["provenance_refs"],
-        "human_review_required": True,
-        "submission_blocked": True,
-        "execution_allowed": False,
-        "report_submission_allowed": False,
     }
-    updated_pipeline_run = repository.append_studio_black_box_bounded_result(
-        run_id=pipeline_run.id,
-        validation_run_id=validation_run.id,
-        result=pipeline_result,
-    )
-    if updated_pipeline_run is None:
-        raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
-
-    matching_stage = next(
-        (
-            stage
-            for stage in repository.list_pipeline_stages_for_run(updated_pipeline_run.id)
-            if stage.stage_key == "studio_black_box_bounded_result"
-            and isinstance(stage.payload, dict)
-            and stage.payload.get("validation_run_id") == validation_run.id
-        ),
-        None,
-    )
-    if matching_stage is None:
-        repository.save_pipeline_stage(
-            pipeline_run_id=updated_pipeline_run.id,
-            campaign_id=campaign.id,
-            task_id=validation_run.task_id,
-            stage_key="studio_black_box_bounded_result",
-            stage_order=len(
-                repository.list_pipeline_stages_for_run(updated_pipeline_run.id)
-            ),
-            status=updated_validation_run.status,
-            input_refs=[
-                f"approval:{approval.id}",
-                f"validation_run:{validation_run.id}",
-            ],
-            output_refs=["sanitized_cross_account_diff"],
-            safety_gate_state="human_review_required",
-            stop_reason=None,
-            payload={
-                **pipeline_result,
-                "pipeline_run_id": updated_pipeline_run.id,
-                "raw_payload_processed": False,
-            },
+    try:
+        updated_validation_run, updated_pipeline_run, _ = (
+            repository.record_studio_black_box_bounded_result_atomic(
+                validation_run_id=validation_run.id,
+                pipeline_run_id=pipeline_run.id,
+                result_digest=result_digest,
+                bounded_projection=bounded_projection,
+            )
         )
-    elif matching_stage.payload.get("result_digest") != result_digest:
-        raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return StudioBlackBoxLabBoundedResultResponse(
         campaign_id=campaign.id,
@@ -5784,6 +6065,11 @@ async def _run_mythos_studio_workspace_research_service(
             "model_failure_reason",
             "prompt_hash",
             "model_latency_ms",
+            "model_request_key",
+            "model_response_digest",
+            "model_response_schema",
+            "model_reasoner",
+            "model_replay_binding",
             "baseline_count",
             "proposed_count",
             "accepted_count",
@@ -5794,6 +6080,7 @@ async def _run_mythos_studio_workspace_research_service(
             "validation_allowed",
             "candidate_promotion_allowed",
             "report_submission_allowed",
+            "raw_payload_processed",
         )
     }
     for key in ("provider", "model"):
@@ -5913,6 +6200,164 @@ def launch_mythos_studio_workspace_campaign(
         "dispatched_task_ids": dispatched_task_ids,
         "manifest": updated_manifest,
         "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.post("/mythos/studio/workspaces/campaigns/{campaign_id}/snapshot-refresh")
+def refresh_mythos_studio_workspace_campaign_snapshot(
+    campaign_id: str,
+    request: StudioCampaignSnapshotRefreshRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if _has_unsettled_campaign_validation_runs(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="validation_review_required")
+    if _has_active_campaign_task(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="active_runtime_task")
+    if campaign.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="campaign_snapshot_refresh_requires_completed_review",
+        )
+
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    previous_snapshot = campaign_payload.get("workspace_snapshot")
+    previous_source_snapshot_digest = campaign_payload.get("source_snapshot_digest")
+    previous_workspace_name = (
+        previous_snapshot.get("workspace_name")
+        if isinstance(previous_snapshot, dict)
+        else None
+    )
+    if (
+        not isinstance(previous_source_snapshot_digest, str)
+        or not isinstance(previous_workspace_name, str)
+    ):
+        raise HTTPException(status_code=409, detail="workspace_snapshot_required")
+
+    manifest = load_workspace_manifest(request.workspace_path)
+    missing = _studio_missing_ab_artifacts(manifest)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"reason": "studio_ab_artifacts_required", "missing": missing},
+        )
+    try:
+        workspace_snapshot = build_authorized_campaign_snapshot(request.workspace_path)
+        load_authorized_campaign_inputs(workspace_snapshot)
+        refreshed_payload = _studio_campaign_payload_from_manifest(
+            workspace_snapshot,
+            request.workspace_path,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    except ValueError as exc:
+        detail = (
+            "workspace_snapshot_redaction_review_required"
+            if str(exc) == "workspace_snapshot_redaction_review_required"
+            else "workspace_snapshot_invalid"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
+
+    source_snapshot_digest = workspace_snapshot.get("source_snapshot_digest")
+    workspace_name = workspace_snapshot.get("workspace_name")
+    if (
+        not isinstance(source_snapshot_digest, str)
+        or not isinstance(workspace_name, str)
+        or workspace_name != previous_workspace_name
+    ):
+        raise HTTPException(status_code=409, detail="workspace_snapshot_workspace_mismatch")
+    if source_snapshot_digest == previous_source_snapshot_digest:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_unchanged")
+
+    workspace_scope_rule = parse_policy_text(
+        _studio_scope_policy_text_from_manifest(manifest),
+        campaign.default_asset,
+    )
+    if workspace_scope_rule.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    current_scope_rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        campaign.default_asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
+    if current_scope_rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+    scope_guard_rule = intersect_scope_guard_rules(
+        current_scope_rule,
+        workspace_scope_rule,
+        asset=campaign.default_asset,
+    )
+    if scope_guard_rule.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+
+    try:
+        refresh_payload = build_autonomous_research_snapshot_refresh_payload(
+            campaign_id=campaign.id,
+            previous_source_snapshot_digest=previous_source_snapshot_digest,
+            source_snapshot_digest=source_snapshot_digest,
+            actor=request.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    refresh_stage = repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=None,
+        stage_key=AUTONOMOUS_RESEARCH_SNAPSHOT_REFRESH_STAGE_KEY,
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status="completed",
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{previous_source_snapshot_digest}",
+        ],
+        output_refs=[f"source_snapshot:{source_snapshot_digest}"],
+        safety_gate_state="human_review_completed",
+        stop_reason=None,
+        payload=refresh_payload,
+    )
+    updated_payload = {
+        **campaign_payload,
+        **refreshed_payload,
+        "scope_guard_rule": scope_guard_rule.model_dump(mode="json"),
+    }
+    campaign = repository.refresh_completed_campaign_snapshot(
+        campaign_id=campaign.id,
+        expected_source_snapshot_digest=previous_source_snapshot_digest,
+        payload=updated_payload,
+    )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_snapshot_refresh_conflict")
+
+    tick_result = tick_autonomous_research_campaign(
+        campaign.id,
+        repository=repository,
+        dispatcher=dispatch_agent_task,
+    )
+    if tick_result["status"] == "blocked":
+        campaign = repository.update_campaign_status(campaign.id, "blocked") or campaign
+    else:
+        campaign = repository.get_campaign(campaign.id) or campaign
+    campaign_task_id = tick_result.get("campaign_task_id")
+    return {
+        "campaign": _campaign_response(campaign, repository).model_dump(mode="json"),
+        "refresh_stage_id": refresh_stage.id,
+        "previous_source_snapshot_digest": previous_source_snapshot_digest,
+        "source_snapshot_digest": source_snapshot_digest,
+        "dispatched_task_ids": (
+            [campaign_task_id] if isinstance(campaign_task_id, str) else []
+        ),
         "execution_allowed": False,
         "validation_allowed": False,
         "report_submission_allowed": False,
@@ -6144,7 +6589,7 @@ def export_mythos_studio_workspace_report(
     record = repository.get_pipeline_run(request.run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     report = preview.model_dump(mode="json")
     report.update(
         _studio_report_candidate_guidance(record, manifest, repository=repository)
@@ -11358,76 +11803,21 @@ def _studio_sarif_surface_facts(payload: object) -> list[dict[str, str]]:
 def _studio_sbom_surface_facts(payload: object) -> list[dict[str, str]]:
     if not isinstance(payload, dict):
         return []
-    components = payload.get("components")
-    if not isinstance(components, list):
-        return []
-    vulnerability_by_ref = _studio_sbom_vulnerability_by_ref(payload)
     facts: list[dict[str, str]] = []
-    for component in components:
-        if not isinstance(component, dict) or component.get("type") not in {None, "library"}:
-            continue
-        name = component.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        purl = component.get("purl")
-        purl_ref = purl if isinstance(purl, str) else ""
-        vulnerability = vulnerability_by_ref.get(purl_ref, {})
+    for signal in extract_sbom_dependency_signals(payload):
         fact = {
             "fact_type": "dependency_signal",
             "artifact_kind": "sbom",
-            "package_name": safe_preview_text(name),
-            "package_version": safe_preview_text(str(component.get("version", ""))),
-            "ecosystem": safe_preview_text(_studio_purl_ecosystem(purl_ref)),
+            "package_name": safe_preview_text(signal["package_name"]),
+            "package_version": safe_preview_text(signal["package_version"]),
+            "ecosystem": safe_preview_text(signal["ecosystem"]),
             "advisory_only": "true",
         }
-        vulnerability_id = vulnerability.get("id")
-        if isinstance(vulnerability_id, str) and vulnerability_id:
-            fact["vulnerability_id"] = safe_preview_text(vulnerability_id)
-        severity = vulnerability.get("severity")
-        if isinstance(severity, str) and severity:
-            fact["severity"] = safe_preview_text(severity.lower())
+        for field in ("vulnerability_id", "severity"):
+            if value := signal.get(field):
+                fact[field] = safe_preview_text(value)
         facts.append(fact)
     return facts[:5]
-
-
-def _studio_sbom_vulnerability_by_ref(payload: dict) -> dict[str, dict[str, str]]:
-    vulnerabilities = payload.get("vulnerabilities")
-    if not isinstance(vulnerabilities, list):
-        return {}
-    by_ref: dict[str, dict[str, str]] = {}
-    for vulnerability in vulnerabilities:
-        if not isinstance(vulnerability, dict):
-            continue
-        affects = vulnerability.get("affects")
-        if not isinstance(affects, list):
-            continue
-        for affected in affects:
-            if not isinstance(affected, dict):
-                continue
-            ref = affected.get("ref")
-            if not isinstance(ref, str) or not ref:
-                continue
-            by_ref.setdefault(
-                ref,
-                {
-                    "id": safe_preview_text(vulnerability.get("id", "")),
-                    "severity": _studio_sbom_vulnerability_severity(vulnerability),
-                },
-            )
-    return by_ref
-
-
-def _studio_sbom_vulnerability_severity(vulnerability: dict) -> str:
-    ratings = vulnerability.get("ratings")
-    if not isinstance(ratings, list):
-        return ""
-    for rating in ratings:
-        if not isinstance(rating, dict):
-            continue
-        severity = rating.get("severity")
-        if isinstance(severity, str) and severity:
-            return safe_preview_text(severity)
-    return ""
 
 
 def _studio_fuzzing_surface_facts(payload: object) -> list[dict[str, str]]:
@@ -11565,12 +11955,6 @@ def _studio_knowledge_retrieval_rank(value: object) -> str:
         if rank > 0:
             return str(rank)
     return ""
-
-
-def _studio_purl_ecosystem(purl: str) -> str:
-    if not purl.startswith("pkg:"):
-        return ""
-    return purl.removeprefix("pkg:").split("/", 1)[0].split("@", 1)[0]
 
 
 def _studio_matching_surface_facts(
@@ -11845,10 +12229,11 @@ def get_mythos_pipeline_report_preview(
     run_id: str,
     session: Session = Depends(get_session),
 ) -> ReportPreviewResponse:
-    record = DatabaseRepository(session).get_pipeline_run(run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    return _build_report_preview_response_or_404(record)
+    return _build_report_preview_response_or_404(record, repository)
 
 
 @app.post(
@@ -11866,7 +12251,7 @@ def create_claim_review_decision(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     _raise_if_campaign_scoped_run_not_in_scope(repository, record.id)
 
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     claims_by_id = {claim.claim_id: claim for claim in preview.claim_ledger}
     claim = claims_by_id.get(request.claim_id)
     if claim is None:
@@ -11931,7 +12316,7 @@ def create_finding_candidate_from_pipeline_run(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     _raise_if_campaign_scoped_run_not_in_scope(repository, record.id)
 
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     research_feedback_gate = _research_feedback_promotion_gate_for_run(
         repository,
         run_id=record.id,
@@ -12016,7 +12401,7 @@ def create_manual_observation(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     _raise_if_campaign_scoped_run_not_in_scope(repository, record.id)
 
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     claims_by_id = {claim.claim_id: claim for claim in preview.claim_ledger}
     claim = claims_by_id.get(request.claim_id)
     if claim is None:
@@ -13159,6 +13544,19 @@ def _record_research_validation_feedback_stage(
     )
 
 
+def _validation_evidence_terminal_state(
+    outcome: str,
+    evidence_ref_count: int,
+) -> tuple[str, str] | None:
+    if outcome == "refuted":
+        return "refuted", "manual_refutation_recorded"
+    if outcome == "needs_more_evidence" or evidence_ref_count == 0:
+        return "needs_evidence", "manual_evidence_gap_recorded"
+    if outcome == "observed":
+        return "evidence_recorded", "manual_evidence_recorded"
+    return None
+
+
 def _record_autonomous_validation_evidence_import_stage(
     repository: DatabaseRepository,
     validation_run: ValidationRunRecord,
@@ -13167,14 +13565,42 @@ def _record_autonomous_validation_evidence_import_stage(
     pipeline_run_id = payload.get("pipeline_run_id")
     handoff_task_id = payload.get("handoff_task_id")
     source_snapshot_digest = payload.get("source_snapshot_digest")
+    candidate_ids = _safe_autonomous_validation_candidate_ids(
+        payload.get("candidate_ids")
+    )
+    manual_result = payload.get("manual_result")
+    outcome = (
+        safe_preview_text(manual_result.get("outcome", ""))
+        if isinstance(manual_result, dict)
+        else ""
+    )
+    evidence_ref_count = _safe_non_negative_int(validation_run.evidence_ref_count)
+    manual_evidence_ref_count = (
+        _safe_non_negative_int(manual_result.get("safe_evidence_ref_count"))
+        if isinstance(manual_result, dict)
+        else -1
+    )
+    terminal_state = _validation_evidence_terminal_state(
+        outcome,
+        evidence_ref_count,
+    )
     if (
         payload.get("source") != "autonomous_validation_handoff"
         or validation_run.task_id is None
         or validation_run.status not in {"evidence_recorded", "refuted", "needs_evidence"}
+        or validation_run.safety_gate_state != (terminal_state[1] if terminal_state else "")
+        or validation_run.status != (terminal_state[0] if terminal_state else "")
+        or validation_run.approval_required is not True
         or validation_run.allowed_to_execute
+        or not isinstance(manual_result, dict)
+        or manual_result.get("execution_started") is not False
+        or not isinstance(manual_result.get("safe_evidence_ref_count"), int)
+        or isinstance(manual_result.get("safe_evidence_ref_count"), bool)
+        or manual_evidence_ref_count != evidence_ref_count
         or not isinstance(pipeline_run_id, str)
         or not isinstance(handoff_task_id, str)
-        or not isinstance(source_snapshot_digest, str)
+        or not _is_source_snapshot_digest(source_snapshot_digest)
+        or candidate_ids is None
         or handoff_task_id != validation_run.task_id
         or payload.get("approval_required") is not True
         or any(
@@ -13207,6 +13633,10 @@ def _record_autonomous_validation_evidence_import_stage(
     if (
         handoff_payload.get("pipeline_run_id") != pipeline_run_id
         or handoff_payload.get("source_snapshot_digest") != source_snapshot_digest
+        or _safe_autonomous_validation_candidate_ids(
+            handoff_payload.get("candidate_ids")
+        )
+        != candidate_ids
     ):
         return
 
@@ -13222,25 +13652,6 @@ def _record_autonomous_validation_evidence_import_stage(
         asset=_validation_run_scope_asset(validation_run, campaign),
     ):
         return
-
-    manual_result = payload.get("manual_result")
-    if not isinstance(manual_result, dict):
-        return
-    outcome = safe_preview_text(manual_result.get("outcome", ""))
-    if outcome not in {"observed", "refuted", "needs_more_evidence"}:
-        return
-
-    raw_candidate_ids = payload.get("candidate_ids")
-    candidate_ids = []
-    if isinstance(raw_candidate_ids, list):
-        for candidate_id in raw_candidate_ids:
-            if not isinstance(candidate_id, str):
-                continue
-            safe_candidate_id = safe_preview_text(candidate_id)
-            if safe_candidate_id and safe_candidate_id not in candidate_ids:
-                candidate_ids.append(safe_candidate_id)
-            if len(candidate_ids) >= 100:
-                break
 
     repository.save_pipeline_stage(
         pipeline_run_id=pipeline_run_id,
@@ -13273,7 +13684,7 @@ def _record_autonomous_validation_evidence_import_stage(
             "validation_run_id": validation_run.id,
             "candidate_ids": candidate_ids,
             "outcome": outcome,
-            "evidence_ref_count": validation_run.evidence_ref_count,
+            "evidence_ref_count": evidence_ref_count,
             "validation_result_review": _validation_result_review_payload(
                 validation_run
             ),
@@ -13326,7 +13737,29 @@ def _agent_run_response(record: AgentRunRecord) -> AgentRunResponse:
     )
 
 
-def _pipeline_stage_response(record: PipelineStageRecord) -> PipelineStageResponse:
+def _agent_run_timeline_indexes(
+    agent_runs: list[AgentRunRecord],
+) -> tuple[dict[str, AgentRunRecord], dict[str, list[AgentRunRecord]]]:
+    by_id: dict[str, AgentRunRecord] = {}
+    by_task_id: dict[str, list[AgentRunRecord]] = {}
+    for agent_run in agent_runs:
+        by_id[agent_run.id] = agent_run
+        if agent_run.task_id:
+            by_task_id.setdefault(agent_run.task_id, []).append(agent_run)
+    return by_id, by_task_id
+
+
+def _pipeline_stage_response(
+    record: PipelineStageRecord,
+    *,
+    agent_runs_by_id: dict[str, AgentRunRecord] | None = None,
+    agent_runs_by_task_id: dict[str, list[AgentRunRecord]] | None = None,
+) -> PipelineStageResponse:
+    agent_run = _pipeline_stage_agent_run(
+        record,
+        agent_runs_by_id=agent_runs_by_id or {},
+        agent_runs_by_task_id=agent_runs_by_task_id or {},
+    )
     return PipelineStageResponse(
         id=record.id,
         pipeline_run_id=record.pipeline_run_id,
@@ -13339,9 +13772,60 @@ def _pipeline_stage_response(record: PipelineStageRecord) -> PipelineStageRespon
         output_refs=safe_string_list(record.output_refs),
         safety_gate_state=safe_preview_text(record.safety_gate_state),
         stop_reason=safe_preview_text(record.stop_reason) if record.stop_reason else None,
+        duration_seconds=_agent_run_duration_seconds(agent_run),
+        error_summary=_pipeline_stage_error_summary(record, agent_run),
         payload=_pipeline_stage_safe_payload(record),
         created_at=record.created_at.isoformat(),
     )
+
+
+def _pipeline_stage_agent_run(
+    record: PipelineStageRecord,
+    *,
+    agent_runs_by_id: dict[str, AgentRunRecord],
+    agent_runs_by_task_id: dict[str, list[AgentRunRecord]],
+) -> AgentRunRecord | None:
+    if not record.task_id:
+        return None
+    linked_run_ids = {
+        reference.removeprefix("agent_run:")
+        for reference in safe_string_list(record.output_refs)
+        if reference.startswith("agent_run:")
+    }
+    if linked_run_ids:
+        if len(linked_run_ids) != 1:
+            return None
+        agent_run = agent_runs_by_id.get(next(iter(linked_run_ids)))
+        return agent_run if agent_run and agent_run.task_id == record.task_id else None
+
+    candidate_runs = agent_runs_by_task_id.get(record.task_id, [])
+    return candidate_runs[0] if len(candidate_runs) == 1 else None
+
+
+def _agent_run_duration_seconds(agent_run: AgentRunRecord | None) -> int | None:
+    if agent_run is None or agent_run.finished_at is None:
+        return None
+    started_at = _timeline_as_utc(agent_run.created_at)
+    finished_at = _timeline_as_utc(agent_run.finished_at)
+    elapsed_seconds = int((finished_at - started_at).total_seconds())
+    return elapsed_seconds if elapsed_seconds >= 0 else None
+
+
+def _timeline_as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _pipeline_stage_error_summary(
+    record: PipelineStageRecord,
+    agent_run: AgentRunRecord | None,
+) -> str | None:
+    if agent_run is not None and agent_run.status == "failed" and agent_run.stop_reason:
+        return safe_preview_text(agent_run.stop_reason)
+    if record.status == "failed" and record.stop_reason:
+        return safe_preview_text(record.stop_reason)
+    return None
 
 
 def _pipeline_stage_safe_payload(record: PipelineStageRecord) -> dict:
@@ -13484,8 +13968,15 @@ def _pipeline_stage_safe_payload(record: PipelineStageRecord) -> dict:
             "status": "submission_blocked_human_review",
             "report_draft_count": _safe_non_negative_int(payload.get("report_draft_count")),
             "candidate_count": _safe_non_negative_int(payload.get("candidate_count")),
+            "candidate_ids": safe_preview_lines(payload.get("candidate_ids", [])),
             "validation_evidence_ref_count": _safe_non_negative_int(
                 payload.get("validation_evidence_ref_count")
+            ),
+            "validation_outcome": safe_preview_text(
+                payload.get("validation_outcome", "unknown")
+            ),
+            "validation_result_review": _safe_validation_result_review_payload(
+                payload.get("validation_result_review")
             ),
             "submission_blocked": True,
             "human_review_required": True,
@@ -16050,9 +16541,15 @@ def _llm_audit_safety_notes(response: LLMResponse) -> list[str]:
 
 def _build_report_preview_response_or_404(
     record: PipelineRunRecord,
+    repository: DatabaseRepository,
 ) -> ReportPreviewResponse:
     try:
-        return build_report_preview_response(record)
+        return build_report_preview_response(
+            record,
+            trusted_bounded_result_claims=(
+                repository.load_trusted_bounded_result_claims(record.id)
+            ),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

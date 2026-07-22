@@ -1,5 +1,6 @@
 from celery import Celery
 
+from app.autonomous_research_wakeup import WAKEUP_INTERVAL_SECONDS
 from app.config import get_settings
 
 
@@ -14,6 +15,6 @@ celery_app = Celery(
 celery_app.conf.beat_schedule = {
     "autonomous-research-wakeup": {
         "task": "autonomous_research.wakeup",
-        "schedule": 60.0,
+        "schedule": float(WAKEUP_INTERVAL_SECONDS),
     },
 }

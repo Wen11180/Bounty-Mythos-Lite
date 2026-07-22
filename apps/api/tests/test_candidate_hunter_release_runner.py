@@ -31,6 +31,12 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "candidate_hunter_release"
 TYPESCRIPT_FIXTURE_ROOT = (
     Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release"
 )
+AUTHORIZED_LAB_FIXTURE_ROOT = (
+    Path(__file__).parent
+    / "fixtures"
+    / "authorized_lab_packages"
+    / "lab-authz-unguarded-notes"
+)
 
 
 def _session() -> Session:
@@ -152,6 +158,27 @@ def test_runner_accepts_authorized_multilang_lab_package(
     assert result["normalized_output"]["final_candidates"][0][
         "report_submission_allowed"
     ] is False
+
+
+def test_runner_uses_applicable_metric_evaluation_for_authorized_lab_gold(tmp_path: Path):
+    session = _session()
+    try:
+        result = run_candidate_hunter_authorized_lab_package(
+            AUTHORIZED_LAB_FIXTURE_ROOT,
+            workspace_root=tmp_path / "studio-workspaces",
+            session=session,
+        )
+    finally:
+        session.close()
+
+    evaluation = result["evaluation"]
+    assert evaluation["version"] == "candidate_hunter_authorized_lab_v1"
+    assert evaluation["status"] == "passed"
+    assert evaluation["not_applicable_metrics"] == [
+        "effective_refutation_rate",
+        "duplicate_suppression_rate",
+    ]
+    assert evaluation["safety_failures"] == []
 
 
 def test_normalizer_preserves_observed_candidate_fields_without_inventing_decisions():
@@ -371,7 +398,7 @@ def test_runner_executes_typescript_case_with_replay_runtime(tmp_path: Path):
     assert case.case_id.lower() not in serialized_fact_pack
     assert case.suite not in serialized_fact_pack
     assert (
-        replay_payload["proposals"][0]["impact_rationale"].lower()
+        replay_payload["response"]["proposals"][0]["impact_rationale"].lower()
         not in serialized_fact_pack
     )
     forbidden_control_keys = {
@@ -413,7 +440,10 @@ def test_runner_keeps_invalid_replay_safe_and_marks_model_review(tmp_path: Path)
     runtime = release_runner_module.ReleaseCaseModelRuntime(
         provider=ProviderName.OPENAI,
         model="fixture-replay-v1",
-        reasoner=ReplayCandidateReasoner(load_release_fixture_replay(case)),
+        reasoner=ReplayCandidateReasoner(
+            load_release_fixture_replay(case),
+            allow_legacy_unbound=True,
+        ),
         audit_mode="replay",
     )
     session = _session()

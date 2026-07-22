@@ -6,6 +6,10 @@ SAFE_VALIDATION_METHODS = {
     "role_based_authorization_check": ["role_matrix_check", "request_response_diff"],
     "non_destructive_request_review": ["local_code_review", "request_response_diff"],
     "non_destructive_business_logic_test": ["non_destructive_business_logic_test", "request_response_diff"],
+    "offline_ssrf_target_policy_review": ["local_code_review", "offline_ssrf_target_policy_review"],
+    "offline_path_canonicalization_review": ["local_code_review", "offline_path_canonicalization_review"],
+    "offline_field_allowlist_review": ["local_code_review", "offline_field_allowlist_review"],
+    "offline_query_parameterization_review": ["local_code_review", "offline_query_parameterization_review"],
 }
 
 

@@ -1,10 +1,28 @@
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
+SBOM_SEVERITY_ORDER = {
+    "critical": 4,
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+    "info": 0,
+    "unknown": 0,
+}
+SBOM_SAFE_VALUE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+/@:-]{0,159}")
+SBOM_UNSAFE_MARKERS = (
+    "authorization",
+    "cookie",
+    "token",
+    "secret",
+    "password",
+    "credential",
+)
 
 
 class ArtifactInput(BaseModel):
@@ -87,6 +105,53 @@ def normalize_sarif(sarif: dict) -> dict:
     return {"paths": paths}
 
 
+def extract_sbom_dependency_signals(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Return a bounded, redaction-safe CycloneDX dependency projection."""
+    components = payload.get("components")
+    if not isinstance(components, list):
+        return []
+
+    vulnerabilities = _sbom_vulnerabilities_by_reference(payload)
+    signals: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for component in components:
+        if not isinstance(component, dict) or component.get("type") not in {None, "library"}:
+            continue
+        package_name = _safe_sbom_value(component.get("name"))
+        if not package_name:
+            continue
+        package_version = _safe_sbom_value(component.get("version"), allow_empty=True)
+        purl = component.get("purl") if isinstance(component.get("purl"), str) else ""
+        bom_ref = component.get("bom-ref") if isinstance(component.get("bom-ref"), str) else ""
+        vulnerability = _select_sbom_vulnerability(
+            [
+                item
+                for reference in (purl, bom_ref)
+                if reference
+                for item in vulnerabilities.get(reference, [])
+            ]
+        )
+        ecosystem = _safe_sbom_value(_sbom_purl_ecosystem(purl), allow_empty=True)
+        signal = {
+            "package_name": package_name,
+            "package_version": package_version,
+            "ecosystem": ecosystem,
+        }
+        if vulnerability:
+            signal.update(vulnerability)
+        dedupe_key = (
+            signal["package_name"],
+            signal["package_version"],
+            signal["ecosystem"],
+            signal.get("vulnerability_id", ""),
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        signals.append(signal)
+    return signals[:100]
+
+
 def normalize_artifact(kind: str, payload: dict) -> NormalizedArtifact:
     normalized_kind = kind.lower()
     if normalized_kind == "openapi":
@@ -111,6 +176,78 @@ def normalize_artifact(kind: str, payload: dict) -> NormalizedArtifact:
 
 def _normalize_text_artifact(payload: dict, source: str) -> dict:
     return {"paths": _extract_paths_from_text(_text_payload(payload), source)}
+
+
+def _sbom_vulnerabilities_by_reference(payload: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    values = payload.get("vulnerabilities")
+    if not isinstance(values, list):
+        return {}
+    by_reference: dict[str, list[dict[str, str]]] = {}
+    for vulnerability in values:
+        if not isinstance(vulnerability, dict):
+            continue
+        vulnerability_id = _safe_sbom_value(vulnerability.get("id"))
+        if not vulnerability_id:
+            continue
+        severity = _sbom_vulnerability_severity(vulnerability)
+        signal = {"vulnerability_id": vulnerability_id}
+        if severity:
+            signal["severity"] = severity
+        affects = vulnerability.get("affects")
+        if not isinstance(affects, list):
+            continue
+        for affected in affects:
+            reference = affected.get("ref") if isinstance(affected, dict) else None
+            if isinstance(reference, str) and reference:
+                by_reference.setdefault(reference, []).append(signal)
+    return by_reference
+
+
+def _select_sbom_vulnerability(values: list[dict[str, str]]) -> dict[str, str]:
+    if not values:
+        return {}
+    return dict(
+        sorted(
+            values,
+            key=lambda value: (
+                -SBOM_SEVERITY_ORDER.get(value.get("severity", "unknown"), 0),
+                value.get("vulnerability_id", ""),
+            ),
+        )[0]
+    )
+
+
+def _sbom_vulnerability_severity(vulnerability: dict[str, Any]) -> str:
+    ratings = vulnerability.get("ratings")
+    if not isinstance(ratings, list):
+        return ""
+    for rating in ratings:
+        severity = rating.get("severity") if isinstance(rating, dict) else None
+        if not isinstance(severity, str):
+            continue
+        normalized = severity.strip().lower()
+        if normalized in SBOM_SEVERITY_ORDER:
+            return normalized
+    return ""
+
+
+def _sbom_purl_ecosystem(purl: str) -> str:
+    match = re.match(r"^pkg:([^/]+)", purl, flags=re.IGNORECASE)
+    return match.group(1).lower() if match else ""
+
+
+def _safe_sbom_value(value: object, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return "" if allow_empty else ""
+    if (
+        not SBOM_SAFE_VALUE_PATTERN.fullmatch(text)
+        or any(marker in text.lower() for marker in SBOM_UNSAFE_MARKERS)
+    ):
+        return ""
+    return text
 
 
 def _text_payload(payload: dict) -> str:
@@ -277,6 +414,7 @@ def _ensure_leading_slash(path: str) -> str:
 __all__ = [
     "ArtifactInput",
     "NormalizedArtifact",
+    "extract_sbom_dependency_signals",
     "normalize_artifact",
     "normalize_code_excerpt",
     "normalize_har",

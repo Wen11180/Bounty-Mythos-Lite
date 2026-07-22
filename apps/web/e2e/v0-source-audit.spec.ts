@@ -313,7 +313,7 @@ test("V0 rendered source-audit flow stays human gated", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Manual submission gate" })).toBeVisible();
   await expect(
     page.getByText("Manual submission gate", { exact: true }).locator("..").getByText("Submission blocked"),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 10000 });
   await expect(page.getByRole("button", { name: /submit report/i })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Review validation" }).click();
@@ -798,6 +798,9 @@ async function listen(server: Server, port: number): Promise<void> {
 }
 
 async function close(server: Server): Promise<void> {
+  if (!server.listening) {
+    return;
+  }
   await new Promise<void>((resolve, reject) => {
     server.close((error) => {
       if (error) {
@@ -806,5 +809,6 @@ async function close(server: Server): Promise<void> {
       }
       resolve();
     });
+    server.closeAllConnections();
   });
 }

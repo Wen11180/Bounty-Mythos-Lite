@@ -3,77 +3,90 @@ const test = require("node:test");
 
 const { createLocalResearchWakeup } = require("./local-research-wakeup.cjs");
 
-const campaignId = "campaign_0123456789abcdef0123456789abcdef";
+const autonomousResearchCapability = "a".repeat(43);
 
-test("local research wakeup ticks only eligible local campaigns", async () => {
+test("local research wakeup delegates one bounded cycle to the shared coordinator", async () => {
   const calls = [];
   const wakeup = createLocalResearchWakeup({
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
-      if (options.method === "GET") {
-        return jsonResponse([
-          {
-            id: campaignId,
-            autonomy_level: "level_0_read_only",
-            scope_status: "in_scope",
-            status: "running",
-          },
-          {
-            id: "campaign_11111111111111111111111111111111",
-            autonomy_level: "level_0_read_only",
-            scope_status: "in_scope",
-            status: "paused",
-          },
-          {
-            id: "campaign_11111111111111111111111111111112",
-            autonomy_level: "level_0_read_only",
-            scope_status: "in_scope",
-            status: "awaiting_review",
-          },
-          {
-            id: "campaign_22222222222222222222222222222222",
-            autonomy_level: "level_0_read_only",
-            scope_status: "out_of_scope",
-            status: "running",
-          },
-          {
-            id: "campaign_33333333333333333333333333333333",
-            autonomy_level: "level_1_assisted",
-            scope_status: "in_scope",
-            status: "running",
-          },
-        ]);
-      }
-      return jsonResponse({
-        status: "dispatched",
-        validation_allowed: false,
-        report_submission_allowed: false,
-      });
+      return jsonResponse(wakeupResult({
+        status: "completed",
+        processed_count: 2,
+        outcome_counts: { dispatched: 2 },
+      }));
     },
     getBaseUrl: () => "http://127.0.0.1:8000",
+    getCapability: () => autonomousResearchCapability,
   });
 
-  const results = await wakeup.wake();
+  const result = await wakeup.wake();
 
-  assert.deepEqual(results, [{ campaign_id: campaignId, status: "dispatched" }]);
+  assert.deepEqual(result, wakeupResult({
+    status: "completed",
+    processed_count: 2,
+    outcome_counts: { dispatched: 2 },
+  }));
   assert.deepEqual(calls, [
     {
-      url: "http://127.0.0.1:8000/mythos/campaigns/autonomous-wakeup-candidates",
-      options: { method: "GET", redirect: "error", signal: calls[0].options.signal },
-    },
-    {
-      url: `http://127.0.0.1:8000/mythos/campaigns/${campaignId}/autonomous-research/tick`,
-      options: { method: "POST", redirect: "error", signal: calls[1].options.signal },
+      url: "http://127.0.0.1:8000/mythos/campaigns/autonomous-wakeup",
+      options: {
+        method: "POST",
+        redirect: "error",
+        signal: calls[0].options.signal,
+        headers: {
+          "X-Mythos-Autonomous-Research-Capability": autonomousResearchCapability,
+        },
+      },
     },
   ]);
+});
+
+test("local research wakeup accepts an immediate coordinator handoff", async () => {
+  const wakeup = createLocalResearchWakeup({
+    fetchImpl: async () => jsonResponse(wakeupResult({
+      status: "accepted",
+      stop_reason: "wakeup_accepted",
+    })),
+    getBaseUrl: () => "http://127.0.0.1:8000",
+    getCapability: () => autonomousResearchCapability,
+  });
+
+  assert.deepEqual(await wakeup.wake(), wakeupResult({
+    status: "accepted",
+    stop_reason: "wakeup_accepted",
+  }));
+});
+
+test("local research wakeup keeps a bounded coordinator submission deadline", async () => {
+  const originalSetTimeout = global.setTimeout;
+  const delays = [];
+  global.setTimeout = (callback, delay, ...args) => {
+    delays.push(delay);
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  try {
+    const wakeup = createLocalResearchWakeup({
+      fetchImpl: async () => jsonResponse(wakeupResult()),
+      getBaseUrl: () => "http://127.0.0.1:8000",
+      getCapability: () => autonomousResearchCapability,
+    });
+
+    await wakeup.wake();
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+
+  assert.deepEqual(delays, [5_000]);
 });
 
 test("local research wakeup uses a 60-second minimum cadence and stops cleanly", async () => {
   const timers = [];
   const cleared = [];
   const wakeup = createLocalResearchWakeup({
-    fetchImpl: async () => jsonResponse([]),
+    fetchImpl: async () => jsonResponse(wakeupResult()),
     getBaseUrl: () => "http://127.0.0.1:8000",
+    getCapability: () => autonomousResearchCapability,
     setIntervalImpl: (callback, delay) => {
       timers.push({ callback, delay });
       return "timer-1";
@@ -89,23 +102,21 @@ test("local research wakeup uses a 60-second minimum cadence and stops cleanly",
   assert.deepEqual(cleared, ["timer-1"]);
 });
 
-test("local research wakeup stops in-flight work before it can tick a campaign", async () => {
+test("local research wakeup stops in-flight shared coordination before it can advance work", async () => {
   const calls = [];
   const errors = [];
   const timers = [];
-  let resolveCampaigns;
-  const campaigns = new Promise((resolve) => {
-    resolveCampaigns = resolve;
+  let resolveWake;
+  const sharedWake = new Promise((resolve) => {
+    resolveWake = resolve;
   });
   const wakeup = createLocalResearchWakeup({
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
-      if (options.method === "GET") {
-        return campaigns;
-      }
-      return jsonResponse({ status: "dispatched" });
+      return sharedWake;
     },
     getBaseUrl: () => "http://127.0.0.1:8000",
+    getCapability: () => autonomousResearchCapability,
     setIntervalImpl: (callback, delay) => {
       timers.push({ callback, delay });
       return "timer-1";
@@ -116,19 +127,12 @@ test("local research wakeup stops in-flight work before it can tick a campaign",
 
   const stop = wakeup.start();
   const stopping = stop();
-  resolveCampaigns(jsonResponse([
-    {
-      id: campaignId,
-      autonomy_level: "level_0_read_only",
-      scope_status: "in_scope",
-      status: "running",
-    },
-  ]));
+  resolveWake(jsonResponse(wakeupResult()));
   await stopping;
   timers[0].callback();
   await Promise.resolve();
 
-  assert.deepEqual(calls.map((call) => call.options.method), ["GET"]);
+  assert.deepEqual(calls.map((call) => call.options.method), ["POST"]);
   assert.deepEqual(errors, []);
 });
 
@@ -140,6 +144,7 @@ test("local research wakeup rejects a non-loopback API origin before requesting 
       return jsonResponse([]);
     },
     getBaseUrl: () => "https://api.example.test",
+    getCapability: () => autonomousResearchCapability,
   });
 
   await assert.rejects(wakeup.wake(), /exact_loopback_api_origin_required/);
@@ -179,6 +184,7 @@ test("local research wakeup enforces the response cap while streaming", async ()
       },
     }),
     getBaseUrl: () => "http://127.0.0.1:8000",
+    getCapability: () => autonomousResearchCapability,
   });
 
   await assert.rejects(wakeup.wake(), /local_research_wakeup_response_too_large/);
@@ -186,107 +192,68 @@ test("local research wakeup enforces the response cap while streaming", async ()
   assert.equal(canceled, true);
 });
 
-test("local research wakeup isolates one failed campaign and continues", async () => {
-  const failedCampaignId = "campaign_11111111111111111111111111111111";
-  const malformedCampaignId = "campaign_22222222222222222222222222222222";
-  const successfulCampaignId = "campaign_33333333333333333333333333333333";
-  const errors = [];
-  const ticked = [];
+test("local research wakeup accepts a shared lease-held result without a second tick", async () => {
+  const calls = [];
   const wakeup = createLocalResearchWakeup({
     fetchImpl: async (url, options = {}) => {
-      if (options.method === "GET") {
-        return jsonResponse([
-          eligibleCampaign(failedCampaignId),
-          eligibleCampaign(malformedCampaignId),
-          eligibleCampaign(successfulCampaignId),
-        ]);
-      }
-      ticked.push(url);
-      if (url.includes(failedCampaignId)) {
-        return { ...jsonResponse({ detail: "synthetic_failure" }), ok: false };
-      }
-      if (url.includes(malformedCampaignId)) {
-        return jsonResponse({ detail: "missing_status" });
-      }
-      return jsonResponse({ status: "dispatched" });
+      calls.push({ url, options });
+      return jsonResponse(wakeupResult({
+        status: "lease_held",
+        stop_reason: "wakeup_lease_held",
+      }));
     },
     getBaseUrl: () => "http://127.0.0.1:8000",
-    onError: (error) => errors.push(error.message),
+    getCapability: () => autonomousResearchCapability,
   });
 
-  const results = await wakeup.wake();
-
-  assert.deepEqual(results, [
-    { campaign_id: successfulCampaignId, status: "dispatched" },
-  ]);
-  assert.deepEqual(ticked, [
-    `http://127.0.0.1:8000/mythos/campaigns/${failedCampaignId}/autonomous-research/tick`,
-    `http://127.0.0.1:8000/mythos/campaigns/${malformedCampaignId}/autonomous-research/tick`,
-    `http://127.0.0.1:8000/mythos/campaigns/${successfulCampaignId}/autonomous-research/tick`,
-  ]);
-  assert.deepEqual(errors, [
-    "local_research_campaign_tick_failed",
-    "local_research_campaign_tick_failed",
-  ]);
+  assert.deepEqual(await wakeup.wake(), wakeupResult({
+    status: "lease_held",
+    stop_reason: "wakeup_lease_held",
+  }));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:8000/mythos/campaigns/autonomous-wakeup");
+  assert.equal(calls[0].options.method, "POST");
 });
 
-test("local research wakeup caps failed tick attempts at twenty", async () => {
-  const campaigns = Array.from({ length: 21 }, (_, index) => (
-    eligibleCampaign(`campaign_${index.toString(16).padStart(32, "0")}`)
-  ));
-  let tickCount = 0;
-  let errorCount = 0;
+test("local research wakeup rejects a malformed shared coordinator response", async () => {
   const wakeup = createLocalResearchWakeup({
-    fetchImpl: async (_url, options = {}) => {
-      if (options.method === "GET") {
-        return jsonResponse(campaigns);
-      }
-      tickCount += 1;
-      return { ...jsonResponse({ detail: "synthetic_failure" }), ok: false };
-    },
+    fetchImpl: async () => jsonResponse({ status: "completed", processed_count: 1 }),
     getBaseUrl: () => "http://127.0.0.1:8000",
-    onError: () => {
-      errorCount += 1;
-    },
+    getCapability: () => autonomousResearchCapability,
   });
 
-  assert.deepEqual(await wakeup.wake(), []);
-  assert.equal(tickCount, 20);
-  assert.equal(errorCount, 20);
+  await assert.rejects(wakeup.wake(), /local_research_wakeup_response_invalid/);
 });
 
-test("local research wakeup advances through bounded campaign pages", async () => {
-  const campaigns = Array.from({ length: 25 }, (_, index) => (
-    eligibleCampaign(`campaign_${index.toString(16).padStart(32, "0")}`)
-  ));
-  const getUrls = [];
-  const tickedCampaignIds = [];
+test("local research wakeup requires an unexposed local capability before requesting", async () => {
+  let fetchCalled = false;
   const wakeup = createLocalResearchWakeup({
-    fetchImpl: async (url, options = {}) => {
-      if (options.method === "GET") {
-        getUrls.push(url);
-        const afterId = new URL(url).searchParams.get("after_id");
-        const startIndex = afterId === null
-          ? 0
-          : campaigns.findIndex((campaign) => campaign.id === afterId) + 1;
-        return jsonResponse(campaigns.slice(startIndex, startIndex + 20));
-      }
-      tickedCampaignIds.push(url.match(/campaign_[0-9a-f]{32}/u)[0]);
-      return jsonResponse({ status: "dispatched" });
+    fetchImpl: async () => {
+      fetchCalled = true;
+      return jsonResponse(wakeupResult());
     },
     getBaseUrl: () => "http://127.0.0.1:8000",
+    getCapability: () => "not-a-capability",
   });
 
-  await wakeup.wake();
-  await wakeup.wake();
-  await wakeup.wake();
+  await assert.rejects(wakeup.wake(), /local_research_wakeup_capability_required/);
+  assert.equal(fetchCalled, false);
+});
 
-  assert.deepEqual(tickedCampaignIds, campaigns.map((campaign) => campaign.id));
-  assert.deepEqual(getUrls, [
-    "http://127.0.0.1:8000/mythos/campaigns/autonomous-wakeup-candidates",
-    `http://127.0.0.1:8000/mythos/campaigns/autonomous-wakeup-candidates?after_id=${campaigns[19].id}`,
-    `http://127.0.0.1:8000/mythos/campaigns/autonomous-wakeup-candidates?after_id=${campaigns[24].id}`,
-  ]);
+test("local research wakeup accepts a shared not-due result", async () => {
+  const wakeup = createLocalResearchWakeup({
+    fetchImpl: async () => jsonResponse(wakeupResult({
+      status: "not_due",
+      stop_reason: "wakeup_not_due",
+    })),
+    getBaseUrl: () => "http://127.0.0.1:8000",
+    getCapability: () => autonomousResearchCapability,
+  });
+
+  assert.deepEqual(await wakeup.wake(), wakeupResult({
+    status: "not_due",
+    stop_reason: "wakeup_not_due",
+  }));
 });
 
 function jsonResponse(value) {
@@ -313,11 +280,17 @@ function jsonResponse(value) {
   };
 }
 
-function eligibleCampaign(id) {
+function wakeupResult(overrides = {}) {
   return {
-    id,
-    autonomy_level: "level_0_read_only",
-    scope_status: "in_scope",
-    status: "running",
+    status: "completed",
+    stop_reason: null,
+    processed_count: 0,
+    outcome_counts: {},
+    execution_allowed: false,
+    dispatch_allowed: false,
+    validation_allowed: false,
+    candidate_promotion_allowed: false,
+    report_submission_allowed: false,
+    ...overrides,
   };
 }

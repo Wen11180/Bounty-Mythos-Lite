@@ -7,6 +7,8 @@ from app.cross_source_candidate_generator import (
     CandidateModelResult,
     RegistryCandidateReasoner,
     ReplayCandidateReasoner,
+    build_candidate_fixture_replay_envelope,
+    build_candidate_replay_envelope,
     build_fact_pack,
     candidate_hunter_inputs,
     generation_stage_payload,
@@ -180,6 +182,27 @@ def test_fact_pack_redacts_sensitive_baseline_text():
     assert "secret-value" not in serialized
 
 
+def test_unbound_replay_requires_explicit_compatibility_opt_in():
+    fact_pack = _fact_pack()
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=fact_pack,
+            baseline_candidates=fact_pack.baseline_candidates,
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(_response(_proposal())),
+        )
+    )
+
+    assert result.model_status == "needs_model_review"
+    assert result.model_failure_reason == "legacy_replay_unbound"
+    assert result.accepted_candidates == []
+    assert result.model_replay_binding == "invalid"
+    assert [candidate["candidate_id"] for candidate in result.working_candidates] == [
+        "H-001"
+    ]
+
+
 def test_valid_cross_source_model_proposal_is_accepted_with_stable_identity():
     fact_pack = _fact_pack()
 
@@ -188,7 +211,10 @@ def test_valid_cross_source_model_proposal_is_accepted_with_stable_identity():
             fact_pack=fact_pack,
             baseline_candidates=[],
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(_proposal())),
+            reasoner=ReplayCandidateReasoner(
+                _response(_proposal()),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -205,6 +231,171 @@ def test_valid_cross_source_model_proposal_is_accepted_with_stable_identity():
     assert candidate["execution_allowed"] is False
     assert candidate["validation_allowed"] is False
     assert candidate["report_submission_allowed"] is False
+    assert result.model_replay_binding == "legacy_unbound"
+
+
+def test_bound_replay_rejects_model_request_mismatch_and_keeps_baseline():
+    fact_pack = _fact_pack()
+    replay = build_candidate_replay_envelope(
+        fact_pack=fact_pack,
+        model_config=_model_config(),
+        response=_response(_proposal()),
+    )
+    different_model = CandidateModelConfig(
+        provider=ProviderName.OPENAI,
+        model="different-model",
+    )
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=fact_pack,
+            baseline_candidates=fact_pack.baseline_candidates,
+            model_config=different_model,
+            reasoner=ReplayCandidateReasoner(replay),
+        )
+    )
+
+    assert result.model_status == "needs_model_review"
+    assert result.model_failure_reason == "replay_request_mismatch"
+    assert result.accepted_candidates == []
+    assert result.model_replay_binding == "mismatch"
+    assert [candidate["candidate_id"] for candidate in result.working_candidates] == [
+        "H-001"
+    ]
+    assert generation_stage_payload(
+        fact_pack=fact_pack,
+        result=result,
+        model_config=different_model,
+    )["model_replay_binding"] == "mismatch"
+
+
+def test_bound_replay_rejects_changed_source_snapshot_and_keeps_baseline():
+    fact_pack = _fact_pack()
+    replay = build_candidate_replay_envelope(
+        fact_pack=fact_pack,
+        model_config=_model_config(),
+        response=_response(_proposal()),
+    )
+    changed_fact_pack = fact_pack.model_copy(
+        update={"source_snapshot_digest": "f" * 64}
+    )
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=changed_fact_pack,
+            baseline_candidates=changed_fact_pack.baseline_candidates,
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(replay),
+        )
+    )
+
+    assert result.model_status == "needs_model_review"
+    assert result.model_failure_reason == "replay_request_mismatch"
+    assert result.accepted_candidates == []
+    assert [candidate["candidate_id"] for candidate in result.working_candidates] == [
+        "H-001"
+    ]
+
+
+def test_bound_replay_rejects_changed_scope_status_and_keeps_baseline():
+    fact_pack = _fact_pack()
+    replay = build_candidate_replay_envelope(
+        fact_pack=fact_pack,
+        model_config=_model_config(),
+        response=_response(_proposal()),
+    )
+    changed_fact_pack = fact_pack.model_copy(update={"scope_status": "out_of_scope"})
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=changed_fact_pack,
+            baseline_candidates=changed_fact_pack.baseline_candidates,
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(replay),
+        )
+    )
+
+    assert result.model_status == "needs_model_review"
+    assert result.model_failure_reason == "replay_request_mismatch"
+    assert result.accepted_candidates == []
+    assert [candidate["candidate_id"] for candidate in result.working_candidates] == [
+        "H-001"
+    ]
+
+
+def test_fixture_replay_accepts_matching_fact_pack_as_bound():
+    fact_pack = _fact_pack()
+    replay = build_candidate_fixture_replay_envelope(
+        fact_pack=fact_pack,
+        model_config=_model_config(),
+        response=_response(_proposal()),
+    )
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=fact_pack,
+            baseline_candidates=[],
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(replay),
+        )
+    )
+
+    assert result.model_status == "completed"
+    assert result.model_replay_binding == "bound"
+    assert len(result.accepted_candidates) == 1
+
+
+def test_fixture_replay_rejects_changed_scope_status_and_keeps_baseline():
+    fact_pack = _fact_pack()
+    replay = build_candidate_fixture_replay_envelope(
+        fact_pack=fact_pack,
+        model_config=_model_config(),
+        response=_response(_proposal()),
+    )
+    changed_fact_pack = fact_pack.model_copy(update={"scope_status": "out_of_scope"})
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=changed_fact_pack,
+            baseline_candidates=changed_fact_pack.baseline_candidates,
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(replay),
+        )
+    )
+
+    assert result.model_status == "needs_model_review"
+    assert result.model_failure_reason == "fixture_replay_request_mismatch"
+    assert result.model_replay_binding == "mismatch"
+    assert result.accepted_candidates == []
+    assert [candidate["candidate_id"] for candidate in result.working_candidates] == [
+        "H-001"
+    ]
+
+
+def test_bound_replay_rejects_tampered_response_digest_and_keeps_baseline():
+    fact_pack = _fact_pack()
+    replay = build_candidate_replay_envelope(
+        fact_pack=fact_pack,
+        model_config=_model_config(),
+        response=_response(_proposal()),
+    )
+    replay["response_digest"] = "0" * 64
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=fact_pack,
+            baseline_candidates=fact_pack.baseline_candidates,
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(replay),
+        )
+    )
+
+    assert result.model_status == "needs_model_review"
+    assert result.model_failure_reason == "invalid_replay_envelope"
+    assert result.accepted_candidates == []
+    assert [candidate["candidate_id"] for candidate in result.working_candidates] == [
+        "H-001"
+    ]
 
 
 def test_unknown_fact_reference_is_rejected_without_dropping_baseline():
@@ -216,7 +407,10 @@ def test_unknown_fact_reference_is_rejected_without_dropping_baseline():
             fact_pack=fact_pack,
             baseline_candidates=fact_pack.baseline_candidates,
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(proposal)),
+            reasoner=ReplayCandidateReasoner(
+                _response(proposal),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -237,7 +431,10 @@ def test_invalid_schema_is_visible_and_keeps_baseline_candidates():
             fact_pack=fact_pack,
             baseline_candidates=fact_pack.baseline_candidates,
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(proposal)),
+            reasoner=ReplayCandidateReasoner(
+                _response(proposal),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -353,7 +550,10 @@ def test_model_candidate_merges_with_baseline_without_removing_evidence():
             fact_pack=fact_pack,
             baseline_candidates=fact_pack.baseline_candidates,
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(_proposal())),
+            reasoner=ReplayCandidateReasoner(
+                _response(_proposal()),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -398,7 +598,10 @@ def test_fact_bound_model_enriches_unique_placeholder_baseline_on_same_route():
             fact_pack=fact_pack,
             baseline_candidates=[placeholder_baseline],
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(_proposal())),
+            reasoner=ReplayCandidateReasoner(
+                _response(_proposal()),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -427,7 +630,10 @@ def test_duplicate_model_proposals_merge_without_claiming_baseline_origin():
             fact_pack=fact_pack,
             baseline_candidates=[],
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(_proposal(), duplicate)),
+            reasoner=ReplayCandidateReasoner(
+                _response(_proposal(), duplicate),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -450,7 +656,10 @@ def test_sensitive_model_content_is_rejected_and_missing_link_stays_unresolved()
             fact_pack=fact_pack,
             baseline_candidates=[],
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(sensitive, unresolved)),
+            reasoner=ReplayCandidateReasoner(
+                _response(sensitive, unresolved),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -531,7 +740,10 @@ def test_generation_stage_payload_records_requested_model_metadata():
             fact_pack=fact_pack,
             baseline_candidates=[],
             model_config=_model_config(),
-            reasoner=ReplayCandidateReasoner(_response(_proposal())),
+            reasoner=ReplayCandidateReasoner(
+                _response(_proposal()),
+                allow_legacy_unbound=True,
+            ),
         )
     )
 
@@ -551,3 +763,35 @@ def test_generation_stage_payload_records_requested_model_metadata():
     assert payload["accepted_count"] == 1
     assert payload["rejected_count"] == 0
     assert payload["working_candidate_count"] == 1
+
+
+def test_bound_replay_stage_payload_records_digest_only_provenance():
+    fact_pack = _fact_pack()
+    raw_marker = "replay-response-content-must-not-be-persisted"
+    replay = build_candidate_replay_envelope(
+        fact_pack=fact_pack,
+        model_config=_model_config(),
+        response=_response(_proposal(impact_rationale=raw_marker)),
+    )
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=fact_pack,
+            baseline_candidates=[],
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(replay),
+        )
+    )
+
+    payload = generation_stage_payload(
+        fact_pack=fact_pack,
+        result=result,
+        model_config=_model_config(),
+    )
+
+    assert payload["model_request_key"] == replay["request_key"]
+    assert payload["model_response_digest"] == replay["response_digest"]
+    assert payload["model_response_schema"] == "cross_source_candidate_model_v1"
+    assert payload["model_reasoner"] == "replay"
+    assert payload["model_replay_binding"] == "bound"
+    assert payload["raw_payload_processed"] is False
+    assert raw_marker not in str(payload)

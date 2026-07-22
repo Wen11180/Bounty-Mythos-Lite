@@ -1,9 +1,13 @@
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
+import app.db as database
+import app.repository as repository
 from app.db import initialize_database
 
 
@@ -13,6 +17,60 @@ PROGRAM_RULE_TABLES = {
     "program_scope_rules",
 }
 WAKEUP_TABLES = {"autonomous_research_wakeup_states"}
+
+
+def test_initialize_database_distinguishes_engines_when_legacy_ids_collide(monkeypatch):
+    calls = []
+    monkeypatch.setattr(database, "ensure_database_schema", calls.append)
+    monkeypatch.setattr(database, "id", lambda _engine: 1, raising=False)
+    monkeypatch.setattr(repository, "seed_sample_data", lambda _session: None)
+
+    first_engine = create_engine("sqlite:///:memory:")
+    second_engine = create_engine("sqlite:///:memory:")
+    try:
+        database.initialize_database(first_engine)
+        database.initialize_database(second_engine)
+    finally:
+        first_engine.dispose()
+        second_engine.dispose()
+
+    assert calls == [first_engine, second_engine]
+
+
+def test_evidence_aware_migration_widens_postgresql_version_identifier(monkeypatch):
+    api_root = Path(__file__).resolve().parents[1]
+    spec = spec_from_file_location(
+        "migration_0003_evidence_aware_learning_signals",
+        str(
+            api_root
+            / "migrations"
+            / "versions"
+            / "0003_evidence_aware_learning_signals.py"
+        ),
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    calls = []
+
+    class FakeOperations:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def alter_column(self, table_name, column_name, **kwargs):
+            calls.append((table_name, column_name, kwargs))
+
+    monkeypatch.setattr(migration, "op", FakeOperations())
+
+    migration._widen_alembic_version_identifier()
+
+    assert len(calls) == 1
+    table_name, column_name, kwargs = calls[0]
+    assert (table_name, column_name) == ("alembic_version", "version_num")
+    assert kwargs["existing_nullable"] is False
+    assert kwargs["existing_type"].length == 32
+    assert kwargs["type_"].length == 64
 
 
 def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path, monkeypatch):
@@ -52,6 +110,9 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
     wakeup_columns = {
         column["name"]
         for column in inspector.get_columns("autonomous_research_wakeup_states")
+    }
+    campaign_task_columns = {
+        column["name"] for column in inspector.get_columns("campaign_tasks")
     }
 
     assert "target_relationships" in learning_columns
@@ -105,12 +166,22 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
     assert {
         "after_campaign_id",
         "lease_token_digest",
-        "lease_started_at",
         "lease_expires_at",
+        "next_due_at",
+        "last_cycle_completed_at",
+        "last_cycle_status",
+        "last_cycle_stop_reason",
+        "last_cycle_processed_count",
+        "last_cycle_outcome_counts",
         "execution_allowed",
         "validation_allowed",
         "report_submission_allowed",
     } <= wakeup_columns
+    assert {
+        "execution_claim_id",
+        "execution_heartbeat_at",
+        "execution_lease_expires_at",
+    } <= campaign_task_columns
 
     source_unique = {
         tuple(constraint["column_names"])
@@ -194,7 +265,7 @@ def test_initialize_database_upgrades_persistent_sqlite_from_0010(tmp_path, monk
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
     unique_constraints = inspect(engine).get_unique_constraints("artifacts")
-    assert version == "0014_autonomous_research_wakeup"
+    assert version == "0017_autonomous_research_wakeup_cadence"
     assert any(
         constraint["name"] == "uq_artifacts_program_source_hash"
         and constraint["column_names"] == ["program_id", "source_hash"]
@@ -219,7 +290,7 @@ def test_initialize_database_adopts_unversioned_0010_sqlite(tmp_path, monkeypatc
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0014_autonomous_research_wakeup"
+    assert version == "0017_autonomous_research_wakeup_cadence"
     assert any(
         constraint["name"] == "uq_artifacts_program_source_hash"
         for constraint in inspect(engine).get_unique_constraints("artifacts")
@@ -243,7 +314,7 @@ def test_initialize_database_adopts_unversioned_field_pilot_schema(tmp_path, mon
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0014_autonomous_research_wakeup"
+    assert version == "0017_autonomous_research_wakeup_cadence"
     assert "field_pilot_feedback" in {
         column["name"] for column in inspect(engine).get_columns("learning_signals")
     }
@@ -267,7 +338,7 @@ def test_initialize_database_adopts_unversioned_program_rule_schema(tmp_path, mo
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0014_autonomous_research_wakeup"
+    assert version == "0017_autonomous_research_wakeup_cadence"
     assert PROGRAM_RULE_TABLES <= set(inspect(engine).get_table_names())
     assert WAKEUP_TABLES <= set(inspect(engine).get_table_names())
     engine.dispose()

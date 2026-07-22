@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 from sqlalchemy import create_engine
@@ -53,6 +54,7 @@ def _passing_case_run(case_id: str) -> dict:
             "candidate_generation": {
                 "model_requested": True,
                 "model_status": "completed",
+                "model_replay_binding": "bound",
                 "accepted_count": 1,
                 **false_permissions,
             }
@@ -207,6 +209,7 @@ def test_typescript_release_gate_stops_before_release_when_development_fails(
     (
         ("model_not_requested", "model_failures"),
         ("model_review", "model_failures"),
+        ("unbound_replay", "model_failures"),
         ("zero_accepted", "model_failures"),
         ("invalid_stage", "stage_failures"),
         ("permission_true", "permission_failures"),
@@ -238,6 +241,8 @@ def test_typescript_release_gate_blocks_release_on_development_runtime_failure(
             generation["model_requested"] = False
         elif failure_kind == "model_review":
             generation["model_status"] = "needs_model_review"
+        elif failure_kind == "unbound_replay":
+            generation["model_replay_binding"] = "legacy_unbound"
         elif failure_kind == "zero_accepted":
             generation["accepted_count"] = 0
         elif failure_kind == "invalid_stage":
@@ -427,3 +432,34 @@ def test_actual_typescript_replay_gate_passes_without_registry_or_network(
         "gold_oracle",
     ):
         assert forbidden not in serialized
+
+
+def test_typescript_replay_gate_rejects_changed_fixture_fact_pack(tmp_path: Path):
+    fixture_root = tmp_path / "candidate_hunter_typescript_release"
+    shutil.copytree(FIXTURE_ROOT, fixture_root)
+    code_path = fixture_root / "cases" / "case-001" / "inputs" / "code.ts"
+    code_path.write_text(
+        code_path.read_text(encoding="utf-8") + "\n// fixture binding mutation\n",
+        encoding="utf-8",
+    )
+
+    session = _session()
+    try:
+        result = _gate_function()(
+            fixture_root=fixture_root,
+            workspace_root=tmp_path / "studio-workspaces",
+            session=session,
+            mode="replay",
+        )
+    finally:
+        session.close()
+
+    assert result["status"] == "failed"
+    assert result["development"]["status"] == "failed"
+    assert {
+        failure["reason"] for failure in result["development"]["model_failures"]
+    } >= {"model_status:needs_model_review", "model_replay_binding:mismatch"}
+    assert result["release"] == {
+        "attempted": False,
+        "status": "not_attempted",
+    }

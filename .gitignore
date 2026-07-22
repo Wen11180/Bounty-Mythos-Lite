@@ -38,6 +38,8 @@ authorized_packages/**/_upstream/
 
 # local test and research scratch trees
 .pytest-tmp*/
+/.tmp/
+/apps/api/.tmp/
 /tmp/
 /tmp_*.py
 /tmpmythos-pytestbase/

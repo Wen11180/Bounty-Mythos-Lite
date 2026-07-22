@@ -103,7 +103,7 @@ function resolveLinkTarget(source) {
 }
 
 function buildApiRuntime() {
-  const python = process.env.MYTHOS_DESKTOP_PYTHON || "python";
+  const python = resolveDesktopPython();
   const buildPath = path.join(apiRoot, "build", "desktop");
   const distPath = path.join(apiRoot, "dist", "desktop");
   fs.rmSync(buildPath, { force: true, recursive: true });
@@ -121,6 +121,19 @@ function buildApiRuntime() {
     apiRoot,
   );
   copyDirectory(path.join(distPath, "mythos-api"), path.join(stagingRoot, "api"));
+}
+
+function resolveDesktopPython(environment = process.env) {
+  if (environment.MYTHOS_DESKTOP_PYTHON) {
+    return environment.MYTHOS_DESKTOP_PYTHON;
+  }
+  const virtualEnvironmentPython = path.join(
+    apiRoot,
+    ".venv",
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
+  return fs.existsSync(virtualEnvironmentPython) ? virtualEnvironmentPython : "python";
 }
 
 function installChromium() {
@@ -181,4 +194,4 @@ if (require.main === module) {
   buildRuntime();
 }
 
-module.exports = { buildRuntime, validateStagedRuntime };
+module.exports = { buildRuntime, resolveDesktopPython, validateStagedRuntime };

@@ -8,6 +8,7 @@ import pytest
 
 from app.cli import main as cli_main
 from app.intelligence_benchmark import (
+    evaluate_candidate_hunter_authorized_lab_v1,
     evaluate_candidate_hunter_release_suite_v1,
     evaluate_candidate_hunter_release_v1,
 )
@@ -245,6 +246,37 @@ def test_release_evaluator_fails_closed_for_invalid_schema_and_zero_metric_denom
         "threshold": 0.8,
         "passed": False,
     }
+
+
+def test_authorized_lab_evaluator_marks_inapplicable_metrics_without_masking_failures():
+    output = _normalized_output()
+    output["candidate_decisions"] = [output["candidate_decisions"][0]]
+    oracle = {"expected_roots": [_gold_oracle()["expected_roots"][0]]}
+
+    strict = evaluate_candidate_hunter_release_v1(output, oracle)
+    lab = evaluate_candidate_hunter_authorized_lab_v1(output, oracle)
+
+    assert strict["status"] == "failed"
+    assert lab["version"] == "candidate_hunter_authorized_lab_v1"
+    assert lab["status"] == "passed"
+    assert lab["applicable_metrics"] == [
+        "precision_at_5",
+        "valuable_recall_at_5",
+        "evidence_traceability_rate",
+        "human_worth_validation_rate",
+    ]
+    assert lab["not_applicable_metrics"] == [
+        "effective_refutation_rate",
+        "duplicate_suppression_rate",
+    ]
+
+    invalid = deepcopy(output)
+    invalid["final_candidates"][0]["root_cause_id"] = "unrelated-root"
+    failed = evaluate_candidate_hunter_authorized_lab_v1(invalid, oracle)
+
+    assert failed["status"] == "failed"
+    assert failed["false_positives"]
+    assert failed["missed_retained_roots"]
 
 
 def test_release_evaluator_requires_decisive_refutation_and_canonical_duplicate_suppression():

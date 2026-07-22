@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import re
@@ -15,7 +15,10 @@ from app.llm.registry import LLMRegistry
 
 FACT_PACK_SCHEMA_VERSION = "cross_source_fact_pack_v1"
 MODEL_SCHEMA_VERSION = "cross_source_candidate_model_v1"
+REPLAY_SCHEMA_VERSION = "cross_source_candidate_replay_v1"
+FIXTURE_REPLAY_SCHEMA_VERSION = "cross_source_candidate_fixture_replay_v1"
 GENERATION_SCHEMA_VERSION = "cross_source_candidate_generation_v1"
+SHA256_HEX_PATTERN = r"^[a-f0-9]{64}$"
 REQUIRED_ARTIFACT_KINDS = {"scope", "policy", "code", "api", "har"}
 SURFACE_ARTIFACT_KINDS = {"api", "har"}
 SAFE_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
@@ -94,6 +97,43 @@ class CandidateModelResponse(_StrictModel):
     proposals: list[ModelCandidateProposal] = Field(max_length=5)
 
 
+def _model_response_digest(response: CandidateModelResponse) -> str:
+    serialized = json.dumps(
+        response.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+class CandidateModelReplayEnvelope(_StrictModel):
+    schema_version: Literal[REPLAY_SCHEMA_VERSION]
+    request_key: str = Field(pattern=SHA256_HEX_PATTERN)
+    response: CandidateModelResponse
+    response_digest: str = Field(pattern=SHA256_HEX_PATTERN)
+
+    @model_validator(mode="after")
+    def validate_response_digest(self) -> CandidateModelReplayEnvelope:
+        if self.response_digest != _model_response_digest(self.response):
+            raise ValueError("response_digest_mismatch")
+        return self
+
+
+class CandidateFixtureReplayEnvelope(_StrictModel):
+    schema_version: Literal[FIXTURE_REPLAY_SCHEMA_VERSION]
+    fact_pack_input_digest: str = Field(pattern=SHA256_HEX_PATTERN)
+    provider: ProviderName
+    model: str = Field(min_length=1, max_length=255)
+    response: CandidateModelResponse
+    response_digest: str = Field(pattern=SHA256_HEX_PATTERN)
+
+    @model_validator(mode="after")
+    def validate_response_digest(self) -> CandidateFixtureReplayEnvelope:
+        if self.response_digest != _model_response_digest(self.response):
+            raise ValueError("response_digest_mismatch")
+        return self
+
+
 class FactReference(_StrictModel):
     fact_ref: str = Field(min_length=1, max_length=500)
     fact_type: str = Field(min_length=1, max_length=100)
@@ -148,6 +188,13 @@ class CandidateModelResult:
     response: CandidateModelResponse | None = None
     prompt_hash: str = ""
     latency_ms: int | None = None
+    request_key: str = ""
+    response_digest: str = ""
+    response_schema: str = ""
+    reasoner_kind: Literal["registry", "replay", "custom"] = "custom"
+    replay_binding: Literal[
+        "not_applicable", "bound", "mismatch", "legacy_unbound", "invalid"
+    ] = "not_applicable"
 
 
 class CandidateReasoner(Protocol):
@@ -161,8 +208,9 @@ class CandidateReasoner(Protocol):
 
 
 class ReplayCandidateReasoner:
-    def __init__(self, payload: object):
+    def __init__(self, payload: object, *, allow_legacy_unbound: bool = False):
         self._payload = payload
+        self._allow_legacy_unbound = allow_legacy_unbound
 
     async def generate(
         self,
@@ -171,8 +219,90 @@ class ReplayCandidateReasoner:
         model_config: CandidateModelConfig,
         request_key: str,
     ) -> CandidateModelResult:
-        del fact_pack, model_config, request_key
-        return _parse_model_payload(self._payload, prompt_hash="replay")
+        prompt_hash = _candidate_prompt_hash(fact_pack, request_key=request_key)
+        if (
+            isinstance(self._payload, dict)
+            and self._payload.get("schema_version") == REPLAY_SCHEMA_VERSION
+        ):
+            try:
+                envelope = CandidateModelReplayEnvelope.model_validate(self._payload)
+            except ValidationError:
+                return CandidateModelResult(
+                    status="invalid_replay_envelope",
+                    prompt_hash=prompt_hash,
+                    request_key=request_key,
+                    reasoner_kind="replay",
+                    replay_binding="invalid",
+                )
+            if envelope.request_key != request_key:
+                return CandidateModelResult(
+                    status="replay_request_mismatch",
+                    prompt_hash=prompt_hash,
+                    request_key=request_key,
+                    reasoner_kind="replay",
+                    replay_binding="mismatch",
+                )
+            return CandidateModelResult(
+                status="completed",
+                response=envelope.response,
+                prompt_hash=prompt_hash,
+                request_key=request_key,
+                response_digest=envelope.response_digest,
+                response_schema=MODEL_SCHEMA_VERSION,
+                reasoner_kind="replay",
+                replay_binding="bound",
+            )
+        if (
+            isinstance(self._payload, dict)
+            and self._payload.get("schema_version") == FIXTURE_REPLAY_SCHEMA_VERSION
+        ):
+            try:
+                envelope = CandidateFixtureReplayEnvelope.model_validate(self._payload)
+            except ValidationError:
+                return CandidateModelResult(
+                    status="invalid_replay_envelope",
+                    prompt_hash=prompt_hash,
+                    request_key=request_key,
+                    reasoner_kind="replay",
+                    replay_binding="invalid",
+                )
+            if (
+                envelope.fact_pack_input_digest != _fact_pack_input_digest(fact_pack)
+                or envelope.provider != model_config.provider
+                or envelope.model != model_config.model
+            ):
+                return CandidateModelResult(
+                    status="fixture_replay_request_mismatch",
+                    prompt_hash=prompt_hash,
+                    request_key=request_key,
+                    reasoner_kind="replay",
+                    replay_binding="mismatch",
+                )
+            return CandidateModelResult(
+                status="completed",
+                response=envelope.response,
+                prompt_hash=prompt_hash,
+                request_key=request_key,
+                response_digest=envelope.response_digest,
+                response_schema=MODEL_SCHEMA_VERSION,
+                reasoner_kind="replay",
+                replay_binding="bound",
+            )
+        if not self._allow_legacy_unbound:
+            return CandidateModelResult(
+                status="legacy_replay_unbound",
+                prompt_hash=prompt_hash,
+                request_key=request_key,
+                reasoner_kind="replay",
+                replay_binding="invalid",
+            )
+        return _parse_model_payload(
+            self._payload,
+            prompt_hash=prompt_hash,
+            request_key=request_key,
+            reasoner_kind="replay",
+            replay_binding="legacy_unbound",
+        )
 
 
 class RegistryCandidateReasoner:
@@ -205,19 +335,31 @@ class RegistryCandidateReasoner:
                 )
             )
         except TimeoutError:
-            return CandidateModelResult(status="timeout")
+            return CandidateModelResult(
+                status="timeout",
+                request_key=request_key,
+                reasoner_kind="registry",
+            )
         except Exception:
-            return CandidateModelResult(status="provider_error")
+            return CandidateModelResult(
+                status="provider_error",
+                request_key=request_key,
+                reasoner_kind="registry",
+            )
         if response.error:
             return CandidateModelResult(
                 status="provider_error",
                 prompt_hash=response.prompt_hash,
                 latency_ms=response.latency_ms,
+                request_key=request_key,
+                reasoner_kind="registry",
             )
         return _parse_model_payload(
             response.text,
             prompt_hash=response.prompt_hash,
             latency_ms=response.latency_ms,
+            request_key=request_key,
+            reasoner_kind="registry",
         )
 
 
@@ -227,6 +369,20 @@ class CrossSourceGenerationResult(_StrictModel):
     model_failure_reason: str | None = None
     prompt_hash: str = ""
     model_latency_ms: int | None = None
+    model_request_key: str = ""
+    model_response_digest: str = ""
+    model_response_schema: str = ""
+    model_reasoner: Literal[
+        "not_requested", "registry", "replay", "custom", "unavailable"
+    ] = "not_requested"
+    model_replay_binding: Literal[
+        "not_requested",
+        "not_applicable",
+        "bound",
+        "mismatch",
+        "legacy_unbound",
+        "invalid",
+    ] = "not_requested"
     baseline_count: int = 0
     proposed_count: int = 0
     accepted_candidates: list[dict[str, Any]] = Field(default_factory=list)
@@ -268,6 +424,56 @@ def build_fact_pack(
     )
 
 
+def build_candidate_replay_envelope(
+    *,
+    fact_pack: FactPack,
+    model_config: CandidateModelConfig,
+    response: object,
+) -> dict[str, Any]:
+    replay_payload = response
+    if isinstance(replay_payload, str):
+        try:
+            replay_payload = json.loads(replay_payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError("replay_response_invalid") from exc
+    try:
+        parsed_response = CandidateModelResponse.model_validate(replay_payload)
+    except ValidationError as exc:
+        raise ValueError("replay_response_invalid") from exc
+    return CandidateModelReplayEnvelope(
+        schema_version=REPLAY_SCHEMA_VERSION,
+        request_key=_generation_request_key(fact_pack, model_config),
+        response=parsed_response,
+        response_digest=_model_response_digest(parsed_response),
+    ).model_dump(mode="json")
+
+
+def build_candidate_fixture_replay_envelope(
+    *,
+    fact_pack: FactPack,
+    model_config: CandidateModelConfig,
+    response: object,
+) -> dict[str, Any]:
+    replay_payload = response
+    if isinstance(replay_payload, str):
+        try:
+            replay_payload = json.loads(replay_payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError("replay_response_invalid") from exc
+    try:
+        parsed_response = CandidateModelResponse.model_validate(replay_payload)
+    except ValidationError as exc:
+        raise ValueError("replay_response_invalid") from exc
+    return CandidateFixtureReplayEnvelope(
+        schema_version=FIXTURE_REPLAY_SCHEMA_VERSION,
+        fact_pack_input_digest=_fact_pack_input_digest(fact_pack),
+        provider=model_config.provider,
+        model=model_config.model,
+        response=parsed_response,
+        response_digest=_model_response_digest(parsed_response),
+    ).model_dump(mode="json")
+
+
 async def generate_cross_source_candidates(
     *,
     fact_pack: FactPack,
@@ -297,15 +503,18 @@ async def generate_cross_source_candidates(
             baseline_count=len(baseline_projections),
             working_candidates=_merge_candidates(baseline_projections),
         )
+    request_key = _generation_request_key(fact_pack, model_config)
     if reasoner is None:
         return _generation_result(
             model_status="needs_model_review",
             model_failure_reason="reasoner_unavailable",
             baseline_count=len(baseline_projections),
             working_candidates=_merge_candidates(baseline_projections),
+            model_request_key=request_key,
+            model_reasoner="unavailable",
+            model_replay_binding="not_applicable",
         )
 
-    request_key = _generation_request_key(fact_pack, model_config)
     try:
         model_result = await reasoner.generate(
             fact_pack=fact_pack,
@@ -313,9 +522,16 @@ async def generate_cross_source_candidates(
             request_key=request_key,
         )
     except TimeoutError:
-        model_result = CandidateModelResult(status="timeout")
+        model_result = CandidateModelResult(
+            status="timeout",
+            request_key=request_key,
+        )
     except Exception:
-        model_result = CandidateModelResult(status="provider_error")
+        model_result = CandidateModelResult(
+            status="provider_error",
+            request_key=request_key,
+        )
+    model_result = _normalize_model_result(model_result, request_key=request_key)
     if model_result.status != "completed" or model_result.response is None:
         return _generation_result(
             model_status="needs_model_review",
@@ -324,6 +540,11 @@ async def generate_cross_source_candidates(
             model_latency_ms=model_result.latency_ms,
             baseline_count=len(baseline_projections),
             working_candidates=_merge_candidates(baseline_projections),
+            model_request_key=request_key,
+            model_response_digest=model_result.response_digest,
+            model_response_schema=model_result.response_schema,
+            model_reasoner=model_result.reasoner_kind,
+            model_replay_binding=model_result.replay_binding,
         )
 
     accepted: list[dict[str, Any]] = []
@@ -347,6 +568,11 @@ async def generate_cross_source_candidates(
         accepted_candidates=accepted,
         rejection_reason_counts=dict(sorted(rejection_counts.items())),
         working_candidates=_merge_candidates([*baseline_projections, *accepted]),
+        model_request_key=request_key,
+        model_response_digest=model_result.response_digest,
+        model_response_schema=model_result.response_schema,
+        model_reasoner=model_result.reasoner_kind,
+        model_replay_binding=model_result.replay_binding,
     )
 
 
@@ -407,8 +633,15 @@ def generation_stage_payload(
     model_config: CandidateModelConfig | None = None,
 ) -> dict[str, Any]:
     fact_pack_digest = _fact_pack_digest(fact_pack)
+    model_request_key = (
+        _generation_request_key(fact_pack, model_config)
+        if model_config is not None
+        else ""
+    )
     idempotency_key = sha256(
-        f"{fact_pack.pipeline_run_id}:{fact_pack_digest}:baseline".encode("utf-8")
+        f"{fact_pack.pipeline_run_id}:{fact_pack_digest}:{model_request_key or 'baseline'}".encode(
+            "utf-8"
+        )
     ).hexdigest()
     payload = {
         "schema_version": GENERATION_SCHEMA_VERSION,
@@ -430,6 +663,11 @@ def generation_stage_payload(
         "model_failure_reason": result.model_failure_reason,
         "prompt_hash": result.prompt_hash,
         "model_latency_ms": result.model_latency_ms,
+        "model_request_key": model_request_key,
+        "model_response_digest": result.model_response_digest,
+        "model_response_schema": result.model_response_schema,
+        "model_reasoner": result.model_reasoner,
+        "model_replay_binding": result.model_replay_binding,
         "idempotency_key": idempotency_key,
         "execution_allowed": False,
         "dispatch_allowed": False,
@@ -463,6 +701,11 @@ def build_candidate_prompt(fact_pack: FactPack, *, request_key: str) -> str:
     )
 
 
+def _candidate_prompt_hash(fact_pack: FactPack, *, request_key: str) -> str:
+    prompt = build_candidate_prompt(fact_pack, request_key=request_key)
+    return sha256(prompt.encode("utf-8")).hexdigest()
+
+
 def _hunter_source_fact(fact: FactReference) -> dict[str, str]:
     source_fact = {
         "fact_ref": fact.fact_ref,
@@ -486,6 +729,11 @@ def _parse_model_payload(
     *,
     prompt_hash: str,
     latency_ms: int | None = None,
+    request_key: str = "",
+    reasoner_kind: Literal["registry", "replay", "custom"] = "custom",
+    replay_binding: Literal[
+        "not_applicable", "bound", "mismatch", "legacy_unbound", "invalid"
+    ] = "not_applicable",
 ) -> CandidateModelResult:
     if isinstance(payload, str):
         try:
@@ -495,6 +743,9 @@ def _parse_model_payload(
                 status="invalid_json",
                 prompt_hash=prompt_hash,
                 latency_ms=latency_ms,
+                request_key=request_key,
+                reasoner_kind=reasoner_kind,
+                replay_binding=replay_binding,
             )
     try:
         response = CandidateModelResponse.model_validate(payload)
@@ -503,12 +754,20 @@ def _parse_model_payload(
             status="invalid_schema",
             prompt_hash=prompt_hash,
             latency_ms=latency_ms,
+            request_key=request_key,
+            reasoner_kind=reasoner_kind,
+            replay_binding=replay_binding,
         )
     return CandidateModelResult(
         status="completed",
         response=response,
         prompt_hash=prompt_hash,
         latency_ms=latency_ms,
+        request_key=request_key,
+        response_digest=_model_response_digest(response),
+        response_schema=MODEL_SCHEMA_VERSION,
+        reasoner_kind=reasoner_kind,
+        replay_binding=replay_binding,
     )
 
 
@@ -963,6 +1222,40 @@ def _candidate_merge_key(candidate: dict[str, Any]) -> tuple[str, str, str, str]
     )
 
 
+def _normalize_model_result(
+    result: CandidateModelResult,
+    *,
+    request_key: str,
+) -> CandidateModelResult:
+    if result.request_key and result.request_key != request_key:
+        return CandidateModelResult(
+            status="model_request_mismatch",
+            prompt_hash=result.prompt_hash,
+            latency_ms=result.latency_ms,
+            request_key=request_key,
+            reasoner_kind=result.reasoner_kind,
+            replay_binding=result.replay_binding,
+        )
+    if result.status != "completed" or result.response is None:
+        return replace(result, request_key=request_key)
+    response_digest = _model_response_digest(result.response)
+    if result.response_digest and result.response_digest != response_digest:
+        return CandidateModelResult(
+            status="response_digest_mismatch",
+            prompt_hash=result.prompt_hash,
+            latency_ms=result.latency_ms,
+            request_key=request_key,
+            reasoner_kind=result.reasoner_kind,
+            replay_binding=result.replay_binding,
+        )
+    return replace(
+        result,
+        request_key=request_key,
+        response_digest=response_digest,
+        response_schema=MODEL_SCHEMA_VERSION,
+    )
+
+
 def _generation_result(
     *,
     model_status: Literal["completed", "model_not_requested", "needs_model_review"],
@@ -971,6 +1264,20 @@ def _generation_result(
     model_failure_reason: str | None = None,
     prompt_hash: str = "",
     model_latency_ms: int | None = None,
+    model_request_key: str = "",
+    model_response_digest: str = "",
+    model_response_schema: str = "",
+    model_reasoner: Literal[
+        "not_requested", "registry", "replay", "custom", "unavailable"
+    ] = "not_requested",
+    model_replay_binding: Literal[
+        "not_requested",
+        "not_applicable",
+        "bound",
+        "mismatch",
+        "legacy_unbound",
+        "invalid",
+    ] = "not_requested",
     proposed_count: int = 0,
     accepted_candidates: list[dict[str, Any]] | None = None,
     rejection_reason_counts: dict[str, int] | None = None,
@@ -980,6 +1287,11 @@ def _generation_result(
         model_failure_reason=model_failure_reason,
         prompt_hash=prompt_hash,
         model_latency_ms=model_latency_ms,
+        model_request_key=model_request_key,
+        model_response_digest=model_response_digest,
+        model_response_schema=model_response_schema,
+        model_reasoner=model_reasoner,
+        model_replay_binding=model_replay_binding,
         baseline_count=baseline_count,
         proposed_count=proposed_count,
         accepted_candidates=accepted_candidates or [],
@@ -995,8 +1307,8 @@ def _generation_request_key(
 ) -> str:
     value = ":".join(
         (
-            fact_pack.pipeline_run_id,
-            fact_pack.source_snapshot_digest,
+            _fact_pack_digest(fact_pack),
+            MODEL_SCHEMA_VERSION,
             model_config.provider.value,
             model_config.model,
         )
@@ -1010,6 +1322,13 @@ def _fact_pack_digest(fact_pack: FactPack) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+    return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _fact_pack_input_digest(fact_pack: FactPack) -> str:
+    payload = fact_pack.model_dump(mode="json")
+    payload.pop("pipeline_run_id", None)
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return sha256(serialized.encode("utf-8")).hexdigest()
 
 
@@ -1215,13 +1534,17 @@ def _identifier(value: object) -> str:
 
 __all__ = [
     "CandidateModelConfig",
+    "CandidateFixtureReplayEnvelope",
+    "CandidateModelReplayEnvelope",
     "CandidateModelResult",
     "CandidateReasoner",
     "CrossSourceGenerationResult",
     "FactPack",
     "RegistryCandidateReasoner",
     "ReplayCandidateReasoner",
+    "build_candidate_fixture_replay_envelope",
     "build_candidate_prompt",
+    "build_candidate_replay_envelope",
     "build_fact_pack",
     "candidate_hunter_inputs",
     "generate_cross_source_candidates",

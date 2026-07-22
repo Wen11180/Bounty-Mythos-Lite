@@ -11,6 +11,10 @@ from app.intelligence_benchmark.candidate_report_bridge import (
     build_submission_blocked_report_bundle,
     retained_candidates_from_normalized_output,
 )
+from app.falsification_engine import (
+    build_falsification_card,
+    project_falsification_summary,
+)
 from app.multi_engine_verifier import (
     VERDICT_FALSE_POSITIVE_LIKELY,
     VERDICT_LOCAL_STATIC_CONSISTENT,
@@ -57,6 +61,13 @@ def test_bridge_rejects_submission_allowed_card():
     with pytest.raises(CandidateReportBridgeError, match="report_submission_allowed"):
         retained_candidates_from_normalized_output(
             {"final_candidates": [_retain_card(report_submission_allowed=True)]}
+        )
+
+
+def test_bundle_rejects_uncited_code_path():
+    with pytest.raises(CandidateReportBridgeError, match="affected_code_path"):
+        build_submission_blocked_report_bundle(
+            _retain_card(affected_code_path="code:invented.py:read_record")
         )
 
 
@@ -118,6 +129,28 @@ def test_bundle_includes_multi_engine_verdict_safety_floor():
     assert "submit_report" in verdict["safety_blockers"]
     assert "execute_live_validation" in verdict["safety_blockers"]
     assert verdict["agreement_score"] == 1.0
+
+
+def test_bundle_carries_retained_falsification_summary_into_report_draft():
+    candidate = _retain_card(
+        candidate_key="pipeline_run_1:H-001",
+        gap_evidence_ref="code:code.ts:export_local_dvwa_user",
+    )
+    card = build_falsification_card(
+        candidate,
+        disposition="retained",
+        evidence_refs=candidate["source_fact_refs"],
+    )
+    candidate["falsification_card"] = card
+
+    bundle = build_submission_blocked_report_bundle(candidate)
+
+    expected_summary = project_falsification_summary(card)
+    assert bundle["falsification_summary"] == expected_summary
+    assert bundle["report_draft"]["falsification_summary"] == expected_summary
+    assert bundle["falsification_summary"]["decision_status"] == "retained"
+    assert bundle["falsification_summary"]["execution_allowed"] is False
+    assert bundle["falsification_summary"]["report_submission_allowed"] is False
 
 
 def test_bridge_operator_trial_result_from_summary_shape():
@@ -204,3 +237,42 @@ def test_candidate_to_hypothesis_prefers_card_broken_invariant():
     )
     assert hypothesis["broken_invariant"] == "Explicit candidate invariant text."
     assert hypothesis["why_still_alive"] == ["Control dimension survived local review."]
+
+
+def test_bundle_preserves_specific_offline_validation_metadata():
+    candidate = _retain_card(
+        broken_invariant=(
+            "Outbound requests to user-controlled URLs must validate the target "
+            "against private networks, metadata endpoints, and unsafe schemes."
+        ),
+        validation_mode="offline_ssrf_target_policy_review",
+        evidence_needed=["local_egress_validation_trace"],
+        impact_rationale=(
+            "Potential server-side outbound request risk if an untrusted target "
+            "reaches the mapped egress sink."
+        ),
+        impact_score=80,
+        safe_validation_plan=[
+            "Review the local URL parsing and egress policy call path.",
+            "Do not execute live validation, access production accounts, or submit a report.",
+        ],
+    )
+
+    hypothesis = candidate_to_hypothesis(candidate)
+    bundle = build_submission_blocked_report_bundle(candidate)
+
+    assert hypothesis["validation_mode"] == "offline_ssrf_target_policy_review"
+    assert hypothesis["evidence_needed"] == ["local_egress_validation_trace"]
+    assert bundle["validation_mode"] == "offline_ssrf_target_policy_review"
+    assert bundle["evidence_needed"] == ["local_egress_validation_trace"]
+    assert bundle["broken_invariant"] == candidate["broken_invariant"]
+    assert bundle["impact_rationale"] == candidate["impact_rationale"]
+    assert bundle["impact_score"] == 80
+    assert bundle["report_draft"]["impact_rationale"] == candidate["impact_rationale"]
+    assert bundle["validation_plan"]["methods"] == [
+        "local_code_review",
+        "offline_ssrf_target_policy_review",
+    ]
+    assert bundle["execution_allowed"] is False
+    assert bundle["validation_allowed"] is False
+    assert bundle["report_submission_allowed"] is False

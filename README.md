@@ -10,9 +10,16 @@ The long-term product target follows `私人 AI 漏洞研究系统最终方案.m
 
 The final product target is a Mythos / XBOW style autonomous vulnerability research system with real high-quality vulnerability discovery capability inside lawful boundaries. Given authorized scope, policy, API/HAR traffic, local code, and optional advisory material, the system should autonomously model the target, choose high-value attack surfaces, generate and refute vulnerability hypotheses, connect each candidate to traceable evidence, rank the Top 1-5 candidates, prepare safe validation work, and draft submission-blocked reports for human review.
 
-Current implementation is not yet that final autonomous discovery engine. It is the safety-first foundation and A+B Candidate Hunter workbench: policy/scope/API/HAR artifacts plus authorized local code are correlated into high-quality candidate records with affected endpoint, affected code path, evidence needs, refutation questions, safe validation plan, review loop state, and submission-blocked report readiness. The next implementation priority is turning the candidate-hunter review loop into an actual bounded autonomous discovery loop rather than only a review/export structure.
+Current implementation is not yet that final autonomous discovery engine. It is the safety-first foundation and A+B Candidate Hunter workbench with a bounded, restart-safe local research loop: policy/scope/API/HAR artifacts plus authorized local code are correlated into high-quality candidate records with affected endpoint, affected code path, evidence needs, refutation questions, safe validation plan, review loop state, and submission-blocked report readiness. Redacted SARIF route signals and SBOM dependency advisories with a direct authorized-code import can join the same snapshot as cross-source evidence, but neither confirms a finding or creates a validation permission by itself. The next implementation priorities are deeper specialist workflows, broader semantic coverage, and calibrated quality evaluation rather than unrestricted execution.
 
 Preferred local software entrypoint: Mythos Studio. During development, run it from `apps/studio` after installing API and web dependencies. The Studio launcher opens the local `/studio` workspace without making the browser dashboard the primary experience. It defaults to inline safe read-only worker dispatch, so Redis/Celery is not required for the local desktop campaign loop.
+
+While Studio is open, its local wake-up timer calls the same durable coordinator
+used by the backend scheduler once per minute. The shared coordinator owns the
+lease and cursor, advances at most one persisted research task per campaign
+tick, and stops at scope, budget, evidence, or human-review gates. Closing
+Studio stops only its local timer; a later launch resumes from the database
+without replaying completed work.
 
 ### Public program rule intake
 
@@ -153,6 +160,24 @@ Copy `.env.example` to `.env` before running services that need environment vari
 ```powershell
 docker compose -f infra/docker-compose.yml up --build
 ```
+
+Compose starts the API, Celery worker, and a `beat` scheduler. The scheduler
+publishes the durable `autonomous_research.wakeup` task once per minute. Its
+cursor and lease live in Postgres, and its local Celery schedule file is kept in
+the `celery_beat_data` volume, so a container restart resumes from persisted
+state. Only `running`, `in_scope`, `level_0_read_only` campaigns are considered;
+each campaign still advances one read-only work item per tick. Campaigns in
+review, validation handoff, blocked, paused, or terminal states are left alone.
+
+Inspect the long-running path with:
+
+```powershell
+docker compose -f infra/docker-compose.yml logs -f beat worker
+```
+
+The wake-up mechanism cannot approve validation, promote a candidate, run a
+remote lease, or submit a report. Those actions remain behind the existing
+human-review gates.
 
 Backend verification:
 

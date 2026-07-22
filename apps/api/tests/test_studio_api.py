@@ -3026,6 +3026,10 @@ def test_workspace_runtime_dispatches_queued_local_evidence_on_the_next_tick(
         assert second_advance["status"] == "dispatched", json.dumps(second_advance)
         third_advance = advance()
         assert third_advance["status"] == "dispatched", json.dumps(third_advance)
+        fourth_advance = advance()
+        assert fourth_advance["status"] == "dispatched", json.dumps(fourth_advance)
+        fifth_advance = advance()
+        assert fifth_advance["status"] == "dispatched", json.dumps(fifth_advance)
         with testing_session() as session:
             repository = DatabaseRepository(session)
             evidence_task = next(
@@ -3033,7 +3037,20 @@ def test_workspace_runtime_dispatches_queued_local_evidence_on_the_next_tick(
                 for task in repository.list_campaign_tasks(campaign_id)
                 if task.task_type == "candidate_hunter_evidence_inspection"
             )
+            candidate_refutation_task = next(
+                task
+                for task in repository.list_campaign_tasks(campaign_id)
+                if task.task_type == "candidate_refutation"
+            )
+            candidate_refutation_runs = [
+                run
+                for run in repository.list_campaign_agent_runs(campaign_id)
+                if run.task_id == candidate_refutation_task.id
+            ]
             assert evidence_task.status == "queued"
+            assert candidate_refutation_task.status == "awaiting_evidence"
+            assert candidate_refutation_task.execution_claim_id is None
+            assert [run.status for run in candidate_refutation_runs] == ["completed"]
 
         result = advance()
 
@@ -3075,12 +3092,14 @@ def test_workspace_runtime_dispatches_queued_local_evidence_on_the_next_tick(
             } == {
                 "campaign_observation",
                 "attack_surface_mapping",
+                "security_invariant_generation",
                 "hypothesis_generation",
+                "exploit_chain_reasoning",
                 "candidate_refutation",
                 "finding_dedup_and_rank",
                 "report_review",
             }
-            assert len(runtime_tasks) == 6
+            assert len(runtime_tasks) == 8
             assert all(task.status == "completed" for task in runtime_tasks)
             assert len(
                 [
@@ -3105,7 +3124,73 @@ def test_workspace_runtime_dispatches_queued_local_evidence_on_the_next_tick(
                 )
                 if stage.stage_key == "autonomous_report_review"
             )
+            deep_code_reasoning_stage = next(
+                stage
+                for stage in DatabaseRepository(session).list_pipeline_stages_for_run(
+                    pipeline_run_id
+                )
+                if stage.stage_key == "autonomous_deep_code_reasoning"
+            )
+            variant_analysis_stage = next(
+                stage
+                for stage in DatabaseRepository(session).list_pipeline_stages_for_run(
+                    pipeline_run_id
+                )
+                if stage.stage_key == "autonomous_variant_analysis"
+            )
+            finding_dedup_risk_stage = next(
+                stage
+                for stage in DatabaseRepository(session).list_pipeline_stages_for_run(
+                    pipeline_run_id
+                )
+                if stage.stage_key == "autonomous_finding_dedup_risk"
+            )
             report_bundle = report_stage.payload["report_drafts"][0]
+            pipeline_run = DatabaseRepository(session).get_pipeline_run(pipeline_run_id)
+            assert pipeline_run is not None
+            source_hypothesis = pipeline_run.payload["hypotheses"][0]
+            assert report_stage.payload["deep_code_reasoning_attached"] is True
+            assert report_stage.payload["variant_analysis_attached"] is True
+            assert report_stage.payload["finding_dedup_risk_attached"] is True
+            assert report_stage.payload["deep_code_reasoning_stage_id"] == (
+                deep_code_reasoning_stage.id
+            )
+            assert report_stage.payload["variant_analysis_stage_id"] == (
+                variant_analysis_stage.id
+            )
+            assert report_stage.payload["finding_dedup_risk_stage_id"] == (
+                finding_dedup_risk_stage.id
+            )
+            assert report_bundle["autonomous_provenance"][
+                "deep_code_reasoning_stage_id"
+            ] == deep_code_reasoning_stage.id
+            assert report_bundle["autonomous_provenance"][
+                "variant_analysis_stage_id"
+            ] == variant_analysis_stage.id
+            assert report_bundle["autonomous_provenance"][
+                "finding_dedup_risk_stage_id"
+            ] == finding_dedup_risk_stage.id
+            assert report_bundle["autonomous_provenance"][
+                "deep_code_reasoning_projection_digest"
+            ] == deep_code_reasoning_stage.payload["deep_code_reasoning_digest"]
+            assert report_bundle["autonomous_provenance"][
+                "variant_analysis_projection_digest"
+            ] == variant_analysis_stage.payload["variant_analysis_digest"]
+            assert report_bundle["autonomous_provenance"][
+                "finding_dedup_risk_projection_digest"
+            ] == finding_dedup_risk_stage.payload["finding_dedup_risk_digest"]
+            assert any(
+                engine["engine"] == "deep_code_reasoning"
+                for engine in report_bundle["multi_engine_verdict"]["engines"]
+            )
+            assert any(
+                engine["engine"] == "variant_analysis"
+                for engine in report_bundle["multi_engine_verdict"]["engines"]
+            )
+            assert any(
+                engine["engine"] == "finding_dedup_risk"
+                for engine in report_bundle["multi_engine_verdict"]["engines"]
+            )
             assert report_bundle["status"] == "unverified_hypothesis"
             assert report_bundle["submission_blocked"] is True
             assert report_bundle["human_review_required"] is True
@@ -3114,10 +3199,302 @@ def test_workspace_runtime_dispatches_queued_local_evidence_on_the_next_tick(
             assert report_bundle["report_submission_allowed"] is False
             assert report_bundle["confirmed_vulnerability"] is False
             assert report_bundle["source_fact_refs"]
+            assert report_bundle["broken_invariant"] == source_hypothesis[
+                "broken_invariant"
+            ]
+            assert report_bundle["validation_mode"] == source_hypothesis[
+                "validation_mode"
+            ]
+            assert report_bundle["evidence_needed"] == source_hypothesis[
+                "evidence_needed"
+            ]
+            assert report_bundle["impact_rationale"] == source_hypothesis[
+                "impact_rationale"
+            ]
+            assert report_bundle["impact_score"] == source_hypothesis["impact_score"]
             assert "No live validation was executed" in report_bundle["report_draft"][
                 "actual_result"
             ]
             assert "def export_file" not in json.dumps(report_bundle)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_campaign_snapshot_refresh_starts_a_new_audited_runtime_cycle(
+    tmp_path: Path,
+    monkeypatch,
+):
+    override_get_session, testing_session = studio_test_session_override()
+    with testing_session() as session:
+        seed_sample_data(session)
+
+    def inline_dispatcher(*, campaign_task_id: str):
+        with testing_session() as session:
+            return run_agent_task(
+                campaign_task_id,
+                repository=DatabaseRepository(session),
+            )
+
+    monkeypatch.setattr(main_module, "dispatch_agent_task", inline_dispatcher)
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        workspace_path = create_runnable_studio_workspace(tmp_path)
+        scope_path = Path(workspace_path) / "scope" / "scope.yaml"
+        scope_path.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
+        assert client.post(
+            "/mythos/studio/workspaces/imports",
+            json={
+                "workspace_path": workspace_path,
+                "kind": "scope",
+                "source_path": str(scope_path),
+            },
+        ).status_code == 200
+        launch = client.post(
+            "/mythos/studio/workspaces/campaigns/launch",
+            json={
+                "workspace_path": workspace_path,
+                "default_asset": "api.example.com",
+            },
+        )
+        assert launch.status_code == 200
+        campaign_id = launch.json()["campaign"]["id"]
+
+        def advance() -> dict:
+            with testing_session() as session:
+                return main_module.tick_autonomous_research_campaign(
+                    campaign_id,
+                    repository=DatabaseRepository(session),
+                    dispatcher=inline_dispatcher,
+                    now=datetime.now(UTC) + timedelta(seconds=61),
+                )
+
+        for _ in range(5):
+            assert advance()["status"] == "dispatched"
+        assert advance()["status"] == "dispatched"
+        assert advance()["status"] == "dispatched"
+        assert advance()["status"] == "dispatched"
+        assert advance()["status"] == "awaiting_review"
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.get_campaign(campaign_id)
+            assert campaign is not None
+            old_snapshot_digest = campaign.payload["source_snapshot_digest"]
+            handoff = next(
+                task
+                for task in repository.list_campaign_tasks(campaign_id)
+                if task.task_type == "validation_handoff"
+            )
+            assert handoff.status == "awaiting_approval"
+
+        blocked_refresh = client.post(
+            f"/mythos/studio/workspaces/campaigns/{campaign_id}/snapshot-refresh",
+            json={
+                "workspace_path": workspace_path,
+                "actor": "operator",
+                "reason": "Awaiting validation review must remain closed.",
+            },
+        )
+        assert blocked_refresh.status_code == 409
+        assert blocked_refresh.json() == {"detail": "human_review_required"}
+
+        review = client.post(
+            f"/mythos/campaigns/{campaign_id}/validation-handoffs/{handoff.id}/review",
+            json={
+                "decision": "dismissed",
+                "reviewer": "operator",
+                "reason": "No local validation is requested for the prior snapshot.",
+            },
+        )
+        assert review.status_code == 200
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            repository.upsert_campaign_budget(
+                campaign_id=campaign_id,
+                time_budget_minutes=60,
+                token_budget=10000,
+                tool_call_budget=30,
+                validation_budget=1,
+            )
+
+        source_path = Path(workspace_path) / "code" / "target" / "routes.py"
+        source_path.write_text(
+            source_path.read_text(encoding="utf-8")
+            + "\n# authorized snapshot refresh marker\n",
+            encoding="utf-8",
+        )
+        assert client.post(
+            "/mythos/studio/workspaces/imports",
+            json={
+                "workspace_path": workspace_path,
+                "kind": "code",
+                "source_path": str(source_path.parent),
+            },
+        ).status_code == 200
+        refreshed_snapshot = main_module.build_authorized_campaign_snapshot(
+            workspace_path
+        )
+        assert main_module.load_authorized_campaign_inputs(refreshed_snapshot)[
+            "source_snapshot_digest"
+        ] == refreshed_snapshot["source_snapshot_digest"]
+        refreshed = client.post(
+            f"/mythos/studio/workspaces/campaigns/{campaign_id}/snapshot-refresh",
+            json={
+                "workspace_path": workspace_path,
+                "actor": "operator",
+                "reason": "Start a new review cycle for the authorized local change.",
+            },
+        )
+
+        assert refreshed.status_code == 200, refreshed.json()
+        body = refreshed.json()
+        assert body["previous_source_snapshot_digest"] == old_snapshot_digest
+        assert body["source_snapshot_digest"] != old_snapshot_digest
+        assert body["execution_allowed"] is False
+        assert body["validation_allowed"] is False
+        assert body["report_submission_allowed"] is False
+        assert len(body["dispatched_task_ids"]) == 1
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.get_campaign(campaign_id)
+            assert campaign is not None
+            new_snapshot_digest = campaign.payload["source_snapshot_digest"]
+            assert campaign.status == "running", [
+                (stage.stage_key, stage.status, stage.stop_reason)
+                for stage in repository.list_campaign_pipeline_stages(campaign_id)
+                if stage.status in {"blocked", "failed"}
+            ]
+            new_runtime_tasks = [
+                task
+                for task in repository.list_campaign_tasks(campaign_id)
+                if isinstance(task.payload, dict)
+                and task.payload.get("runtime_schema") == "autonomous_research_v1"
+                and task.payload.get("source_snapshot_digest") == new_snapshot_digest
+            ]
+            refresh_stage = next(
+                stage
+                for stage in repository.list_campaign_pipeline_stages(campaign_id)
+                if stage.stage_key == "autonomous_research_snapshot_refresh"
+            )
+
+            assert [task.task_type for task in new_runtime_tasks] == [
+                "campaign_observation"
+            ]
+            assert new_runtime_tasks[0].status == "completed"
+            assert refresh_stage.payload["previous_source_snapshot_digest"] == (
+                old_snapshot_digest
+            )
+            assert refresh_stage.payload["source_snapshot_digest"] == new_snapshot_digest
+            assert refresh_stage.payload["execution_allowed"] is False
+            assert refresh_stage.safety_gate_state == "human_review_completed"
+            assert all(
+                refresh_stage.payload[field] is False
+                for field in (
+                    "dispatch_allowed",
+                    "validation_allowed",
+                    "candidate_promotion_allowed",
+                    "report_submission_allowed",
+                    "raw_payload_processed",
+                    "raw_payload_in_dispatch",
+                )
+            )
+            assert "authorized snapshot refresh marker" not in json.dumps(
+                refresh_stage.payload
+            )
+
+        next_cycle = advance()
+        assert next_cycle["status"] == "dispatched"
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            new_task_types = {
+                task.task_type
+                for task in repository.list_campaign_tasks(campaign_id)
+                if isinstance(task.payload, dict)
+                and task.payload.get("runtime_schema") == "autonomous_research_v1"
+                and task.payload.get("source_snapshot_digest") == new_snapshot_digest
+            }
+            assert new_task_types == {
+                "campaign_observation",
+                "attack_surface_mapping",
+            }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_studio_campaign_snapshot_refresh_blocks_unsettled_validation_run(
+    tmp_path: Path,
+    monkeypatch,
+):
+    override_get_session, testing_session = studio_test_session_override()
+    with testing_session() as session:
+        seed_sample_data(session)
+
+    def inline_dispatcher(*, campaign_task_id: str):
+        with testing_session() as session:
+            return run_agent_task(
+                campaign_task_id,
+                repository=DatabaseRepository(session),
+            )
+
+    monkeypatch.setattr(main_module, "dispatch_agent_task", inline_dispatcher)
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        workspace_path = create_runnable_studio_workspace(tmp_path)
+        scope_path = Path(workspace_path) / "scope" / "scope.yaml"
+        scope_path.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
+        assert client.post(
+            "/mythos/studio/workspaces/imports",
+            json={
+                "workspace_path": workspace_path,
+                "kind": "scope",
+                "source_path": str(scope_path),
+            },
+        ).status_code == 200
+        launch = client.post(
+            "/mythos/studio/workspaces/campaigns/launch",
+            json={
+                "workspace_path": workspace_path,
+                "default_asset": "api.example.com",
+            },
+        )
+        assert launch.status_code == 200
+        campaign_id = launch.json()["campaign"]["id"]
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.get_campaign(campaign_id)
+            assert campaign is not None
+            repository.save_validation_run(
+                campaign_id=campaign.id,
+                task_id=None,
+                approval_id=None,
+                validation_mode="two_account_authorization_check",
+                target_ref=f"campaign:{campaign.id}",
+                status="awaiting_approval",
+                safety_gate_state="awaiting_approval",
+                plan_digest="sha256:" + "c" * 64,
+                approval_required=True,
+                allowed_to_execute=False,
+                evidence_ref_count=0,
+                summary="Awaiting human validation review.",
+                payload={"source": "snapshot_refresh_guard"},
+            )
+            completed = repository.update_campaign_status(campaign.id, "completed")
+            assert completed is not None
+
+        refreshed = client.post(
+            f"/mythos/studio/workspaces/campaigns/{campaign_id}/snapshot-refresh",
+            json={
+                "workspace_path": workspace_path,
+                "actor": "operator",
+                "reason": "An open validation run must block refresh.",
+            },
+        )
+
+        assert refreshed.status_code == 409
+        assert refreshed.json() == {"detail": "validation_review_required"}
     finally:
         app.dependency_overrides.clear()
 
@@ -3170,7 +3547,7 @@ def test_workspace_runtime_blocks_local_evidence_when_snapshot_changes(
                     now=datetime.now(UTC) + timedelta(seconds=61),
                 )
 
-        for _ in range(3):
+        for _ in range(5):
             assert advance()["status"] == "dispatched"
         with testing_session() as session:
             repository = DatabaseRepository(session)
@@ -3323,7 +3700,10 @@ def test_internal_studio_service_runs_replay_with_safe_audit(
         ],
     }
     received_fact_packs = []
-    replay_reasoner = ReplayCandidateReasoner(payload)
+    replay_reasoner = ReplayCandidateReasoner(
+        payload,
+        allow_legacy_unbound=True,
+    )
 
     class RecordingReplayReasoner:
         async def generate(self, *, fact_pack, model_config, request_key):
@@ -3371,6 +3751,23 @@ def test_internal_studio_service_runs_replay_with_safe_audit(
             generation_stage.payload.get("model_failure_reason"),
             received_fact_packs[0].allowed_fact_refs,
         )
+        for key in (
+            "model_request_key",
+            "model_response_digest",
+            "model_response_schema",
+            "model_reasoner",
+            "model_replay_binding",
+            "raw_payload_processed",
+        ):
+            assert body["candidate_generation"][key] == generation_stage.payload[key]
+        assert len(body["candidate_generation"]["model_request_key"]) == 64
+        assert len(body["candidate_generation"]["model_response_digest"]) == 64
+        assert body["candidate_generation"]["model_response_schema"] == (
+            "cross_source_candidate_model_v1"
+        )
+        assert body["candidate_generation"]["model_reasoner"] == "replay"
+        assert body["candidate_generation"]["model_replay_binding"] == "legacy_unbound"
+        assert body["candidate_generation"]["raw_payload_processed"] is False
         assert len(llm_runs) == 1
         assert llm_runs[0].mode == "replay"
         assert "synthetic_replay_no_provider_call" in llm_runs[0].safety_notes
@@ -3435,7 +3832,8 @@ def test_internal_studio_service_rejects_invalid_replay_boundary_before_persiste
             {
                 "schema_version": "cross_source_candidate_model_v1",
                 "proposals": [],
-            }
+            },
+            allow_legacy_unbound=True,
         )
         if include_reasoner
         else None

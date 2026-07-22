@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
+from app.config import get_settings
 from app.db_models import ApprovalRecord, CampaignRecord, ValidationRunRecord
 import app.main as main_module
 from app.main import app
@@ -18,6 +19,13 @@ from app.worker.tasks import run_agent_task
 
 
 client = TestClient(app)
+AUTONOMOUS_RESEARCH_CAPABILITY = "a" * 43
+
+
+def autonomous_research_headers() -> dict[str, str]:
+    return {
+        "X-Mythos-Autonomous-Research-Capability": AUTONOMOUS_RESEARCH_CAPABILITY
+    }
 
 
 def build_testing_session():
@@ -199,6 +207,10 @@ def test_autonomous_runtime_tick_endpoint_uses_only_the_local_runtime_dispatcher
         with testing_session() as session:
             yield session
 
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
     app.dependency_overrides[get_session] = override_get_session
     try:
         with testing_session() as session:
@@ -250,7 +262,8 @@ def test_autonomous_runtime_tick_endpoint_uses_only_the_local_runtime_dispatcher
         )
 
         response = client.post(
-            f"/mythos/campaigns/{campaign.id}/autonomous-research/tick"
+            f"/mythos/campaigns/{campaign.id}/autonomous-research/tick",
+            headers=autonomous_research_headers(),
         )
 
         assert response.status_code == 200
@@ -262,6 +275,184 @@ def test_autonomous_runtime_tick_endpoint_uses_only_the_local_runtime_dispatcher
         assert calls[0][2] is main_module.dispatch_agent_task
     finally:
         app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_wakeup_endpoint_handoffs_to_the_shared_persisted_coordinator(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        calls = []
+
+        monkeypatch.setattr(
+            main_module,
+            "start_autonomous_research_wakeup_in_background",
+            lambda: calls.append("start") or True,
+            raising=False,
+        )
+        assert not hasattr(main_module, "run_autonomous_research_wakeup")
+
+        response = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 202
+        assert response.json() == {
+            "status": "accepted",
+            "stop_reason": "wakeup_accepted",
+            "processed_count": 0,
+            "outcome_counts": {},
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+        assert calls == ["start"]
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_research_http_endpoints_require_the_local_capability(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    calls = []
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        main_module,
+        "start_autonomous_research_wakeup_in_background",
+        lambda: calls.append("wakeup") or True,
+        raising=False,
+    )
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        missing = client.post("/mythos/campaigns/autonomous-wakeup")
+        foreign = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers={"Origin": "https://foreign.example.test"},
+        )
+        invalid = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers={
+                "X-Mythos-Autonomous-Research-Capability": "b" * 43,
+            },
+        )
+        tick = client.post(
+            "/mythos/campaigns/campaign_missing/autonomous-research/tick"
+        )
+        retry = client.post(
+            "/mythos/campaigns/campaign_missing/autonomous-research/tasks/task_missing/retry"
+        )
+
+        assert [
+            response.status_code for response in (missing, foreign, invalid, tick, retry)
+        ] == [403, 403, 403, 403, 403]
+        assert all(
+            response.json() == {"detail": "local_autonomous_capability_required"}
+            for response in (missing, foreign, invalid, tick, retry)
+        )
+        assert calls == []
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_wakeup_endpoint_accepts_a_coalesced_local_handoff(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        calls = []
+        monkeypatch.setattr(
+            main_module,
+            "start_autonomous_research_wakeup_in_background",
+            lambda: calls.append("coalesced") or False,
+            raising=False,
+        )
+        assert not hasattr(main_module, "run_autonomous_research_wakeup")
+
+        response = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 202
+        assert response.json()["status"] == "accepted"
+        assert response.json()["stop_reason"] == "wakeup_accepted"
+        assert response.json()["processed_count"] == 0
+        assert response.json()["outcome_counts"] == {}
+        assert all(
+            response.json()[field] is False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+        assert calls == ["coalesced"]
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_wakeup_endpoint_reports_a_fixed_handoff_failure(monkeypatch):
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+
+    def fail_start():
+        raise RuntimeError("token=not-for-response")
+
+    monkeypatch.setattr(
+        main_module,
+        "start_autonomous_research_wakeup_in_background",
+        fail_start,
+    )
+    try:
+        response = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "local_autonomous_wakeup_unavailable"}
+    finally:
+        get_settings.cache_clear()
 
 
 def test_autonomous_runtime_tick_endpoint_blocks_non_read_only_campaign(monkeypatch):
@@ -271,6 +462,10 @@ def test_autonomous_runtime_tick_endpoint_blocks_non_read_only_campaign(monkeypa
         with testing_session() as session:
             yield session
 
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
     app.dependency_overrides[get_session] = override_get_session
     monkeypatch.setattr(
         main_module,
@@ -297,7 +492,8 @@ def test_autonomous_runtime_tick_endpoint_blocks_non_read_only_campaign(monkeypa
             assert campaign is not None
 
         response = client.post(
-            f"/mythos/campaigns/{campaign.id}/autonomous-research/tick"
+            f"/mythos/campaigns/{campaign.id}/autonomous-research/tick",
+            headers=autonomous_research_headers(),
         )
 
         assert response.status_code == 200
@@ -307,6 +503,82 @@ def test_autonomous_runtime_tick_endpoint_blocks_non_read_only_campaign(monkeypa
             assert DatabaseRepository(session).list_campaign_tasks(campaign.id) == []
     finally:
         app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_runtime_retry_endpoint_requeues_only_after_explicit_request(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    dispatched_task_ids = []
+    monkeypatch.setattr(
+        main_module,
+        "dispatch_agent_task",
+        lambda *, campaign_task_id: dispatched_task_ids.append(campaign_task_id),
+    )
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        source_snapshot_digest = "sha256:" + "a" * 64
+
+        def failing_dispatcher(**_kwargs):
+            raise RuntimeError("queue unavailable")
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Explicit autonomous retry campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": source_snapshot_digest,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+            failed = main_module.tick_autonomous_research_campaign(
+                campaign.id,
+                repository=repository,
+                dispatcher=failing_dispatcher,
+            )
+            assert failed["status"] == "blocked"
+            campaign_id = campaign.id
+            task_id = failed["campaign_task_id"]
+
+        response = client.post(
+            "/mythos/campaigns/"
+            f"{campaign_id}/autonomous-research/tasks/{task_id}/retry",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "dispatched"
+        assert response.json()["campaign_task_id"] == task_id
+        assert dispatched_task_ids == [task_id]
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            assert repository.get_campaign(campaign_id).status == "running"
+            assert next(
+                stored_task
+                for stored_task in repository.list_campaign_tasks(campaign_id)
+                if stored_task.id == task_id
+            ).status == "dispatched"
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
 
 
 def test_autonomous_wakeup_candidates_are_db_bounded_and_minimally_projected(
@@ -921,6 +1193,7 @@ def test_autonomous_validation_result_is_imported_as_advisory_report_evidence():
             assert handoff is not None
             campaign_id = campaign.id
             handoff_id = handoff.id
+            report_task_id = report_task.id
             pipeline_run_id = pipeline_run.id
 
         handoff_response = client.post(
@@ -1013,12 +1286,129 @@ def test_autonomous_validation_result_is_imported_as_advisory_report_evidence():
         assert imported_response["payload"]["report_submission_allowed"] is False
         assert "secret-token" not in str(imported_response)
 
+        revision_request = {
+            "reviewer": "lead_report_reviewer",
+            "rationale": "Attach the redacted validation evidence; Authorization: Bearer secret-token",
+        }
+        missing_report_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json=revision_request,
+        )
+        assert missing_report_response.status_code == 409
+        assert missing_report_response.json() == {
+            "detail": "autonomous_report_review_missing"
+        }
+
+        with testing_session() as session:
+            DatabaseRepository(session).save_pipeline_stage(
+                pipeline_run_id=pipeline_run_id,
+                campaign_id=campaign_id,
+                task_id=report_task_id,
+                stage_key="autonomous_report_review",
+                stage_order=40,
+                status="completed",
+                input_refs=[f"pipeline_run:{pipeline_run_id}"],
+                output_refs=[f"campaign_task:{handoff_id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason="human_review_required",
+                payload={
+                    "schema_version": "autonomous_report_review_v1",
+                    "pipeline_run_id": pipeline_run_id,
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "report_drafts": [
+                        {
+                            "candidate_id": "H-003",
+                            "status": "unverified_hypothesis",
+                            "submission_blocked": True,
+                            "human_review_required": True,
+                            "execution_allowed": False,
+                            "validation_allowed": False,
+                            "report_submission_allowed": False,
+                            "confirmed_vulnerability": False,
+                        },
+                        {
+                            "candidate_id": "H-004",
+                            "status": "unverified_hypothesis",
+                            "submission_blocked": True,
+                            "human_review_required": True,
+                            "execution_allowed": False,
+                            "validation_allowed": False,
+                            "report_submission_allowed": False,
+                            "confirmed_vulnerability": False,
+                        },
+                    ],
+                    "raw_payload_processed": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                },
+            )
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            original_evidence_input_refs = list(evidence_stage.input_refs)
+            evidence_stage.input_refs = [
+                ref
+                for ref in evidence_stage.input_refs
+                if ref != f"validation_run:{validation_run_id}"
+            ]
+            session.add(evidence_stage)
+            session.commit()
+
+        missing_validation_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json=revision_request,
+        )
+        assert missing_validation_response.status_code == 409
+        assert missing_validation_response.json() == {
+            "detail": "validation_evidence_provenance_invalid"
+        }
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            evidence_stage.input_refs = original_evidence_input_refs
+            session.add(evidence_stage)
+            session.commit()
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            evidence_stage.input_refs = [
+                ref
+                for ref in original_evidence_input_refs
+                if ref != f"approval:{approval_id}"
+            ]
+            session.add(evidence_stage)
+            session.commit()
+
+        missing_approval_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json=revision_request,
+        )
+        assert missing_approval_response.status_code == 409
+        assert missing_approval_response.json() == {
+            "detail": "validation_evidence_provenance_invalid"
+        }
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            evidence_stage.input_refs = original_evidence_input_refs
+            session.add(evidence_stage)
+            session.commit()
+
         revision_response = client.post(
             f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
-            json={
-                "reviewer": "lead_report_reviewer",
-                "rationale": "Attach the redacted validation evidence; Authorization: Bearer secret-token",
-            },
+            json=revision_request,
         )
 
         assert revision_response.status_code == 200
@@ -1027,10 +1417,29 @@ def test_autonomous_validation_result_is_imported_as_advisory_report_evidence():
         assert revision["pipeline_run_id"] == pipeline_run_id
         assert revision["task_id"] == handoff_id
         assert f"pipeline_stage:{imported_response['id']}" in revision["input_refs"]
+        assert f"approval:{approval_id}" in revision["input_refs"]
+        assert f"validation_run:{validation_run_id}" in revision["input_refs"]
         assert revision["payload"]["status"] == "submission_blocked_human_review"
-        assert revision["payload"]["report_draft_count"] == 1
+        assert revision["payload"]["report_draft_count"] == 2
         assert revision["payload"]["candidate_count"] == 1
+        assert revision["payload"]["candidate_ids"] == ["H-003"]
         assert revision["payload"]["validation_evidence_ref_count"] == 1
+        assert revision["payload"]["validation_outcome"] == "observed"
+        assert revision["payload"]["validation_result_review"] == {
+            "source_type": "manual_safe_observation",
+            "redaction_status": "redacted",
+            "evidence_quality": "adequate",
+            "quality_score": 45,
+            "promotion_review_ready": False,
+            "quality_reasons": [
+                "manual_result_recorded",
+                "has_report_safe_evidence",
+                "sensitive_material_redacted",
+                "promotion_blocked_by_redaction_review",
+            ],
+            "safe_evidence_ref_count": 1,
+            "unsafe_evidence_ref_count": 0,
+        }
         assert revision["payload"]["human_review_required"] is True
         assert revision["payload"]["execution_allowed"] is False
         assert revision["payload"]["candidate_promotion_allowed"] is False
@@ -2067,6 +2476,109 @@ def test_campaign_api_lists_pipeline_stages_without_payload_leaks():
         assert "secret-token" not in str(stages)
         assert "session=secret" not in str(stages)
         assert "authorization" not in str(stages).lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_pipeline_stages_project_terminal_agent_timing_and_redacted_errors():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Timeline timing projection campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="campaign_observation",
+                agent_type="orchestrator_agent",
+                title="Observe campaign",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            agent_run = repository.save_agent_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                agent_type="orchestrator_agent",
+                status="failed",
+                input_refs=[f"campaign_task:{task.id}"],
+                output_refs=[],
+                tool_calls=[],
+                safety_gate_state="blocked",
+                stop_reason="api_key=timeline-secret",
+                payload={},
+            )
+            agent_run.created_at = datetime(2026, 7, 22, 9, 0, tzinfo=UTC)
+            agent_run.finished_at = agent_run.created_at + timedelta(seconds=42)
+            session.commit()
+
+            terminal_stage = repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=task.id,
+                stage_key="campaign_observation",
+                stage_order=0,
+                status="failed",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[f"agent_run:{agent_run.id}"],
+                safety_gate_state="blocked",
+                stop_reason="dispatch_failed",
+                payload={},
+            )
+            fallback_stage = repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=task.id,
+                stage_key="campaign_tick",
+                stage_order=1,
+                status="failed",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[],
+                safety_gate_state="blocked",
+                stop_reason="dispatch_failed",
+                payload={},
+            )
+            pending_stage = repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=None,
+                stage_key="campaign_tick",
+                stage_order=2,
+                status="dispatched",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[],
+                safety_gate_state="allowed",
+                stop_reason=None,
+                payload={},
+            )
+            campaign_id = campaign.id
+            terminal_stage_id = terminal_stage.id
+            fallback_stage_id = fallback_stage.id
+            pending_stage_id = pending_stage.id
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+
+        assert response.status_code == 200
+        stages = {stage["id"]: stage for stage in response.json()}
+        assert stages[terminal_stage_id]["duration_seconds"] == 42
+        assert stages[terminal_stage_id]["error_summary"] == "[REDACTED]"
+        assert stages[fallback_stage_id]["duration_seconds"] == 42
+        assert stages[fallback_stage_id]["error_summary"] == "[REDACTED]"
+        assert stages[pending_stage_id]["duration_seconds"] is None
+        assert stages[pending_stage_id]["error_summary"] is None
+        assert "timeline-secret" not in str(stages)
     finally:
         app.dependency_overrides.clear()
 
@@ -3575,6 +4087,8 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
             {
                 "campaign_id": campaign_id,
                 "created_at": materialized_stages[0]["created_at"],
+                "duration_seconds": None,
+                "error_summary": None,
                 "id": materialized_stages[0]["id"],
                 "input_refs": [
                     f"campaign:{campaign_id}",

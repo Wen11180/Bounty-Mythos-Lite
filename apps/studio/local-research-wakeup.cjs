@@ -1,11 +1,37 @@
 const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const maxResponseBytes = 64 * 1024;
 const minimumIntervalMs = 60_000;
-const maximumCampaignsPerWake = 20;
+const maxCampaignsPerWake = 20;
+const wakeStatuses = new Set([
+  "accepted",
+  "completed",
+  "failed",
+  "lease_held",
+  "lease_lost",
+  "not_due",
+]);
+const capabilityPattern = /^[A-Za-z0-9_-]{43,128}$/u;
+const wakeStopReasons = new Set([
+  "wakeup_accepted",
+  "wakeup_candidate_invalid",
+  "wakeup_candidate_query_failed",
+  "wakeup_campaign_tick_failed",
+  "wakeup_lease_held",
+  "wakeup_lease_lost",
+  "wakeup_not_due",
+]);
+const wakeSafetyFields = [
+  "execution_allowed",
+  "dispatch_allowed",
+  "validation_allowed",
+  "candidate_promotion_allowed",
+  "report_submission_allowed",
+];
 
 function createLocalResearchWakeup({
   fetchImpl = globalThis.fetch,
   getBaseUrl,
+  getCapability,
   setIntervalImpl = setInterval,
   clearIntervalImpl = clearInterval,
   intervalMs = minimumIntervalMs,
@@ -15,6 +41,7 @@ function createLocalResearchWakeup({
   if (
     typeof fetchImpl !== "function"
     || typeof getBaseUrl !== "function"
+    || typeof getCapability !== "function"
     || typeof setIntervalImpl !== "function"
     || typeof clearIntervalImpl !== "function"
     || typeof onError !== "function"
@@ -30,7 +57,6 @@ function createLocalResearchWakeup({
   let activeWakeController = null;
   let timer = null;
   let scheduling = false;
-  let campaignCursor = null;
 
   function wake() {
     if (activeWake) {
@@ -58,64 +84,23 @@ function createLocalResearchWakeup({
 
   async function wakeDueCampaigns(signal) {
     const origin = exactLoopbackApiOrigin(getBaseUrl());
-    const cursorQuery = campaignCursor === null
-      ? ""
-      : `?after_id=${encodeURIComponent(campaignCursor)}`;
-    const campaigns = await requestJson(
-      `${origin}/mythos/campaigns/autonomous-wakeup-candidates${cursorQuery}`,
-      "GET",
+    const capability = autonomousResearchCapability(getCapability());
+    const result = await requestJson(
+      `${origin}/mythos/campaigns/autonomous-wakeup`,
+      "POST",
       signal,
+      capability,
     );
     if (signal.aborted) {
       return [];
     }
-    if (!Array.isArray(campaigns)) {
-      throw new Error("local_research_campaign_list_invalid");
+    if (!isAutonomousWakeupResult(result)) {
+      throw new Error("local_research_wakeup_response_invalid");
     }
-
-    const results = [];
-    let attemptedCampaigns = 0;
-    let nextCampaignCursor = null;
-    for (const campaign of campaigns) {
-      if (signal.aborted) {
-        return results;
-      }
-      if (attemptedCampaigns >= maximumCampaignsPerWake) {
-        break;
-      }
-      if (!isCampaignCursorItem(campaign)) {
-        throw new Error("local_research_campaign_list_invalid");
-      }
-      nextCampaignCursor = campaign.id;
-      if (!isEligibleCampaign(campaign)) {
-        continue;
-      }
-      attemptedCampaigns += 1;
-      try {
-        const tick = await requestJson(
-          `${origin}/mythos/campaigns/${campaign.id}/autonomous-research/tick`,
-          "POST",
-          signal,
-        );
-        if (signal.aborted) {
-          return results;
-        }
-        if (!tick || typeof tick !== "object" || Array.isArray(tick) || typeof tick.status !== "string") {
-          throw new Error("local_research_tick_response_invalid");
-        }
-        results.push({ campaign_id: campaign.id, status: tick.status });
-      } catch {
-        if (signal.aborted) {
-          return results;
-        }
-        reportError(new Error("local_research_campaign_tick_failed"));
-      }
-    }
-    campaignCursor = campaigns.length === 0 ? null : nextCampaignCursor;
-    return results;
+    return result;
   }
 
-  async function requestJson(url, method, wakeSignal) {
+  async function requestJson(url, method, wakeSignal, capability) {
     const controller = new AbortController();
     const abortRequest = () => controller.abort();
     const timeout = setTimeout(abortRequest, timeoutMs);
@@ -132,6 +117,9 @@ function createLocalResearchWakeup({
           method,
           redirect: "error",
           signal: controller.signal,
+          headers: {
+            "X-Mythos-Autonomous-Research-Capability": capability,
+          },
         });
       } catch {
         throw new Error("local_research_wakeup_request_failed");
@@ -239,24 +227,75 @@ async function readBoundedBody(response, controller, wakeSignal) {
   }
 }
 
-function isEligibleCampaign(campaign) {
-  return (
-    campaign
-    && typeof campaign === "object"
-    && !Array.isArray(campaign)
-    && /^campaign_[0-9a-f]{32}$/u.test(campaign.id ?? "")
-    && campaign.autonomy_level === "level_0_read_only"
-    && campaign.scope_status === "in_scope"
-    && campaign.status === "running"
-  );
+function isAutonomousWakeupResult(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const expectedKeys = [
+    "status",
+    "stop_reason",
+    "processed_count",
+    "outcome_counts",
+    ...wakeSafetyFields,
+  ];
+  if (
+    Object.keys(value).length !== expectedKeys.length
+    || expectedKeys.some((key) => !(key in value))
+    || !wakeStatuses.has(value.status)
+    || !Number.isInteger(value.processed_count)
+    || value.processed_count < 0
+    || value.processed_count > maxCampaignsPerWake
+    || !value.outcome_counts
+    || typeof value.outcome_counts !== "object"
+    || Array.isArray(value.outcome_counts)
+    || wakeSafetyFields.some((field) => value[field] !== false)
+  ) {
+    return false;
+  }
+  if (!isWakeStopReason(value.status, value.stop_reason)) {
+    return false;
+  }
+  let outcomeTotal = 0;
+  for (const [status, count] of Object.entries(value.outcome_counts)) {
+    if (
+      !/^[a-z][a-z0-9_:-]{0,127}$/u.test(status)
+      || !Number.isInteger(count)
+      || count < 0
+      || count > maxCampaignsPerWake
+    ) {
+      return false;
+    }
+    outcomeTotal += count;
+  }
+  return outcomeTotal === value.processed_count;
 }
 
-function isCampaignCursorItem(campaign) {
+function autonomousResearchCapability(value) {
+  if (typeof value !== "string" || !capabilityPattern.test(value)) {
+    throw new Error("local_research_wakeup_capability_required");
+  }
+  return value;
+}
+
+function isWakeStopReason(status, stopReason) {
+  if (status === "accepted") {
+    return stopReason === "wakeup_accepted";
+  }
+  if (status === "completed") {
+    return stopReason === null || stopReason === "wakeup_campaign_tick_failed";
+  }
+  if (status === "failed") {
+    return wakeStopReasons.has(stopReason)
+      && stopReason !== "wakeup_campaign_tick_failed"
+      && stopReason !== "wakeup_lease_held"
+      && stopReason !== "wakeup_lease_lost";
+  }
+  if (status === "not_due") {
+    return stopReason === "wakeup_not_due";
+  }
   return (
-    campaign
-    && typeof campaign === "object"
-    && !Array.isArray(campaign)
-    && /^campaign_[0-9a-f]{32}$/u.test(campaign.id ?? "")
+    (status === "lease_held" && stopReason === "wakeup_lease_held")
+    || (status === "lease_lost" && stopReason === "wakeup_lease_lost")
   );
 }
 

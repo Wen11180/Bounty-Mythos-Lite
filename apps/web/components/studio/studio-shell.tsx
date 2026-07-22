@@ -111,7 +111,7 @@ export function StudioShell({
         </div>
       </header>
 
-      <Tabs className="block gap-0" defaultValue="overview">
+      <Tabs className="!block gap-0" defaultValue="overview">
         <TabsList
           aria-label="Studio 移动视图"
           className="grid h-11 w-full grid-cols-3 rounded-none border-b border-[var(--cc-border)] bg-transparent p-0 sm:hidden"
@@ -122,16 +122,19 @@ export function StudioShell({
           <TabsTrigger className="rounded-none" value="details">详情</TabsTrigger>
         </TabsList>
 
-        <div className="mx-auto grid max-w-[1800px] min-[1100px]:grid-cols-[260px_minmax(0,1fr)_390px]">
+        <div className="mx-auto grid w-full max-w-[1800px] min-[1100px]:grid-cols-[260px_minmax(0,1fr)_390px]">
           <TabsContent
-            className="m-0 data-[state=inactive]:hidden sm:contents"
+            className="m-0 min-w-0 data-[state=inactive]:hidden sm:contents"
             forceMount
             tabIndex={-1}
             value="overview"
           >
+            <section className="min-w-0 p-4 lg:p-6 min-[1100px]:col-start-2" id="studio-main">
+              {children}
+            </section>
             <aside
               aria-label="工作区导航"
-              className="border-r border-[var(--cc-border)] bg-[var(--cc-surface)] p-4 min-[1100px]:sticky min-[1100px]:top-16 min-[1100px]:h-[calc(100dvh-4rem)] min-[1100px]:overflow-y-auto"
+              className="min-w-0 border-r border-[var(--cc-border)] bg-[var(--cc-surface)] p-4 min-[1100px]:col-start-1 min-[1100px]:row-start-1 min-[1100px]:sticky min-[1100px]:top-16 min-[1100px]:h-[calc(100dvh-4rem)] min-[1100px]:overflow-y-auto"
             >
               <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-[var(--cc-text-muted)]">
                 <Menu aria-hidden="true" className="size-4" />
@@ -139,9 +142,6 @@ export function StudioShell({
               </div>
               {navigation}
             </aside>
-            <section className="min-w-0 p-4 lg:p-6" id="studio-main">
-              {children}
-            </section>
           </TabsContent>
 
           {inspectorPlacement === "desktop" ? <aside

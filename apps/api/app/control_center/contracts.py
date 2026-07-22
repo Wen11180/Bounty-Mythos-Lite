@@ -57,6 +57,38 @@ class ResearchQualitySummary(StrictResponseModel):
     median_human_review_seconds: float | None = Field(default=None, ge=0)
 
 
+class AutonomousWakeupHealthSummary(StrictResponseModel):
+    status: Literal[
+        "not_started",
+        "active",
+        "healthy",
+        "degraded",
+        "expired_lease",
+        "invalid_lease",
+        "stale",
+    ]
+    last_heartbeat_at: datetime | None = None
+    heartbeat_age_seconds: int | None = Field(default=None, ge=0)
+    lease_active: bool
+    lease_expires_at: datetime | None = None
+    has_more_campaigns: bool
+    scheduled_interval_seconds: int = Field(ge=1)
+    last_cycle_completed_at: datetime | None = None
+    last_cycle_status: Literal["not_finished", "completed", "failed"]
+    last_cycle_stop_reason: Literal[
+        "wakeup_candidate_invalid",
+        "wakeup_candidate_query_failed",
+        "wakeup_campaign_tick_failed",
+    ] | None = None
+    last_cycle_processed_count: int = Field(ge=0)
+    last_cycle_outcome_counts: dict[str, int] = Field(default_factory=dict)
+    execution_allowed: Literal[False] = False
+    dispatch_allowed: Literal[False] = False
+    validation_allowed: Literal[False] = False
+    candidate_promotion_allowed: Literal[False] = False
+    report_submission_allowed: Literal[False] = False
+
+
 class ReportReadinessSummary(StrictResponseModel):
     available: bool
     status: str
@@ -95,6 +127,7 @@ class ControlCenterOverviewResponse(StrictResponseModel):
     campaigns: list[CampaignOverviewSummary] = Field(default_factory=list)
     candidates: list[CandidateQueueSummary] = Field(default_factory=list)
     research_quality: ResearchQualitySummary
+    autonomous_wakeup: AutonomousWakeupHealthSummary | None = None
     report_readiness: ReportReadinessSummary
     recent_events: list[SanitizedEventSummary] = Field(default_factory=list)
 
