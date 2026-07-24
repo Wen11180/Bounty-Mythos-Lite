@@ -1039,7 +1039,7 @@ def test_typescript_replay_responses_pass_real_schema_and_fact_validation():
                 proposal["affected_endpoint"]["method"],
                 proposal["affected_endpoint"]["path"],
             )
-            for proposal in payload["proposals"]
+            for proposal in payload["response"]["proposals"]
         } == {
             (gap.route_method, gap.route_path)
             for gap in gaps
@@ -1053,7 +1053,10 @@ def test_typescript_replay_responses_pass_real_schema_and_fact_validation():
                     provider=ProviderName.OPENAI,
                     model="fixture-replay-v1",
                 ),
-                reasoner=ReplayCandidateReasoner(payload),
+                reasoner=ReplayCandidateReasoner(
+                    payload["response"],
+                    allow_legacy_unbound=True,
+                ),
             )
         )
 
@@ -1081,7 +1084,7 @@ def test_typescript_dedup_replays_give_retained_root_unique_priority():
             proposal["affected_code_path"]["symbol_name"].lower(): risk_priority[
                 proposal["risk_estimate"]
             ]
-            for proposal in replay["proposals"]
+            for proposal in replay["response"]["proposals"]
         }
 
         assert priorities[retained_symbol] > max(
@@ -1196,7 +1199,7 @@ def test_typescript_replay_loader_rejects_unsafe_text(tmp_path: Path):
     case = load_release_fixture_suite(fixture_root, "development")[0]
     response_path = case.root / "replay" / "response.json"
     payload = json.loads(response_path.read_text(encoding="utf-8"))
-    payload["proposals"][0]["impact_rationale"] = (
+    payload["response"]["proposals"][0]["impact_rationale"] = (
         "Authorization: Bearer synthetic-placeholder"
     )
     _write_json(response_path, payload)
@@ -1268,7 +1271,10 @@ def test_invalid_replay_schema_fails_in_real_reasoner_not_fixture_loader(
     )
 
     result = asyncio.run(
-        ReplayCandidateReasoner(loaded).generate(
+        ReplayCandidateReasoner(
+            loaded,
+            allow_legacy_unbound=True,
+        ).generate(
             fact_pack=fact_pack,
             model_config=CandidateModelConfig(
                 provider=ProviderName.OPENAI,

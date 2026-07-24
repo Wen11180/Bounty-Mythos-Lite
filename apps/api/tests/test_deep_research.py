@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.deep_research import (
     STATUS_EMPTY,
     STATUS_PACKAGE_MISSING,
@@ -145,6 +147,145 @@ def test_build_deep_research_plan_creates_chains_variants_and_long_horizon_queue
     )
     assert "no_exploit_generation" in plan.safety_invariants
     assert "human_review_required_before_validation" in plan.safety_invariants
+
+
+@pytest.mark.parametrize(
+    ("vuln_type", "expected_stages", "expected_invariant", "expected_refutation_steps"),
+    [
+        (
+            "ssrf",
+            ["entrypoint", "url_policy", "egress_sink", "impact_review"],
+            (
+                "Outbound requests to user-controlled URLs must validate the target "
+                "against private networks, metadata endpoints, and unsafe schemes."
+            ),
+            [
+                "trace local URL normalization and egress policy before the outbound sink",
+                "confirm the policy rejects private, metadata, and unsafe scheme target classes",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+        (
+            "path_traversal",
+            ["entrypoint", "path_canonicalization", "filesystem_sink", "impact_review"],
+            "User-controlled file paths must be sanitized before reaching filesystem read sinks.",
+            [
+                "trace local path canonicalization or safe-join before the filesystem sink",
+                "confirm the boundary remains inside the intended local root",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+        (
+            "mass_assignment",
+            ["entrypoint", "field_allowlist", "state_update", "impact_review"],
+            (
+                "User-controlled update payloads must not set privilege or tenancy fields "
+                "without an allowlist."
+            ),
+            [
+                "trace the local schema or field allowlist before the update sink",
+                "confirm privilege and tenancy fields remain outside the writable set",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+        (
+            "command_injection",
+            ["entrypoint", "command_policy", "command_sink", "impact_review"],
+            (
+                "Command selection and arguments must be constrained by an explicit local "
+                "allowlist or structured validation before command-execution sinks."
+            ),
+            [
+                "trace command identifier and argument validation before the execution sink",
+                "confirm an explicit local allowlist constrains the mapped command path",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+        (
+            "unsafe_deserialization",
+            ["entrypoint", "loader_policy", "deserialization_sink", "impact_review"],
+            (
+                "Serialized input must pass an explicit type and loader policy before unsafe "
+                "deserialization sinks."
+            ),
+            [
+                "trace serialized-input validation and loader policy before deserialization",
+                "confirm local type and format restrictions run before object construction",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+        (
+            "file_upload",
+            ["entrypoint", "upload_policy", "storage_sink", "impact_review"],
+            (
+                "Uploaded files must pass explicit type, filename, and storage policy checks "
+                "before upload-storage sinks."
+            ),
+            [
+                "trace type, filename, and storage policy checks before upload storage",
+                "confirm unsupported fixture metadata is rejected before storage",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+        (
+            "business_logic",
+            [
+                "entrypoint",
+                "server_amount_derivation",
+                "financial_action",
+                "impact_review",
+            ],
+            (
+                "Financial amounts, credits, and refunds must be derived from trusted "
+                "server-side order or account state before financial action sinks."
+            ),
+            [
+                "trace server-side amount or credit derivation before the financial action",
+                "confirm trusted order or account state overrides client-supplied values",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+        (
+            "agent_tool_authz_gap",
+            ["entrypoint", "agent_tool_policy", "tool_dispatch", "impact_review"],
+            (
+                "Agent tool dispatch must verify the current user, agent policy, and task "
+                "context permit the selected tool before invocation."
+            ),
+            [
+                "trace current-user, agent-policy, and task-context checks before tool dispatch",
+                "confirm selected tool and resource scope are rechecked before invocation",
+                "require redacted evidence and human review before promotion",
+            ],
+        ),
+    ],
+)
+def test_build_deep_research_plan_preserves_static_family_reasoning(
+    vuln_type: str,
+    expected_stages: list[str],
+    expected_invariant: str,
+    expected_refutation_steps: list[str],
+):
+    plan = build_deep_research_plan(
+        {
+            "source_hypotheses": [
+                {
+                    "hypothesis_id": "H-static",
+                    "vuln_type": vuln_type,
+                    "location": "local_handler",
+                    "risk": "high",
+                    "reason": "static candidate",
+                }
+            ]
+        }
+    )
+
+    assert plan.vulnerability_chains[0].stages == expected_stages
+    assert plan.vulnerability_chains[0].execution_allowed is False
+    assert plan.cross_file_reasoning[0].invariant == expected_invariant
+    assert plan.cross_file_reasoning[0].refutation_steps == expected_refutation_steps
+    assert plan.refutation_matrix[0].execution_allowed is False
+    assert plan.refutation_matrix[0].human_review_required is True
 
 
 def test_build_knowledge_artifact_exports_advisory_reviewable_memory_without_secrets():

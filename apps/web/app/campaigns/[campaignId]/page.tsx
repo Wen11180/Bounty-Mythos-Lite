@@ -2,6 +2,7 @@ import { revalidatePath } from "next/cache";
 import { AlertTriangle, ArrowLeft, ClipboardCheck, Gauge, ShieldCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
+import { AutopilotCampaignSection } from "@/components/autopilot/autopilot-campaign-section";
 import { getCampaignControlCenter, materializeResearchQueueTask } from "@/lib/api";
 import { toCampaignControlSummary } from "@/lib/campaigns-data";
 
@@ -77,6 +78,10 @@ export default async function CampaignDetailPage({ params }: PageProps) {
               {summary.defaultAsset}
             </p>
             <nav className="mt-4 flex flex-wrap gap-2">
+              <AuditLink
+                href={`/campaigns/${encodeURIComponent(campaignId)}/autopilot`}
+                label="Autopilot"
+              />
               <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/tasks`} label="Research Review" />
               <AuditLink href={`/campaigns/${encodeURIComponent(campaignId)}/agent-runs`} label="Agent Audit" />
               <AuditLink
@@ -182,6 +187,10 @@ export default async function CampaignDetailPage({ params }: PageProps) {
           </div>
         </div>
       </header>
+
+      <section className="border-b border-[var(--line)] py-5" id="campaign-autopilot">
+        <AutopilotCampaignSection campaignId={campaignId} />
+      </section>
 
       <section className="border-b border-[var(--line)] py-5">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2">

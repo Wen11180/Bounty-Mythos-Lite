@@ -5,6 +5,7 @@ from typing import Any
 
 VERSION = "candidate_hunter_release_v1"
 SUITE_VERSION = "candidate_hunter_release_suite_v1"
+AUTHORIZED_LAB_VERSION = "candidate_hunter_authorized_lab_v1"
 MAX_CANDIDATES = 5
 OUTPUT_DISPOSITIONS = {"retained", "refuted", "deduplicated", "suppressed"}
 GOLD_DISPOSITIONS = {"retain", "refute", "deduplicate", "suppress"}
@@ -33,6 +34,44 @@ def evaluate_candidate_hunter_release_v1(
         require_metric_denominators=True,
         require_metric_thresholds=True,
     )
+
+
+def evaluate_candidate_hunter_authorized_lab_v1(
+    normalized_output: Any,
+    gold_oracle: Any,
+) -> dict[str, Any]:
+    """Evaluate one authorized lab without requiring unrelated metric families."""
+    result = _evaluate_candidate_hunter_release_v1(
+        normalized_output,
+        gold_oracle,
+        require_metric_denominators=False,
+        require_metric_thresholds=False,
+    )
+    metrics = result["metrics"]
+    applicable_metrics = [
+        name
+        for name, metric in metrics.items()
+        if metric["denominator"] > 0
+    ]
+    not_applicable_metrics = [
+        name
+        for name, metric in metrics.items()
+        if metric["denominator"] == 0
+    ]
+    passed = (
+        result["status"] == "passed"
+        and not result["false_positives"]
+        and not result["missed_retained_roots"]
+        and all(metrics[name]["passed"] for name in applicable_metrics)
+    )
+    return {
+        **result,
+        "version": AUTHORIZED_LAB_VERSION,
+        "status": "passed" if passed else "failed",
+        "evaluation_scope": "authorized_lab_package",
+        "applicable_metrics": applicable_metrics,
+        "not_applicable_metrics": not_applicable_metrics,
+    }
 
 
 def _evaluate_candidate_hunter_release_v1(
@@ -930,6 +969,7 @@ def _text(value: Any) -> str:
 
 
 __all__ = [
+    "evaluate_candidate_hunter_authorized_lab_v1",
     "evaluate_candidate_hunter_release_suite_v1",
     "evaluate_candidate_hunter_release_v1",
 ]

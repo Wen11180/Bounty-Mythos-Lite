@@ -36,6 +36,13 @@ CARD_STATUSES = {
     "suppressed",
 }
 ATTEMPT_STATUSES = {"open", "killed", "survived", "insufficient_evidence"}
+PUBLIC_FILTER_REFUTABLE_VULN_TYPES = {
+    "authorization",
+    "authorization_boundary",
+    "bola_idor",
+    "broken_access_control",
+    "idor",
+}
 
 
 def _text(value: object) -> str:
@@ -79,7 +86,13 @@ def _route_label(state: dict[str, Any]) -> str:
     return f"{method} {path}".strip()
 
 
+def _public_filter_refutes_candidate(state: dict[str, Any]) -> bool:
+    return _text(state.get("vuln_type")).lower() in PUBLIC_FILTER_REFUTABLE_VULN_TYPES
+
+
 def _broken_invariant(state: dict[str, Any]) -> str:
+    if declared_invariant := _text(state.get("broken_invariant")):
+        return declared_invariant
     root = _text(state.get("root_cause_id"))
     if ":" in root:
         root = root.rpartition(":")[2]
@@ -290,7 +303,11 @@ def build_falsification_card(
         )
 
     # impact / intended public surface
-    if public_ref and public_ref in refs:
+    if (
+        public_ref
+        and public_ref in refs
+        and _public_filter_refutes_candidate(state)
+    ):
         attempts.append(
             _attempt(
                 dimension="impact",
@@ -298,6 +315,36 @@ def build_falsification_card(
                 status="killed",
                 evidence_refs=[public_ref],
                 rationale="Public/shared filter fact indicates non-vulnerability impact class.",
+            )
+        )
+    elif public_ref and public_ref in refs:
+        attempts.append(
+            _attempt(
+                dimension="impact",
+                question="Does public route status refute this non-authorization security boundary?",
+                status="survived",
+                evidence_refs=[public_ref],
+                rationale=(
+                    "Public route status does not refute the mapped non-authorization "
+                    "security boundary."
+                ),
+            )
+        )
+    elif not _public_filter_refutes_candidate(state):
+        attempts.append(
+            _attempt(
+                dimension="impact",
+                question=(
+                    "Does local evidence show the mapped non-authorization behavior is "
+                    "intended or non-sensitive by design?"
+                ),
+                status="survived",
+                evidence_refs=refs[:1]
+                or ([f"candidate:{candidate_id}"] if candidate_id else []),
+                rationale=(
+                    "No local design or impact fact refutes the mapped non-authorization "
+                    "security boundary."
+                ),
             )
         )
     else:

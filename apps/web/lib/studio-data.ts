@@ -1467,6 +1467,27 @@ export type StudioCandidateCard = {
   validationMode: string;
 };
 
+export type StudioControlCenterView = {
+  candidates: StudioCandidateCard[];
+  inspectorTabs: ["候选详情", "证据", "验证计划", "报告草稿"];
+  mobileTabs: ["总览", "候选", "详情"];
+  permissions: {
+    executionAllowed: false;
+    reportSubmissionAllowed: false;
+    validationAllowed: false;
+  };
+  reportState: {
+    humanReviewRequired: true;
+    label: "submission-blocked";
+    submissionBlocked: true;
+  };
+  selectedCandidate: StudioCandidateCard | null;
+};
+
+export function toStudioConversationActorLabel(actor?: string): "Mythos Agent" | "研究员" {
+  return actor === "operator" ? "研究员" : "Mythos Agent";
+}
+
 export function toStudioWorkspaceSummary(
   manifest: StudioWorkspaceManifest,
 ): StudioWorkspaceSummary {
@@ -1981,13 +2002,12 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
     })),
     candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
     gates: {
-      humanReviewRequired: mission?.quality_gates?.human_review_required === true,
-      reportSubmissionAllowed: mission?.quality_gates?.report_submission_allowed === true,
-      submissionBlocked: mission?.quality_gates?.submission_blocked !== false,
+      humanReviewRequired: true,
+      reportSubmissionAllowed: false,
+      submissionBlocked: true,
       topCandidateQualityGate: mission?.quality_gates?.top_candidate_quality_gate === true,
       topCandidatesLimited: mission?.quality_gates?.top_candidates_limited === true,
-      validationExecutionAllowed:
-        mission?.quality_gates?.validation_execution_allowed === true,
+      validationExecutionAllowed: false,
     },
     modeLabel:
       mission?.mode === "local_ai_vulnerability_research_workbench"
@@ -2345,6 +2365,55 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       validationMode: safeText(candidate.validation_mode, "manual_review"),
     };
   });
+}
+
+export function toStudioControlCenterView(
+  candidates: StudioCandidateCard[],
+  selectedCandidateId: string | null,
+): StudioControlCenterView {
+  const localizedCandidates = candidates.map((candidate) => ({
+    ...candidate,
+    affectedCodePath:
+      candidate.affectedCodePath === "Code path needs review"
+        ? "待补充代码路径"
+        : candidate.affectedCodePath,
+    affectedEndpoint:
+      candidate.affectedEndpoint === "Endpoint needs review"
+        ? "待补充受影响端点"
+        : candidate.affectedEndpoint,
+    evidenceTraceSummary: {
+      ...candidate.evidenceTraceSummary,
+      executionAllowed: false,
+      reportSubmissionAllowed: false,
+      validationAllowed: false,
+    },
+    reportReadiness: {
+      ...candidate.reportReadiness,
+      reportSubmissionAllowed: false,
+      submissionBlocked: true,
+    },
+  }));
+  const selectedCandidate =
+    localizedCandidates.find((candidate) => candidate.id === selectedCandidateId)
+    ?? localizedCandidates[0]
+    ?? null;
+
+  return {
+    candidates: localizedCandidates,
+    inspectorTabs: ["候选详情", "证据", "验证计划", "报告草稿"],
+    mobileTabs: ["总览", "候选", "详情"],
+    permissions: {
+      executionAllowed: false,
+      reportSubmissionAllowed: false,
+      validationAllowed: false,
+    },
+    reportState: {
+      humanReviewRequired: true,
+      label: "submission-blocked",
+      submissionBlocked: true,
+    },
+    selectedCandidate,
+  };
 }
 
 export function toStudioCampaignHunterCandidateCards(

@@ -1,19 +1,25 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import hmac
 import json
 from pathlib import Path
+import re
 from threading import RLock
 from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import JSON, String, cast, func, update
+from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.orm import Session
 
-from app.artifact_ingestion import normalize_artifact
+from app.artifact_ingestion import extract_sbom_dependency_signals, normalize_artifact
 from app.black_box_hunter import BlackBoxExecutionLease, BlackBoxStop, LeaseApproval
 from app.black_box_hunter.audit import (
     BlackBoxAuditError,
@@ -40,6 +46,13 @@ from app.black_box_hunter.remote_profile import (
     issue_remote_human_lease,
 )
 from app.config import get_settings
+from app.control_center import (
+    ControlCenterCampaignNotFound,
+    ControlCenterOverviewResponse,
+    build_control_center_overview,
+)
+from app.control_center.events import stream_control_center_events
+from app.control_center.contracts import AutonomousWakeupHealthSummary
 from app.db import get_session
 from app.db_models import (
     AgentRunRecord,
@@ -57,16 +70,37 @@ from app.db_models import (
     ScannerRunRecord,
     ValidationRunRecord,
 )
+from app.execution_registry import (
+    ExecutionAuthorizationRequest,
+    ToolCapability,
+    default_execution_registry,
+)
+from app.execution_registry.local_runner import (
+    RegisteredLocalToolRun,
+    RegisteredLocalToolRunRequest,
+    local_tool_advisory_artifact_data,
+    run_registered_local_tool,
+)
 from app.campaign_orchestrator import (
     campaign_elapsed_minutes,
     campaign_token_used_from_runs,
     tick_campaign,
+)
+from app.autonomous_research_runtime import (
+    AUTONOMOUS_RESEARCH_SNAPSHOT_REFRESH_STAGE_KEY,
+    build_autonomous_research_snapshot_refresh_payload,
+    retry_autonomous_research_task,
+    tick_autonomous_research_campaign,
+)
+from app.autonomous_research_wakeup import (
+    build_autonomous_research_wakeup_health,
 )
 from app.candidate_hunter_loop import (
     build_candidate_hunter_observations,
     load_candidate_hunter_projection,
     run_candidate_hunter_loop,
 )
+from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
 from app.cross_source_candidate_generator import (
     CandidateModelConfig,
     CandidateReasoner,
@@ -86,6 +120,8 @@ from app.intelligence_benchmark import (
 from app.llm.base import LLMRequest, LLMResponse, ProviderName
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
+from app.bounty_autopilot.observations import ObservationRecord
+from app.bounty_autopilot.plans import ValidationPlan
 from app.mythos_brain import (
     LearningEvidenceQuality,
     LearningOutcome,
@@ -117,6 +153,34 @@ from app.mythos_pipeline import (
     count_blocked,
 )
 from app.policy_ingestion import parse_policy_text
+from app.program_rule_intake.advisory import build_configured_program_rule_advisory
+from app.program_rule_intake.contracts import (
+    NormalizedRuleDocument,
+    ProgramRuleClaimCompleteRequest,
+    ProgramRuleClaimFailRequest,
+    ProgramRuleClaimNextResult,
+    ProgramRuleClaimNormalizeRequest,
+    ProgramRuleRegistrationRequest,
+    ProgramRuleSnapshotDiff,
+    ProgramRuleSnapshotProjection,
+    ProgramRuleSourceProjection,
+    ProgramScopeRuleProjection,
+    SnapshotReviewRequest,
+)
+from app.program_rule_intake.service import (
+    ProgramRuleBrowserRenderRequired,
+    ProgramRuleClaimRejected,
+    ProgramRuleConflict,
+    ProgramRuleCooldown,
+    ProgramRuleIntakeError,
+    ProgramRuleIntakeService,
+    ProgramRuleNotFound,
+    ProgramRuleValidationError,
+)
+from app.program_rule_intake.scope_resolver import (
+    intersect_scope_guard_rules,
+    resolve_effective_program_rule,
+)
 from app.mythos_report import (
     ClaimLedgerEntry,
     ClaimReviewDecisionValue,
@@ -136,6 +200,18 @@ from app.repository import (
     _safe_asset_value,
     approval_record_is_active,
 )
+from app.research_director import (
+    ResearchDirectorContext,
+    ResearchDirectorPlan,
+    ResearchSignal,
+    build_research_director_plan,
+)
+from app.research_director.runtime import (
+    LOCAL_TOOL_TASK_SCHEMA,
+    LOCAL_TOOL_TASK_TYPE,
+    campaign_local_tool_approval_is_active,
+    ensure_campaign_local_tool_approval,
+)
 from app.scope_guard import (
     ScopeGuardDecision,
     ScopeGuardRule,
@@ -150,8 +226,10 @@ from app.source_audit import (
 from app.studio_workspace import (
     StudioArtifactImport,
     StudioWorkspaceAccessError,
+    build_authorized_campaign_snapshot,
     create_workspace,
     import_workspace_artifact,
+    load_authorized_campaign_inputs,
     load_workspace_manifest,
     record_workspace_benchmark_result,
     record_workspace_benchmark_template,
@@ -163,7 +241,10 @@ from app.studio_workspace import (
     resolve_configured_workspace_artifact,
     resolve_workspace_file,
 )
-from app.worker.tasks import dispatch_agent_task
+from app.worker.tasks import (
+    dispatch_agent_task,
+    start_autonomous_research_wakeup_in_background,
+)
 from app.residual_patch_decision_api import (
     ResidualPatchDecisionApiError,
     ResidualPatchDecisionApply,
@@ -174,7 +255,7 @@ from app.residual_patch_decision_api import (
     get_residual_patch_decision,
     list_residual_patch_decisions,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 def _studio_web_origin() -> str | None:
@@ -195,13 +276,26 @@ app.add_middleware(
     allow_origins=[origin] if (origin := _studio_web_origin()) is not None else [],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Last-Event-ID"],
 )
 
 
 @app.exception_handler(StudioWorkspaceAccessError)
 async def studio_workspace_access_error_handler(_, exc: StudioWorkspaceAccessError):
     return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith((
+        "/program-rule-sources",
+        "/mythos/studio/program-rule-fetch/",
+    )):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Program rule request is invalid"},
+        )
+    return await request_validation_exception_handler(request, exc)
 
 
 class ScopeGuardEvaluationRequest(BaseModel):
@@ -282,6 +376,10 @@ class StudioCandidateModelRequest(BaseModel):
         if self.enabled:
             if self.provider is None or self.model is None or not self.model.strip():
                 raise ValueError("enabled candidate model requires provider and model")
+            try:
+                CandidateModelConfig(provider=self.provider, model=self.model)
+            except ValueError as exc:
+                raise ValueError("candidate model is invalid") from exc
         elif self.provider is not None or self.model is not None:
             raise ValueError("disabled candidate model cannot include provider or model")
         return self
@@ -503,11 +601,135 @@ class StudioBlackBoxLabRunApprovalResponse(BaseModel):
     approval_status: Literal["approved"] = "approved"
     validation_run_id: str
     approval_id: str
+    approved_session_alias: str
+    approved_workflow_alias: str
+    complete_plan_digest: str
+    expires_at: str
     lease_digest: str
-    local_runner_dispatch_allowed: bool = True
-    execution_allowed: bool = False
-    report_submission_allowed: bool = False
+    plan_digest: str
+    scope_reference: str
+    local_runner_dispatch_allowed: Literal[True] = True
+    execution_allowed: Literal[False] = False
+    report_submission_allowed: Literal[False] = False
     reason: Literal["bounded_local_lab_run_approved"] = "bounded_local_lab_run_approved"
+
+
+class StudioBlackBoxLabRunPreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approval_id: str = Field(min_length=1, max_length=100)
+    complete_plan_digest: str = Field(
+        min_length=71,
+        max_length=71,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    lease_digest: str = Field(
+        min_length=71,
+        max_length=71,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    complete_plan: StudioBlackBoxLabRunApprovalRequest
+
+
+class StudioBlackBoxLabRunPreflightResponse(BaseModel):
+    validation_run_id: str
+    approval_id: str
+    approved_session_alias: str
+    approved_workflow_alias: str
+    complete_plan_digest: str
+    expires_at: str
+    lease_digest: str
+    plan_digest: str
+    scope_reference: str
+    local_runner_dispatch_allowed: Literal[True] = True
+    execution_allowed: Literal[False] = False
+    report_submission_allowed: Literal[False] = False
+
+
+class StudioBlackBoxLabBoundedTraceAliases(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_alias: str = Field(min_length=1, max_length=64)
+    object_aliases: list[str] = Field(min_length=1, max_length=20)
+    role_alias: str = Field(min_length=1, max_length=64)
+    session_alias: str = Field(min_length=1, max_length=64)
+    workflow_alias: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_safe_aliases(self):
+        self.account_alias = _studio_black_box_safe_alias(self.account_alias)
+        self.role_alias = _studio_black_box_safe_alias(self.role_alias)
+        self.session_alias = _studio_black_box_safe_alias(self.session_alias)
+        self.workflow_alias = _studio_black_box_safe_alias(self.workflow_alias)
+        if len(set(self.object_aliases)) != len(self.object_aliases):
+            raise ValueError("unique_lab_object_aliases_required")
+        self.object_aliases = [
+            _studio_black_box_safe_alias(alias) for alias in self.object_aliases
+        ]
+        return self
+
+
+class StudioBlackBoxLabBoundedTraceParameter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location: Literal["path"]
+    name: str = Field(min_length=1, max_length=64)
+    value_type: Literal["object_alias"]
+
+    @model_validator(mode="after")
+    def validate_safe_parameter_name(self):
+        self.name = _studio_black_box_safe_alias(self.name)
+        return self
+
+
+class StudioBlackBoxLabBoundedTrace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    aliases: StudioBlackBoxLabBoundedTraceAliases
+    method: Literal["GET", "HEAD"]
+    parameters: list[StudioBlackBoxLabBoundedTraceParameter] = Field(
+        min_length=1,
+        max_length=1,
+    )
+    response_schema_fingerprint: str = Field(min_length=71, max_length=71)
+    route_template: str = Field(min_length=1, max_length=1024)
+    status_class: Literal["1xx", "2xx", "3xx", "4xx", "5xx"]
+    timing_bucket: Literal["under_100ms", "under_500ms", "under_2s", "over_2s"]
+
+    @model_validator(mode="after")
+    def validate_safe_trace(self):
+        self.route_template = _studio_black_box_route_template(self.route_template)
+        digest = self.response_schema_fingerprint.removeprefix("sha256:")
+        if (
+            not self.response_schema_fingerprint.startswith("sha256:")
+            or len(digest) != 64
+            or digest != digest.lower()
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("safe_trace_fingerprint_required")
+        return self
+
+
+class StudioBlackBoxLabBoundedResultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    exact_preflight: StudioBlackBoxLabRunPreflightRequest
+    trace: StudioBlackBoxLabBoundedTrace
+
+
+class StudioBlackBoxLabBoundedResultResponse(BaseModel):
+    campaign_id: str
+    difference_labels: list[Literal["response_schema_changed", "response_schema_unchanged"]]
+    evidence_ref_count: int = Field(ge=0)
+    execution_allowed: Literal[False] = False
+    human_review_required: Literal[True] = True
+    pipeline_run_id: str
+    report_preview_refreshed: bool
+    report_submission_allowed: Literal[False] = False
+    result_digest: str
+    submission_blocked: Literal[True] = True
+    validation_run_id: str
+    validation_status: str
 
 
 def build_studio_black_box_lab_lease_preview(
@@ -741,6 +963,327 @@ def _studio_black_box_remote_as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def _studio_black_box_local_scope_digest(
+    repository: DatabaseRepository,
+    campaign: CampaignRecord,
+    asset: str,
+) -> str | None:
+    rule, reason = _current_campaign_scope_guard_rule(repository, campaign, asset)
+    if reason is not None or rule is None:
+        return None
+    return _studio_black_box_remote_digest(
+        {
+            "asset": asset,
+            "allowed_tools": sorted(campaign.allowed_tools),
+            "scope_guard_rule": rule.model_dump(mode="json"),
+            "target_classes": sorted(campaign.target_classes),
+        }
+    )
+
+
+def _studio_black_box_local_lease_digest(
+    request: StudioBlackBoxLabLeasePreviewRequest,
+) -> str:
+    return _studio_black_box_remote_digest(request.model_dump(mode="json"))
+
+
+def _studio_black_box_local_complete_plan_digest(
+    request: StudioBlackBoxLabRunApprovalRequest,
+) -> str:
+    return _studio_black_box_remote_digest(request.model_dump(mode="json"))
+
+
+def _studio_black_box_local_bind_complete_plan_digest(
+    approval: ApprovalRecord,
+    complete_plan_digest: str,
+    *,
+    repository: DatabaseRepository,
+) -> bool:
+    if (
+        not isinstance(complete_plan_digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", complete_plan_digest) is None
+    ):
+        return False
+    if not isinstance(approval.payload, dict):
+        return False
+    payload = approval.payload
+    if "complete_plan_digest" in payload:
+        durable_digest = payload["complete_plan_digest"]
+        return (
+            isinstance(durable_digest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", durable_digest) is not None
+            and durable_digest == complete_plan_digest
+        )
+
+    dialect = repository.session.get_bind().dialect.name
+    if dialect == "postgresql":
+        jsonb_payload = cast(ApprovalRecord.payload, JSONB)
+        updated_payload = cast(
+            func.jsonb_set(
+                jsonb_payload,
+                array(["complete_plan_digest"]),
+                func.to_jsonb(cast(complete_plan_digest, String)),
+                True,
+            ),
+            JSON,
+        )
+        payload_is_object = func.jsonb_typeof(jsonb_payload) == "object"
+        digest_key_is_missing = jsonb_payload.op("?")(
+            "complete_plan_digest"
+        ).is_(False)
+    elif dialect == "sqlite":
+        updated_payload = func.json_set(
+            ApprovalRecord.payload,
+            "$.complete_plan_digest",
+            complete_plan_digest,
+        )
+        payload_is_object = func.json_type(ApprovalRecord.payload) == "object"
+        digest_key_is_missing = func.json_type(
+            ApprovalRecord.payload,
+            "$.complete_plan_digest",
+        ).is_(None)
+    else:
+        return False
+
+    result = repository.session.execute(
+        update(ApprovalRecord)
+        .where(ApprovalRecord.id == approval.id)
+        .where(payload_is_object)
+        .where(digest_key_is_missing)
+        .values(payload=updated_payload)
+    )
+    repository.session.commit()
+    repository.session.refresh(approval)
+    return result.rowcount in {0, 1} and (
+        isinstance(approval.payload, dict)
+        and approval.payload.get("complete_plan_digest") == complete_plan_digest
+    )
+
+
+def _studio_black_box_local_aliases_match(
+    payload: object,
+    *,
+    request: StudioBlackBoxLabLeasePreviewRequest,
+    lease_digest: str,
+    policy_digest: str,
+    scope_reference: str,
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    expected = {
+        "allowed_accounts": {session.account_alias for session in request.sessions},
+        "allowed_roles": {session.role_alias for session in request.sessions},
+        "allowed_workflows": {
+            workflow.workflow_alias for workflow in request.workflows
+        },
+    }
+    for key, aliases in expected.items():
+        values = payload.get(key)
+        if (
+            not isinstance(values, list)
+            or any(not isinstance(value, str) for value in values)
+            or set(values) != aliases
+        ):
+            return False
+    return (
+        payload.get("local_lab_complete_plan") is True
+        and payload.get("lease_digest") == lease_digest
+        and payload.get("policy_digest") == policy_digest
+        and payload.get("scope_reference") == scope_reference
+    )
+
+
+def _studio_black_box_local_auto_dispatch_facts(
+    *,
+    repository: DatabaseRepository,
+    validation_run: ValidationRunRecord,
+    campaign: CampaignRecord,
+    approval: ApprovalRecord | None,
+    request: StudioBlackBoxLabLeasePreviewRequest,
+    complete_plan_digest: str | None = None,
+) -> dict[str, str] | None:
+    if len(request.workflows) != 1 or approval is None:
+        return None
+    now = datetime.now(UTC)
+    decided_at = _studio_black_box_remote_as_utc(approval.decided_at)
+    expires_at = _studio_black_box_remote_as_utc(approval.expires_at)
+    if (
+        decided_at is None
+        or decided_at > now
+        or expires_at is None
+        or expires_at <= now
+        or approval.task_id is None
+        or validation_run.task_id != approval.task_id
+        or approval.run_id is None
+        or approval.scope_reference is None
+        or not validation_run.plan_digest
+        or approval.requested_action != "local_black_box_differential"
+        or (
+            complete_plan_digest is not None
+            and (
+                not isinstance(approval.payload, dict)
+                or approval.payload.get("complete_plan_digest")
+                != complete_plan_digest
+            )
+        )
+    ):
+        return None
+    validation_payload = (
+        validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    )
+    pipeline_run_id = validation_payload.get("pipeline_run_id")
+    if pipeline_run_id != approval.run_id:
+        return None
+    pipeline_run = repository.get_pipeline_run(approval.run_id)
+    if (
+        pipeline_run is None
+        or not isinstance(pipeline_run.payload, dict)
+        or pipeline_run.payload.get("campaign_id") != campaign.id
+        or pipeline_run.scope_status != "in_scope"
+    ):
+        return None
+    asset = _validation_run_scope_asset(validation_run, campaign)
+    if pipeline_run.asset != asset:
+        return None
+    try:
+        policy_digest = _studio_black_box_remote_policy_digest(campaign)
+    except ValueError:
+        return None
+    scope_reference = _studio_black_box_local_scope_digest(
+        repository,
+        campaign,
+        asset,
+    )
+    if scope_reference is None:
+        return None
+    lease_digest = _studio_black_box_local_lease_digest(request)
+    if (
+        approval.campaign_id != campaign.id
+        or approval.asset is None
+        or _safe_asset_value(approval.asset) != _safe_asset_value(asset)
+        or approval.validation_mode != validation_run.validation_mode
+        or approval.plan_digest != validation_run.plan_digest
+        or approval.scope_reference != scope_reference
+        or not _studio_black_box_local_aliases_match(
+            approval.payload,
+            request=request,
+            lease_digest=lease_digest,
+            policy_digest=policy_digest,
+            scope_reference=scope_reference,
+        )
+        or not _studio_black_box_local_aliases_match(
+            validation_payload,
+            request=request,
+            lease_digest=lease_digest,
+            policy_digest=policy_digest,
+            scope_reference=scope_reference,
+        )
+        or not _validation_run_currently_allowed_to_execute(
+            validation_run,
+            repository=repository,
+        )
+    ):
+        return None
+    workflow = request.workflows[0]
+    trial_session = next(
+        (
+            session.session_alias
+            for session in request.sessions
+            if session.session_alias != workflow.session_alias
+        ),
+        None,
+    )
+    if trial_session is None:
+        return None
+    return {
+        "approved_session_alias": trial_session,
+        "approved_workflow_alias": workflow.workflow_alias,
+        "expires_at": expires_at.isoformat(),
+        "lease_digest": lease_digest,
+        "plan_digest": validation_run.plan_digest,
+        "scope_reference": scope_reference,
+    }
+
+
+def _studio_black_box_local_bounded_result_details(
+    *,
+    request: StudioBlackBoxLabBoundedResultRequest,
+    approved_session_alias: str,
+    approved_workflow_alias: str,
+) -> dict[str, Any]:
+    complete_plan = request.exact_preflight.complete_plan
+    workflow = next(
+        (
+            item
+            for item in complete_plan.lease_preview.workflows
+            if item.workflow_alias == approved_workflow_alias
+        ),
+        None,
+    )
+    trial_session = next(
+        (
+            item
+            for item in complete_plan.lease_preview.sessions
+            if item.session_alias == approved_session_alias
+        ),
+        None,
+    )
+    reviewed_trace = next(
+        (
+            item
+            for item in complete_plan.trace_review
+            if workflow is not None
+            and item.workflow_alias == workflow.workflow_alias
+            and item.session_alias == workflow.session_alias
+            and item.route_template == workflow.route_template
+        ),
+        None,
+    )
+    trace = request.trace
+    if (
+        workflow is None
+        or trial_session is None
+        or reviewed_trace is None
+        or trace.aliases.account_alias != trial_session.account_alias
+        or trace.aliases.role_alias != trial_session.role_alias
+        or trace.aliases.session_alias != trial_session.session_alias
+        or trace.aliases.workflow_alias != workflow.workflow_alias
+        or trace.aliases.object_aliases != workflow.object_aliases
+        or trace.method != workflow.method
+        or trace.route_template != workflow.route_template
+    ):
+        raise ValueError("bounded_result_trace_plan_mismatch")
+    difference_labels: list[Literal["response_schema_changed", "response_schema_unchanged"]] = [
+        (
+            "response_schema_unchanged"
+            if trace.response_schema_fingerprint
+            == reviewed_trace.response_schema_fingerprint
+            else "response_schema_changed"
+        )
+    ]
+    trace_payload = trace.model_dump(mode="json")
+    return {
+        "difference_labels": difference_labels,
+        "safe_counters": {
+            "difference_count": len(difference_labels),
+            "object_alias_count": len(trace.aliases.object_aliases),
+            "parameter_count": len(trace.parameters),
+        },
+        "trace": trace_payload,
+    }
+
+
+def _studio_black_box_local_bounded_result_digest(
+    request: StudioBlackBoxLabBoundedResultRequest,
+) -> str:
+    return _studio_black_box_remote_digest(
+        {
+            "exact_preflight": request.exact_preflight.model_dump(mode="json"),
+            "trace": request.trace.model_dump(mode="json"),
+        }
+    )
+
+
 def _studio_black_box_remote_payload_matches(
     payload: object,
     *,
@@ -818,6 +1361,13 @@ class StudioCampaignLaunchRequest(BaseModel):
     program_id: str | None = None
     name: str | None = Field(default=None, max_length=255)
     default_asset: str | None = Field(default=None, max_length=255)
+    candidate_model: StudioCandidateModelRequest | None = None
+
+
+class StudioCampaignSnapshotRefreshRequest(BaseModel):
+    workspace_path: str = Field(min_length=1)
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class StudioMissionExportRequest(BaseModel):
@@ -902,6 +1452,8 @@ class CampaignCreateRequest(BaseModel):
     )
     created_by: str = Field(default="operator", min_length=1, max_length=255)
     budget: CampaignBudgetRequest | None = None
+    campaign_mode: Literal["legacy", "bounty_autopilot"] = "legacy"
+    autopilot_authorization: dict[str, Any] | None = None
 
 
 class CampaignBudgetResponse(BaseModel):
@@ -928,6 +1480,7 @@ class CampaignResponse(BaseModel):
     program_id: str | None = None
     name: str
     status: str
+    campaign_mode: str = "legacy"
     autonomy_level: str
     scope_status: str
     policy_text_hash: str
@@ -937,6 +1490,138 @@ class CampaignResponse(BaseModel):
     created_by: str
     created_at: str
     budget: CampaignBudgetResponse | None = None
+    current_authorization_digest: str | None = None
+
+
+class AutopilotValidationPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    handoff_id: str = Field(min_length=1, max_length=128)
+    plan: dict[str, Any]
+    actor: str = Field(default="operator", min_length=1, max_length=128)
+
+
+class AutopilotLeaseIssueRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=128)
+    lease_id: str | None = Field(default=None, max_length=128)
+    approval_id: str | None = Field(default=None, max_length=128)
+
+
+class AutopilotRequestReserveRequest(BaseModel):
+    lease_id: str = Field(min_length=1, max_length=128)
+    reservation: dict[str, Any]
+
+
+class AutopilotRequestCompleteRequest(BaseModel):
+    reservation_id: str = Field(min_length=1, max_length=128)
+    outcome: str = Field(min_length=1, max_length=64)
+
+
+class AutopilotGatewayAuthorizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lease_id: str = Field(min_length=1, max_length=128)
+    reservation_id: str = Field(min_length=1, max_length=128)
+    method: str = Field(min_length=1, max_length=16)
+    scheme: str = Field(min_length=1, max_length=16)
+    host: str = Field(min_length=1, max_length=253)
+    port: int = Field(ge=1, le=65535)
+    path: str = Field(min_length=1, max_length=1024)
+    body_digest: str | None = None
+    mutation_class: str = Field(default="none", max_length=64)
+    resolved_ips: tuple[str, ...] = Field(min_length=1, max_length=32)
+    cname_chain: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    is_redirect: bool = False
+    is_subresource: bool = False
+
+
+class AutopilotEmergencyStopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: str = Field(default="operator", min_length=1, max_length=255)
+    reason: str = Field(default="emergency_stop", min_length=1, max_length=512)
+    confirmation_nonce: str = Field(min_length=16, max_length=256)
+
+
+class AutopilotEmergencyStopPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: str = Field(default="operator", min_length=1, max_length=255)
+    reason: str = Field(default="emergency_stop", min_length=1, max_length=512)
+
+
+class AutopilotPodGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lease_id: str = Field(min_length=1, max_length=128)
+    pod_id: str = Field(min_length=1, max_length=128)
+
+
+class AutopilotApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approved", "denied"]
+    actor: str = Field(default="operator", min_length=1, max_length=128)
+    reason: str = Field(default="operator_decision", min_length=1, max_length=256)
+
+
+class AutopilotObservationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation: dict[str, Any]
+
+
+class AutopilotSteerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    directive: Literal["set_priority", "add_hypothesis_guidance"]
+    branch_id: str = Field(min_length=1, max_length=128)
+    priority: int | None = Field(default=None, ge=0, le=100)
+    hypothesis_guidance: str | None = Field(default=None, min_length=1, max_length=240)
+    reason: str = Field(default="operator_steer", min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def require_directive_value(self):
+        if self.directive == "set_priority":
+            if self.priority is None or self.hypothesis_guidance is not None:
+                raise ValueError("set_priority_value_required")
+        elif self.hypothesis_guidance is None or self.priority is not None:
+            raise ValueError("hypothesis_guidance_value_required")
+        return self
+
+
+class AutonomousWakeupCampaignResponse(BaseModel):
+    id: str
+    autonomy_level: str
+    scope_status: str
+    status: str
+
+
+class AutonomousWakeupRunResponse(BaseModel):
+    status: Literal[
+        "accepted",
+        "completed",
+        "failed",
+        "lease_held",
+        "lease_lost",
+        "not_due",
+    ]
+    stop_reason: Literal[
+        "wakeup_accepted",
+        "wakeup_candidate_invalid",
+        "wakeup_candidate_query_failed",
+        "wakeup_campaign_tick_failed",
+        "wakeup_lease_held",
+        "wakeup_lease_lost",
+        "wakeup_not_due",
+    ] | None = None
+    processed_count: int = Field(ge=0, le=20)
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    execution_allowed: Literal[False] = False
+    dispatch_allowed: Literal[False] = False
+    validation_allowed: Literal[False] = False
+    candidate_promotion_allowed: Literal[False] = False
+    report_submission_allowed: Literal[False] = False
 
 
 class CampaignControlCampaignResponse(BaseModel):
@@ -991,6 +1676,8 @@ class PipelineStageResponse(BaseModel):
     output_refs: list[str] = Field(default_factory=list)
     safety_gate_state: str
     stop_reason: str | None = None
+    duration_seconds: int | None = None
+    error_summary: str | None = None
     payload: dict = Field(default_factory=dict)
     created_at: str
 
@@ -1039,6 +1726,19 @@ class ScannerRunResponse(BaseModel):
     summary: str
     safety_gate_state: str
     created_at: str
+
+
+class ResearchDirectorLocalToolRunRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=100)
+    plan_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class ResearchDirectorLocalToolRunResponse(BaseModel):
+    source_snapshot_digest: str
+    result: RegisteredLocalToolRun
+    scanner_run: ScannerRunResponse | None = None
+    advisory_artifact_id: str | None = None
+    execution_started: bool = False
 
 
 class ValidationRunResponse(BaseModel):
@@ -1425,9 +2125,27 @@ class CampaignCycleReviewCompletionRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class AutonomousValidationHandoffReviewRequest(BaseModel):
+    decision: Literal["accepted_for_manual_follow_up", "dismissed"]
+    reviewer: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=1000)
+    validation_mode: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AutonomousReportRevisionRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=100)
+    rationale: str = Field(min_length=1, max_length=1000)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "bounty-mythos-api"}
+
+
+@app.get("/mythos/execution-capabilities", response_model=list[ToolCapability])
+def list_mythos_execution_capabilities() -> list[ToolCapability]:
+    """Expose registered tool metadata without granting execution authority."""
+    return default_execution_registry().list_capabilities()
 
 
 @app.post("/mythos/campaigns", response_model=CampaignResponse)
@@ -1439,8 +2157,36 @@ def create_mythos_campaign(
     if request.program_id is None or repository.get_program(request.program_id) is None:
         raise HTTPException(status_code=404, detail="Program not found")
     scope_guard_rule = parse_policy_text(request.policy_text, request.default_asset)
+    resolution = resolve_effective_program_rule(
+        repository,
+        request.program_id,
+        request.default_asset,
+        datetime.now(UTC),
+    )
+    if resolution.source_backed:
+        if resolution.reason is not None or resolution.rule is None:
+            raise HTTPException(
+                status_code=409,
+                detail=resolution.reason or "program_rule_not_authorizing",
+            )
+        scope_guard_rule = intersect_scope_guard_rules(
+            scope_guard_rule,
+            resolution.rule,
+            asset=request.default_asset,
+        )
     payload = _campaign_create_payload(request)
     payload["scope_guard_rule"] = scope_guard_rule.model_dump(mode="json")
+    if resolution.provenance is not None:
+        payload["program_rule_provenance"] = resolution.provenance.model_dump(
+            mode="json"
+        )
+    if request.campaign_mode == "bounty_autopilot":
+        payload["campaign_mode"] = "bounty_autopilot"
+        if request.autopilot_authorization is None:
+            raise HTTPException(
+                status_code=400,
+                detail="autopilot_authorization_required",
+            )
     campaign = repository.create_campaign(
         program_id=request.program_id,
         name=request.name,
@@ -1452,7 +2198,38 @@ def create_mythos_campaign(
         allowed_tools=request.allowed_tools,
         created_by=request.created_by,
         payload=payload,
+        campaign_mode=request.campaign_mode,
     )
+    if request.campaign_mode == "bounty_autopilot":
+        try:
+            from app.bounty_autopilot.authority import (
+                build_campaign_authorization,
+            )
+            from app.bounty_autopilot.contracts import (
+                CampaignAuthorization,
+                campaign_authorization_payload,
+            )
+
+            create_auth = CampaignAuthorization.model_validate_json(
+                json.dumps({
+                    **request.autopilot_authorization,
+                    "campaign_id": campaign.id,
+                    "operator_identity": request.autopilot_authorization.get(
+                        "operator_identity", request.created_by
+                    ),
+                }, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+            )
+            built = build_campaign_authorization(create_auth)
+            repository.create_campaign_authorization(
+                campaign_id=campaign.id,
+                authorization_payload=campaign_authorization_payload(built),
+            )
+        except Exception as exc:  # noqa: BLE001
+            repository.update_campaign_status(campaign.id, "failed")
+            raise HTTPException(
+                status_code=400,
+                detail=getattr(exc, "reason", None) or str(exc) or "authorization_invalid",
+            ) from exc
     if request.budget is not None:
         repository.upsert_campaign_budget(
             campaign_id=campaign.id,
@@ -1497,6 +2274,977 @@ def _campaign_scope_guard_rule(campaign: CampaignRecord) -> ScopeGuardRule | Non
         return None
 
 
+def _current_campaign_scope_guard_rule(
+    repository: DatabaseRepository,
+    campaign: CampaignRecord,
+    asset: str,
+) -> tuple[ScopeGuardRule | None, str | None]:
+    stored = _campaign_scope_guard_rule(campaign)
+    if campaign.program_id is None:
+        return stored, None
+    resolution = resolve_effective_program_rule(
+        repository,
+        campaign.program_id,
+        asset,
+        datetime.now(UTC),
+    )
+    if not resolution.source_backed:
+        return stored, None
+    if resolution.reason is not None or resolution.rule is None:
+        return None, resolution.reason or "program_rule_not_authorizing"
+    if stored is None:
+        return None, "scope_guard_rule_missing"
+    return (
+        intersect_scope_guard_rules(stored, resolution.rule, asset=asset),
+        None,
+    )
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/research-director/plan",
+    response_model=ResearchDirectorPlan,
+)
+def build_mythos_research_director_plan(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> ResearchDirectorPlan:
+    """Create one snapshot-bound, non-executing next-action plan."""
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        campaign.default_asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
+    if rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+
+    try:
+        context = _research_director_context(
+            campaign=campaign,
+            rule=rule,
+            repository=repository,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    plan = build_research_director_plan(context)
+    _record_research_director_plan(
+        campaign=campaign,
+        plan=plan,
+        repository=repository,
+    )
+    return plan
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/research-director/local-tools/{tool_id}/run",
+    response_model=ResearchDirectorLocalToolRunResponse,
+)
+def run_mythos_research_director_local_tool(
+    campaign_id: str,
+    tool_id: str,
+    request: ResearchDirectorLocalToolRunRequest,
+    session: Session = Depends(get_session),
+) -> ResearchDirectorLocalToolRunResponse:
+    """Run the current plan's local adapter against a verified workspace snapshot."""
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.autonomy_level != "level_1_local_validation":
+        raise HTTPException(status_code=409, detail="local_execution_autonomy_required")
+    if campaign.status != "running":
+        raise HTTPException(status_code=409, detail="campaign_not_running")
+
+    plan_stage = _current_research_director_local_tool_plan(
+        campaign=campaign,
+        tool_id=tool_id,
+        request=request,
+        repository=repository,
+    )
+    if plan_stage is None:
+        raise HTTPException(status_code=409, detail="research_director_plan_not_current")
+    plan_payload = plan_stage.payload if isinstance(plan_stage.payload, dict) else {}
+    source_snapshot_digest = plan_payload.get("source_snapshot_digest")
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    if (
+        not isinstance(source_snapshot_digest, str)
+        or source_snapshot_digest != campaign_payload.get("source_snapshot_digest")
+    ):
+        raise HTTPException(status_code=409, detail="source_snapshot_changed")
+    if _has_active_research_director_local_tool_task(
+        campaign=campaign,
+        source_snapshot_digest=source_snapshot_digest,
+        excluded_task_id=_research_director_local_tool_task_id(request.plan_digest),
+        repository=repository,
+    ):
+        raise HTTPException(status_code=409, detail="active_local_tool_task")
+    workspace_snapshot = campaign_payload.get("workspace_snapshot")
+    if not isinstance(workspace_snapshot, dict):
+        raise HTTPException(status_code=409, detail="workspace_snapshot_required")
+    try:
+        workspace_inputs = load_authorized_campaign_inputs(workspace_snapshot)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    if workspace_inputs.get("source_snapshot_digest") != source_snapshot_digest:
+        raise HTTPException(status_code=409, detail="source_snapshot_changed")
+    package_root = workspace_inputs.get("authorized_local_root")
+    if not isinstance(package_root, str) or not Path(package_root).is_dir():
+        raise HTTPException(status_code=409, detail="authorized_local_root_required")
+    dependency_input_manifest = workspace_inputs.get("dependency_input_manifest")
+    if tool_id == "dependency_sbom_local" and not isinstance(
+        dependency_input_manifest,
+        list,
+    ):
+        raise HTTPException(status_code=409, detail="dependency_snapshot_required")
+
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        campaign.default_asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
+    if rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+    remaining_tool_calls = _research_director_remaining_tool_calls(
+        campaign=campaign,
+        repository=repository,
+    )
+    if remaining_tool_calls is not None and remaining_tool_calls <= 0:
+        raise HTTPException(status_code=409, detail="budget_exhausted")
+    execution_task = _ensure_research_director_local_tool_task(
+        campaign=campaign,
+        plan_stage=plan_stage,
+        tool_id=tool_id,
+        source_snapshot_digest=source_snapshot_digest,
+        repository=repository,
+    )
+    if execution_task is None:
+        raise HTTPException(status_code=409, detail="research_director_plan_consumed")
+    approval = ensure_campaign_local_tool_approval(
+        campaign=campaign,
+        task=execution_task,
+        source_snapshot_digest=source_snapshot_digest,
+        tool_id=tool_id,
+        plan_digest=request.plan_digest,
+        repository=repository,
+    )
+    if not campaign_local_tool_approval_is_active(approval):
+        if execution_task.status in {"queued", "ready"}:
+            execution_task = (
+                repository.transition_campaign_task_status_if_currently(
+                    execution_task.id,
+                    "awaiting_approval",
+                    allowed_current_statuses={"queued", "ready"},
+                    require_unclaimed_execution=True,
+                )
+                or execution_task
+            )
+        raise HTTPException(status_code=409, detail="human_approval_required")
+    execution_task = repository.claim_campaign_task_execution(execution_task.id)
+    if execution_task is None:
+        if _has_active_research_director_local_tool_task(
+            campaign=campaign,
+            source_snapshot_digest=source_snapshot_digest,
+            excluded_task_id=_research_director_local_tool_task_id(request.plan_digest),
+            repository=repository,
+        ):
+            raise HTTPException(status_code=409, detail="active_local_tool_task")
+        raise HTTPException(status_code=409, detail="research_director_plan_consumed")
+    if not _renew_research_director_local_tool_execution(
+        task=execution_task,
+        repository=repository,
+    ):
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    reservation = repository.reserve_campaign_local_tool_call(
+        campaign_id=campaign.id,
+        task_id=execution_task.id,
+        execution_claim_id=execution_task.execution_claim_id,
+        research_plan_id=request.plan_id,
+        research_plan_digest=request.plan_digest,
+        source_snapshot_digest=source_snapshot_digest,
+        tool_id=tool_id,
+    )
+    if reservation is None:
+        remaining_tool_calls = _research_director_remaining_tool_calls(
+            campaign=campaign,
+            repository=repository,
+        )
+        if remaining_tool_calls is not None and remaining_tool_calls <= 0:
+            _finish_research_director_local_tool_execution(
+                task=execution_task,
+                repository=repository,
+                status="blocked",
+                safety_gate_state="blocked",
+                stop_reason="budget_exhausted",
+                output_refs=[f"research_plan:{request.plan_id}"],
+                result=None,
+            )
+            raise HTTPException(status_code=409, detail="budget_exhausted")
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    try:
+        result = run_registered_local_tool(
+            RegisteredLocalToolRunRequest(
+                authorization=ExecutionAuthorizationRequest(
+                    tool_id=tool_id,
+                    asset=campaign.default_asset,
+                    campaign_allowed_tools=campaign.allowed_tools,
+                    scope_rule=rule,
+                    human_approved=campaign_local_tool_approval_is_active(approval),
+                ),
+                package_root=package_root,
+                package_id=campaign.id,
+                dependency_input_manifest=dependency_input_manifest,
+            )
+        )
+    except Exception as exc:
+        _finish_research_director_local_tool_execution(
+            task=execution_task,
+            repository=repository,
+            status="failed",
+            safety_gate_state="allowed",
+            stop_reason="local_tool_runtime_failed",
+            output_refs=[f"research_plan:{request.plan_id}"],
+            result=None,
+        )
+        raise HTTPException(status_code=503, detail="local_tool_runtime_failed") from exc
+    if not _renew_research_director_local_tool_execution(
+        task=execution_task,
+        repository=repository,
+    ):
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    advisory_artifact = None
+    if result.command_executed:
+        artifact_kind, artifact_summary, artifact_facts = (
+            local_tool_advisory_artifact_data(result)
+        )
+        advisory_artifact = repository.save_artifact(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            kind=artifact_kind,
+            source_type="registered_local_tool",
+            source_hash=_research_director_advisory_artifact_hash(
+                campaign_id=campaign.id,
+                source_snapshot_digest=source_snapshot_digest,
+                tool_id=tool_id,
+                command_hash=result.command_hash,
+            ),
+            ingestion_status="advisory_only",
+            provenance={
+                "source": "research_director_local_tool",
+                "campaign_id": campaign.id,
+                "tool_id": tool_id,
+                "source_snapshot_digest": source_snapshot_digest,
+                "research_plan_digest": request.plan_digest,
+                "raw_payload_processed": False,
+            },
+            payload_summary=artifact_summary,
+            derived_facts=artifact_facts,
+            commit=False,
+        )
+    scanner_run = None
+    if result.status != "blocked":
+        scanner_run = repository.save_scanner_run(
+            campaign_id=campaign.id,
+            codebase_map_id=None,
+            tool_name=tool_id,
+            command_hash=result.command_hash,
+            status=result.runner_status or result.status,
+            finding_count=result.finding_count,
+            candidate_count=0,
+            summary=(
+                f"Registered local {tool_id} run recorded as advisory evidence only."
+            ),
+            safety_gate_state="allowed",
+            payload={
+                "research_plan_id": request.plan_id,
+                "research_plan_digest": request.plan_digest,
+                "source_snapshot_digest": source_snapshot_digest,
+                "tool_id": tool_id,
+                "runner_status": result.runner_status,
+                "command_executed": result.command_executed,
+                "advisory_artifact_id": (
+                    advisory_artifact.id if advisory_artifact is not None else None
+                ),
+                "research_director_tool_run": True,
+                "tool_call_consumed": True,
+                "tool_call_reservation_agent_run_id": reservation.id,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+                "raw_payload_processed": False,
+            },
+            commit=False,
+        )
+    run_stage = _record_research_director_local_tool_run(
+        campaign=campaign,
+        task=execution_task,
+        plan_stage=plan_stage,
+        result=result,
+        scanner_run_id=scanner_run.id if scanner_run is not None else None,
+        advisory_artifact_id=(
+            advisory_artifact.id if advisory_artifact is not None else None
+        ),
+        repository=repository,
+        commit=False,
+    )
+    execution_status = (
+        "blocked"
+        if result.status == "blocked"
+        else "failed"
+        if result.status == "failed"
+        else "completed"
+    )
+    if not _finish_research_director_local_tool_execution(
+        task=execution_task,
+        repository=repository,
+        status=execution_status,
+        safety_gate_state=("blocked" if result.status == "blocked" else "allowed"),
+        stop_reason=(None if result.status != "blocked" else result.authorization.reason),
+        output_refs=[
+            f"research_plan:{request.plan_id}",
+            f"pipeline_stage:{run_stage.id}",
+            *(
+                [f"scanner_run:{scanner_run.id}"]
+                if scanner_run is not None
+                else []
+            ),
+            *(
+                [f"artifact:{advisory_artifact.id}"]
+                if advisory_artifact is not None
+                else []
+            ),
+        ],
+        result=result,
+    ):
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    return ResearchDirectorLocalToolRunResponse(
+        source_snapshot_digest=source_snapshot_digest,
+        result=result,
+        scanner_run=(
+            _scanner_run_response(scanner_run) if scanner_run is not None else None
+        ),
+        advisory_artifact_id=(
+            advisory_artifact.id if advisory_artifact is not None else None
+        ),
+        execution_started=result.command_executed,
+    )
+
+
+def _current_research_director_local_tool_plan(
+    *,
+    campaign: CampaignRecord,
+    tool_id: str,
+    request: ResearchDirectorLocalToolRunRequest,
+    repository: DatabaseRepository,
+) -> PipelineStageRecord | None:
+    matches = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "research_director_plan"
+        and stage.status == "planned"
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("plan_id") == request.plan_id
+        and stage.payload.get("plan_digest") == request.plan_digest
+        and stage.payload.get("action_kind") == "local_tool"
+        and stage.payload.get("action_id") == tool_id
+        and stage.payload.get("plan_dispatch_allowed") is True
+    ]
+    if len(matches) != 1:
+        return None
+    consumed = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "research_director_local_tool_run"
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("research_plan_digest") == request.plan_digest
+    ]
+    return None if consumed else matches[0]
+
+
+def _ensure_research_director_local_tool_task(
+    *,
+    campaign: CampaignRecord,
+    plan_stage: PipelineStageRecord,
+    tool_id: str,
+    source_snapshot_digest: str,
+    repository: DatabaseRepository,
+) -> CampaignTaskRecord | None:
+    plan_payload = plan_stage.payload if isinstance(plan_stage.payload, dict) else {}
+    plan_id = plan_payload.get("plan_id")
+    plan_digest = plan_payload.get("plan_digest")
+    if not isinstance(plan_id, str) or not isinstance(plan_digest, str):
+        return None
+    task, _claimed = repository.claim_campaign_task(
+        task_id=_research_director_local_tool_task_id(plan_digest),
+        campaign_id=campaign.id,
+        task_type=LOCAL_TOOL_TASK_TYPE,
+        agent_type="registered_local_tool",
+        title=f"Run registered local {tool_id} analysis",
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+            f"research_plan:{plan_id}",
+        ],
+        payload={
+            "schema_version": LOCAL_TOOL_TASK_SCHEMA,
+            "execution_lease_required": True,
+            "research_plan_id": plan_id,
+            "research_plan_digest": plan_digest,
+            "source_snapshot_digest": source_snapshot_digest,
+            "tool_id": tool_id,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    if (
+        task.campaign_id != campaign.id
+        or task.task_type != LOCAL_TOOL_TASK_TYPE
+        or task.agent_type != "registered_local_tool"
+        or task.status not in {"queued", "ready", "awaiting_approval"}
+        or task_payload.get("schema_version") != LOCAL_TOOL_TASK_SCHEMA
+        or task_payload.get("research_plan_id") != plan_id
+        or task_payload.get("research_plan_digest") != plan_digest
+        or task_payload.get("source_snapshot_digest") != source_snapshot_digest
+        or task_payload.get("tool_id") != tool_id
+    ):
+        return None
+    return task
+
+
+def _research_director_local_tool_task_id(plan_digest: str) -> str:
+    return "research_local_tool_" + plan_digest.removeprefix("sha256:")
+
+
+def _has_active_research_director_local_tool_task(
+    *,
+    campaign: CampaignRecord,
+    source_snapshot_digest: str,
+    excluded_task_id: str,
+    repository: DatabaseRepository,
+) -> bool:
+    return any(
+        task.id != excluded_task_id
+        and task.task_type == LOCAL_TOOL_TASK_TYPE
+        and task.status in {"dispatched", "running"}
+        and isinstance(task.payload, dict)
+        and task.payload.get("schema_version") == LOCAL_TOOL_TASK_SCHEMA
+        and task.payload.get("execution_lease_required") is True
+        and task.payload.get("source_snapshot_digest") == source_snapshot_digest
+        for task in repository.list_campaign_tasks(campaign.id)
+    )
+
+
+def _record_research_director_local_tool_run(
+    *,
+    campaign: CampaignRecord,
+    task: CampaignTaskRecord,
+    plan_stage: PipelineStageRecord,
+    result: RegisteredLocalToolRun,
+    scanner_run_id: str | None,
+    advisory_artifact_id: str | None,
+    repository: DatabaseRepository,
+    commit: bool = True,
+) -> PipelineStageRecord:
+    plan_payload = plan_stage.payload if isinstance(plan_stage.payload, dict) else {}
+    source_snapshot_digest = plan_payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str):
+        raise ValueError("source_snapshot_digest_required")
+    stage_status = "blocked" if result.status == "blocked" else result.status
+    return repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_key="research_director_local_tool_run",
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status=stage_status,
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+            f"research_plan:{plan_payload.get('plan_id')}",
+        ],
+        output_refs=(
+            [
+                *(
+                    [f"scanner_run:{scanner_run_id}"]
+                    if scanner_run_id is not None
+                    else []
+                ),
+                *(
+                    [f"artifact:{advisory_artifact_id}"]
+                    if advisory_artifact_id is not None
+                    else []
+                ),
+            ]
+        ),
+        safety_gate_state=("allowed" if result.status != "blocked" else "blocked"),
+        stop_reason=(None if result.status != "blocked" else result.authorization.reason),
+        payload={
+            "research_plan_id": plan_payload.get("plan_id"),
+            "research_plan_digest": plan_payload.get("plan_digest"),
+            "source_snapshot_digest": source_snapshot_digest,
+            "tool_id": result.tool_id,
+            "runner_status": result.runner_status,
+            "command_hash": result.command_hash,
+            "command_executed": result.command_executed,
+            "finding_count": result.finding_count,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+        commit=commit,
+    )
+
+
+def _renew_research_director_local_tool_execution(
+    *,
+    task: CampaignTaskRecord,
+    repository: DatabaseRepository,
+) -> bool:
+    return (
+        repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=task.execution_claim_id,
+        )
+        is not None
+    )
+
+
+def _finish_research_director_local_tool_execution(
+    *,
+    task: CampaignTaskRecord,
+    repository: DatabaseRepository,
+    status: str,
+    safety_gate_state: str,
+    stop_reason: str | None,
+    output_refs: list[str],
+    result: RegisteredLocalToolRun | None,
+) -> bool:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    result_payload = {
+        "schema_version": LOCAL_TOOL_TASK_SCHEMA,
+        "research_plan_id": payload.get("research_plan_id"),
+        "research_plan_digest": payload.get("research_plan_digest"),
+        "source_snapshot_digest": payload.get("source_snapshot_digest"),
+        "tool_id": payload.get("tool_id"),
+        "runner_status": result.runner_status if result is not None else None,
+        "command_hash": result.command_hash if result is not None else None,
+        "command_executed": result.command_executed if result is not None else False,
+        "finding_count": result.finding_count if result is not None else 0,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+        **repository.local_tool_call_reservation_metadata(
+            task_id=task.id,
+            execution_claim_id=task.execution_claim_id,
+        ),
+    }
+    return (
+        repository.finish_campaign_task_execution(
+            task_id=task.id,
+            execution_claim_id=task.execution_claim_id,
+            task_status=status,
+            task_output_refs=output_refs,
+            agent_status=status,
+            agent_output_refs=output_refs,
+            safety_gate_state=safety_gate_state,
+            stop_reason=stop_reason,
+            payload=result_payload,
+            require_active_execution_lease=True,
+        )
+        is not None
+    )
+
+
+def _research_director_advisory_artifact_hash(
+    *,
+    campaign_id: str,
+    source_snapshot_digest: str,
+    tool_id: str,
+    command_hash: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "campaign_id": campaign_id,
+            "source_snapshot_digest": source_snapshot_digest,
+            "tool_id": tool_id,
+            "command_hash": command_hash,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"sha256:{sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _research_director_context(
+    *,
+    campaign: CampaignRecord,
+    rule: ScopeGuardRule,
+    repository: DatabaseRepository,
+) -> ResearchDirectorContext:
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str):
+        raise ValueError("source_snapshot_digest_required")
+
+    saved_scope_guard = payload.get("saved_scope_guard")
+    authorized_local_root = (
+        saved_scope_guard.get("authorized_local_root")
+        if isinstance(saved_scope_guard, dict)
+        else None
+    )
+    has_authorized_local_root = isinstance(authorized_local_root, str) and bool(
+        authorized_local_root.strip()
+    )
+    completed_action_ids = [
+        record.tool_name
+        for record in repository.list_campaign_scanner_runs(campaign.id)
+        if isinstance(record.payload, dict)
+        and record.payload.get("research_director_tool_run") is True
+        and record.payload.get("tool_call_consumed") is True
+        and record.payload.get("source_snapshot_digest") == source_snapshot_digest
+    ]
+    completed_action_ids.extend(
+        run.payload["tool_call_reservation_tool_id"]
+        for run in repository.list_campaign_local_tool_call_reservations(campaign.id)
+        if isinstance(run.payload, dict)
+        and run.payload.get("tool_call_reservation_source_snapshot_digest")
+        == source_snapshot_digest
+        and isinstance(run.payload.get("tool_call_reservation_tool_id"), str)
+    )
+    signals = _research_director_signals(
+        campaign=campaign,
+        has_authorized_local_root=has_authorized_local_root,
+        repository=repository,
+    )
+    remaining_tool_calls = _research_director_remaining_tool_calls(
+        campaign=campaign,
+        repository=repository,
+    )
+
+    return ResearchDirectorContext(
+        campaign_id=campaign.id,
+        asset=campaign.default_asset,
+        autonomy_level=campaign.autonomy_level,
+        source_snapshot_digest=source_snapshot_digest,
+        scope_rule=rule,
+        campaign_allowed_tools=campaign.allowed_tools,
+        has_authorized_local_root=has_authorized_local_root,
+        local_execution_authorized=(
+            campaign.autonomy_level == "level_1_local_validation"
+            and campaign.status == "running"
+        ),
+        remaining_tool_calls=remaining_tool_calls,
+        completed_action_ids=completed_action_ids,
+        signals=signals,
+        human_review_required=campaign.status == "awaiting_review",
+    )
+
+
+def _research_director_signals(
+    *,
+    campaign: CampaignRecord,
+    has_authorized_local_root: bool,
+    repository: DatabaseRepository,
+) -> list[ResearchSignal]:
+    signals: list[ResearchSignal] = []
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    source_snapshot_digest = campaign_payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str):
+        return signals
+    for artifact in repository.list_artifacts(
+        program_id=campaign.program_id,
+        asset=campaign.default_asset,
+    ):
+        provenance = artifact.provenance if isinstance(artifact.provenance, dict) else {}
+        derived_facts = (
+            artifact.derived_facts if isinstance(artifact.derived_facts, dict) else {}
+        )
+        findings = derived_facts.get("advisory_findings")
+        if (
+            artifact.source_type != "registered_local_tool"
+            or provenance.get("campaign_id") != campaign.id
+            or provenance.get("source_snapshot_digest")
+            != source_snapshot_digest
+        ):
+            continue
+        if isinstance(findings, list):
+            for index, finding in enumerate(findings[:20], start=1):
+                if not isinstance(finding, dict):
+                    continue
+                signals.append(
+                    ResearchSignal(
+                        signal_id=f"static_{artifact.id}_{index}",
+                        state="needs_evidence",
+                        priority=75,
+                        evidence_refs=[f"artifact:{artifact.id}"],
+                    )
+                )
+        dependency_advisories = derived_facts.get("dependency_advisories")
+        if (
+            getattr(artifact, "kind", None) == "dependency_sbom_advisory"
+            and provenance.get("tool_id") == "dependency_sbom_local"
+            and isinstance(dependency_advisories, list)
+        ):
+            for index, advisory in enumerate(dependency_advisories[:20], start=1):
+                if not isinstance(advisory, dict):
+                    continue
+                signals.append(
+                    ResearchSignal(
+                        signal_id=f"dependency_{artifact.id}_{index}",
+                        state="needs_evidence",
+                        priority=70,
+                        evidence_refs=[f"artifact:{artifact.id}"],
+                    )
+                )
+    static_hints: list[str] = []
+    if (
+        "static_analyzer" in campaign.allowed_tools
+        or "semgrep_local" in campaign.allowed_tools
+    ):
+        static_hints.append("semgrep_local")
+    if "codeql_local" in campaign.allowed_tools:
+        static_hints.append("codeql_local")
+    if "dependency_sbom_local" in campaign.allowed_tools:
+        static_hints.append("dependency_sbom_local")
+    for task in repository.list_campaign_tasks(campaign.id):
+        if task.status not in {"awaiting_evidence", "needs_evidence"}:
+            continue
+        signals.append(
+            ResearchSignal(
+                signal_id=f"evidence_{task.id}",
+                state="needs_evidence",
+                priority=90,
+                tool_hints=static_hints,
+                evidence_refs=[f"campaign_task:{task.id}"],
+            )
+        )
+    if has_authorized_local_root and static_hints:
+        signals.append(
+            ResearchSignal(
+                signal_id="source_snapshot_static_coverage",
+                state="open",
+                priority=60,
+                tool_hints=static_hints,
+                evidence_refs=[f"campaign:{campaign.id}"],
+            )
+        )
+    return signals
+
+
+def _research_director_remaining_tool_calls(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> int | None:
+    budget = repository.get_campaign_budget(campaign.id)
+    if budget is None or budget.tool_call_budget is None:
+        return None
+    return max(
+        0,
+        budget.tool_call_budget
+        - repository.campaign_local_tool_call_count(campaign.id),
+    )
+
+
+def _record_research_director_plan(
+    *,
+    campaign: CampaignRecord,
+    plan: ResearchDirectorPlan,
+    repository: DatabaseRepository,
+) -> None:
+    existing = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "research_director_plan"
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("plan_digest") == plan.plan_digest
+    ]
+    if existing:
+        return
+    stage_status = {
+        "ready": "planned",
+        "awaiting_human_review": "awaiting_review",
+        "blocked": "blocked",
+    }[plan.status]
+    source_ref = f"source_snapshot:{plan.source_snapshot_digest}"
+    payload = plan.model_dump(mode="json")
+    payload.update(
+        {
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "plan_dispatch_allowed": plan.dispatch_allowed,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+            "raw_payload_in_dispatch": False,
+        }
+    )
+    repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=None,
+        stage_key="research_director_plan",
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status=stage_status,
+        input_refs=[f"campaign:{campaign.id}", source_ref],
+        output_refs=[f"research_plan:{plan.plan_id}"],
+        safety_gate_state=("advisory_plan_only" if stage_status != "blocked" else "blocked"),
+        stop_reason=plan.stop_reason,
+        payload=payload,
+    )
+
+
+def _has_pending_autonomous_validation_handoff(
+    repository: DatabaseRepository,
+    campaign_id: str,
+) -> bool:
+    return any(
+        task.task_type == "validation_handoff"
+        and task.status == "awaiting_approval"
+        for task in repository.list_campaign_tasks(campaign_id)
+    )
+
+
+def _has_unsettled_campaign_validation_runs(
+    repository: DatabaseRepository,
+    campaign_id: str,
+) -> bool:
+    terminal_statuses = {
+        "blocked",
+        "evidence_recorded",
+        "refuted",
+        "needs_evidence",
+    }
+    return any(
+        validation_run.allowed_to_execute
+        or validation_run.status not in terminal_statuses
+        for validation_run in repository.list_campaign_validation_runs(campaign_id)
+    )
+
+
+def _has_active_campaign_task(
+    repository: DatabaseRepository,
+    campaign_id: str,
+) -> bool:
+    return any(
+        task.status
+        in {
+            "queued",
+            "ready",
+            "dispatched",
+            "running",
+            "awaiting_evidence",
+            "awaiting_approval",
+            "needs_evidence",
+        }
+        for task in repository.list_campaign_tasks(campaign_id)
+    )
+
+
+def _is_safe_autonomous_validation_handoff(
+    repository: DatabaseRepository,
+    campaign: CampaignRecord,
+    task: CampaignTaskRecord,
+) -> bool:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    pipeline_run_id = payload.get("pipeline_run_id")
+    report_review_task_id = payload.get("report_review_task_id")
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    candidate_ids = _safe_autonomous_validation_candidate_ids(
+        payload.get("candidate_ids")
+    )
+    if (
+        task.task_type != "validation_handoff"
+        or payload.get("schema_version") != "autonomous_validation_handoff_v1"
+        or not isinstance(pipeline_run_id, str)
+        or not isinstance(report_review_task_id, str)
+        or not _is_source_snapshot_digest(source_snapshot_digest)
+        or candidate_ids is None
+        or source_snapshot_digest != campaign_payload.get("source_snapshot_digest")
+        or payload.get("submission_blocked") is not True
+        or payload.get("human_review_required") is not True
+        or payload.get("approval_required") is not True
+        or any(
+            payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        return False
+    pipeline_run = repository.get_pipeline_run(pipeline_run_id)
+    report_review_task = repository.session.get(
+        CampaignTaskRecord,
+        report_review_task_id,
+    )
+    pipeline_payload = pipeline_run.payload if pipeline_run is not None else {}
+    return (
+        pipeline_run is not None
+        and pipeline_run.asset == campaign.default_asset
+        and pipeline_run.scope_status == "in_scope"
+        and pipeline_run.policy_text_hash == campaign.policy_text_hash
+        and isinstance(pipeline_payload, dict)
+        and pipeline_payload.get("campaign_id") == campaign.id
+        and report_review_task is not None
+        and report_review_task.campaign_id == campaign.id
+        and report_review_task.task_type == "report_review"
+        and report_review_task.status == "completed"
+        and f"pipeline_run:{pipeline_run_id}" in task.input_refs
+        and f"campaign_task:{report_review_task_id}" in task.input_refs
+    )
+
+
+def _is_source_snapshot_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
+
+
+def _safe_autonomous_validation_candidate_ids(value: object) -> list[str] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 100:
+        return None
+    candidate_ids: list[str] = []
+    for candidate_id in value:
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or safe_preview_text(candidate_id) != candidate_id
+            or candidate_id in candidate_ids
+        ):
+            return None
+        candidate_ids.append(candidate_id)
+    return candidate_ids
+
+
 @app.get("/mythos/campaigns", response_model=list[CampaignResponse])
 def list_mythos_campaigns(
     session: Session = Depends(get_session),
@@ -1506,6 +3254,90 @@ def list_mythos_campaigns(
         _campaign_response(campaign, repository)
         for campaign in repository.list_campaigns()
     ]
+
+
+@app.get(
+    "/mythos/campaigns/autonomous-wakeup-candidates",
+    response_model=list[AutonomousWakeupCampaignResponse],
+)
+def list_mythos_autonomous_wakeup_campaigns(
+    after_id: str | None = Query(
+        default=None,
+        pattern=r"^campaign_[0-9a-f]{32}$",
+    ),
+    session: Session = Depends(get_session),
+) -> list[AutonomousWakeupCampaignResponse]:
+    repository = DatabaseRepository(session)
+    return [
+        AutonomousWakeupCampaignResponse(**campaign)
+        for campaign in repository.list_autonomous_wakeup_campaigns(after_id=after_id)
+    ]
+
+
+@app.post(
+    "/mythos/campaigns/autonomous-wakeup",
+    response_model=AutonomousWakeupRunResponse,
+    status_code=202,
+)
+def run_mythos_autonomous_research_wakeup(
+    x_mythos_autonomous_research_capability: str | None = Header(
+        default=None,
+        alias="X-Mythos-Autonomous-Research-Capability",
+        max_length=128,
+    ),
+) -> AutonomousWakeupRunResponse:
+    _require_autonomous_research_capability(
+        x_mythos_autonomous_research_capability
+    )
+    try:
+        start_autonomous_research_wakeup_in_background()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="local_autonomous_wakeup_unavailable",
+        ) from exc
+    return AutonomousWakeupRunResponse(
+        status="accepted",
+        stop_reason="wakeup_accepted",
+        processed_count=0,
+        outcome_counts={},
+        execution_allowed=False,
+        dispatch_allowed=False,
+        validation_allowed=False,
+        candidate_promotion_allowed=False,
+        report_submission_allowed=False,
+    )
+
+
+def _has_autonomous_research_capability(value: str | None) -> bool:
+    configured = get_settings().autonomous_research_capability
+    return (
+        isinstance(value, str)
+        and isinstance(configured, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{43,128}", value) is not None
+        and re.fullmatch(r"[A-Za-z0-9_-]{43,128}", configured) is not None
+        and hmac.compare_digest(value, configured)
+    )
+
+
+def _require_autonomous_research_capability(value: str | None) -> None:
+    if not _has_autonomous_research_capability(value):
+        raise HTTPException(status_code=403, detail="local_autonomous_capability_required")
+
+
+@app.get(
+    "/mythos/campaigns/autonomous-wakeup-health",
+    response_model=AutonomousWakeupHealthSummary,
+)
+def get_mythos_autonomous_wakeup_health(
+    session: Session = Depends(get_session),
+) -> AutonomousWakeupHealthSummary:
+    repository = DatabaseRepository(session)
+    return AutonomousWakeupHealthSummary(
+        **build_autonomous_research_wakeup_health(
+            repository.get_autonomous_research_wakeup_state()
+        )
+    )
 
 
 @app.get("/mythos/campaigns/{campaign_id}", response_model=CampaignResponse)
@@ -1536,12 +3368,61 @@ def start_mythos_campaign(
         raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
     if scope_guard_rule.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
-    campaign = repository.update_campaign_status(campaign_id, "running") or campaign
-    tick_result = tick_campaign(
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if campaign.status in {"canceled", "completed", "failed"}:
+        raise HTTPException(status_code=409, detail="campaign_not_startable")
+    campaign_mode = getattr(campaign, "campaign_mode", None) or "legacy"
+    if campaign_mode == "bounty_autopilot":
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+
+        auth_record = repository.get_current_campaign_authorization(campaign_id)
+        if auth_record is None:
+            raise HTTPException(status_code=409, detail="authorization_missing")
+        if auth_record.revoked_at is not None or not auth_record.is_current:
+            raise HTTPException(status_code=409, detail="authorization_revoked")
+        try:
+            auth = authorization_from_payload(auth_record.payload)
+            if auth.authorization_digest != auth_record.authorization_digest:
+                raise AuthorizationValidationError("authorization_digest_invalid")
+            validate_current_authorization(auth, now=datetime.now(UTC))
+        except AuthorizationValidationError as exc:
+            raise HTTPException(status_code=409, detail=exc.reason) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=409, detail="authorization_digest_invalid"
+            ) from exc
+        campaign = _materialize_autopilot_source_snapshot(campaign, repository)
+
+    campaign = repository.transition_campaign_status_if_currently(
         campaign_id,
-        repository=repository,
-        dispatcher=dispatch_agent_task,
+        "running",
+        allowed_current_statuses={
+            "draft",
+            "paused",
+            "blocked",
+            "awaiting_review",
+            "running",
+        },
     )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_not_startable")
+    if campaign_mode == "bounty_autopilot":
+        tick_result = tick_autonomous_research_campaign(
+            campaign_id,
+            repository=repository,
+            dispatcher=dispatch_agent_task,
+        )
+    else:
+        tick_result = tick_campaign(
+            campaign_id,
+            repository=repository,
+            dispatcher=dispatch_agent_task,
+        )
     if tick_result["status"] == "blocked":
         campaign = repository.update_campaign_status(campaign_id, "blocked")
     return _campaign_response(campaign, repository)
@@ -1552,7 +3433,28 @@ def pause_mythos_campaign(
     campaign_id: str,
     session: Session = Depends(get_session),
 ) -> CampaignResponse:
-    return _update_campaign_status(campaign_id, "paused", session)
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if campaign.status in {"canceled", "completed", "failed"}:
+        raise HTTPException(status_code=409, detail="campaign_not_pausable")
+    campaign = repository.transition_campaign_status_if_currently(
+        campaign_id,
+        "paused",
+        allowed_current_statuses={
+            "draft",
+            "paused",
+            "blocked",
+            "awaiting_review",
+            "running",
+        },
+    )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_not_pausable")
+    return _campaign_response(campaign, repository)
 
 
 @app.post("/mythos/campaigns/{campaign_id}/resume", response_model=CampaignResponse)
@@ -1571,6 +3473,10 @@ def resume_mythos_campaign(
         raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
     if scope_guard_rule.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if campaign.status in {"canceled", "completed", "failed"}:
+        raise HTTPException(status_code=409, detail="campaign_not_resumable")
     budget = repository.get_campaign_budget(campaign_id)
     if _campaign_budget_exhausted(
         budget,
@@ -1578,7 +3484,790 @@ def resume_mythos_campaign(
         agent_runs=repository.list_campaign_agent_runs(campaign.id),
     ):
         raise HTTPException(status_code=409, detail="budget_exhausted")
-    return _update_campaign_status(campaign_id, "running", session)
+    campaign_mode = getattr(campaign, "campaign_mode", None) or "legacy"
+    if campaign_mode == "bounty_autopilot":
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+
+        auth_record = repository.get_current_campaign_authorization(campaign_id)
+        if auth_record is None:
+            raise HTTPException(status_code=409, detail="authorization_missing")
+        try:
+            auth = authorization_from_payload(auth_record.payload)
+            if auth.authorization_digest != auth_record.authorization_digest:
+                raise AuthorizationValidationError("authorization_digest_invalid")
+            validate_current_authorization(auth, now=datetime.now(UTC))
+        except AuthorizationValidationError as exc:
+            raise HTTPException(status_code=409, detail=exc.reason) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=409, detail="authorization_digest_invalid"
+            ) from exc
+        campaign = _materialize_autopilot_source_snapshot(campaign, repository)
+    campaign = repository.transition_campaign_status_if_currently(
+        campaign_id,
+        "running",
+        allowed_current_statuses={
+            "draft",
+            "paused",
+            "blocked",
+            "awaiting_review",
+            "running",
+        },
+    )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_not_resumable")
+    return _campaign_response(campaign, repository)
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/plans")
+def create_autopilot_validation_plan(
+    campaign_id: str,
+    request: AutopilotValidationPlanRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        plan = ValidationPlan.model_validate_json(
+            json.dumps(
+                request.plan,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        record = repository.materialize_validation_plan_from_handoff(
+            campaign_id=campaign_id,
+            handoff_id=request.handoff_id,
+            plan=plan,
+            actor=request.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "id": record.id,
+        "campaign_id": record.campaign_id,
+        "plan_id": record.plan_id,
+        "plan_digest": record.plan_digest,
+        "status": record.status,
+        "risk_tier": record.risk_tier,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/plans")
+def list_autopilot_validation_plans(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        {
+            "id": row.id,
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "branch_id": row.branch_id,
+            "asset_id": row.asset_id,
+            "risk_tier": row.risk_tier,
+            "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_validation_plans(campaign_id)
+    ]
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/leases")
+def issue_autopilot_execution_lease(
+    campaign_id: str,
+    request: AutopilotLeaseIssueRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    from app.bounty_autopilot.authority import (
+        AuthorizationValidationError,
+        authorization_from_payload,
+        validate_current_authorization,
+    )
+    from app.bounty_autopilot.plans import ValidationPlan
+
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    plan_record = repository.get_validation_plan(
+        campaign_id=campaign_id,
+        plan_id=request.plan_id,
+    )
+    if plan_record is None:
+        raise HTTPException(status_code=409, detail="plan_not_found")
+    authorization_record = repository.get_current_campaign_authorization(campaign_id)
+    if authorization_record is None:
+        raise HTTPException(status_code=409, detail="authorization_missing")
+    try:
+        authorization = authorization_from_payload(authorization_record.payload)
+        if authorization.authorization_digest != authorization_record.authorization_digest:
+            raise AuthorizationValidationError("authorization_digest_invalid")
+        validate_current_authorization(authorization, now=datetime.now(UTC))
+        plan = ValidationPlan.model_validate_json(
+            json.dumps(
+                plan_record.payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    except AuthorizationValidationError as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except Exception as exc:  # noqa: BLE001 - persisted contracts are fail-closed
+        raise HTTPException(
+            status_code=409,
+            detail="authorization_digest_invalid",
+        ) from exc
+    if plan.asset_id not in authorization.asset_ids:
+        raise HTTPException(status_code=409, detail="authorization_asset_not_allowed")
+    materialization_reason = repository.validation_plan_materialization_stop_reason(
+        campaign_id=campaign_id,
+        plan=plan,
+        require_completed=True,
+    )
+    if materialization_reason is not None:
+        raise HTTPException(status_code=409, detail=materialization_reason)
+    ok, reason, lease = repository.issue_execution_lease(
+        campaign_id=campaign_id,
+        plan_id=request.plan_id,
+        lease_id=request.lease_id,
+        authorization_digest=authorization.authorization_digest,
+        scope_snapshot_digest=authorization.scope_snapshot_digest,
+        authorization_recipe_allowed=plan.recipe_ref in authorization.recipe_refs,
+        policy_mode=authorization.policy_mode,
+        approval_id=request.approval_id,
+    )
+    if not ok or lease is None:
+        raise HTTPException(status_code=409, detail=reason)
+    return {
+        "allowed": True,
+        "reason": reason,
+        "lease_id": lease.lease_id,
+        "plan_id": lease.plan_id,
+        "plan_digest": lease.plan_digest,
+        "status": lease.status,
+        "r3_approval_id": lease.r3_approval_id,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/leases")
+def list_autopilot_execution_leases(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        {
+            "lease_id": row.lease_id,
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "status": row.status,
+            "r3_approval_id": row.r3_approval_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        }
+        for row in repository.list_execution_leases(campaign_id)
+    ]
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/requests/reserve")
+def reserve_autopilot_request(
+    campaign_id: str,
+    request: AutopilotRequestReserveRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        record = repository.reserve_execution_request(
+            campaign_id=campaign_id,
+            lease_id=request.lease_id,
+            reservation_payload=request.reservation,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "reservation_id": record.reservation_id,
+        "lease_id": record.lease_id,
+        "status": record.status,
+        "idempotency_key": record.idempotency_key,
+        "plan_digest": record.plan_digest,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/requests/complete")
+def complete_autopilot_request(
+    campaign_id: str,
+    request: AutopilotRequestCompleteRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        record = repository.complete_execution_request(
+            campaign_id=campaign_id,
+            reservation_id=request.reservation_id,
+            outcome=request.outcome,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "reservation_id": record.reservation_id,
+        "status": record.status,
+        "completed_at": record.completed_at.isoformat() if record.completed_at else None,
+    }
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/gateway/authorize")
+def authorize_autopilot_gateway(
+    campaign_id: str,
+    request: AutopilotGatewayAuthorizeRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        decision = repository.authorize_execution_request(
+            campaign_id=campaign_id,
+            lease_id=request.lease_id,
+            reservation_id=request.reservation_id,
+            method=request.method,
+            scheme=request.scheme,
+            host=request.host,
+            port=request.port,
+            path=request.path,
+            body_digest=request.body_digest,
+            mutation_class=request.mutation_class,
+            resolved_ips=request.resolved_ips,
+            cname_chain=request.cname_chain,
+            is_redirect=request.is_redirect,
+            is_subresource=request.is_subresource,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return decision.model_dump(mode="json")
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/pods/grant")
+def grant_autopilot_pod(
+    campaign_id: str,
+    request: AutopilotPodGrantRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.build_autopilot_pod_grant(
+            campaign_id=campaign_id,
+            lease_id=request.lease_id,
+            pod_id=request.pod_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/emergency-stop/prepare")
+def prepare_emergency_stop_autopilot_campaign(
+    campaign_id: str,
+    request: AutopilotEmergencyStopPrepareRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.prepare_autopilot_emergency_stop(
+            campaign_id=campaign_id,
+            actor=request.actor,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/emergency-stop")
+def emergency_stop_autopilot_campaign(
+    campaign_id: str,
+    request: AutopilotEmergencyStopRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.confirm_autopilot_emergency_stop(
+            campaign_id=campaign_id,
+            actor=request.actor,
+            reason=request.reason,
+            confirmation_nonce=request.confirmation_nonce,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/observations")
+def create_autopilot_observation(
+    campaign_id: str,
+    request: AutopilotObservationCreateRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        observation = ObservationRecord.model_validate_json(
+            json.dumps(
+                request.observation,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        if observation.campaign_id != campaign_id:
+            raise ValueError("campaign_id_mismatch")
+        record = repository.create_autopilot_observation(observation)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "observation_id": record.observation_id,
+        "branch_id": record.branch_id,
+        "plan_digest": record.plan_digest,
+        "grade": record.grade,
+        "outcome_class": record.outcome_class,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/observations")
+def list_autopilot_observations(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    rows = repository.list_autopilot_observations(campaign_id)
+    return {
+        "items": [
+            {
+                "observation_id": row.observation_id,
+                "branch_id": row.branch_id,
+                "plan_digest": row.plan_digest,
+                "grade": row.grade,
+                "outcome_class": row.outcome_class,
+                "payload": row.payload,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+            }
+            for row in rows
+        ],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot")
+def get_autopilot_campaign_projection(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Safe Autopilot projection for Control Center / Studio / CLI."""
+
+    from app.bounty_autopilot.projection import build_autopilot_projection
+
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    auth = repository.get_current_campaign_authorization(campaign_id)
+    auth_payload = dict(auth.payload or {}) if auth is not None else {}
+    if auth is not None:
+        auth_payload.setdefault("authorization_digest", auth.authorization_digest)
+        auth_payload.setdefault("scope_snapshot_digest", auth.scope_snapshot_digest)
+
+    assets = [
+        {
+            "asset_id": row.asset_id,
+            "status": row.admission_decision,
+            "host": row.host,
+            "scheme": row.scheme,
+            "port": row.port,
+            "admitted": str(row.admission_decision) == "admitted",
+            "identity": {
+                "host": row.host,
+                "scheme": row.scheme,
+                "port": row.port,
+                "path_authority": row.path_authority,
+            },
+        }
+        for row in repository.list_campaign_assets(campaign_id)
+    ]
+    branches = [
+        {
+            "branch_id": row.branch_id,
+            "asset_id": row.asset_id,
+            "status": row.status,
+            "priority": row.priority,
+            "risk_tier": row.risk_tier,
+            "reason": row.stop_reason
+            or (row.payload or {}).get("reason")
+            or (row.payload or {}).get("park_reason"),
+            "dependencies": (row.payload or {}).get("dependencies", []),
+            "handoff_from": (row.payload or {}).get("handoff_from"),
+            "handoff_to": (row.payload or {}).get("handoff_to"),
+            "specialist": (row.payload or {}).get("specialist"),
+        }
+        for row in repository.list_research_branches(campaign_id)
+    ]
+    plans = [
+        {
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "status": row.status,
+            "branch_id": row.branch_id,
+            "asset_id": row.asset_id,
+            "risk_tier": row.risk_tier,
+            "recipe_id": (row.payload or {}).get("recipe_ref", {}).get("recipe_id"),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_validation_plans(campaign_id)
+    ]
+    leases = [
+        {
+            "lease_id": row.lease_id,
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_execution_leases(campaign_id)
+    ]
+    requests = [
+        {
+            "reservation_id": row.reservation_id,
+            "status": row.status,
+            "lease_id": row.lease_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_execution_request_ledger(campaign_id)
+    ]
+    observations = [
+        {
+            "observation_id": row.observation_id,
+            "branch_id": row.branch_id,
+            "tool_run_id": (row.payload or {}).get("tool_run_id"),
+            "outcome_class": row.outcome_class,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_observations(campaign_id)
+    ]
+    risk_decisions = [
+        {
+            "risk_decision_id": row.risk_decision_id,
+            "branch_id": row.branch_id,
+            "recipe_id": row.recipe_id,
+            "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_risk_decisions(campaign_id)
+    ]
+    tool_runs = [
+        {
+            "tool_run_id": row.tool_run_id,
+            "branch_id": row.branch_id,
+            "lease_id": row.lease_id,
+            "plan_id": row.plan_id,
+            "run_status": row.run_status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_tool_runs(campaign_id)
+    ]
+    refutations = [
+        {
+            "decision_id": row.decision_id,
+            "branch_id": row.branch_id,
+            "verdict": row.verdict,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_refutation_decisions(campaign_id)
+    ]
+    candidates = [
+        {
+            "candidate_id": row.candidate_id,
+            "branch_id": row.branch_id,
+            "judge_verdict": row.judge_verdict,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_candidate_revisions(campaign_id)
+    ]
+    reports = [
+        {
+            "report_id": row.report_id,
+            "candidate_id": row.candidate_id,
+            "status": "submission_blocked" if row.submission_blocked else "invalid",
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_report_revisions(campaign_id)
+    ]
+    now = datetime.now(UTC)
+    approvals = [
+        {
+            "approval_id": row.id,
+            "status": row.status,
+            "plan_digest": getattr(row, "plan_digest", None),
+            "risk_tier": getattr(row, "risk_tier", None),
+            "consumed": bool(getattr(row, "consumed_at", None)),
+            "expired": _autopilot_record_expired(row.expires_at, now),
+            "plan_changed": False,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "exact_diff": (
+                (row.payload or {}).get("exact_diff", [])
+                if row.approval_type == "r3_exact_plan"
+                else []
+            ),
+        }
+        for row in repository.list_campaign_approval_records(campaign_id)
+        if row.approval_type != "autopilot_emergency_stop_confirmation"
+    ]
+    authorization_budget = auth_payload.get("budgets") or {}
+    campaign_max_requests = int(authorization_budget.get("max_requests") or 0)
+    used_requests = len(requests)
+    budget_remaining = {
+        "asset_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "account_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "branch_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "hypothesis_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "recipe_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "request_slots_remaining": max(0, campaign_max_requests - used_requests),
+        "time_seconds_remaining": authorization_budget.get("max_duration_seconds"),
+        "retry_attempts_remaining": 0,
+        "model_cost_units_remaining": authorization_budget.get("max_cost_microusd"),
+    }
+    projection = build_autopilot_projection(
+        campaign_id=campaign_id,
+        campaign_mode=getattr(campaign, "campaign_mode", None) or "bounty_autopilot",
+        emergency_stopped=repository.campaign_is_emergency_stopped(campaign_id),
+        authorization=auth_payload,
+        assets=assets,
+        branches=branches,
+        plans=plans,
+        leases=leases,
+        requests=requests,
+        observations=observations,
+        risk_decisions=risk_decisions,
+        tool_runs=tool_runs,
+        refutations=refutations,
+        candidates=candidates,
+        reports=reports,
+        approvals=approvals,
+        budget_remaining=budget_remaining,
+    )
+    return projection.model_dump(mode="json")
+
+
+def _autopilot_record_expired(value: datetime | None, now: datetime) -> bool:
+    if value is None:
+        return False
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=UTC)
+    return value <= now
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/assets")
+def list_autopilot_assets(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["assets"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/branches")
+def list_autopilot_branches(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["branches"],
+        "next_branch_id": projection["next_branch_id"],
+        "next_reason": projection["next_reason"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/budgets")
+def get_autopilot_budgets(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        **projection["budgets"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/approvals")
+def list_autopilot_approvals(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["approvals"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/events")
+def list_autopilot_events(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["events"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/steering")
+def steer_autopilot_campaign(
+    campaign_id: str,
+    request: AutopilotSteerRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Persist one bounded branch command against current server authority."""
+
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.steer_autopilot_branch(
+            campaign_id=campaign_id,
+            branch_id=request.branch_id,
+            directive=request.directive,
+            priority=request.priority,
+            hypothesis_guidance=request.hypothesis_guidance,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/autopilot/approvals/{approval_id}/decision"
+)
+def decide_autopilot_approval(
+    campaign_id: str,
+    approval_id: str,
+    request: AutopilotApprovalDecisionRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        approval = repository.decide_autopilot_r3_approval(
+            campaign_id=campaign_id,
+            approval_id=approval_id,
+            decision=request.decision,
+            actor=request.actor,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "approval_id": approval.id,
+        "status": approval.status,
+        "plan_digest": approval.plan_digest,
+        "decided_at": (
+            approval.decided_at.isoformat() if approval.decided_at is not None else None
+        ),
+        "consumed": approval.consumed_at is not None,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autonomous-research/tick")
+def tick_mythos_autonomous_research_campaign(
+    campaign_id: str,
+    x_mythos_autonomous_research_capability: str | None = Header(
+        default=None,
+        alias="X-Mythos-Autonomous-Research-Capability",
+        max_length=128,
+    ),
+    session: Session = Depends(get_session),
+) -> dict:
+    _require_autonomous_research_capability(
+        x_mythos_autonomous_research_capability
+    )
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return tick_autonomous_research_campaign(
+        campaign_id,
+        repository=repository,
+        dispatcher=dispatch_agent_task,
+    )
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/autonomous-research/tasks/{task_id}/retry"
+)
+def retry_mythos_autonomous_research_task(
+    campaign_id: str,
+    task_id: str,
+    x_mythos_autonomous_research_capability: str | None = Header(
+        default=None,
+        alias="X-Mythos-Autonomous-Research-Capability",
+        max_length=128,
+    ),
+    session: Session = Depends(get_session),
+) -> dict:
+    _require_autonomous_research_capability(
+        x_mythos_autonomous_research_capability
+    )
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return retry_autonomous_research_task(
+        campaign_id,
+        task_id,
+        repository=repository,
+        dispatcher=dispatch_agent_task,
+    )
 
 
 @app.get("/mythos/campaigns/{campaign_id}/tasks", response_model=list[CampaignTaskResponse])
@@ -1593,6 +4282,175 @@ def list_mythos_campaign_tasks(
         _campaign_task_response(record)
         for record in repository.list_campaign_tasks(campaign_id)
     ]
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/validation-handoffs/{task_id}/review",
+    response_model=CampaignTaskResponse,
+)
+def review_mythos_autonomous_validation_handoff(
+    campaign_id: str,
+    task_id: str,
+    request: AutonomousValidationHandoffReviewRequest,
+    session: Session = Depends(get_session),
+) -> CampaignTaskResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    task = repository.session.get(CampaignTaskRecord, task_id)
+    if task is None or task.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Validation handoff not found")
+    if task.status != "awaiting_approval":
+        raise HTTPException(status_code=409, detail="validation_handoff_not_awaiting_review")
+    if not _is_safe_autonomous_validation_handoff(repository, campaign, task):
+        raise HTTPException(status_code=409, detail="autonomous_validation_handoff_invalid")
+    if campaign.status == "running":
+        campaign = repository.transition_campaign_status_if_currently(
+            campaign.id,
+            "awaiting_review",
+            allowed_current_statuses={"running"},
+        )
+        if campaign is None:
+            raise HTTPException(status_code=409, detail="campaign_not_ready_for_review")
+    elif campaign.status not in {"awaiting_review", "paused"}:
+        raise HTTPException(status_code=409, detail="campaign_not_ready_for_review")
+
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    manual_validation = None
+    if (
+        request.decision == "accepted_for_manual_follow_up"
+        and request.validation_mode is not None
+    ):
+        validation_mode = safe_preview_text(request.validation_mode)
+        asset = campaign.default_asset
+        scope_rule, program_rule_reason = _current_campaign_scope_guard_rule(
+            repository,
+            campaign,
+            asset,
+        )
+        if program_rule_reason is not None:
+            raise HTTPException(status_code=409, detail=program_rule_reason)
+        if scope_rule is None:
+            raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+        scope_decision = evaluate_validation_request(
+            scope_rule,
+            ValidationRequest(
+                asset=asset,
+                validation_type=validation_mode,
+                human_approved=False,
+            ),
+        )
+        if (
+            scope_decision.reason == "human_approval_required"
+            and validation_mode not in scope_rule.allowed_validation
+        ):
+            raise HTTPException(status_code=409, detail="validation_not_allowed")
+        if (
+            not scope_decision.allowed
+            and scope_decision.reason != "human_approval_required"
+        ):
+            raise HTTPException(status_code=409, detail=scope_decision.reason)
+
+        candidate_ids = list(
+            dict.fromkeys(
+                safe_preview_text(candidate_id)
+                for candidate_id in payload.get("candidate_ids", [])
+                if isinstance(candidate_id, str) and safe_preview_text(candidate_id)
+            )
+        )[:100]
+        plan_material = {
+            "handoff_task_id": task.id,
+            "pipeline_run_id": payload["pipeline_run_id"],
+            "source_snapshot_digest": payload["source_snapshot_digest"],
+            "candidate_ids": candidate_ids,
+            "validation_mode": validation_mode,
+        }
+        plan_digest = "sha256:" + sha256(
+            json.dumps(plan_material, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        audit_payload = {
+            "source": "autonomous_validation_handoff",
+            "handoff_task_id": task.id,
+            "pipeline_run_id": payload["pipeline_run_id"],
+            "source_snapshot_digest": payload["source_snapshot_digest"],
+            "scope_reference": payload["source_snapshot_digest"],
+            "candidate_ids": candidate_ids,
+            "scope_guard_reason": scope_decision.reason,
+            "submission_blocked": True,
+            "human_review_completed": True,
+            "approval_required": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        }
+        manual_validation = {
+            "reviewer": request.reviewer,
+            "approval_reason": "Human approval required before validation preflight.",
+            "scope_reference": payload["source_snapshot_digest"],
+            "asset": asset,
+            "validation_mode": validation_mode,
+            "plan_digest": plan_digest,
+            "approval_payload": audit_payload,
+            "target_ref": f"campaign:{campaign.id}",
+            "summary": "Human approval required before non-destructive validation preflight.",
+            "validation_payload": audit_payload,
+        }
+    review_payload = {
+        "schema_version": "autonomous_validation_handoff_review_v1",
+        "idempotency_key": sha256(
+            f"{task.id}:autonomous_validation_handoff_review_v1".encode("utf-8")
+        ).hexdigest(),
+        "handoff_task_id": task.id,
+        "pipeline_run_id": payload["pipeline_run_id"],
+        "source_snapshot_digest": payload["source_snapshot_digest"],
+        "decision": request.decision,
+        "reviewer": request.reviewer,
+        "reason_recorded": bool(request.reason),
+        "validation_mode": (
+            manual_validation["validation_mode"] if manual_validation is not None else None
+        ),
+        "manual_validation_queued": manual_validation is not None,
+        "submission_blocked": True,
+        "human_review_completed": True,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+    }
+    if manual_validation is None:
+        review_result = repository.complete_autonomous_validation_handoff_review(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            pipeline_run_id=payload["pipeline_run_id"],
+            input_refs=[*task.input_refs, f"campaign_task:{task.id}"],
+            payload=review_payload,
+        )
+    else:
+        review_result = (
+            repository.complete_autonomous_validation_handoff_review_with_manual_validation(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                pipeline_run_id=payload["pipeline_run_id"],
+                input_refs=[*task.input_refs, f"campaign_task:{task.id}"],
+                payload=review_payload,
+                manual_validation=manual_validation,
+            )
+    )
+    if review_result is None:
+        raise HTTPException(status_code=409, detail="validation_handoff_not_awaiting_review")
+    reviewed_task = review_result[0]
+    return _campaign_task_response(reviewed_task)
 
 
 @app.post(
@@ -2018,10 +4876,286 @@ def list_mythos_campaign_pipeline_stages(
     repository = DatabaseRepository(session)
     if repository.get_campaign(campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    agent_runs_by_id, agent_runs_by_task_id = _agent_run_timeline_indexes(
+        repository.list_campaign_agent_runs(campaign_id)
+    )
     return [
-        _pipeline_stage_response(record)
+        _pipeline_stage_response(
+            record,
+            agent_runs_by_id=agent_runs_by_id,
+            agent_runs_by_task_id=agent_runs_by_task_id,
+        )
         for record in repository.list_campaign_pipeline_stages(campaign_id)
     ]
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/pipeline-stages/{stage_id}/report-revisions",
+    response_model=PipelineStageResponse,
+)
+def revise_autonomous_report_with_validation_evidence(
+    campaign_id: str,
+    stage_id: str,
+    request: AutonomousReportRevisionRequest,
+    session: Session = Depends(get_session),
+) -> PipelineStageResponse:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+
+    stage = repository.get_pipeline_stage(stage_id)
+    if (
+        stage is None
+        or stage.campaign_id != campaign_id
+        or stage.stage_key != "autonomous_validation_evidence_import"
+        or stage.status != "evidence_recorded"
+        or stage.safety_gate_state != "advisory_validation_evidence_only"
+        or stage.pipeline_run_id is None
+        or stage.task_id is None
+        or not isinstance(stage.payload, dict)
+    ):
+        raise HTTPException(status_code=404, detail="Validation evidence stage not found")
+
+    payload = stage.payload
+    raw_candidate_ids = payload.get("candidate_ids")
+    candidate_ids = _safe_autonomous_validation_candidate_ids(raw_candidate_ids)
+    evidence_ref_count = _safe_non_negative_int(payload.get("evidence_ref_count"))
+    if (
+        payload.get("schema_version") != "autonomous_validation_evidence_import_v1"
+        or payload.get("source") != "autonomous_validation_handoff"
+        or payload.get("pipeline_run_id") != stage.pipeline_run_id
+        or payload.get("handoff_task_id") != stage.task_id
+        or payload.get("outcome") != "observed"
+        or payload.get("submission_blocked") is not True
+        or payload.get("human_review_completed") is not True
+        or candidate_ids is None
+        or not _is_source_snapshot_digest(payload.get("source_snapshot_digest"))
+        or evidence_ref_count < 1
+        or any(
+            payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        raise HTTPException(status_code=409, detail="validation_evidence_not_report_safe")
+
+    handoff = repository.session.get(CampaignTaskRecord, stage.task_id)
+    pipeline_run = repository.get_pipeline_run(stage.pipeline_run_id)
+    handoff_payload = handoff.payload if handoff is not None else {}
+    if (
+        handoff is None
+        or handoff.campaign_id != campaign_id
+        or handoff.status != "completed"
+        or not _is_safe_autonomous_validation_handoff(repository, campaign, handoff)
+        or not isinstance(handoff_payload, dict)
+        or _safe_autonomous_validation_candidate_ids(
+            handoff_payload.get("candidate_ids")
+        )
+        != candidate_ids
+        or payload.get("source_snapshot_digest")
+        != handoff_payload.get("source_snapshot_digest")
+        or f"pipeline_run:{stage.pipeline_run_id}" not in stage.input_refs
+        or f"campaign_task:{stage.task_id}" not in stage.input_refs
+        or pipeline_run is None
+    ):
+        raise HTTPException(status_code=409, detail="validation_evidence_provenance_invalid")
+
+    validation_run_id = payload.get("validation_run_id")
+    approval_id = payload.get("approval_id")
+    validation_run = (
+        repository.get_validation_run(validation_run_id)
+        if isinstance(validation_run_id, str)
+        else None
+    )
+    approval = (
+        repository.session.get(ApprovalRecord, approval_id)
+        if isinstance(approval_id, str)
+        else None
+    )
+    validation_payload = (
+        validation_run.payload
+        if validation_run is not None and isinstance(validation_run.payload, dict)
+        else {}
+    )
+    manual_result = validation_payload.get("manual_result")
+    evidence_input_refs = safe_string_list(stage.input_refs)
+    if (
+        not isinstance(validation_run_id, str)
+        or not validation_run_id
+        or safe_preview_text(validation_run_id) != validation_run_id
+        or not isinstance(approval_id, str)
+        or not approval_id
+        or safe_preview_text(approval_id) != approval_id
+        or f"validation_run:{validation_run_id}" not in evidence_input_refs
+        or f"approval:{approval_id}" not in evidence_input_refs
+        or validation_run is None
+        or validation_run.campaign_id != campaign_id
+        or validation_run.task_id != handoff.id
+        or validation_run.approval_id != approval_id
+        or validation_run.status != "evidence_recorded"
+        or validation_run.safety_gate_state != "manual_evidence_recorded"
+        or validation_run.approval_required is not True
+        or validation_run.allowed_to_execute is not False
+        or validation_run.evidence_ref_count != evidence_ref_count
+        or validation_payload.get("source") != "autonomous_validation_handoff"
+        or validation_payload.get("pipeline_run_id") != pipeline_run.id
+        or validation_payload.get("handoff_task_id") != handoff.id
+        or validation_payload.get("source_snapshot_digest")
+        != payload.get("source_snapshot_digest")
+        or validation_payload.get("approval_record_id") != approval_id
+        or _safe_autonomous_validation_candidate_ids(
+            validation_payload.get("candidate_ids")
+        )
+        != candidate_ids
+        or validation_payload.get("approval_required") is not True
+        or not isinstance(manual_result, dict)
+        or safe_preview_text(manual_result.get("outcome", "")) != "observed"
+        or manual_result.get("execution_started") is not False
+        or any(
+            validation_payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+        or approval is None
+        or approval.run_id != pipeline_run.id
+        or not _validation_run_approval_matches(
+            approval=approval,
+            validation_run=validation_run,
+            campaign=campaign,
+            asset=_validation_run_scope_asset(validation_run, campaign),
+        )
+    ):
+        raise HTTPException(status_code=409, detail="validation_evidence_provenance_invalid")
+
+    report_review_task_id = handoff_payload.get("report_review_task_id")
+    report_review_stages = [
+        record
+        for record in repository.list_pipeline_stages_for_run(pipeline_run.id)
+        if record.campaign_id == campaign_id
+        and record.task_id == report_review_task_id
+        and record.stage_key == "autonomous_report_review"
+        and record.status == "completed"
+    ]
+    if len(report_review_stages) != 1:
+        raise HTTPException(status_code=409, detail="autonomous_report_review_missing")
+
+    report_review = report_review_stages[0]
+    report_payload = (
+        report_review.payload if isinstance(report_review.payload, dict) else {}
+    )
+    raw_report_drafts = report_payload.get("report_drafts")
+    if (
+        report_review.safety_gate_state != "awaiting_review"
+        or report_review.stop_reason != "human_review_required"
+        or report_payload.get("schema_version") != "autonomous_report_review_v1"
+        or report_payload.get("pipeline_run_id") != pipeline_run.id
+        or report_payload.get("submission_blocked") is not True
+        or report_payload.get("human_review_required") is not True
+        or not isinstance(raw_report_drafts, list)
+        or f"pipeline_run:{pipeline_run.id}" not in report_review.input_refs
+        or f"campaign_task:{handoff.id}" not in report_review.output_refs
+        or any(
+            report_payload.get(field) is not False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        raise HTTPException(status_code=409, detail="autonomous_report_review_invalid")
+
+    report_candidate_ids: list[str] = []
+    for report_draft in raw_report_drafts:
+        candidate_id = (
+            report_draft.get("candidate_id")
+            if isinstance(report_draft, dict)
+            else None
+        )
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or safe_preview_text(candidate_id) != candidate_id
+            or candidate_id in report_candidate_ids
+            or not isinstance(report_draft, dict)
+            or report_draft.get("submission_blocked") is not True
+            or report_draft.get("human_review_required") is not True
+            or report_draft.get("execution_allowed") is not False
+            or report_draft.get("validation_allowed") is not False
+            or report_draft.get("report_submission_allowed") is not False
+            or report_draft.get("confirmed_vulnerability") is not False
+        ):
+            raise HTTPException(status_code=409, detail="autonomous_report_review_invalid")
+        report_candidate_ids.append(candidate_id)
+    if not set(candidate_ids).issubset(report_candidate_ids):
+        raise HTTPException(status_code=409, detail="autonomous_report_review_invalid")
+
+    validation_outcome = safe_preview_text(manual_result.get("outcome", "unknown"))
+    validation_result_review = _validation_result_review_payload(validation_run)
+    revision = repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run.id,
+        campaign_id=campaign_id,
+        task_id=handoff.id,
+        stage_key="autonomous_report_revision",
+        stage_order=43,
+        status="completed",
+        input_refs=[
+            f"pipeline_run:{pipeline_run.id}",
+            f"campaign_task:{handoff.id}",
+            f"pipeline_stage:{stage.id}",
+            f"approval:{approval_id}",
+            f"validation_run:{validation_run_id}",
+        ],
+        output_refs=[],
+        safety_gate_state="submission_blocked_human_review",
+        stop_reason="human_review_required",
+        payload={
+            "schema_version": "autonomous_report_revision_v1",
+            "idempotency_key": sha256(
+                f"{stage.id}:autonomous_report_revision_v1".encode("utf-8")
+            ).hexdigest(),
+            "source_stage_id": stage.id,
+            "reviewer": safe_preview_text(request.reviewer),
+            "rationale": safe_preview_text(request.rationale),
+            "status": "submission_blocked_human_review",
+            "report_draft_count": len(report_candidate_ids),
+            "candidate_count": len(candidate_ids),
+            "candidate_ids": candidate_ids,
+            "validation_evidence_ref_count": evidence_ref_count,
+            "validation_outcome": validation_outcome,
+            "validation_result_review": validation_result_review,
+            "submission_blocked": True,
+            "human_review_required": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+    return _pipeline_stage_response(revision)
 
 
 @app.post(
@@ -2225,8 +5359,17 @@ def preflight_mythos_validation_run(
         )
     else:
         asset = _validation_run_scope_asset(validation_run, campaign)
-        rule = _campaign_scope_guard_rule(campaign)
-        if rule is None:
+        rule, program_rule_reason = _current_campaign_scope_guard_rule(
+            repository,
+            campaign,
+            asset,
+        )
+        if program_rule_reason is not None:
+            decision = ScopeGuardDecision(
+                allowed=False,
+                reason=program_rule_reason,
+            )
+        elif rule is None:
             decision = ScopeGuardDecision(
                 allowed=False,
                 reason="scope_guard_rule_missing",
@@ -2309,6 +5452,10 @@ def record_mythos_validation_run_manual_result(
             campaign=campaign,
         )
     if _validation_run_manual_result_matches(validation_run, request):
+        _record_autonomous_validation_evidence_import_stage(
+            repository,
+            validation_run,
+        )
         return _validation_run_response(validation_run, repository=repository)
     if validation_run.status != "preflight_passed":
         raise HTTPException(
@@ -2355,6 +5502,7 @@ def record_mythos_validation_run_manual_result(
             "validation_result_review": _validation_result_review_payload(updated_run),
         },
     )
+    _record_autonomous_validation_evidence_import_stage(repository, updated_run)
     _record_research_validation_feedback_stage(repository, updated_run, request)
     usage_record = _artifact_usage_record_for_validation_feedback(
         repository=repository,
@@ -2514,6 +5662,7 @@ def _campaign_control_center_response(
     approvals = repository.list_campaign_approval_records(campaign.id)
     validation_runs = repository.list_campaign_validation_runs(campaign.id)
     stages = repository.list_campaign_pipeline_stages(campaign.id)
+    agent_runs_by_id, agent_runs_by_task_id = _agent_run_timeline_indexes(agent_runs)
     blocked_reasons = _campaign_control_center_blocked_reasons(
         campaign=campaign,
         budget=budget,
@@ -2532,7 +5681,14 @@ def _campaign_control_center_response(
             _validation_run_response(record, repository=repository)
             for record in validation_runs
         ],
-        pipeline_stages=[_pipeline_stage_response(record) for record in stages],
+        pipeline_stages=[
+            _pipeline_stage_response(
+                record,
+                agent_runs_by_id=agent_runs_by_id,
+                agent_runs_by_task_id=agent_runs_by_task_id,
+            )
+            for record in stages
+        ],
         safe_next_action=_campaign_control_center_safe_next_action(
             campaign=campaign,
             budget=budget,
@@ -2556,6 +5712,326 @@ def _campaign_control_center_response(
             repository,
         ),
     )
+
+
+@app.get(
+    "/mythos/control-center/overview",
+    response_model=ControlCenterOverviewResponse,
+)
+def get_mythos_control_center_overview(
+    campaign_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> ControlCenterOverviewResponse:
+    try:
+        return build_control_center_overview(
+            DatabaseRepository(session),
+            campaign_id=campaign_id,
+            campaign_response_builder=_campaign_control_center_response,
+        )
+    except ControlCenterCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail="Campaign not found") from exc
+
+
+@app.get("/mythos/control-center/events")
+def get_mythos_control_center_events(
+    campaign_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_.:-]+$",
+    ),
+    cursor: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
+    last_event_id: str | None = Header(
+        default=None,
+        alias="Last-Event-ID",
+        pattern=r"^[0-9a-f]{64}$",
+    ),
+    session: Session = Depends(get_session, scope="function"),
+) -> StreamingResponse:
+    if campaign_id and DatabaseRepository(session).get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    resolved_cursor = cursor or last_event_id
+    scope = "campaign" if campaign_id else "global"
+    return StreamingResponse(
+        stream_control_center_events(
+            campaign_id=campaign_id,
+            cursor=resolved_cursor,
+            scope=scope,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _program_rule_intake_service(session: Session) -> ProgramRuleIntakeService:
+    settings = get_settings()
+    return ProgramRuleIntakeService(
+        DatabaseRepository(session),
+        advisory_extractor=build_configured_program_rule_advisory(settings),
+    )
+
+
+def _raise_program_rule_http_error(error: ProgramRuleIntakeError) -> None:
+    if isinstance(error, ProgramRuleCooldown):
+        raise HTTPException(
+            status_code=429,
+            detail="Program rule manual refresh is cooling down",
+            headers={"Retry-After": str(error.retry_after_seconds)},
+        )
+    if isinstance(error, ProgramRuleNotFound):
+        raise HTTPException(status_code=404, detail="Program rule resource not found")
+    if isinstance(error, ProgramRuleBrowserRenderRequired):
+        raise HTTPException(status_code=422, detail="browser_render_required")
+    if isinstance(error, ProgramRuleValidationError):
+        raise HTTPException(status_code=422, detail="Program rule request is invalid")
+    if isinstance(error, ProgramRuleClaimRejected):
+        raise HTTPException(status_code=409, detail="Program rule claim is invalid")
+    if isinstance(error, ProgramRuleConflict):
+        raise HTTPException(status_code=409, detail="Program rule state conflict")
+    raise HTTPException(status_code=400, detail="Program rule request failed")
+
+
+@app.post(
+    "/program-rule-sources",
+    response_model=ProgramRuleSourceProjection,
+    status_code=201,
+)
+def register_program_rule_source(
+    request: ProgramRuleRegistrationRequest,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSourceProjection:
+    try:
+        return _program_rule_intake_service(session).register_source(
+            program_alias=request.program_alias,
+            public_rule_url=request.public_rule_url,
+        )
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.get(
+    "/program-rule-sources",
+    response_model=list[ProgramRuleSourceProjection],
+)
+def list_program_rule_sources(
+    session: Session = Depends(get_session),
+) -> list[ProgramRuleSourceProjection]:
+    return _program_rule_intake_service(session).list_sources()
+
+
+@app.get(
+    "/program-rule-sources/{source_id}",
+    response_model=ProgramRuleSourceProjection,
+)
+def get_program_rule_source(
+    source_id: str,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSourceProjection:
+    try:
+        return _program_rule_intake_service(session).get_source(source_id)
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.post(
+    "/program-rule-sources/{source_id}/refresh",
+    response_model=ProgramRuleSourceProjection,
+    status_code=202,
+)
+def refresh_program_rule_source(
+    source_id: str,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSourceProjection:
+    try:
+        return _program_rule_intake_service(session).request_refresh(source_id)
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.get(
+    "/program-rule-sources/{source_id}/snapshots",
+    response_model=list[ProgramRuleSnapshotProjection],
+)
+def list_program_rule_source_snapshots(
+    source_id: str,
+    session: Session = Depends(get_session),
+) -> list[ProgramRuleSnapshotProjection]:
+    try:
+        return _program_rule_intake_service(session).list_snapshots(source_id)
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.get(
+    "/program-rule-sources/{source_id}/snapshots/{snapshot_id}/diff",
+    response_model=ProgramRuleSnapshotDiff,
+)
+def get_program_rule_snapshot_diff(
+    source_id: str,
+    snapshot_id: str,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSnapshotDiff:
+    try:
+        return _program_rule_intake_service(session).get_snapshot_diff(
+            source_id,
+            snapshot_id,
+        )
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+def _review_program_rule_snapshot(
+    *,
+    source_id: str,
+    snapshot_id: str,
+    decision: str,
+    request: SnapshotReviewRequest,
+    session: Session,
+) -> ProgramRuleSnapshotProjection:
+    try:
+        return _program_rule_intake_service(session).review_snapshot(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            decision=decision,
+            reviewer_alias=request.reviewer_alias,
+            expected_review_digest=request.expected_review_digest,
+            operator_confirmed=request.operator_confirmed,
+        )
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.post(
+    "/program-rule-sources/{source_id}/snapshots/{snapshot_id}/approve",
+    response_model=ProgramRuleSnapshotProjection,
+)
+def approve_program_rule_snapshot(
+    source_id: str,
+    snapshot_id: str,
+    request: SnapshotReviewRequest,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSnapshotProjection:
+    return _review_program_rule_snapshot(
+        source_id=source_id,
+        snapshot_id=snapshot_id,
+        decision="approved",
+        request=request,
+        session=session,
+    )
+
+
+@app.post(
+    "/program-rule-sources/{source_id}/snapshots/{snapshot_id}/reject",
+    response_model=ProgramRuleSnapshotProjection,
+)
+def reject_program_rule_snapshot(
+    source_id: str,
+    snapshot_id: str,
+    request: SnapshotReviewRequest,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSnapshotProjection:
+    return _review_program_rule_snapshot(
+        source_id=source_id,
+        snapshot_id=snapshot_id,
+        decision="rejected",
+        request=request,
+        session=session,
+    )
+
+
+@app.get(
+    "/programs/{program_id}/scope-rules",
+    response_model=list[ProgramScopeRuleProjection],
+)
+def list_program_scope_rules(
+    program_id: str,
+    session: Session = Depends(get_session),
+) -> list[ProgramScopeRuleProjection]:
+    try:
+        return _program_rule_intake_service(session).list_scope_rules(program_id)
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.post(
+    "/mythos/studio/program-rule-fetch/claims/next",
+    response_model=ProgramRuleClaimNextResult,
+)
+def claim_next_program_rule_source(
+    session: Session = Depends(get_session),
+) -> ProgramRuleClaimNextResult:
+    return _program_rule_intake_service(session).claim_next()
+
+
+@app.post(
+    "/mythos/studio/program-rule-fetch/claims/{claim_id}/normalize",
+    response_model=NormalizedRuleDocument,
+)
+def normalize_program_rule_claim_document(
+    claim_id: str,
+    request: ProgramRuleClaimNormalizeRequest,
+    session: Session = Depends(get_session),
+) -> NormalizedRuleDocument:
+    try:
+        return _program_rule_intake_service(session).normalize_claim_document(
+            claim_id=claim_id,
+            source_id=request.source_id,
+            claim_token=request.claim_token,
+            envelope=request.document,
+        )
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.post(
+    "/mythos/studio/program-rule-fetch/claims/{claim_id}/complete",
+    response_model=ProgramRuleSnapshotProjection,
+)
+async def complete_program_rule_claim(
+    claim_id: str,
+    request: ProgramRuleClaimCompleteRequest,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSnapshotProjection:
+    try:
+        documents = [
+            NormalizedRuleDocument.model_validate_json(
+                json.dumps(document, separators=(",", ":"))
+            )
+            for document in request.documents
+        ]
+        return await _program_rule_intake_service(session).complete_claim(
+            claim_id=claim_id,
+            source_id=request.source_id,
+            claim_token=request.claim_token,
+            documents=documents,
+        )
+    except ValidationError:
+        raise HTTPException(status_code=422, detail="Program rule request is invalid")
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
+
+
+@app.post(
+    "/mythos/studio/program-rule-fetch/claims/{claim_id}/fail",
+    response_model=ProgramRuleSourceProjection,
+)
+def fail_program_rule_claim(
+    claim_id: str,
+    request: ProgramRuleClaimFailRequest,
+    session: Session = Depends(get_session),
+) -> ProgramRuleSourceProjection:
+    try:
+        return _program_rule_intake_service(session).fail_claim(
+            claim_id=claim_id,
+            source_id=request.source_id,
+            claim_token=request.claim_token,
+            failure_code=request.failure_code.value,
+        )
+    except ProgramRuleIntakeError as error:
+        _raise_program_rule_http_error(error)
 
 
 @app.get("/programs", response_model=list[Program])
@@ -2612,7 +6088,13 @@ def create_approval_record(
 ) -> ApprovalRecordResponse:
     repository = DatabaseRepository(session)
     if request.program_id is not None:
-        _program_or_404_in_scope(repository, request.program_id)
+        _program_or_404_in_scope(
+            repository,
+            request.program_id,
+            asset=request.asset,
+            validation_type=request.validation_mode,
+            enforce_current_rule=True,
+        )
     if request.run_id is not None:
         if repository.get_pipeline_run(request.run_id) is None:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
@@ -2779,7 +6261,13 @@ def _decide_approval_record_response(
     if request.decision == "approved" and not approval_record_is_active(current_record):
         raise HTTPException(status_code=409, detail="Approval record expired")
     if request.decision == "approved" and current_record.program_id is not None:
-        _program_or_404_in_scope(repository, current_record.program_id)
+        _program_or_404_in_scope(
+            repository,
+            current_record.program_id,
+            asset=current_record.asset,
+            validation_type=current_record.validation_mode,
+            enforce_current_rule=True,
+        )
     if request.decision == "approved" and current_record.campaign_id is not None:
         campaign = repository.get_campaign(current_record.campaign_id)
         if campaign is None:
@@ -3183,7 +6671,16 @@ def evaluate_scope_guard(
                 allowed=False,
                 reason="scope_not_in_scope",
             )
-        rule = _campaign_scope_guard_rule(campaign)
+        rule, program_rule_reason = _current_campaign_scope_guard_rule(
+            repository,
+            campaign,
+            request.request.asset,
+        )
+        if program_rule_reason is not None:
+            return ScopeGuardDecision(
+                allowed=False,
+                reason=program_rule_reason,
+            )
         if rule is None:
             return ScopeGuardDecision(
                 allowed=False,
@@ -3239,6 +6736,31 @@ def evaluate_scope_guard(
                     allowed=False,
                     reason="scope_not_in_scope",
                 )
+            resolution = resolve_effective_program_rule(
+                repository,
+                approval.program_id,
+                request.request.asset,
+                datetime.now(UTC),
+            )
+            if resolution.source_backed:
+                if resolution.reason is not None or resolution.rule is None:
+                    return ScopeGuardDecision(
+                        allowed=False,
+                        reason=(
+                            resolution.reason or "program_rule_not_authorizing"
+                        ),
+                    )
+                current_rule = intersect_scope_guard_rules(
+                    rule,
+                    resolution.rule,
+                    asset=request.request.asset,
+                )
+                current_decision = evaluate_validation_request(
+                    current_rule,
+                    preflight_request,
+                )
+                if not current_decision.allowed:
+                    return current_decision
         return ScopeGuardDecision(
             allowed=True,
             reason="approved_validation_record",
@@ -3296,6 +6818,10 @@ def approve_mythos_studio_black_box_lab_run(
         validation_run.validation_mode != "black_box_differential"
         or validation_run.status != "preflight_passed"
         or not validation_run.allowed_to_execute
+        or not _validation_run_currently_allowed_to_execute(
+            validation_run,
+            repository=repository,
+        )
     ):
         raise HTTPException(status_code=409, detail="local_lab_preflight_required")
     _raise_if_validation_run_approval_not_active(
@@ -3311,24 +6837,272 @@ def approve_mythos_studio_black_box_lab_run(
     if approval is None:
         raise HTTPException(status_code=409, detail="active_lab_approval_required")
 
+    dispatch_facts = _studio_black_box_local_auto_dispatch_facts(
+        repository=repository,
+        validation_run=validation_run,
+        campaign=campaign,
+        approval=approval,
+        request=request.lease_preview,
+    )
+    if dispatch_facts is None:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_approval_required",
+        )
+
     approved_asset = _validation_run_scope_asset(validation_run, campaign)
     active_origin = request.lease_preview.active_origin
     origin_netloc = urlparse(active_origin).netloc
     if approved_asset not in {active_origin, origin_netloc}:
         raise HTTPException(status_code=409, detail="lab_origin_approval_mismatch")
 
-    lease_payload = request.lease_preview.model_dump(mode="json")
-    serialized_lease = json.dumps(
-        lease_payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    lease_digest = f"sha256:{sha256(serialized_lease.encode('utf-8')).hexdigest()}"
+    complete_plan_digest = _studio_black_box_local_complete_plan_digest(request)
+    if not _studio_black_box_local_bind_complete_plan_digest(
+        approval,
+        complete_plan_digest,
+        repository=repository,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_approval_required",
+        )
+
     return StudioBlackBoxLabRunApprovalResponse(
         validation_run_id=validation_run.id,
         approval_id=approval.id,
-        lease_digest=lease_digest,
+        complete_plan_digest=complete_plan_digest,
+        **dispatch_facts,
+    )
+
+
+@app.post(
+    "/mythos/studio/black-box-lab/runs/preflight",
+    response_model=StudioBlackBoxLabRunPreflightResponse,
+)
+def preflight_mythos_studio_black_box_lab_run(
+    request: StudioBlackBoxLabRunPreflightRequest,
+    session: Session = Depends(get_session),
+) -> StudioBlackBoxLabRunPreflightResponse:
+    complete_plan = request.complete_plan
+    expected_traces = {
+        (
+            workflow.workflow_alias,
+            workflow.session_alias,
+            workflow.route_template,
+        )
+        for workflow in complete_plan.lease_preview.workflows
+    }
+    reviewed_traces = {
+        (trace.workflow_alias, trace.session_alias, trace.route_template)
+        for trace in complete_plan.trace_review
+    }
+    if (
+        not complete_plan.operator_confirmed
+        or not all(session.ready for session in complete_plan.lease_preview.sessions)
+        or len(complete_plan.trace_review) != len(reviewed_traces)
+        or reviewed_traces != expected_traces
+        or request.lease_digest
+        != _studio_black_box_local_lease_digest(complete_plan.lease_preview)
+        or request.complete_plan_digest
+        != _studio_black_box_local_complete_plan_digest(complete_plan)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+
+    try:
+        fresh_preflight = preflight_mythos_validation_run(
+            complete_plan.validation_run_id,
+            session,
+        )
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        ) from exc
+    if not fresh_preflight.decision.allowed:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+
+    repository = DatabaseRepository(session)
+    validation_run = repository.get_validation_run(complete_plan.validation_run_id)
+    if validation_run is None:
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id == request.approval_id
+        else None
+    )
+    dispatch_facts = _studio_black_box_local_auto_dispatch_facts(
+        repository=repository,
+        validation_run=validation_run,
+        campaign=campaign,
+        approval=approval,
+        request=complete_plan.lease_preview,
+        complete_plan_digest=request.complete_plan_digest,
+    )
+    approved_asset = _validation_run_scope_asset(validation_run, campaign)
+    active_origin = complete_plan.lease_preview.active_origin
+    if (
+        dispatch_facts is None
+        or dispatch_facts["lease_digest"] != request.lease_digest
+        or approved_asset not in {active_origin, urlparse(active_origin).netloc}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+    return StudioBlackBoxLabRunPreflightResponse(
+        validation_run_id=validation_run.id,
+        approval_id=request.approval_id,
+        complete_plan_digest=request.complete_plan_digest,
+        **dispatch_facts,
+    )
+
+
+@app.post(
+    "/mythos/studio/black-box-lab/runs/bounded-result",
+    response_model=StudioBlackBoxLabBoundedResultResponse,
+)
+def record_mythos_studio_black_box_lab_bounded_result(
+    request: StudioBlackBoxLabBoundedResultRequest,
+    session: Session = Depends(get_session),
+) -> StudioBlackBoxLabBoundedResultResponse:
+    repository = DatabaseRepository(session)
+    result_digest = _studio_black_box_local_bounded_result_digest(request)
+    validation_run = repository.get_validation_run(
+        request.exact_preflight.complete_plan.validation_run_id
+    )
+    existing_result = (
+        validation_run.payload.get("black_box_bounded_result")
+        if validation_run is not None and isinstance(validation_run.payload, dict)
+        else None
+    )
+    if isinstance(existing_result, dict):
+        existing_payload = existing_result.get("result_payload")
+        if (
+            not isinstance(existing_payload, dict)
+            or existing_payload.get("request_digest") != result_digest
+            or validation_run.approval_id != request.exact_preflight.approval_id
+        ):
+            raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+        approved_workflow = request.exact_preflight.complete_plan.lease_preview.workflows[0]
+        approved_session = next(
+            (
+                item
+                for item in request.exact_preflight.complete_plan.lease_preview.sessions
+                if item.session_alias != approved_workflow.session_alias
+            ),
+            None,
+        )
+        if approved_session is None:
+            raise HTTPException(status_code=409, detail="bounded_result_request_mismatch")
+        approved_session_alias = approved_session.session_alias
+        approved_workflow_alias = approved_workflow.workflow_alias
+    else:
+        try:
+            preflight = preflight_mythos_studio_black_box_lab_run(
+                request.exact_preflight,
+                session,
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="fresh_complete_local_plan_preflight_required",
+            ) from exc
+        validation_run = repository.get_validation_run(preflight.validation_run_id)
+        if validation_run is None:
+            raise HTTPException(
+                status_code=409,
+                detail="fresh_complete_local_plan_preflight_required",
+            )
+        approved_session_alias = preflight.approved_session_alias
+        approved_workflow_alias = preflight.approved_workflow_alias
+
+    campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id == request.exact_preflight.approval_id
+        else None
+    )
+    validation_payload = (
+        validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    )
+    pipeline_run_id = validation_payload.get("pipeline_run_id")
+    pipeline_run = (
+        repository.get_pipeline_run(pipeline_run_id)
+        if isinstance(pipeline_run_id, str)
+        else None
+    )
+    if (
+        approval is None
+        or approval.campaign_id != campaign.id
+        or approval.run_id != pipeline_run_id
+        or pipeline_run is None
+        or not isinstance(pipeline_run.payload, dict)
+        or pipeline_run.payload.get("campaign_id") != campaign.id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="fresh_complete_local_plan_preflight_required",
+        )
+    try:
+        details = _studio_black_box_local_bounded_result_details(
+            request=request,
+            approved_session_alias=approved_session_alias,
+            approved_workflow_alias=approved_workflow_alias,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    trace_aliases = details["trace"]["aliases"]
+    bounded_projection = {
+        "aliases": {
+            "account": trace_aliases["account_alias"],
+            "objects": trace_aliases["object_aliases"],
+            "role": trace_aliases["role_alias"],
+            "runner": trace_aliases["session_alias"],
+            "workflow": trace_aliases["workflow_alias"],
+        },
+        "response_schema_fingerprint": details["trace"][
+            "response_schema_fingerprint"
+        ],
+        "status_class": details["trace"]["status_class"],
+        "timing_bucket": details["trace"]["timing_bucket"],
+        "difference_labels": details["difference_labels"],
+        "safe_counters": details["safe_counters"],
+    }
+    try:
+        updated_validation_run, updated_pipeline_run, _ = (
+            repository.record_studio_black_box_bounded_result_atomic(
+                validation_run_id=validation_run.id,
+                pipeline_run_id=pipeline_run.id,
+                result_digest=result_digest,
+                bounded_projection=bounded_projection,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return StudioBlackBoxLabBoundedResultResponse(
+        campaign_id=campaign.id,
+        difference_labels=details["difference_labels"],
+        evidence_ref_count=updated_validation_run.evidence_ref_count,
+        pipeline_run_id=updated_pipeline_run.id,
+        report_preview_refreshed=isinstance(
+            updated_pipeline_run.payload.get("report_draft"),
+            dict,
+        ),
+        result_digest=result_digest,
+        validation_run_id=updated_validation_run.id,
+        validation_status=updated_validation_run.status,
     )
 
 
@@ -3413,7 +7187,14 @@ def _issue_mythos_studio_black_box_remote_lease(
     if validation_run is None:
         raise HTTPException(status_code=404, detail="Validation run not found")
     campaign = _validation_run_campaign_or_404_in_scope(repository, validation_run)
-    rule = _campaign_scope_guard_rule(campaign)
+    asset = _validation_run_scope_asset(validation_run, campaign)
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
     if rule is None:
         raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
     if (
@@ -3429,7 +7210,7 @@ def _issue_mythos_studio_black_box_remote_lease(
     scope_decision = evaluate_validation_request(
         rule,
         ValidationRequest(
-            asset=campaign.default_asset,
+            asset=asset,
             validation_type="black_box_differential",
             human_approved=True,
             plan_digest=validation_run.plan_digest,
@@ -3582,8 +7363,12 @@ def _studio_black_box_remote_current_authority(
     campaign = repository.get_campaign(validation_run.campaign_id)
     if campaign is None or campaign.scope_status != "in_scope":
         return None
-    rule = _campaign_scope_guard_rule(campaign)
-    if rule is None:
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        _validation_run_scope_asset(validation_run, campaign),
+    )
+    if program_rule_reason is not None or rule is None:
         return None
     approval = repository.session.get(ApprovalRecord, entry.approval_id)
     summary = (
@@ -4036,6 +7821,11 @@ async def _run_mythos_studio_workspace_research_service(
             "model_failure_reason",
             "prompt_hash",
             "model_latency_ms",
+            "model_request_key",
+            "model_response_digest",
+            "model_response_schema",
+            "model_reasoner",
+            "model_replay_binding",
             "baseline_count",
             "proposed_count",
             "accepted_count",
@@ -4046,6 +7836,7 @@ async def _run_mythos_studio_workspace_research_service(
             "validation_allowed",
             "candidate_promotion_allowed",
             "report_submission_allowed",
+            "raw_payload_processed",
         )
     }
     for key in ("provider", "model"):
@@ -4087,6 +7878,20 @@ def launch_mythos_studio_workspace_campaign(
     if repository.get_program(program_id) is None:
         raise HTTPException(status_code=404, detail="Program not found")
 
+    try:
+        workspace_snapshot = build_authorized_campaign_snapshot(
+            request.workspace_path
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    except ValueError as exc:
+        detail = (
+            "workspace_snapshot_redaction_review_required"
+            if str(exc) == "workspace_snapshot_redaction_review_required"
+            else "workspace_snapshot_invalid"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
+
     default_asset = request.default_asset or _studio_campaign_default_asset(
         manifest,
         request.workspace_path,
@@ -4097,9 +7902,22 @@ def launch_mythos_studio_workspace_campaign(
     )
     if scope_guard_rule.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
-
-    payload = _studio_campaign_payload_from_manifest(manifest)
+    payload = _studio_campaign_payload_from_manifest(
+        workspace_snapshot,
+        request.workspace_path,
+    )
     payload["scope_guard_rule"] = scope_guard_rule.model_dump(mode="json")
+    if request.candidate_model is not None and request.candidate_model.enabled:
+        assert request.candidate_model.provider is not None
+        assert request.candidate_model.model is not None
+        model_config = CandidateModelConfig(
+            provider=request.candidate_model.provider,
+            model=request.candidate_model.model,
+        )
+        payload["candidate_model"] = {
+            "provider": model_config.provider.value,
+            "model": model_config.model,
+        }
     campaign = repository.create_campaign(
         program_id=program_id,
         name=request.name or f"Mythos Studio hunter: {manifest.get('name', 'workspace')}",
@@ -4108,7 +7926,11 @@ def launch_mythos_studio_workspace_campaign(
         policy_text=_studio_policy_text_from_manifest(manifest),
         default_asset=default_asset,
         target_classes=["idor", "authorization"],
-        allowed_tools=["static_analyzer", "api_artifact_mapper"],
+        allowed_tools=[
+            "static_analyzer",
+            "api_artifact_mapper",
+            "candidate_hunter_local_evidence_inspector",
+        ],
         created_by="mythos_studio",
         payload=payload,
     )
@@ -4120,7 +7942,7 @@ def launch_mythos_studio_workspace_campaign(
         validation_budget=1,
     )
     campaign = repository.update_campaign_status(campaign.id, "running") or campaign
-    tick_result = tick_campaign(
+    tick_result = tick_autonomous_research_campaign(
         campaign.id,
         repository=repository,
         dispatcher=dispatch_agent_task,
@@ -4129,7 +7951,8 @@ def launch_mythos_studio_workspace_campaign(
         campaign = repository.update_campaign_status(campaign.id, "blocked") or campaign
 
     control_center = _campaign_control_center_response(campaign, repository)
-    dispatched_task_ids = tick_result.get("dispatched_task_ids", [])
+    campaign_task_id = tick_result.get("campaign_task_id")
+    dispatched_task_ids = [campaign_task_id] if isinstance(campaign_task_id, str) else []
     updated_manifest = record_workspace_campaign_hunter_run(
         request.workspace_path,
         campaign_id=campaign.id,
@@ -4144,6 +7967,164 @@ def launch_mythos_studio_workspace_campaign(
         "dispatched_task_ids": dispatched_task_ids,
         "manifest": updated_manifest,
         "safety_gate": "review_only_no_execution",
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.post("/mythos/studio/workspaces/campaigns/{campaign_id}/snapshot-refresh")
+def refresh_mythos_studio_workspace_campaign_snapshot(
+    campaign_id: str,
+    request: StudioCampaignSnapshotRefreshRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    if _has_pending_autonomous_validation_handoff(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="human_review_required")
+    if _has_unsettled_campaign_validation_runs(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="validation_review_required")
+    if _has_active_campaign_task(repository, campaign.id):
+        raise HTTPException(status_code=409, detail="active_runtime_task")
+    if campaign.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="campaign_snapshot_refresh_requires_completed_review",
+        )
+
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    previous_snapshot = campaign_payload.get("workspace_snapshot")
+    previous_source_snapshot_digest = campaign_payload.get("source_snapshot_digest")
+    previous_workspace_name = (
+        previous_snapshot.get("workspace_name")
+        if isinstance(previous_snapshot, dict)
+        else None
+    )
+    if (
+        not isinstance(previous_source_snapshot_digest, str)
+        or not isinstance(previous_workspace_name, str)
+    ):
+        raise HTTPException(status_code=409, detail="workspace_snapshot_required")
+
+    manifest = load_workspace_manifest(request.workspace_path)
+    missing = _studio_missing_ab_artifacts(manifest)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"reason": "studio_ab_artifacts_required", "missing": missing},
+        )
+    try:
+        workspace_snapshot = build_authorized_campaign_snapshot(request.workspace_path)
+        load_authorized_campaign_inputs(workspace_snapshot)
+        refreshed_payload = _studio_campaign_payload_from_manifest(
+            workspace_snapshot,
+            request.workspace_path,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    except ValueError as exc:
+        detail = (
+            "workspace_snapshot_redaction_review_required"
+            if str(exc) == "workspace_snapshot_redaction_review_required"
+            else "workspace_snapshot_invalid"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
+
+    source_snapshot_digest = workspace_snapshot.get("source_snapshot_digest")
+    workspace_name = workspace_snapshot.get("workspace_name")
+    if (
+        not isinstance(source_snapshot_digest, str)
+        or not isinstance(workspace_name, str)
+        or workspace_name != previous_workspace_name
+    ):
+        raise HTTPException(status_code=409, detail="workspace_snapshot_workspace_mismatch")
+    if source_snapshot_digest == previous_source_snapshot_digest:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_unchanged")
+
+    workspace_scope_rule = parse_policy_text(
+        _studio_scope_policy_text_from_manifest(manifest),
+        campaign.default_asset,
+    )
+    if workspace_scope_rule.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    current_scope_rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        campaign.default_asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
+    if current_scope_rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+    scope_guard_rule = intersect_scope_guard_rules(
+        current_scope_rule,
+        workspace_scope_rule,
+        asset=campaign.default_asset,
+    )
+    if scope_guard_rule.scope_status != "in_scope":
+        raise HTTPException(status_code=409, detail="scope_not_in_scope")
+
+    try:
+        refresh_payload = build_autonomous_research_snapshot_refresh_payload(
+            campaign_id=campaign.id,
+            previous_source_snapshot_digest=previous_source_snapshot_digest,
+            source_snapshot_digest=source_snapshot_digest,
+            actor=request.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    refresh_stage = repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=None,
+        stage_key=AUTONOMOUS_RESEARCH_SNAPSHOT_REFRESH_STAGE_KEY,
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status="completed",
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{previous_source_snapshot_digest}",
+        ],
+        output_refs=[f"source_snapshot:{source_snapshot_digest}"],
+        safety_gate_state="human_review_completed",
+        stop_reason=None,
+        payload=refresh_payload,
+    )
+    updated_payload = {
+        **campaign_payload,
+        **refreshed_payload,
+        "scope_guard_rule": scope_guard_rule.model_dump(mode="json"),
+    }
+    campaign = repository.refresh_completed_campaign_snapshot(
+        campaign_id=campaign.id,
+        expected_source_snapshot_digest=previous_source_snapshot_digest,
+        payload=updated_payload,
+    )
+    if campaign is None:
+        raise HTTPException(status_code=409, detail="campaign_snapshot_refresh_conflict")
+
+    tick_result = tick_autonomous_research_campaign(
+        campaign.id,
+        repository=repository,
+        dispatcher=dispatch_agent_task,
+    )
+    if tick_result["status"] == "blocked":
+        campaign = repository.update_campaign_status(campaign.id, "blocked") or campaign
+    else:
+        campaign = repository.get_campaign(campaign.id) or campaign
+    campaign_task_id = tick_result.get("campaign_task_id")
+    return {
+        "campaign": _campaign_response(campaign, repository).model_dump(mode="json"),
+        "refresh_stage_id": refresh_stage.id,
+        "previous_source_snapshot_digest": previous_source_snapshot_digest,
+        "source_snapshot_digest": source_snapshot_digest,
+        "dispatched_task_ids": (
+            [campaign_task_id] if isinstance(campaign_task_id, str) else []
+        ),
         "execution_allowed": False,
         "validation_allowed": False,
         "report_submission_allowed": False,
@@ -4375,7 +8356,7 @@ def export_mythos_studio_workspace_report(
     record = repository.get_pipeline_run(request.run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     report = preview.model_dump(mode="json")
     report.update(
         _studio_report_candidate_guidance(record, manifest, repository=repository)
@@ -4475,24 +8456,51 @@ def _studio_missing_ab_artifacts(manifest: dict) -> list[str]:
     ]
 
 
-def _studio_campaign_payload_from_manifest(manifest: dict) -> dict[str, object]:
-    payload: dict[str, object] = {"source": "studio_workspace_campaign_bridge"}
-    code_path = _studio_artifact_path(manifest, "code")
-    api_path = _studio_artifact_path(manifest, "api")
-    har_path = _studio_artifact_path(manifest, "har")
-
-    code_files = _studio_authorized_code_files(code_path)
-    if code_files:
-        payload["authorized_code_files"] = code_files
-
-    api_artifacts = []
-    if api_path:
-        api_artifacts.append(_studio_authorized_json_artifact("openapi", api_path))
-    if har_path:
-        api_artifacts.append(_studio_authorized_json_artifact("har", har_path))
-    if api_artifacts:
-        payload["authorized_api_artifacts"] = api_artifacts
-    return payload
+def _studio_campaign_payload_from_manifest(
+    workspace_snapshot: dict[str, object],
+    workspace_path: str,
+) -> dict[str, object]:
+    source_snapshot_digest = workspace_snapshot.get("source_snapshot_digest")
+    source_manifest = workspace_snapshot.get("source_manifest")
+    artifact_refs = workspace_snapshot.get("artifact_refs")
+    if (
+        not isinstance(source_snapshot_digest, str)
+        or not isinstance(source_manifest, list)
+        or not isinstance(artifact_refs, list)
+    ):
+        raise ValueError("workspace_snapshot_invalid")
+    code_ref = next(
+        (
+            item
+            for item in artifact_refs
+            if isinstance(item, dict) and item.get("kind") == "code"
+        ),
+        None,
+    )
+    code_relative_path = (
+        code_ref.get("relative_path") if isinstance(code_ref, dict) else None
+    )
+    if not isinstance(code_relative_path, str):
+        raise ValueError("workspace_snapshot_invalid")
+    return {
+        "source": "studio_workspace_campaign_bridge",
+        "source_snapshot_digest": source_snapshot_digest,
+        "workspace_snapshot": workspace_snapshot,
+        "source_manifest": source_manifest,
+        "saved_scope_guard": {
+            "scope_status": "in_scope",
+            "authorized_local_root": str(
+                (Path(workspace_path) / code_relative_path).resolve(strict=True)
+            ),
+        },
+        "inspector_tool_allowlist": ["candidate_hunter_local_evidence_inspector"],
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+    }
 
 
 def _studio_policy_text_from_manifest(manifest: dict) -> str:
@@ -4530,7 +8538,7 @@ def _studio_authorized_code_files(path_value: str | None) -> list[dict[str, str]
         return []
     path = Path(path_value)
     if path.is_file():
-        return [{"path": str(path), "content": _studio_read_text_file(str(path))}]
+        return [{"path": path.name, "content": _studio_read_text_file(str(path))}]
     if not path.is_dir():
         return []
 
@@ -4545,25 +8553,22 @@ def _studio_authorized_code_files(path_value: str | None) -> list[dict[str, str]
             continue
         if not resolved_candidate.is_relative_to(resolved_root):
             raise HTTPException(status_code=403, detail="studio_artifact_not_authorized")
-        if not resolved_candidate.is_file() or candidate.suffix.lower() not in {
-            ".py",
-            ".js",
-            ".jsx",
-            ".ts",
-            ".tsx",
-            ".go",
-            ".java",
-            ".kt",
-            ".rb",
-            ".php",
-        }:
+        if (
+            not resolved_candidate.is_file()
+            or candidate.suffix.lower() not in SUPPORTED_CODE_SOURCE_SUFFIXES
+        ):
             continue
         try:
             content = resolved_candidate.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             continue
         if content.strip():
-            files.append({"path": str(candidate), "content": content[:20000]})
+            files.append(
+                {
+                    "path": resolved_candidate.relative_to(resolved_root).as_posix(),
+                    "content": content[:20000],
+                }
+            )
     return files
 
 
@@ -4575,8 +8580,16 @@ def _studio_fact_pack_code_files(code_files: list[dict[str, str]]) -> list[dict[
         content = item.get("content")
         if not isinstance(path, str) or not isinstance(content, str):
             continue
-        source_path = Path(path).name
-        if not source_path or source_path in seen_paths:
+        source_path = path.replace("\\", "/").strip()
+        if source_path.startswith("./"):
+            source_path = source_path[2:]
+        if (
+            not source_path
+            or source_path.startswith("/")
+            or ":" in source_path
+            or any(segment in {"", ".", ".."} for segment in source_path.split("/"))
+            or source_path in seen_paths
+        ):
             continue
         seen_paths.add(source_path)
         files.append({"path": source_path, "content": content})
@@ -9557,76 +13570,21 @@ def _studio_sarif_surface_facts(payload: object) -> list[dict[str, str]]:
 def _studio_sbom_surface_facts(payload: object) -> list[dict[str, str]]:
     if not isinstance(payload, dict):
         return []
-    components = payload.get("components")
-    if not isinstance(components, list):
-        return []
-    vulnerability_by_ref = _studio_sbom_vulnerability_by_ref(payload)
     facts: list[dict[str, str]] = []
-    for component in components:
-        if not isinstance(component, dict) or component.get("type") not in {None, "library"}:
-            continue
-        name = component.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        purl = component.get("purl")
-        purl_ref = purl if isinstance(purl, str) else ""
-        vulnerability = vulnerability_by_ref.get(purl_ref, {})
+    for signal in extract_sbom_dependency_signals(payload):
         fact = {
             "fact_type": "dependency_signal",
             "artifact_kind": "sbom",
-            "package_name": safe_preview_text(name),
-            "package_version": safe_preview_text(str(component.get("version", ""))),
-            "ecosystem": safe_preview_text(_studio_purl_ecosystem(purl_ref)),
+            "package_name": safe_preview_text(signal["package_name"]),
+            "package_version": safe_preview_text(signal["package_version"]),
+            "ecosystem": safe_preview_text(signal["ecosystem"]),
             "advisory_only": "true",
         }
-        vulnerability_id = vulnerability.get("id")
-        if isinstance(vulnerability_id, str) and vulnerability_id:
-            fact["vulnerability_id"] = safe_preview_text(vulnerability_id)
-        severity = vulnerability.get("severity")
-        if isinstance(severity, str) and severity:
-            fact["severity"] = safe_preview_text(severity.lower())
+        for field in ("vulnerability_id", "severity"):
+            if value := signal.get(field):
+                fact[field] = safe_preview_text(value)
         facts.append(fact)
     return facts[:5]
-
-
-def _studio_sbom_vulnerability_by_ref(payload: dict) -> dict[str, dict[str, str]]:
-    vulnerabilities = payload.get("vulnerabilities")
-    if not isinstance(vulnerabilities, list):
-        return {}
-    by_ref: dict[str, dict[str, str]] = {}
-    for vulnerability in vulnerabilities:
-        if not isinstance(vulnerability, dict):
-            continue
-        affects = vulnerability.get("affects")
-        if not isinstance(affects, list):
-            continue
-        for affected in affects:
-            if not isinstance(affected, dict):
-                continue
-            ref = affected.get("ref")
-            if not isinstance(ref, str) or not ref:
-                continue
-            by_ref.setdefault(
-                ref,
-                {
-                    "id": safe_preview_text(vulnerability.get("id", "")),
-                    "severity": _studio_sbom_vulnerability_severity(vulnerability),
-                },
-            )
-    return by_ref
-
-
-def _studio_sbom_vulnerability_severity(vulnerability: dict) -> str:
-    ratings = vulnerability.get("ratings")
-    if not isinstance(ratings, list):
-        return ""
-    for rating in ratings:
-        if not isinstance(rating, dict):
-            continue
-        severity = rating.get("severity")
-        if isinstance(severity, str) and severity:
-            return safe_preview_text(severity)
-    return ""
 
 
 def _studio_fuzzing_surface_facts(payload: object) -> list[dict[str, str]]:
@@ -9764,12 +13722,6 @@ def _studio_knowledge_retrieval_rank(value: object) -> str:
         if rank > 0:
             return str(rank)
     return ""
-
-
-def _studio_purl_ecosystem(purl: str) -> str:
-    if not purl.startswith("pkg:"):
-        return ""
-    return purl.removeprefix("pkg:").split("/", 1)[0].split("@", 1)[0]
 
 
 def _studio_matching_surface_facts(
@@ -10044,10 +13996,11 @@ def get_mythos_pipeline_report_preview(
     run_id: str,
     session: Session = Depends(get_session),
 ) -> ReportPreviewResponse:
-    record = DatabaseRepository(session).get_pipeline_run(run_id)
+    repository = DatabaseRepository(session)
+    record = repository.get_pipeline_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
-    return _build_report_preview_response_or_404(record)
+    return _build_report_preview_response_or_404(record, repository)
 
 
 @app.post(
@@ -10065,7 +14018,7 @@ def create_claim_review_decision(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     _raise_if_campaign_scoped_run_not_in_scope(repository, record.id)
 
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     claims_by_id = {claim.claim_id: claim for claim in preview.claim_ledger}
     claim = claims_by_id.get(request.claim_id)
     if claim is None:
@@ -10130,7 +14083,7 @@ def create_finding_candidate_from_pipeline_run(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     _raise_if_campaign_scoped_run_not_in_scope(repository, record.id)
 
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     research_feedback_gate = _research_feedback_promotion_gate_for_run(
         repository,
         run_id=record.id,
@@ -10215,7 +14168,7 @@ def create_manual_observation(
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     _raise_if_campaign_scoped_run_not_in_scope(repository, record.id)
 
-    preview = _build_report_preview_response_or_404(record)
+    preview = _build_report_preview_response_or_404(record, repository)
     claims_by_id = {claim.claim_id: claim for claim in preview.claim_ledger}
     claim = claims_by_id.get(request.claim_id)
     if claim is None:
@@ -10346,15 +14299,67 @@ def _artifact_response(record: ArtifactRecord) -> ArtifactResponse:
     )
 
 
+
+def _materialize_autopilot_source_snapshot(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> CampaignRecord:
+    """Ensure autopilot campaigns carry a safe local source snapshot digest."""
+
+    from hashlib import sha256
+    import json
+
+    payload = dict(campaign.payload) if isinstance(campaign.payload, dict) else {}
+    existing = payload.get("source_snapshot_digest")
+    if isinstance(existing, str) and existing.startswith("sha256:"):
+        return campaign
+    material = {
+        "campaign_id": campaign.id,
+        "policy_text_hash": campaign.policy_text_hash,
+        "default_asset": campaign.default_asset,
+        "authorized_code_files": payload.get("authorized_code_files") or [],
+        "authorized_api_artifacts": [
+            {
+                "kind": item.get("kind"),
+                "source_name": item.get("source_name"),
+            }
+            for item in (payload.get("authorized_api_artifacts") or [])
+            if isinstance(item, dict)
+        ],
+        "authorization": None,
+    }
+    auth = repository.get_current_campaign_authorization(campaign.id)
+    if auth is not None:
+        material["authorization"] = {
+            "id": auth.id,
+            "digest": auth.authorization_digest,
+            "scope_snapshot_digest": auth.scope_snapshot_digest,
+        }
+    serialized = json.dumps(material, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    digest = f"sha256:{sha256(serialized.encode('utf-8')).hexdigest()}"
+    payload["source_snapshot_digest"] = digest
+    payload["campaign_mode"] = "bounty_autopilot"
+    if auth is not None:
+        payload["current_authorization_id"] = auth.id
+        payload["current_authorization_digest"] = auth.authorization_digest
+    campaign.payload = payload
+    repository.session.add(campaign)
+    repository.session.commit()
+    repository.session.refresh(campaign)
+    return campaign
+
+
 def _campaign_response(
     record: CampaignRecord,
     repository: DatabaseRepository,
 ) -> CampaignResponse:
+    current_auth = repository.get_current_campaign_authorization(record.id)
     return CampaignResponse(
         id=record.id,
         program_id=record.program_id,
         name=record.name,
         status=record.status,
+        campaign_mode=getattr(record, "campaign_mode", None) or "legacy",
         autonomy_level=record.autonomy_level,
         scope_status=record.scope_status,
         policy_text_hash=record.policy_text_hash,
@@ -10366,6 +14371,9 @@ def _campaign_response(
         budget=_campaign_budget_response(
             repository.get_campaign_budget(record.id),
             repository=repository,
+        ),
+        current_authorization_digest=(
+            current_auth.authorization_digest if current_auth is not None else None
         ),
     )
 
@@ -11358,6 +15366,163 @@ def _record_research_validation_feedback_stage(
     )
 
 
+def _validation_evidence_terminal_state(
+    outcome: str,
+    evidence_ref_count: int,
+) -> tuple[str, str] | None:
+    if outcome == "refuted":
+        return "refuted", "manual_refutation_recorded"
+    if outcome == "needs_more_evidence" or evidence_ref_count == 0:
+        return "needs_evidence", "manual_evidence_gap_recorded"
+    if outcome == "observed":
+        return "evidence_recorded", "manual_evidence_recorded"
+    return None
+
+
+def _record_autonomous_validation_evidence_import_stage(
+    repository: DatabaseRepository,
+    validation_run: ValidationRunRecord,
+) -> None:
+    payload = validation_run.payload if isinstance(validation_run.payload, dict) else {}
+    pipeline_run_id = payload.get("pipeline_run_id")
+    handoff_task_id = payload.get("handoff_task_id")
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    candidate_ids = _safe_autonomous_validation_candidate_ids(
+        payload.get("candidate_ids")
+    )
+    manual_result = payload.get("manual_result")
+    outcome = (
+        safe_preview_text(manual_result.get("outcome", ""))
+        if isinstance(manual_result, dict)
+        else ""
+    )
+    evidence_ref_count = _safe_non_negative_int(validation_run.evidence_ref_count)
+    manual_evidence_ref_count = (
+        _safe_non_negative_int(manual_result.get("safe_evidence_ref_count"))
+        if isinstance(manual_result, dict)
+        else -1
+    )
+    terminal_state = _validation_evidence_terminal_state(
+        outcome,
+        evidence_ref_count,
+    )
+    if (
+        payload.get("source") != "autonomous_validation_handoff"
+        or validation_run.task_id is None
+        or validation_run.status not in {"evidence_recorded", "refuted", "needs_evidence"}
+        or validation_run.safety_gate_state != (terminal_state[1] if terminal_state else "")
+        or validation_run.status != (terminal_state[0] if terminal_state else "")
+        or validation_run.approval_required is not True
+        or validation_run.allowed_to_execute
+        or not isinstance(manual_result, dict)
+        or manual_result.get("execution_started") is not False
+        or not isinstance(manual_result.get("safe_evidence_ref_count"), int)
+        or isinstance(manual_result.get("safe_evidence_ref_count"), bool)
+        or manual_evidence_ref_count != evidence_ref_count
+        or not isinstance(pipeline_run_id, str)
+        or not isinstance(handoff_task_id, str)
+        or not _is_source_snapshot_digest(source_snapshot_digest)
+        or candidate_ids is None
+        or handoff_task_id != validation_run.task_id
+        or payload.get("approval_required") is not True
+        or any(
+            payload.get(field) is not False
+            for field in (
+                "allowed_to_execute",
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+                "raw_payload_processed",
+            )
+        )
+    ):
+        return
+
+    campaign = repository.get_campaign(validation_run.campaign_id)
+    handoff = repository.session.get(CampaignTaskRecord, handoff_task_id)
+    if (
+        campaign is None
+        or campaign.scope_status != "in_scope"
+        or handoff is None
+        or handoff.campaign_id != campaign.id
+        or handoff.status != "completed"
+        or not _is_safe_autonomous_validation_handoff(repository, campaign, handoff)
+    ):
+        return
+    handoff_payload = handoff.payload if isinstance(handoff.payload, dict) else {}
+    if (
+        handoff_payload.get("pipeline_run_id") != pipeline_run_id
+        or handoff_payload.get("source_snapshot_digest") != source_snapshot_digest
+        or _safe_autonomous_validation_candidate_ids(
+            handoff_payload.get("candidate_ids")
+        )
+        != candidate_ids
+    ):
+        return
+
+    approval = (
+        repository.session.get(ApprovalRecord, validation_run.approval_id)
+        if validation_run.approval_id
+        else None
+    )
+    if approval is None or not _validation_run_approval_matches(
+        approval=approval,
+        validation_run=validation_run,
+        campaign=campaign,
+        asset=_validation_run_scope_asset(validation_run, campaign),
+    ):
+        return
+
+    repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run_id,
+        campaign_id=campaign.id,
+        task_id=handoff.id,
+        stage_key="autonomous_validation_evidence_import",
+        stage_order=42,
+        status=validation_run.status,
+        input_refs=[
+            f"pipeline_run:{pipeline_run_id}",
+            f"campaign_task:{handoff.id}",
+            f"approval:{approval.id}",
+            f"validation_run:{validation_run.id}",
+        ],
+        output_refs=[f"validation_run:{validation_run.id}"],
+        safety_gate_state="advisory_validation_evidence_only",
+        stop_reason=None,
+        payload={
+            "schema_version": "autonomous_validation_evidence_import_v1",
+            "idempotency_key": sha256(
+                f"{validation_run.id}:autonomous_validation_evidence_import_v1".encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+            "source": "autonomous_validation_handoff",
+            "pipeline_run_id": pipeline_run_id,
+            "handoff_task_id": handoff.id,
+            "source_snapshot_digest": source_snapshot_digest,
+            "approval_id": approval.id,
+            "validation_run_id": validation_run.id,
+            "candidate_ids": candidate_ids,
+            "outcome": outcome,
+            "evidence_ref_count": evidence_ref_count,
+            "validation_result_review": _validation_result_review_payload(
+                validation_run
+            ),
+            "submission_blocked": True,
+            "human_review_completed": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+
+
 def _safe_priority_score(value: Any) -> int:
     score = int(value) if isinstance(value, int | float) else 0
     return max(0, min(100, score))
@@ -11394,7 +15559,29 @@ def _agent_run_response(record: AgentRunRecord) -> AgentRunResponse:
     )
 
 
-def _pipeline_stage_response(record: PipelineStageRecord) -> PipelineStageResponse:
+def _agent_run_timeline_indexes(
+    agent_runs: list[AgentRunRecord],
+) -> tuple[dict[str, AgentRunRecord], dict[str, list[AgentRunRecord]]]:
+    by_id: dict[str, AgentRunRecord] = {}
+    by_task_id: dict[str, list[AgentRunRecord]] = {}
+    for agent_run in agent_runs:
+        by_id[agent_run.id] = agent_run
+        if agent_run.task_id:
+            by_task_id.setdefault(agent_run.task_id, []).append(agent_run)
+    return by_id, by_task_id
+
+
+def _pipeline_stage_response(
+    record: PipelineStageRecord,
+    *,
+    agent_runs_by_id: dict[str, AgentRunRecord] | None = None,
+    agent_runs_by_task_id: dict[str, list[AgentRunRecord]] | None = None,
+) -> PipelineStageResponse:
+    agent_run = _pipeline_stage_agent_run(
+        record,
+        agent_runs_by_id=agent_runs_by_id or {},
+        agent_runs_by_task_id=agent_runs_by_task_id or {},
+    )
     return PipelineStageResponse(
         id=record.id,
         pipeline_run_id=record.pipeline_run_id,
@@ -11407,9 +15594,60 @@ def _pipeline_stage_response(record: PipelineStageRecord) -> PipelineStageRespon
         output_refs=safe_string_list(record.output_refs),
         safety_gate_state=safe_preview_text(record.safety_gate_state),
         stop_reason=safe_preview_text(record.stop_reason) if record.stop_reason else None,
+        duration_seconds=_agent_run_duration_seconds(agent_run),
+        error_summary=_pipeline_stage_error_summary(record, agent_run),
         payload=_pipeline_stage_safe_payload(record),
         created_at=record.created_at.isoformat(),
     )
+
+
+def _pipeline_stage_agent_run(
+    record: PipelineStageRecord,
+    *,
+    agent_runs_by_id: dict[str, AgentRunRecord],
+    agent_runs_by_task_id: dict[str, list[AgentRunRecord]],
+) -> AgentRunRecord | None:
+    if not record.task_id:
+        return None
+    linked_run_ids = {
+        reference.removeprefix("agent_run:")
+        for reference in safe_string_list(record.output_refs)
+        if reference.startswith("agent_run:")
+    }
+    if linked_run_ids:
+        if len(linked_run_ids) != 1:
+            return None
+        agent_run = agent_runs_by_id.get(next(iter(linked_run_ids)))
+        return agent_run if agent_run and agent_run.task_id == record.task_id else None
+
+    candidate_runs = agent_runs_by_task_id.get(record.task_id, [])
+    return candidate_runs[0] if len(candidate_runs) == 1 else None
+
+
+def _agent_run_duration_seconds(agent_run: AgentRunRecord | None) -> int | None:
+    if agent_run is None or agent_run.finished_at is None:
+        return None
+    started_at = _timeline_as_utc(agent_run.created_at)
+    finished_at = _timeline_as_utc(agent_run.finished_at)
+    elapsed_seconds = int((finished_at - started_at).total_seconds())
+    return elapsed_seconds if elapsed_seconds >= 0 else None
+
+
+def _timeline_as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _pipeline_stage_error_summary(
+    record: PipelineStageRecord,
+    agent_run: AgentRunRecord | None,
+) -> str | None:
+    if agent_run is not None and agent_run.status == "failed" and agent_run.stop_reason:
+        return safe_preview_text(agent_run.stop_reason)
+    if record.status == "failed" and record.stop_reason:
+        return safe_preview_text(record.stop_reason)
+    return None
 
 
 def _pipeline_stage_safe_payload(record: PipelineStageRecord) -> dict:
@@ -11531,6 +15769,45 @@ def _pipeline_stage_safe_payload(record: PipelineStageRecord) -> dict:
             "finding_confirmation_allowed": payload.get("finding_confirmation_allowed") is True,
             "report_submission_allowed": False,
             "validation_allowed": False,
+        }
+    if record.stage_key == "autonomous_validation_evidence_import":
+        return {
+            "outcome": safe_preview_text(payload.get("outcome", "unknown")),
+            "candidate_count": len(safe_string_list(payload.get("candidate_ids", []))),
+            "evidence_ref_count": _safe_non_negative_int(payload.get("evidence_ref_count")),
+            "validation_result_review": _safe_validation_result_review_payload(
+                payload.get("validation_result_review")
+            ),
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+    if record.stage_key == "autonomous_report_revision":
+        return {
+            "status": "submission_blocked_human_review",
+            "report_draft_count": _safe_non_negative_int(payload.get("report_draft_count")),
+            "candidate_count": _safe_non_negative_int(payload.get("candidate_count")),
+            "candidate_ids": safe_preview_lines(payload.get("candidate_ids", [])),
+            "validation_evidence_ref_count": _safe_non_negative_int(
+                payload.get("validation_evidence_ref_count")
+            ),
+            "validation_outcome": safe_preview_text(
+                payload.get("validation_outcome", "unknown")
+            ),
+            "validation_result_review": _safe_validation_result_review_payload(
+                payload.get("validation_result_review")
+            ),
+            "submission_blocked": True,
+            "human_review_required": True,
+            "allowed_to_execute": False,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
         }
     if record.stage_key == "validation_manual_result":
         return {
@@ -11669,6 +15946,26 @@ def _validation_run_currently_allowed_to_execute(
     campaign = repository.get_campaign(record.campaign_id)
     if campaign is None or campaign.scope_status != "in_scope":
         return False
+    asset = _validation_run_scope_asset(record, campaign)
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        asset,
+    )
+    if program_rule_reason is not None:
+        return False
+    if rule is not None:
+        scope_decision = evaluate_validation_request(
+            rule,
+            ValidationRequest(
+                asset=asset,
+                validation_type=record.validation_mode,
+                human_approved=True,
+                plan_digest=record.plan_digest,
+            ),
+        )
+        if not scope_decision.allowed:
+            return False
     if not record.approval_required:
         return True
     if record.approval_id is None:
@@ -11682,7 +15979,7 @@ def _validation_run_currently_allowed_to_execute(
         approval=approval,
         validation_run=record,
         campaign=campaign,
-        asset=_validation_run_scope_asset(record, campaign),
+        asset=asset,
     )
 
 
@@ -14066,9 +18363,15 @@ def _llm_audit_safety_notes(response: LLMResponse) -> list[str]:
 
 def _build_report_preview_response_or_404(
     record: PipelineRunRecord,
+    repository: DatabaseRepository,
 ) -> ReportPreviewResponse:
     try:
-        return build_report_preview_response(record)
+        return build_report_preview_response(
+            record,
+            trusted_bounded_result_claims=(
+                repository.load_trusted_bounded_result_claims(record.id)
+            ),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -14106,12 +18409,49 @@ def _campaign_scoped_run_has_out_of_scope_campaign(
 def _program_or_404_in_scope(
     repository: DatabaseRepository,
     program_id: str,
+    *,
+    asset: str | None = None,
+    validation_type: str | None = None,
+    enforce_current_rule: bool = False,
 ):
     program = repository.get_program(program_id)
     if program is None:
         raise HTTPException(status_code=404, detail="Program not found")
     if program.scope_status != "in_scope":
         raise HTTPException(status_code=409, detail="scope_not_in_scope")
+    if enforce_current_rule and asset is None and any(
+        source.program_id == program_id
+        for source in repository.list_program_rule_sources()
+    ):
+        raise HTTPException(status_code=409, detail="program_rule_asset_required")
+    if asset is not None:
+        resolution = resolve_effective_program_rule(
+            repository,
+            program_id,
+            asset,
+            datetime.now(UTC),
+        )
+        if resolution.source_backed:
+            if resolution.reason is not None or resolution.rule is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=resolution.reason or "program_rule_not_authorizing",
+                )
+            if validation_type is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="program_rule_validation_type_required",
+                )
+            decision = evaluate_validation_request(
+                resolution.rule,
+                ValidationRequest(
+                    asset=asset,
+                    validation_type=validation_type,
+                    human_approved=True,
+                ),
+            )
+            if not decision.allowed:
+                raise HTTPException(status_code=409, detail=decision.reason)
     return program
 
 

@@ -1,8 +1,18 @@
 "use client";
 
 import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AutopilotCampaignSection } from "@/components/autopilot/autopilot-campaign-section";
+import { CandidateInspector } from "@/components/studio/candidate-inspector";
+import { EvidenceInspector } from "@/components/studio/evidence-inspector";
+import { MissionStageStrip } from "@/components/studio/mission-stage-strip";
+import { ReportInspector } from "@/components/studio/report-inspector";
+import { ResearchConversation } from "@/components/studio/research-conversation";
+import { StudioShell } from "@/components/studio/studio-shell";
+import { ValidationPlanInspector } from "@/components/studio/validation-plan-inspector";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ProgramRuleIntake } from "./program-rule-intake";
 import {
   ApiRequestError,
   approveStudioBlackBoxLabRun,
@@ -11,15 +21,19 @@ import {
   exportStudioWorkspaceCampaignHunterReport,
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
-  getCampaignControlCenter,
+  getCampaignControlCenterRequired,
+  getRuntimeApiBaseUrl,
   getStudioBlackBoxRemoteStatus,
-  getStudioWorkspaceManifest,
+  getStudioWorkspaceManifestRequired,
   getStudioWorkspaceMission,
+  getStudioWorkspaceMissionRequired,
   importStudioWorkspaceArtifact,
   launchStudioWorkspaceCampaignHunter,
-  listStudioWorkspaceCandidates,
+  listStudioWorkspaceCandidatesRequired,
+  preflightStudioBlackBoxLabRun,
   previewStudioBlackBoxLabLease,
   recordCandidateHunterLearningOutcome,
+  recordStudioBlackBoxLabBoundedResult,
   runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
   type CandidateHunterLearningOutcome,
@@ -27,7 +41,10 @@ import {
   type StudioBenchmarkRunResponse,
   type StudioBlackBoxLabLeasePreviewRequest,
   type StudioBlackBoxLabLeasePreviewResponse,
-  type StudioBlackBoxLabRunApprovalResponse,
+  type StudioBlackBoxLabBoundedResultResponse,
+  type StudioBlackBoxLabBoundedTrace,
+  type StudioBlackBoxLabCompletePlan,
+  type StudioBlackBoxLabRunPreflightRequest,
   type StudioBlackBoxLabTraceReviewRequest,
   type StudioBlackBoxRemoteStatusResponse,
   type StudioMissionDossierExportResponse,
@@ -35,18 +52,30 @@ import {
   type StudioWorkspaceRunRequest,
 } from "@/lib/api";
 import {
+  createControlCenterLiveController,
+  type ControlCenterLiveState,
+} from "@/lib/control-center-live";
+import {
+  buildStudioEventsUrl,
+  refreshStudioProjection,
+  type StudioRefreshProjection,
+} from "@/lib/studio-live";
+import {
   toStudioArtifactChecklist,
   toStudioBlackBoxRemoteStatus,
   toStudioCampaignHunterCandidateCards,
   toStudioCandidateCards,
+  toStudioControlCenterView,
   toStudioMissionHandoffBrief,
   toStudioMissionPanel,
   toStudioResearchReadiness,
   toStudioWorkspaceSummary,
   type StudioWorkspaceManifest,
 } from "@/lib/studio-data";
+import type { SafeRefreshStatus } from "@/lib/program-rule-data";
 
 type LogEntry = {
+  actor?: "operator" | "system";
   message: string;
   tone: "info" | "safe" | "blocked";
 };
@@ -59,9 +88,21 @@ type BlackBoxLabRunnerState =
   | "trial_complete"
   | "stopped";
 
+type DesktopBackupResult =
+  | { status: "cancelled" | "failed" | "unavailable" }
+  | { archive_name: string; file_count: number; status: "created" }
+  | { archive_name: string; rollback_archive_name: string | null; status: "restored" };
+
 type MythosStudioDesktopBridge = {
+  apiBaseUrl?: string | null;
   closeBlackBoxSessions: () => Promise<string>;
+  createBackup?: () => Promise<DesktopBackupResult>;
   createBlackBoxSessions: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
+  emergencyStopAutopilotLocal?: (payload: {
+    campaignId: string;
+  }) => Promise<{ revoked: true; revokedHandles: number }>;
+  refreshProgramRules: () => Promise<SafeRefreshStatus>;
+  restoreBackup?: () => Promise<DesktopBackupResult>;
   runBlackBoxTrial: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
   selectDirectory: () => Promise<string | null>;
   selectFile: (options?: { title?: string }) => Promise<string | null>;
@@ -96,8 +137,23 @@ const remoteStatusFallback: StudioBlackBoxRemoteStatusResponse = {
   human_confirmation_allowed: false,
 };
 
+const studioRefreshDependencies = {
+  getCampaign: getCampaignControlCenterRequired,
+  getManifest: getStudioWorkspaceManifestRequired,
+  getMission: getStudioWorkspaceMissionRequired,
+  listCandidates: listStudioWorkspaceCandidatesRequired,
+  mapCampaignCandidates: toStudioCampaignHunterCandidateCards,
+  mapMission: toStudioMissionPanel,
+  mapResearchCandidates: toStudioCandidateCards,
+};
+
 function blackBoxLabLeaseExpiry() {
   return new Date(Date.now() + 15 * 60 * 1000).toISOString();
+}
+
+function isFutureExpiry(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed > Date.now();
 }
 
 export function StudioWorkbench() {
@@ -142,18 +198,33 @@ export function StudioWorkbench() {
     useState<StudioBlackBoxLabLeasePreviewResponse | null>(null);
   const [labTraceReview, setLabTraceReview] = useState<StudioBlackBoxLabTraceReviewRequest[]>([]);
   const [labTraceReviewConfirmed, setLabTraceReviewConfirmed] = useState(false);
-  const [labApproval, setLabApproval] = useState<StudioBlackBoxLabRunApprovalResponse | null>(null);
+  const [labBoundedResult, setLabBoundedResult] =
+    useState<StudioBlackBoxLabBoundedResultResponse | null>(null);
   const [labRunnerState, setLabRunnerState] = useState<BlackBoxLabRunnerState>("idle");
+  const labReviewGeneration = useRef(0);
+  const labDispatchInFlight = useRef(false);
   const [remoteStatus, setRemoteStatus] =
     useState<StudioBlackBoxRemoteStatusResponse>(remoteStatusFallback);
   const [busy, setBusy] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<ControlCenterLiveState>("connecting");
   const [desktopPickerAvailable, setDesktopPickerAvailable] = useState(false);
+  const [desktopBackupAvailable, setDesktopBackupAvailable] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<"candidate" | "evidence" | "report" | "validation">("candidate");
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([
     {
       message: "Studio ready.",
       tone: "info",
     },
   ]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      void window.mythosStudio?.closeBlackBoxSessions().catch(() => undefined);
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, []);
 
   const workspace = useMemo(() => toStudioWorkspaceSummary(manifest), [manifest]);
   const artifactChecklist = useMemo(() => toStudioArtifactChecklist(manifest), [manifest]);
@@ -213,22 +284,73 @@ export function StudioWorkbench() {
     () => artifactChecklist.filter((item) => !item.required),
     [artifactChecklist],
   );
-  const localCandidateHuntInputReady = [policyPath, scopePath, codePath, apiPath, harPath].every(
-    (value) => value.trim(),
-  );
   const benchmarkEvidenceGaps = benchmarkResult?.benchmark.evidence_gaps ?? [];
   const remoteStatusView = useMemo(
     () => toStudioBlackBoxRemoteStatus(remoteStatus),
     [remoteStatus],
   );
   const remoteReloginRequired = remoteStatusView.warning || remoteStatus.relogin_required;
+  const studioView = useMemo(
+    () => toStudioControlCenterView(candidates, selectedCandidateId),
+    [candidates, selectedCandidateId],
+  );
+
+  const applyStudioProjection = useCallback((projection: StudioRefreshProjection) => {
+    setManifest(projection.manifest);
+    setLatestRunId(projection.latestRunId);
+    setLatestCampaignHunterId(projection.latestCampaignHunterId);
+    setCandidates(projection.candidates);
+    setMissionPanel(projection.missionPanel);
+    setReportExport(projection.reportExport);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDesktopPickerAvailable(Boolean(window.mythosStudio));
+      setDesktopBackupAvailable(
+        Boolean(window.mythosStudio?.createBackup && window.mythosStudio?.restoreBackup),
+      );
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!workspacePath) {
+      return;
+    }
+    const controller = createControlCenterLiveController({
+      eventsUrl: buildStudioEventsUrl(
+        getRuntimeApiBaseUrl(),
+        latestCampaignHunterId,
+      ),
+      eventSourceFactory: (url) => new EventSource(url),
+      onStateChange: setConnectionState,
+      async refetch(signal) {
+        const projection = await refreshStudioProjection({
+          dependencies: studioRefreshDependencies,
+          signal,
+          workspacePath,
+        });
+        if (!projection || signal.aborted) {
+          return;
+        }
+        applyStudioProjection(projection);
+      },
+      scheduler: {
+        clearInterval: (id) => window.clearInterval(id),
+        setInterval: (callback, delay) => window.setInterval(callback, delay),
+      },
+      visibility: {
+        addEventListener: (_type, listener) => document.addEventListener("visibilitychange", listener),
+        get state() {
+          return document.visibilityState === "hidden" ? "hidden" : "visible";
+        },
+        removeEventListener: (_type, listener) => document.removeEventListener("visibilitychange", listener),
+      },
+    });
+    controller.start();
+    return () => controller.stop();
+  }, [applyStudioProjection, latestCampaignHunterId, latestRunId, workspacePath]);
 
   useEffect(() => {
     let mounted = true;
@@ -314,11 +436,12 @@ export function StudioWorkbench() {
   }
 
   function invalidateBlackBoxLabReview() {
+    labReviewGeneration.current += 1;
     setLabLeaseRequestSnapshot(null);
     setLabLeasePreview(null);
     setLabTraceReview([]);
     setLabTraceReviewConfirmed(false);
-    setLabApproval(null);
+    setLabBoundedResult(null);
   }
 
   function handleLabOriginChange(value: string) {
@@ -339,8 +462,8 @@ export function StudioWorkbench() {
   }
 
   function handleLabValidationRunIdChange(value: string) {
+    labReviewGeneration.current += 1;
     setLabValidationRunId(value);
-    setLabApproval(null);
   }
 
   function parseBlackBoxRunnerEvent(line: string): Record<string, unknown> {
@@ -396,6 +519,107 @@ export function StudioWorkbench() {
     });
   }
 
+  function boundedTraceFromTrialResult(
+    event: Record<string, unknown>,
+    completePlan: StudioBlackBoxLabCompletePlan,
+    preflight: { approved_session_alias: string; approved_workflow_alias: string },
+  ): StudioBlackBoxLabBoundedTrace {
+    const rawTrace = event.trace;
+    if (!rawTrace || typeof rawTrace !== "object" || Array.isArray(rawTrace)) {
+      throw new Error("bounded_trial_trace_required");
+    }
+    const trace = rawTrace as Record<string, unknown>;
+    const rawAliases = trace.aliases;
+    if (!rawAliases || typeof rawAliases !== "object" || Array.isArray(rawAliases)) {
+      throw new Error("bounded_trial_trace_required");
+    }
+    const aliases = rawAliases as Record<string, unknown>;
+    const workflow = completePlan.lease_preview.workflows.find(
+      (item) => item.workflow_alias === preflight.approved_workflow_alias,
+    );
+    const trialSession = completePlan.lease_preview.sessions.find(
+      (item) => item.session_alias === preflight.approved_session_alias,
+    );
+    const objectAliases = aliases.object_aliases;
+    const parameters = trace.parameters;
+    if (
+      !workflow ||
+      !trialSession ||
+      (workflow.method !== "GET" && workflow.method !== "HEAD") ||
+      aliases.account_alias !== trialSession.account_alias ||
+      aliases.role_alias !== trialSession.role_alias ||
+      aliases.session_alias !== trialSession.session_alias ||
+      aliases.workflow_alias !== workflow.workflow_alias ||
+      !Array.isArray(objectAliases) ||
+      objectAliases.length !== workflow.object_aliases.length ||
+      objectAliases.some((value, index) => value !== workflow.object_aliases[index]) ||
+      trace.method !== workflow.method ||
+      trace.route_template !== workflow.route_template ||
+      !Array.isArray(parameters) ||
+      parameters.length !== 1
+    ) {
+      throw new Error("bounded_trial_trace_plan_mismatch");
+    }
+    const parameter = parameters[0];
+    if (
+      !parameter ||
+      typeof parameter !== "object" ||
+      Array.isArray(parameter) ||
+      (parameter as Record<string, unknown>).location !== "path" ||
+      (parameter as Record<string, unknown>).name !== "object" ||
+      (parameter as Record<string, unknown>).value_type !== "object_alias"
+    ) {
+      throw new Error("bounded_trial_trace_parameter_mismatch");
+    }
+    if (
+      typeof trace.response_schema_fingerprint !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(trace.response_schema_fingerprint)
+    ) {
+      throw new Error("bounded_trial_trace_fingerprint_required");
+    }
+    if (
+      trace.status_class !== "1xx" &&
+      trace.status_class !== "2xx" &&
+      trace.status_class !== "3xx" &&
+      trace.status_class !== "4xx" &&
+      trace.status_class !== "5xx"
+    ) {
+      throw new Error("bounded_trial_trace_status_required");
+    }
+
+    const timingBucket = boundedTrialTimingBucket(trace.timing_bucket);
+    return {
+      aliases: {
+        account_alias: trialSession.account_alias,
+        object_aliases: [...workflow.object_aliases],
+        role_alias: trialSession.role_alias,
+        session_alias: trialSession.session_alias,
+        workflow_alias: workflow.workflow_alias,
+      },
+      method: workflow.method,
+      parameters: [{ location: "path", name: "object", value_type: "object_alias" }],
+      response_schema_fingerprint: trace.response_schema_fingerprint,
+      route_template: workflow.route_template,
+      status_class: trace.status_class,
+      timing_bucket: timingBucket,
+    };
+  }
+
+  function boundedTrialTimingBucket(
+    value: unknown,
+  ): StudioBlackBoxLabBoundedTrace["timing_bucket"] {
+    if (value === "under_100ms" || value === "under_500ms" || value === "under_2s" || value === "over_2s") {
+      return value;
+    }
+    if (value === "under_1s") {
+      return "under_2s";
+    }
+    if (value === "under_3s" || value === "over_3s") {
+      return "over_2s";
+    }
+    throw new Error("bounded_trial_trace_timing_required");
+  }
+
   function resetBlackBoxLabState() {
     setLabSessionAReady(false);
     setLabSessionBReady(false);
@@ -414,7 +638,6 @@ export function StudioWorkbench() {
       }
       setLabLeaseRequestSnapshot(request);
       setLabLeasePreview(preview);
-      setLabApproval(null);
       pushLog(
         preview.sessions_ready
           ? "Bounded loopback lease reviewed; both session aliases are marked ready."
@@ -508,7 +731,7 @@ export function StudioWorkbench() {
       }
       setLabTraceReview([]);
       setLabTraceReviewConfirmed(false);
-      setLabApproval(null);
+      setLabBoundedResult(null);
       setLabRunnerState("recording");
       pushLog("Recording alias-only normalized traces for the declared local workflow.", "safe");
     } catch (error) {
@@ -559,12 +782,20 @@ export function StudioWorkbench() {
       return;
     }
     setLabTraceReviewConfirmed(true);
-    setLabApproval(null);
-    pushLog("Normalized alias-only traces reviewed; raw headers and bodies remain excluded.", "safe");
+    pushLog(
+      "Normalized alias-only traces reviewed; raw headers and bodies remain excluded.",
+      "safe",
+      "operator",
+    );
   }
 
   async function handleApproveBlackBoxLabRun() {
+    const bridge = window.mythosStudio;
+    if (labDispatchInFlight.current) {
+      return;
+    }
     if (
+      !bridge ||
       !labLeaseRequestSnapshot ||
       !labTraceReviewConfirmed ||
       !labValidationRunId.trim() ||
@@ -573,46 +804,74 @@ export function StudioWorkbench() {
       pushLog("A durable validation run and reviewed traces are required for confirmation.", "blocked");
       return;
     }
+    labDispatchInFlight.current = true;
+    const generation = labReviewGeneration.current;
+    const leasePreview = labLeaseRequestSnapshot;
+    const validationRunId = labValidationRunId.trim();
+    let trialDispatched = false;
     setBusy("lab-approve");
     try {
-      const approval = await approveStudioBlackBoxLabRun({
-        lease_preview: labLeaseRequestSnapshot,
+      const completePlan: StudioBlackBoxLabCompletePlan = {
+        lease_preview: leasePreview,
         operator_confirmed: true,
         trace_review: labTraceReview,
-        validation_run_id: labValidationRunId.trim(),
-      });
-      if (!approval) {
-        pushLog("Local lab approval was not returned.", "blocked");
-        return;
+        validation_run_id: validationRunId,
+      };
+      const approval = await approveStudioBlackBoxLabRun(completePlan);
+      if (
+        labReviewGeneration.current !== generation ||
+        approval.approval_status !== "approved" ||
+        approval.validation_run_id !== validationRunId ||
+        approval.local_runner_dispatch_allowed !== true ||
+        approval.execution_allowed !== false ||
+        approval.report_submission_allowed !== false ||
+        !/^sha256:[0-9a-f]{64}$/u.test(approval.complete_plan_digest) ||
+        !/^sha256:[0-9a-f]{64}$/u.test(approval.lease_digest) ||
+        !approval.plan_digest ||
+        !approval.scope_reference ||
+        !isFutureExpiry(approval.expires_at) ||
+        !leasePreview.sessions.some(
+          (session) => session.session_alias === approval.approved_session_alias,
+        ) ||
+        !leasePreview.workflows.some(
+          (workflow) => workflow.workflow_alias === approval.approved_workflow_alias,
+        )
+      ) {
+        throw new Error("local_lab_approval_binding_changed");
       }
-      setLabApproval(approval);
-      pushLog("Bounded local trial approved for one explicit runner dispatch.", "safe");
-    } catch (error) {
-      pushMutationFailure("Local lab run confirmation", error);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleRunApprovedBlackBoxTrial() {
-    const bridge = window.mythosStudio;
-    if (
-      !bridge ||
-      !labApproval?.local_runner_dispatch_allowed ||
-      labRunnerState !== "sessions_ready"
-    ) {
-      pushLog("The bounded local trial is not approved for dispatch.", "blocked");
-      return;
-    }
-    setBusy("lab-trial");
-    try {
+      const exactPreflightRequest: StudioBlackBoxLabRunPreflightRequest = {
+        approval_id: approval.approval_id,
+        complete_plan: completePlan,
+        complete_plan_digest: approval.complete_plan_digest,
+        lease_digest: approval.lease_digest,
+      };
+      const preflight = await preflightStudioBlackBoxLabRun(exactPreflightRequest);
+      if (
+        labReviewGeneration.current !== generation ||
+        preflight.approval_id !== approval.approval_id ||
+        preflight.validation_run_id !== approval.validation_run_id ||
+        preflight.approved_session_alias !== approval.approved_session_alias ||
+        preflight.approved_workflow_alias !== approval.approved_workflow_alias ||
+        preflight.complete_plan_digest !== approval.complete_plan_digest ||
+        preflight.expires_at !== approval.expires_at ||
+        preflight.lease_digest !== approval.lease_digest ||
+        preflight.plan_digest !== approval.plan_digest ||
+        preflight.scope_reference !== approval.scope_reference ||
+        preflight.local_runner_dispatch_allowed !== true ||
+        preflight.execution_allowed !== false ||
+        preflight.report_submission_allowed !== false ||
+        !isFutureExpiry(preflight.expires_at)
+      ) {
+        throw new Error("fresh_local_lab_preflight_required");
+      }
+      trialDispatched = true;
       const event = parseBlackBoxRunnerEvent(
         await bridge.runBlackBoxTrial({
-          session_alias: "session_b",
-          workflow_alias: "read_widget_a",
+          exact_preflight_request: exactPreflightRequest,
+          session_alias: preflight.approved_session_alias,
+          workflow_alias: preflight.approved_workflow_alias,
         }),
       );
-      setLabApproval(null);
       if (event.event === "stop") {
         setLabRunnerState("stopped");
         pushLog(`Local trial stopped: ${String(event.reason ?? "safety_stop")}.`, "blocked");
@@ -621,14 +880,44 @@ export function StudioWorkbench() {
       if (event.event !== "trial_result") {
         throw new Error("bounded_trial_result_required");
       }
+      const trace = boundedTraceFromTrialResult(event, completePlan, preflight);
+      if (labReviewGeneration.current !== generation) {
+        throw new Error("local_lab_result_binding_changed");
+      }
+      const boundedResult = await recordStudioBlackBoxLabBoundedResult({
+        exact_preflight: exactPreflightRequest,
+        trace,
+      });
+      if (
+        labReviewGeneration.current !== generation ||
+        boundedResult.validation_run_id !== validationRunId ||
+        !boundedResult.pipeline_run_id ||
+        !/^sha256:[0-9a-f]{64}$/u.test(boundedResult.result_digest) ||
+        boundedResult.evidence_ref_count < 1 ||
+        boundedResult.execution_allowed !== false ||
+        boundedResult.report_submission_allowed !== false ||
+        boundedResult.submission_blocked !== true ||
+        boundedResult.human_review_required !== true
+      ) {
+        throw new Error("bounded_result_review_gate_required");
+      }
+      setLabBoundedResult(boundedResult);
       setLabRunnerState("trial_complete");
       pushLog("One bounded local differential trial completed; result remains review-only.", "safe");
+      pushLog(
+        boundedResult.report_preview_refreshed
+          ? "Bounded result recorded; report preview refreshed for human review. Submission remains blocked."
+          : "Bounded result recorded for human review. Submission remains blocked.",
+        "safe",
+      );
     } catch (error) {
-      setLabApproval(null);
-      setLabRunnerState("stopped");
-      pushMutationFailure("Bounded local lab trial", error);
+      if (trialDispatched) {
+        setLabRunnerState("stopped");
+      }
+      pushMutationFailure("Complete local lab plan", error);
     } finally {
       setBusy(null);
+      labDispatchInFlight.current = false;
     }
   }
 
@@ -660,34 +949,64 @@ export function StudioWorkbench() {
     }
     setBusy("open");
     try {
-      const opened = await getStudioWorkspaceManifest(workspacePath, null);
-      if (!opened) {
+      const projection = await refreshStudioProjection({
+        dependencies: studioRefreshDependencies,
+        signal: new AbortController().signal,
+        workspacePath,
+      });
+      if (!projection) {
         pushLog("Workspace manifest was not found.", "blocked");
         return;
       }
-      setManifest(opened);
-      const latest = latestSessionFromManifest(opened);
-      setLatestRunId(latest.kind === "research" ? latest.id : null);
-      setLatestCampaignHunterId(latest.kind === "campaign_hunter" ? latest.id : null);
-      setReportExport(reportExportFromLatestSession(opened, latest));
+      applyStudioProjection(projection);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
-      if (latest.kind === "research" && latest.id) {
-        const listed = await listStudioWorkspaceCandidates(workspacePath, latest.id, {
-          candidates: [],
-          run_id: latest.id,
-        });
-        setCandidates(toStudioCandidateCards(listed.candidates));
-        await refreshMissionPanel(workspacePath, latest.id);
-      } else if (latest.kind === "campaign_hunter" && latest.id) {
-        const controlCenter = await getCampaignControlCenter(latest.id, null);
-        setCandidates(toStudioCampaignHunterCandidateCards(controlCenter));
-        setMissionPanel(toStudioMissionPanel(null));
-      } else {
-        setCandidates([]);
-        setMissionPanel(toStudioMissionPanel(null));
-      }
       pushLog("Workspace opened locally.", "safe");
+    } catch (error) {
+      pushMutationFailure("Workspace open", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleCreateDesktopBackup() {
+    const createBackup = window.mythosStudio?.createBackup;
+    if (!createBackup) {
+      pushLog("Desktop backup is available only in Mythos Studio.", "blocked");
+      return;
+    }
+    setBusy("backup");
+    try {
+      const result = await createBackup();
+      if (result.status !== "created") {
+        pushLog("Backup was not created. No state was changed.", "blocked");
+        return;
+      }
+      pushLog(`Local backup created: ${result.archive_name}.`, "safe");
+    } catch {
+      pushLog("Backup failed. No success state was recorded.", "blocked");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRestoreDesktopBackup() {
+    const restoreBackup = window.mythosStudio?.restoreBackup;
+    if (!restoreBackup) {
+      pushLog("Desktop restore is available only in Mythos Studio.", "blocked");
+      return;
+    }
+    setBusy("restore");
+    try {
+      const result = await restoreBackup();
+      if (result.status !== "restored") {
+        pushLog("Backup was not restored. Current state remains active.", "blocked");
+        return;
+      }
+      pushLog("Local state restored. Reloading Studio.", "safe");
+      window.setTimeout(() => window.location.reload(), 50);
+    } catch {
+      pushLog("Restore failed. Current state remains active.", "blocked");
     } finally {
       setBusy(null);
     }
@@ -747,77 +1066,6 @@ export function StudioWorkbench() {
     }
   }
 
-  async function handleRunLocalCandidateHunt() {
-    if (!localCandidateHuntInputReady) {
-      pushLog("Select policy, scope, code, API, and HAR inputs before starting the local candidate hunt.", "blocked");
-      return;
-    }
-    setBusy("candidate-hunt");
-    try {
-      let activeWorkspacePath = workspacePath;
-      let activeManifest: StudioWorkspaceManifest | null = manifest;
-      if (!activeWorkspacePath) {
-        const created = await createStudioWorkspace(
-          { name: workspaceName, root_path: workspaceRoot },
-        );
-        if (!created) {
-          pushLog("Workspace creation failed. Check that the local API is running.", "blocked");
-          return;
-        }
-        activeWorkspacePath = created.path;
-        activeManifest = created.manifest;
-        setWorkspacePath(created.path);
-      }
-
-      for (const artifact of studioArtifactInputs(activeWorkspacePath)) {
-        if (!artifact.source_path.trim()) {
-          continue;
-        }
-        activeManifest = await importStudioWorkspaceArtifact(artifact);
-      }
-      if (!activeManifest) {
-        pushLog("Authorized artifact import failed.", "blocked");
-        return;
-      }
-
-      setManifest(activeManifest);
-      const readiness = toStudioResearchReadiness(activeWorkspacePath, activeManifest);
-      if (!readiness.canStart) {
-        pushLog(readiness.reason, "blocked");
-        return;
-      }
-
-      const run = await runStudioResearchOnce(activeWorkspacePath);
-      if (run === undefined) {
-        return;
-      }
-      if (!run) {
-        pushLog("Local candidate hunt did not start. Scope and code artifacts are required.", "blocked");
-        return;
-      }
-      setManifest(run.manifest);
-      setLatestRunId(run.run_id);
-      setLatestCampaignHunterId(null);
-      const listed = await listStudioWorkspaceCandidates(activeWorkspacePath, run.run_id, {
-        candidates: [],
-        run_id: run.run_id,
-      });
-      setCandidates(toStudioCandidateCards(listed.candidates));
-      await refreshMissionPanel(activeWorkspacePath, run.run_id);
-      setReportExport(null);
-      setMissionDossierExport(null);
-      setBenchmarkResult(null);
-      pushLog(
-        `Local candidate hunt ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
-        "safe",
-      );
-    } catch (error) {
-      pushMutationFailure("Local candidate hunt", error);
-    } finally {
-      setBusy(null);
-    }
-  }
-
   async function handleSelectPath({
     mode,
     setter,
@@ -855,16 +1103,16 @@ export function StudioWorkbench() {
         pushLog("Research run did not start. Scope and code artifacts are required.", "blocked");
         return;
       }
-      setManifest(run.manifest);
-      setLatestRunId(run.run_id);
-      setLatestCampaignHunterId(null);
-      const listed = await listStudioWorkspaceCandidates(workspacePath, run.run_id, {
-        candidates: [],
-        run_id: run.run_id,
+      const projection = await refreshStudioProjection({
+        dependencies: studioRefreshDependencies,
+        signal: new AbortController().signal,
+        workspacePath,
       });
-      setCandidates(toStudioCandidateCards(listed.candidates));
-      await refreshMissionPanel(workspacePath, run.run_id);
-      setReportExport(null);
+      if (!projection) {
+        pushLog("Research projection was not available. No success state was recorded.", "blocked");
+        return;
+      }
+      applyStudioProjection(projection);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
       pushLog(
@@ -939,7 +1187,11 @@ export function StudioWorkbench() {
         },
       );
       setLearningProfile(profile);
-      pushLog(`Recorded ${outcome} learning feedback for ${action.candidateId}.`, "safe");
+      pushLog(
+        `Recorded ${outcome} learning feedback for ${action.candidateId}.`,
+        "safe",
+        "operator",
+      );
     } catch (error) {
       pushMutationFailure("Learning feedback", error);
     } finally {
@@ -971,7 +1223,7 @@ export function StudioWorkbench() {
         },
       );
       setLearningProfile(profile);
-      pushLog(`Recorded ${outcome} learning feedback for ${candidate.id}.`, "safe");
+      pushLog(`Recorded ${outcome} learning feedback for ${candidate.id}.`, "safe", "operator");
     } catch (error) {
       pushMutationFailure("Learning feedback", error);
     } finally {
@@ -1101,8 +1353,12 @@ export function StudioWorkbench() {
     }
   }
 
-  function pushLog(message: string, tone: LogEntry["tone"]) {
-    setLog((entries) => [{ message, tone }, ...entries].slice(0, 6));
+  function pushLog(
+    message: string,
+    tone: LogEntry["tone"],
+    actor: LogEntry["actor"] = "system",
+  ) {
+    setLog((entries) => [{ actor, message, tone }, ...entries].slice(0, 6));
   }
 
   function pushMutationFailure(action: string, error: unknown) {
@@ -1130,14 +1386,14 @@ export function StudioWorkbench() {
     ];
   }
 
-  const wizardPrimaryAction =
+  const nextSafeAction =
     currentWizardStep === "workspace"
       ? {
-          busy: busy === "open" || busy === "workspace",
-          disabled: false,
+          busy: false,
+          disabled: true,
           icon: <FolderPlus size={16} aria-hidden="true" />,
-          label: workspacePath.trim() ? "Open workspace" : "Create workspace",
-          onClick: workspacePath.trim() ? handleOpenWorkspace : handleCreateWorkspace,
+          label: "Complete workspace setup in navigation",
+          onClick: () => undefined,
         }
       : currentWizardStep === "authorized_materials"
         ? {
@@ -1156,31 +1412,274 @@ export function StudioWorkbench() {
               onClick: handleStartResearch,
             }
           : {
-              busy: busy === "export",
-              disabled: !latestRunId && !latestCampaignHunterId,
-              icon: <FileDown size={16} aria-hidden="true" />,
-              label: "Export submission-blocked draft",
-              onClick: handleExportReport,
+              busy: false,
+              disabled: studioView.selectedCandidate === null,
+              icon: <ShieldCheck size={16} aria-hidden="true" />,
+              label: "Review selected candidate",
+              onClick: () => setInspectorTab("candidate"),
             };
 
+  const studioCandidateList = (
+    <div className="grid gap-1" data-testid="studio-candidate-list">
+      {studioView.candidates.length === 0 ? (
+        <p className="py-3 text-xs text-[var(--muted)]">暂无候选。导入授权材料后开始本地研究。</p>
+      ) : (
+        studioView.candidates.map((candidate) => (
+          <button
+            className={`grid min-h-14 gap-1 rounded-sm border-l-2 px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+              studioView.selectedCandidate?.id === candidate.id
+                ? "border-[var(--accent)] bg-[var(--accent-surface)]"
+                : "border-transparent hover:bg-[var(--surface-raised)]"
+            }`}
+            key={candidate.id}
+            onClick={() => setSelectedCandidateId(candidate.id)}
+            type="button"
+          >
+            <span className="flex items-center justify-between gap-2">
+              <span className="truncate font-mono text-xs">{candidate.id}</span>
+              <span className="text-[10px] text-[var(--warning)]">{candidate.status}</span>
+            </span>
+            <span className="truncate text-xs text-[var(--muted)]">{candidate.title}</span>
+          </button>
+        ))
+      )}
+    </div>
+  );
+
+  const studioNavigation = (
+    <div className="grid gap-4 text-sm">
+      <nav aria-label="Studio 工作区分区" className="grid gap-1">
+        {[
+          ["#studio-mission", "研究任务"],
+          ...(latestCampaignHunterId ? [["#studio-autopilot", "Autopilot"]] : []),
+          ["#studio-artifacts", "授权材料"],
+          ["#studio-lab", "安全验证"],
+          ["#studio-candidates", "候选审查"],
+        ].map(([href, label], index) => (
+          <a
+            className={`rounded-sm border-l-2 px-3 py-2 transition-colors hover:bg-[var(--surface-raised)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${index === 0 ? "border-[var(--accent)] bg-[var(--accent-surface)]" : "border-transparent text-[var(--muted)]"}`}
+            href={href}
+            key={href}
+          >
+            {label}
+          </a>
+        ))}
+      </nav>
+      <div className="border-t border-[var(--line)] pt-4">
+        <TextField
+          browseEnabled={desktopPickerAvailable}
+          label="Workspace path"
+          onBrowse={() =>
+            handleSelectPath({
+              mode: "directory",
+              setter: setWorkspacePath,
+              title: "Select Mythos workspace",
+            })
+          }
+          onChange={setWorkspacePath}
+          value={workspacePath}
+        />
+        <ActionButton
+          busy={busy === "open"}
+          icon={<FolderOpen size={16} aria-hidden="true" />}
+          label="Open workspace"
+          onClick={handleOpenWorkspace}
+        />
+        <div className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4">
+          <TextField
+            browseEnabled={desktopPickerAvailable}
+            label="Workspace root"
+            onBrowse={() =>
+              handleSelectPath({
+                mode: "directory",
+                setter: setWorkspaceRoot,
+                title: "Select workspace root",
+              })
+            }
+            value={workspaceRoot}
+            onChange={setWorkspaceRoot}
+          />
+          <TextField label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
+          <ActionButton
+            busy={busy === "workspace"}
+            icon={<FolderPlus size={16} aria-hidden="true" />}
+            label="Create workspace"
+            onClick={handleCreateWorkspace}
+          />
+        </div>
+      </div>
+      {desktopBackupAvailable ? (
+        <div className="grid gap-2 border-t border-[var(--line)] pt-4" data-testid="desktop-data-recovery">
+          <p className="text-xs font-semibold text-[var(--muted)]">本地数据恢复</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ActionButton
+              busy={busy === "backup"}
+              icon={<FileDown size={16} aria-hidden="true" />}
+              label="创建备份"
+              onClick={handleCreateDesktopBackup}
+            />
+            <ActionButton
+              busy={busy === "restore"}
+              icon={<Upload size={16} aria-hidden="true" />}
+              label="恢复备份"
+              onClick={handleRestoreDesktopBackup}
+            />
+          </div>
+        </div>
+      ) : null}
+      <dl className="grid gap-2 border-t border-[var(--line)] pt-4 text-xs">
+        <StatusRow label="Scope Guard" value={workspace.scopeGuardLabel} warning />
+        <StatusRow label="授权材料" value={String(workspace.artifactCount)} />
+        <StatusRow label="研究运行" value={String(workspace.runCount)} />
+      </dl>
+      <div className="border-t border-[var(--line)] pt-4">
+        <p className="mb-2 text-xs font-semibold text-[var(--muted)]">候选队列</p>
+        {studioCandidateList}
+      </div>
+    </div>
+  );
+
+  const inspectorTabs = [
+    { id: "candidate", label: "候选详情" },
+    { id: "evidence", label: "证据" },
+    { id: "validation", label: "验证计划" },
+    { id: "report", label: "报告草稿" },
+  ] as const;
+  const studioInspector = (
+    <Tabs
+      className="!block w-full gap-0"
+      data-testid="studio-inspector"
+      onValueChange={(value) =>
+        setInspectorTab(value as "candidate" | "evidence" | "report" | "validation")
+      }
+      value={inspectorTab}
+    >
+      <TabsList
+        aria-label="候选检查器"
+        className="!grid h-10 !w-full grid-cols-4 rounded-none border-b border-[var(--line)] bg-transparent p-0"
+        variant="line"
+      >
+        {inspectorTabs.map((tab) => (
+          <TabsTrigger
+            className="min-w-0 whitespace-nowrap rounded-none px-1 text-xs"
+            key={tab.id}
+            tabIndex={tab.id === inspectorTab ? 0 : -1}
+            value={tab.id}
+          >
+            {tab.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <TabsContent className="pt-4" tabIndex={-1} value="candidate">
+          <CandidateInspector
+            actions={studioView.selectedCandidate ? (
+              <>
+                <ActionButton
+                  busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:needs_more_evidence`}
+                  icon={<ShieldCheck size={16} aria-hidden="true" />}
+                  label="Record needs-evidence learning"
+                  onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "needs_more_evidence")}
+                />
+                <ActionButton
+                  busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:refuted`}
+                  icon={<ShieldCheck size={16} aria-hidden="true" />}
+                  label="Record refuted learning"
+                  onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "refuted")}
+                />
+                <ActionButton
+                  busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:duplicate`}
+                  icon={<ShieldCheck size={16} aria-hidden="true" />}
+                  label="Record duplicate learning"
+                  onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "duplicate")}
+                />
+              </>
+            ) : null}
+            candidate={studioView.selectedCandidate}
+            candidates={studioView.candidates}
+            onSelect={setSelectedCandidateId}
+          />
+      </TabsContent>
+      <TabsContent className="pt-4" tabIndex={-1} value="evidence">
+        <EvidenceInspector candidate={studioView.selectedCandidate} />
+      </TabsContent>
+      <TabsContent className="pt-4" tabIndex={-1} value="validation">
+        <ValidationPlanInspector candidate={studioView.selectedCandidate} />
+      </TabsContent>
+      <TabsContent className="pt-4" tabIndex={-1} value="report">
+          <ReportInspector
+            actions={(
+              <>
+                <ActionButton
+                  busy={busy === "export"}
+                  disabled={!latestRunId && !latestCampaignHunterId}
+                  icon={<FileDown size={16} aria-hidden="true" />}
+                  label="Export report preview"
+                  onClick={handleExportReport}
+                />
+                <ActionButton
+                  busy={busy === "mission-dossier"}
+                  disabled={!latestRunId}
+                  icon={<FileDown size={16} aria-hidden="true" />}
+                  label="Export mission dossier"
+                  onClick={handleExportMissionDossier}
+                />
+              </>
+            )}
+            candidate={studioView.selectedCandidate}
+            dossierPaths={[
+              missionDossierExport?.mission_dossier_markdown_path,
+              missionDossierExport?.agent_queue_markdown_path,
+            ].filter((path): path is string => Boolean(path))}
+            markdownPath={reportExport?.report_markdown_path}
+          />
+      </TabsContent>
+    </Tabs>
+  );
+
   return (
-    <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
-      <header className="border-b border-[var(--line)] pb-5">
+    <StudioShell
+      candidates={studioCandidateList}
+      connectionLabel={`实时连接：${connectionState}`}
+      inspector={studioInspector}
+      navigation={studioNavigation}
+      safetyLabel="submission-blocked"
+      workspaceName={workspace.name}
+    >
+      <div className="min-w-0 [&_.bg-white]:!bg-[var(--surface)]">
+      <header className="border-b border-[var(--line)] pb-5" id="studio-mission">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ShieldCheck size={17} aria-hidden="true" />
           Mythos Studio
         </p>
         <h1 className="mt-3 max-w-4xl text-3xl font-semibold leading-tight text-balance">
-          Authorized research workspace
+          授权研究工作台
         </h1>
       </header>
 
-      <section className="mt-6 border border-[var(--line)] bg-white">
+      <MissionStageStrip
+        activeStage={missionPanel.researchLoopStages.find((stage) => !/complete|done|passed/i.test(stage.status))?.key ?? ""}
+        stages={missionPanel.researchLoopStages}
+      />
+
+      {latestCampaignHunterId ? (
+        <section className="mt-5" id="studio-autopilot">
+          <AutopilotCampaignSection campaignId={latestCampaignHunterId} />
+        </section>
+      ) : null}
+
+      <ResearchConversation
+        messages={log}
+        runId={missionPanel.runId}
+      />
+
+      <ProgramRuleIntake />
+
+      <section className="mt-6 border-b border-[var(--line)] pb-5" id="studio-artifacts">
         <SectionHeader title="Local research setup" />
         <div className="grid gap-3 p-5 text-sm md:grid-cols-4">
           {wizardSteps.map((step, index) => (
             <div
-              className={`border border-[var(--line)] p-3 ${
+              className={`border-t border-[var(--line)] p-3 ${
                 step.id === currentWizardStep ? "bg-[var(--background)]" : "bg-white"
               }`}
               key={step.id}
@@ -1195,18 +1694,11 @@ export function StudioWorkbench() {
         <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] p-5 text-sm">
           <p className="font-semibold">Next safe action</p>
           <ActionButton
-            busy={busy === "candidate-hunt"}
-            disabled={!localCandidateHuntInputReady}
-            icon={<Play size={16} aria-hidden="true" />}
-            label="Run local candidate hunt"
-            onClick={handleRunLocalCandidateHunt}
-          />
-          <ActionButton
-            busy={wizardPrimaryAction.busy}
-            disabled={wizardPrimaryAction.disabled}
-            icon={wizardPrimaryAction.icon}
-            label={wizardPrimaryAction.label}
-            onClick={wizardPrimaryAction.onClick}
+            busy={nextSafeAction.busy}
+            disabled={nextSafeAction.disabled}
+            icon={nextSafeAction.icon}
+            label={nextSafeAction.label}
+            onClick={nextSafeAction.onClick}
           />
           <ActionButton
             busy={busy === "campaign-hunter"}
@@ -1311,7 +1803,7 @@ export function StudioWorkbench() {
         </div>
       </section>
 
-      <section className="mt-6 border border-[var(--line)] bg-white">
+      <section className="mt-6 border-y border-[var(--line)]" id="studio-lab">
         <SectionHeader title="Local black-box lab (explicit)" />
         <details className="p-5 text-sm">
           <summary className="cursor-pointer font-semibold">Enable explicit local black-box lab</summary>
@@ -1338,7 +1830,7 @@ export function StudioWorkbench() {
                 </span>
                 <input
                   className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)] disabled:opacity-60"
-                  disabled={Boolean(labApproval)}
+                  disabled={Boolean(busy)}
                   onChange={(event) => handleLabValidationRunIdChange(event.target.value)}
                   value={labValidationRunId}
                 />
@@ -1429,15 +1921,8 @@ export function StudioWorkbench() {
                   labRunnerState !== "sessions_ready"
                 }
                 icon={<ShieldCheck size={16} aria-hidden="true" />}
-                label="Confirm bounded lab run"
+                label="Review and approve complete plan"
                 onClick={handleApproveBlackBoxLabRun}
-              />
-              <ActionButton
-                busy={busy === "lab-trial"}
-                disabled={!labApproval?.local_runner_dispatch_allowed}
-                icon={<Play size={16} aria-hidden="true" />}
-                label="Run approved trial"
-                onClick={handleRunApprovedBlackBoxTrial}
               />
               <ActionButton
                 busy={busy === "lab-close"}
@@ -1447,7 +1932,7 @@ export function StudioWorkbench() {
                 onClick={handleCloseBlackBoxSessions}
               />
             </div>
-            <dl className="grid gap-3 sm:grid-cols-3">
+            <dl className="grid gap-3 sm:grid-cols-4">
               <StatusRow label="Runner state" value={labRunnerState} />
               <StatusRow
                 label="Lease review"
@@ -1459,9 +1944,21 @@ export function StudioWorkbench() {
                 value={labTraceReviewConfirmed ? "confirmed" : "required"}
                 warning={!labTraceReviewConfirmed}
               />
+              <StatusRow
+                label="Bounded result"
+                value={labBoundedResult ? "recorded" : "not recorded"}
+                warning={!labBoundedResult}
+              />
             </dl>
+            {labBoundedResult ? (
+              <p className="text-xs text-[var(--muted)]">
+                {labBoundedResult.report_preview_refreshed
+                  ? "Report preview refreshed from the bounded local-lab result; human review remains required."
+                  : "Bounded local-lab result recorded; human review remains required."}
+              </p>
+            ) : null}
             {labTraceReview.length > 0 ? (
-              <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+              <div className="border-t border-[var(--line)] pt-4">
                 <p className="font-semibold">Normalized traces</p>
                 <ul className="mt-2 grid gap-2 text-xs text-[var(--muted)]">
                   {labTraceReview.map((trace) => (
@@ -1477,64 +1974,9 @@ export function StudioWorkbench() {
         </details>
       </section>
 
-      <div className="mt-6 grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_360px]">
-        <section className="border border-[var(--line)] bg-white">
-          <SectionHeader title="Workspaces" />
-          <div className="grid gap-4 p-5 text-sm">
-            <TextField
-              browseEnabled={desktopPickerAvailable}
-              label="Workspace path"
-              onBrowse={() =>
-                handleSelectPath({
-                  mode: "directory",
-                  setter: setWorkspacePath,
-                  title: "Select Mythos workspace",
-                })
-              }
-              value={workspacePath}
-              onChange={setWorkspacePath}
-            />
-            <ActionButton
-              busy={busy === "open"}
-              icon={<FolderOpen size={16} aria-hidden="true" />}
-              label="Open workspace"
-              onClick={handleOpenWorkspace}
-            />
-            <TextField
-              browseEnabled={desktopPickerAvailable}
-              label="Workspace root"
-              onBrowse={() =>
-                handleSelectPath({
-                  mode: "directory",
-                  setter: setWorkspaceRoot,
-                  title: "Select workspace root",
-                })
-              }
-              value={workspaceRoot}
-              onChange={setWorkspaceRoot}
-            />
-            <TextField label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
-            <ActionButton
-              busy={busy === "workspace"}
-              icon={<FolderPlus size={16} aria-hidden="true" />}
-              label="Create workspace"
-              onClick={handleCreateWorkspace}
-            />
-
-            <div className="border-t border-[var(--line)] pt-4">
-              <dl className="grid gap-3">
-                <StatusRow label="Name" value={workspace.name} />
-                <StatusRow label="Path" value={workspacePath || "No workspace selected"} />
-                <StatusRow label="Scope Guard" value={workspace.scopeGuardLabel} warning />
-                <StatusRow label="Artifacts" value={String(workspace.artifactCount)} />
-                <StatusRow label="Runs" value={String(workspace.runCount)} />
-              </dl>
-            </div>
-          </div>
-        </section>
-
-        <section className="border border-[var(--line)] bg-white">
-          <SectionHeader title="Conversation" />
+      <div className="mt-6 grid min-w-0 gap-5">
+        <section className="min-w-0 border-b border-[var(--line)] pb-5">
+          <SectionHeader title="Authorized materials / evaluation" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <TextField
@@ -1668,12 +2110,12 @@ export function StudioWorkbench() {
                 onChange={setKnowledgePath}
               />
             </div>
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] p-4">
               <p className="font-semibold">Artifact readiness</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {artifactChecklist.map((item) => (
                   <span
-                    className={`border border-[var(--line)] px-3 py-2 ${checklistTone(item.status)}`}
+                    className={`border-l-2 border-[var(--line)] px-3 py-2 ${checklistTone(item.status)}`}
                     key={item.kind}
                   >
                     {item.label}: {item.status}
@@ -1682,43 +2124,7 @@ export function StudioWorkbench() {
               </div>
               <p className="mt-3 text-[var(--muted)]">{researchReadiness.reason}</p>
             </div>
-            <div className="flex flex-wrap gap-3">
-              <ActionButton
-                busy={busy === "import"}
-                icon={<Upload size={16} aria-hidden="true" />}
-                label="Import artifacts"
-                onClick={handleImportArtifacts}
-              />
-              <ActionButton
-                busy={busy === "research"}
-                disabled={!researchReadiness.canStart}
-                icon={<Play size={16} aria-hidden="true" />}
-                label="Start research"
-                onClick={handleStartResearch}
-              />
-              <ActionButton
-                busy={busy === "candidate-hunt"}
-                disabled={!localCandidateHuntInputReady}
-                icon={<Play size={16} aria-hidden="true" />}
-                label="Run local candidate hunt"
-                onClick={handleRunLocalCandidateHunt}
-              />
-              <ActionButton
-                busy={busy === "export"}
-                disabled={!latestRunId && !latestCampaignHunterId}
-                icon={<FileDown size={16} aria-hidden="true" />}
-                label="Export report preview"
-                onClick={handleExportReport}
-              />
-              <ActionButton
-                busy={busy === "mission-dossier"}
-                disabled={!latestRunId}
-                icon={<FileDown size={16} aria-hidden="true" />}
-                label="Export mission dossier"
-                onClick={handleExportMissionDossier}
-              />
-            </div>
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] p-4">
               <p className="font-semibold">A+B benchmark</p>
               <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                 <TextField
@@ -1788,7 +2194,7 @@ export function StudioWorkbench() {
                 </div>
               ) : null}
             </div>
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] p-4">
               <p className="font-semibold">Research intent</p>
               <p className="mt-2 text-[var(--muted)]">
                 Access control, role boundaries, refutation first.
@@ -1797,10 +2203,10 @@ export function StudioWorkbench() {
           </div>
         </section>
 
-        <section className="border border-[var(--line)] bg-white">
-          <SectionHeader title="Safety and Run Log" />
+        <section className="min-w-0 border-b border-[var(--line)] pb-5" data-testid="studio-mission-details">
+          <SectionHeader title="Mission details" />
           <div className="grid gap-4 p-5 text-sm">
-            <div className="border border-[var(--line)] bg-[var(--background)] p-4">
+            <div className="border-t border-[var(--line)] pt-4">
               <p className="font-semibold">Mission control</p>
               <dl className="mt-3 grid gap-3">
                 <StatusRow label="Mode" value={missionPanel.modeLabel} />
@@ -2002,145 +2408,13 @@ export function StudioWorkbench() {
                 </span>
               ))}
             </div>
-            <div className="grid gap-2 border-t border-[var(--line)] pt-4">
-              {log.map((entry, index) => (
-                <p key={`${entry.message}-${index}`} className={logTone(entry.tone)}>
-                  {entry.message}
-                </p>
-              ))}
-            </div>
           </div>
         </section>
       </div>
 
-      <section className="mt-5 border border-[var(--line)] bg-white">
-        <SectionHeader title="Candidate Board" />
-        <div className="grid gap-4 p-5 lg:grid-cols-2">
-          {candidates.length === 0 ? (
-            <p className="text-sm text-[var(--muted)]">
-              No candidates yet.
-            </p>
-          ) : (
-            candidates.map((candidate) => (
-              <article key={candidate.id} className="border border-[var(--line)] p-4 text-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold">{candidate.id}</p>
-                    <h2 className="mt-1 text-lg font-semibold">{candidate.title}</h2>
-                  </div>
-                  <span className="border border-[var(--line)] px-2 py-1 text-xs uppercase">
-                    {candidate.status}
-                  </span>
-                </div>
-                <dl className="mt-4 grid gap-3">
-                  <StatusRow label="Severity" value={candidate.severity} />
-                  <StatusRow label="Endpoint" value={candidate.affectedEndpoint} />
-                  <StatusRow label="Code path" value={candidate.affectedCodePath} />
-                  <StatusRow label="Priority" value={String(candidate.priorityScore)} />
-                  <StatusRow label="Validation mode" value={candidate.validationMode} />
-                  <StatusRow label="Report readiness" value={candidate.reportReadiness.status} warning />
-                </dl>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Reason</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.reason}</p>
-                </div>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Broken invariant</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.brokenInvariant}</p>
-                </div>
-                <ListBlock title="Why still alive" items={candidate.whyStillAlive} />
-                <ListBlock
-                  title="Falsification open dimensions"
-                  items={candidate.falsificationSummary.openDimensions}
-                />
-                <ListBlock
-                  title="Semantic evidence"
-                  items={[semanticEvidenceLine(candidate.semanticEvidence)]}
-                />
-                <ListBlock
-                  title="Candidate evidence review packet"
-                  items={candidateEvidenceReviewPacketLines(candidate)}
-                />
-                <ListBlock title="Evidence focus" items={candidate.evidenceFocus} />
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Repair guidance</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.repairGuidance}</p>
-                </div>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Regression test</p>
-                  <p className="mt-2 text-[var(--muted)]">{candidate.regressionTest}</p>
-                </div>
-                <div className="mt-4">
-                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">Next report action</p>
-                  <p className="mt-2 text-[var(--muted)]">
-                    {candidate.reportReadiness.nextAllowedAction}
-                  </p>
-                </div>
-                <ListBlock title="Ranking reasons" items={candidate.rankingReasons} />
-                <ListBlock title="Safe validation plan" items={candidate.safeValidationPlan} />
-                <ListBlock title="Safety blockers" items={candidate.safetyBlockers} />
-                <ListBlock title="Candidate evidence gaps" items={candidate.evidenceGaps} />
-                <ListBlock title="Evidence needed" items={candidate.evidenceNeeds} />
-                <ListBlock title="False-positive checks" items={candidate.refutationQuestions} />
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <ActionButton
-                    busy={busy === `candidate-learning:${candidate.id}:needs_more_evidence`}
-                    icon={<ShieldCheck size={16} aria-hidden="true" />}
-                    label="Record needs-evidence learning"
-                    onClick={() => handleRecordCandidateCardLearning(candidate, "needs_more_evidence")}
-                  />
-                  <ActionButton
-                    busy={busy === `candidate-learning:${candidate.id}:refuted`}
-                    icon={<ShieldCheck size={16} aria-hidden="true" />}
-                    label="Record refuted learning"
-                    onClick={() => handleRecordCandidateCardLearning(candidate, "refuted")}
-                  />
-                  <ActionButton
-                    busy={busy === `candidate-learning:${candidate.id}:duplicate`}
-                    icon={<ShieldCheck size={16} aria-hidden="true" />}
-                    label="Record duplicate learning"
-                    onClick={() => handleRecordCandidateCardLearning(candidate, "duplicate")}
-                  />
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-        {reportExport ? (
-          <div className="border-t border-[var(--line)] p-5 text-sm">
-            <p className="font-semibold">{reportExport.title}</p>
-            {reportExport.report_markdown_path ? (
-              <p className="mt-1 text-[var(--muted)]">
-                Markdown draft: {reportExport.report_markdown_path}
-              </p>
-            ) : null}
-            <p className="mt-1 text-[var(--muted)]">
-              Exported report preview remains submission-blocked and cannot be submitted from
-              Studio.
-            </p>
-          </div>
-        ) : null}
-        {missionDossierExport ? (
-          <div className="border-t border-[var(--line)] p-5 text-sm">
-            <p className="font-semibold">Mission dossier exported</p>
-            {missionDossierExport.mission_dossier_markdown_path ? (
-              <p className="mt-1 text-[var(--muted)]">
-                Mission dossier: {missionDossierExport.mission_dossier_markdown_path}
-              </p>
-            ) : null}
-            {missionDossierExport.agent_queue_markdown_path ? (
-              <p className="mt-1 text-[var(--muted)]">
-                Agent queue audit: {missionDossierExport.agent_queue_markdown_path}
-              </p>
-            ) : null}
-            <p className="mt-1 text-[var(--muted)]">
-              Local mission dossiers are review-only and do not grant validation execution or
-              report submission.
-            </p>
-          </div>
-        ) : null}
-      </section>
-    </main>
+      <div className="mt-5" id="studio-candidates" />
+      </div>
+    </StudioShell>
   );
 }
 
@@ -2166,11 +2440,11 @@ function TextField({
   value: string;
 }) {
   return (
-    <label className="grid gap-1 text-sm">
+    <label className="grid min-w-0 gap-1 text-sm">
       <span className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</span>
-      <span className="grid gap-2">
+      <span className="grid min-w-0 gap-2">
         <input
-          className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
+          className="min-h-10 min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
           onChange={(event) => onChange(event.target.value)}
           value={value}
         />
@@ -2302,43 +2576,6 @@ function missionCandidateLine(
     `independent challenge ${crossChecks}`,
     `report ${candidate.reportStatus}`,
   ].join("; ");
-}
-
-function semanticEvidenceLine(
-  evidence: ReturnType<typeof toStudioCandidateCards>[number]["semanticEvidence"],
-): string {
-  const sinks = evidence.sinkSymbols.length > 0 ? evidence.sinkSymbols.join(", ") : "none";
-  const gates = [
-    evidence.executionAllowed ? "execution allowed" : "execution blocked",
-    evidence.validationAllowed ? "validation allowed" : "validation blocked",
-    evidence.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
-  ].join(", ");
-  return `root ${evidence.rootCause}; invariant ${evidence.securityInvariant}; authz ${evidence.authzHint}; sinks ${evidence.sinkCount} (${sinks}); review ${evidence.reviewState}; ${gates}`;
-}
-
-function candidateEvidenceReviewPacketLines(
-  candidate: ReturnType<typeof toStudioCandidateCards>[number],
-): string[] {
-  const trace = candidate.evidenceTraceSummary;
-  const missingArtifacts =
-    trace.missingRequiredArtifactKinds.length > 0
-      ? trace.missingRequiredArtifactKinds.join(", ")
-      : "none";
-  const evidenceNeeds =
-    candidate.evidenceNeeds.length > 0 ? candidate.evidenceNeeds.join(", ") : "review";
-  const evidenceGaps =
-    candidate.evidenceGaps.length > 0 ? candidate.evidenceGaps.join(", ") : "none";
-  const focus =
-    candidate.evidenceFocus.length > 0 ? candidate.evidenceFocus.join(", ") : "review";
-  const readiness = candidate.reportReadiness;
-  return [
-    `Trace ${trace.status}; endpoint traced ${trace.endpointTraced ? "true" : "false"}; code traced ${trace.codePathTraced ? "true" : "false"}; source facts ${trace.sourceFactCount}.`,
-    `Report readiness ${readiness.status}; trace ${readiness.traceStatus}; required evidence ${readiness.requiredEvidenceCount}; safe validation steps ${readiness.safeValidationStepCount}; submission blocked ${readiness.submissionBlocked ? "true" : "false"}.`,
-    `Required artifacts ${trace.requiredArtifactKinds.join(", ")}; present ${trace.presentRequiredArtifactKinds.join(", ") || "none"}; missing ${missingArtifacts}.`,
-    `Evidence needs ${evidenceNeeds}; evidence gaps ${evidenceGaps}; focus ${focus}.`,
-    "Redaction review required before sharing evidence; raw secrets, tokens, cookies, authorization headers, and user data stay excluded.",
-    "Evidence review remains read-only: execution blocked, validation blocked, report submission blocked.",
-  ];
 }
 
 function agentQueueLine(
@@ -2772,16 +3009,6 @@ function toCandidateHunterLearningOutcome(value: string): CandidateHunterLearnin
   return "needs_more_evidence";
 }
 
-function logTone(tone: LogEntry["tone"]): string {
-  if (tone === "safe") {
-    return "text-[var(--success)]";
-  }
-  if (tone === "blocked") {
-    return "text-[var(--warning)]";
-  }
-  return "text-[var(--muted)]";
-}
-
 function checklistTone(status: "ready" | "missing" | "optional"): string {
   if (status === "ready") {
     return "text-[var(--success)]";
@@ -2790,75 +3017,4 @@ function checklistTone(status: "ready" | "missing" | "optional"): string {
     return "text-[var(--warning)]";
   }
   return "text-[var(--muted)]";
-}
-
-function latestSessionFromManifest(
-  manifest: StudioWorkspaceManifest,
-): { id: string | null; kind: "campaign_hunter" | "none" | "research" } {
-  let latest: { id: string | null; kind: "campaign_hunter" | "none" | "research"; recordedAt: string } = {
-    id: null,
-    kind: "none",
-    recordedAt: "",
-  };
-  for (const run of [...(manifest.runs ?? [])].reverse()) {
-    if (run.run_id && (!latest.id || safeDateValue(run.recorded_at) >= safeDateValue(latest.recordedAt))) {
-      latest = {
-        id: run.run_id,
-        kind: "research",
-        recordedAt: run.recorded_at ?? "",
-      };
-    }
-  }
-  for (const run of [...(manifest.campaign_hunter_runs ?? [])].reverse()) {
-    if (
-      run.campaign_id &&
-      (!latest.id || safeDateValue(run.recorded_at) >= safeDateValue(latest.recordedAt))
-    ) {
-      latest = {
-        id: run.campaign_id,
-        kind: "campaign_hunter",
-        recordedAt: run.recorded_at ?? "",
-      };
-    }
-  }
-  return { id: latest.id, kind: latest.kind };
-}
-
-function reportExportFromLatestSession(
-  manifest: StudioWorkspaceManifest,
-  latest: { id: string | null; kind: "campaign_hunter" | "none" | "research" },
-): StudioReportExportResponse | null {
-  if (!latest.id || latest.kind === "none") {
-    return null;
-  }
-  const run =
-    latest.kind === "research"
-      ? (manifest.runs ?? []).find((item) => item.run_id === latest.id)
-      : (manifest.campaign_hunter_runs ?? []).find((item) => item.campaign_id === latest.id);
-  if (!run?.report_markdown_path) {
-    return null;
-  }
-  return {
-    manifest,
-    report: {
-      restored_from_manifest: true,
-      submission_blocked: true,
-    },
-    report_markdown_path: run.report_markdown_path,
-    report_submission_allowed: false,
-    run_id: latest.id,
-    submission_blocked: true,
-    title:
-      latest.kind === "campaign_hunter"
-        ? "Submission-blocked campaign hunter draft"
-        : "Submission-blocked report draft",
-  };
-}
-
-function safeDateValue(value: string | undefined): number {
-  if (!value) {
-    return 0;
-  }
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? 0 : timestamp;
 }

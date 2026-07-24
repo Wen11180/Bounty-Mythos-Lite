@@ -1,30 +1,38 @@
 {
-  "schema_version": "cross_source_candidate_model_v1",
-  "proposals": [
-    {
-      "vulnerability_family": "authorization",
-      "affected_endpoint": {
-        "method": "GET",
-        "path": "/local/ledgers/k4v9/:ledgerId/file"
-      },
-      "affected_code_path": {
-        "source_path": "code.ts",
-        "symbol_name": "fetchLedger"
-      },
-      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
-      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
-      "evidence_requirements": [
-        "Review the cited route and handler boundary."
-      ],
-      "refutation_questions": [
-        "Does an observed upstream control enforce the applicable boundary?"
-      ],
-      "root_cause_summary": "missing_object_ownership_check",
-      "risk_estimate": "high",
-      "cited_fact_refs": [
-        "code:code.ts:fetchLedger",
-        "api:GET:/local/ledgers/k4v9/{ledgerId}/file"
-      ]
-    }
-  ]
+  "schema_version": "cross_source_candidate_fixture_replay_v1",
+  "fact_pack_input_digest": "4f3ee27a028873098427dc106a54f03c4983d5fb9b7872b415de3111912d8762",
+  "provider": "openai",
+  "model": "fixture-replay-v1",
+  "response": {
+    "schema_version": "cross_source_candidate_model_v1",
+    "proposals": [
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "GET",
+          "path": "/local/ledgers/k4v9/:ledgerId/file"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "fetchLedger"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "high",
+        "cited_fact_refs": [
+          "code:code.ts:fetchLedger",
+          "api:GET:/local/ledgers/k4v9/{ledgerId}/file"
+        ]
+      }
+    ]
+  },
+  "response_digest": "10bee02a76d6369fd6b58a82933aaec1b9a00d663001846aac9221c0d5f0ee26"
 }

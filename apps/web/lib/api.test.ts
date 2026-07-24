@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ApiRequestError,
+  approveProgramRuleSnapshot,
   approveStudioBlackBoxLabRun,
   completeCampaignCycleReview,
   createResearchReviewPlan,
@@ -9,24 +10,41 @@ import {
   createStudioWorkspaceBenchmarkTemplate,
   createStudioWorkspace,
   createFindingCandidate,
+  getCampaignControlCenter,
+  getCampaignControlCenterRequired,
+  getControlCenterOverview,
+  getProgramRuleSnapshotDiff,
+  getProgramRuleSource,
   getStudioBlackBoxRemoteStatus,
   getStudioWorkspaceManifest,
+  getStudioWorkspaceManifestRequired,
   importStudioWorkspaceArtifact,
   exportStudioWorkspaceCampaignHunterReport,
   exportStudioWorkspaceMissionDossier,
   exportStudioWorkspaceReport,
   listStudioWorkspaceCandidates,
+  listStudioWorkspaceCandidatesRequired,
+  listProgramRuleSnapshots,
+  listProgramRuleSources,
+  listProgramScopeRules,
   getStudioWorkspaceMission,
+  getStudioWorkspaceMissionRequired,
   getStudioWorkspaceMissionHandoff,
   materializeResearchQueueTask,
   recordCandidateHunterLearningOutcome,
   recordClaimReviewDecision,
   recordManualObservation,
+  refreshProgramRuleSource,
+  registerProgramRuleSource,
+  rejectProgramRuleSnapshot,
   runStudioWorkspaceBenchmark,
   runStudioWorkspaceResearch,
   reviewValidationFeedbackForFindingPromotion,
   runSourceAuditScan,
   previewStudioBlackBoxLabLease,
+  preflightMythosValidationRun,
+  preflightStudioBlackBoxLabRun,
+  recordStudioBlackBoxLabBoundedResult,
   SourceAuditScanError,
   type Finding,
   type ProgramIntelligenceProfile,
@@ -92,6 +110,291 @@ const fallbackProgramProfile: ProgramIntelligenceProfile = {
   safety_notes: [],
   skipped_lessons: [],
 };
+
+test("program-rule operator helpers use only documented non-claim endpoints", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; method: string; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    const method = init?.method ?? "GET";
+    calls.push({
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+      method,
+      path,
+    });
+    if (path.endsWith("/diff")) return jsonResponse({ review_digest: "a".repeat(64) });
+    if (path.endsWith("/scope-rules")) return jsonResponse([]);
+    if (path.endsWith("/snapshots")) return jsonResponse([]);
+    if (path.endsWith("/approve") || path.endsWith("/reject")) {
+      return jsonResponse({ review_status: path.endsWith("/approve") ? "approved" : "rejected" });
+    }
+    if (path === "/program-rule-sources" && method === "GET") return jsonResponse([]);
+    return jsonResponse({ source_id: "source_synthetic" }, method === "POST" ? 202 : 200);
+  };
+
+  const review = {
+    expected_review_digest: "a".repeat(64),
+    operator_confirmed: true as const,
+    reviewer_alias: "reviewer_one",
+  };
+  try {
+    await listProgramRuleSources();
+    await registerProgramRuleSource({
+      program_alias: "synthetic_program",
+      public_rule_url: "https://rules.example.test/program",
+    });
+    await getProgramRuleSource("source_synthetic");
+    await refreshProgramRuleSource("source_synthetic");
+    await listProgramRuleSnapshots("source_synthetic");
+    await getProgramRuleSnapshotDiff("source_synthetic", "snapshot_pending");
+    await approveProgramRuleSnapshot("source_synthetic", "snapshot_pending", review);
+    await rejectProgramRuleSnapshot("source_synthetic", "snapshot_pending", review);
+    await listProgramScopeRules("program_synthetic");
+
+    assert.deepEqual(calls.map(({ method, path }) => ({ method, path })), [
+      { method: "GET", path: "/program-rule-sources" },
+      { method: "POST", path: "/program-rule-sources" },
+      { method: "GET", path: "/program-rule-sources/source_synthetic" },
+      { method: "POST", path: "/program-rule-sources/source_synthetic/refresh" },
+      { method: "GET", path: "/program-rule-sources/source_synthetic/snapshots" },
+      { method: "GET", path: "/program-rule-sources/source_synthetic/snapshots/snapshot_pending/diff" },
+      { method: "POST", path: "/program-rule-sources/source_synthetic/snapshots/snapshot_pending/approve" },
+      { method: "POST", path: "/program-rule-sources/source_synthetic/snapshots/snapshot_pending/reject" },
+      { method: "GET", path: "/programs/program_synthetic/scope-rules" },
+    ]);
+    assert.deepEqual(calls[1]?.body, {
+      program_alias: "synthetic_program",
+      public_rule_url: "https://rules.example.test/program",
+    });
+    assert.deepEqual(calls[3]?.body, {});
+    assert.deepEqual(calls[6]?.body, review);
+    assert.deepEqual(calls[7]?.body, review);
+    assert.doesNotMatch(JSON.stringify(calls), /program-rule-fetch|claims\/next/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("program-rule mutations propagate conflict and cooldown errors without fallback success", async () => {
+  const originalFetch = globalThis.fetch;
+  for (const [status, detail, operation] of [
+    [409, "Program rule state conflict", () => registerProgramRuleSource({
+      program_alias: "synthetic_program",
+      public_rule_url: "https://rules.example.test/program",
+    })],
+    [429, "Program rule manual refresh is cooling down", () => refreshProgramRuleSource("source_synthetic")],
+  ] as const) {
+    globalThis.fetch = async () => jsonResponse({ detail }, status);
+    await assert.rejects(operation, (error) => {
+      assert.equal(error instanceof ApiRequestError, true);
+      assert.equal((error as ApiRequestError).status, status);
+      assert.equal((error as ApiRequestError).detail, detail);
+      return true;
+    });
+  }
+  globalThis.fetch = originalFetch;
+});
+
+function jsonResponse(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), {
+    headers: { "Content-Type": "application/json" },
+    status,
+  });
+}
+
+test("getControlCenterOverview is strict and forwards an optional campaign filter", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  const overview = {
+    agent_stages: [],
+    authorized_assets: [],
+    campaigns: [],
+    candidates: [],
+    data_mode: "live" as const,
+    empty_state: true,
+    generated_at: "2026-07-18T04:00:00Z",
+    metrics: {
+      approval_pressure_count: 0,
+      retained_high_value_candidate_count: 0,
+      running_task_count: 0,
+      safety_block_count: 0,
+    },
+    recent_events: [],
+    report_readiness: {
+      available: false,
+      human_review_required: true,
+      report_submission_allowed: false as const,
+      status: "unavailable",
+      submission_blocked: true,
+    },
+    research_quality: {
+      evidence_completeness: null,
+      median_human_review_seconds: null,
+      refutation_kill_rate: null,
+      retention_rate: null,
+    },
+    snapshot_version: "a".repeat(64),
+  };
+
+  globalThis.fetch = async (input, init) => {
+    urls.push(String(input));
+    assert.equal(init?.cache, "no-store");
+    return new Response(JSON.stringify(overview), {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    assert.deepEqual(await getControlCenterOverview(), overview);
+    assert.deepEqual(await getControlCenterOverview("campaign / one"), overview);
+    assert.match(urls[0] ?? "", /\/mythos\/control-center\/overview$/);
+    assert.match(urls[1] ?? "", /campaign_id=campaign(?:%20|\+)%2F(?:%20|\+)one$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getControlCenterOverview never falls back on HTTP or network failures", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ detail: "overview_unavailable" }), {
+        headers: { "Content-Type": "application/json" },
+        status: 503,
+      });
+    await assert.rejects(
+      () => getControlCenterOverview(),
+      (error) =>
+        error instanceof ApiRequestError &&
+        error.status === 503 &&
+        error.detail === "overview_unavailable",
+    );
+
+    globalThis.fetch = async () => {
+      throw new TypeError("offline");
+    };
+    await assert.rejects(
+      () => getControlCenterOverview(),
+      (error) =>
+        error instanceof ApiRequestError && error.status === 0 && error.detail === "network_error",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getControlCenterOverview forwards AbortSignal and aborts its strict fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let receivedSignal: AbortSignal | null | undefined;
+  globalThis.fetch = async (_input, init) => {
+    receivedSignal = init?.signal;
+    return await new Promise<Response>((_resolve, reject) => {
+      if (!init?.signal) {
+        reject(new TypeError("missing abort signal"));
+        return;
+      }
+      init.signal.addEventListener("abort", () => {
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      });
+    });
+  };
+
+  try {
+    const request = getControlCenterOverview("campaign_1", controller.signal);
+    controller.abort();
+
+    await assert.rejects(
+      request,
+      (error) => error instanceof ApiRequestError && error.detail === "network_error",
+    );
+    assert.equal(receivedSignal, controller.signal);
+    assert.equal(receivedSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio live-refresh helpers forward AbortSignal to their GET requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const receivedSignals: Array<AbortSignal | null | undefined> = [];
+  globalThis.fetch = async (_input, init) => {
+    receivedSignals.push(init?.signal);
+    return await new Promise<Response>((_resolve, reject) => {
+      if (!init?.signal) {
+        reject(new TypeError("missing abort signal"));
+        return;
+      }
+      init.signal.addEventListener("abort", () => {
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      });
+    });
+  };
+
+  try {
+    const fallbackCandidates = { candidates: [], run_id: "run_1" };
+    const requests = [
+      getCampaignControlCenter("campaign_1", null, controller.signal),
+      getStudioWorkspaceManifest("C:/authorized/studio", null, controller.signal),
+      listStudioWorkspaceCandidates(
+        "C:/authorized/studio",
+        "run_1",
+        fallbackCandidates,
+        controller.signal,
+      ),
+      getStudioWorkspaceMission("C:/authorized/studio", "run_1", null, controller.signal),
+    ] as const;
+    controller.abort();
+
+    const [campaign, manifest, candidates, mission] = await Promise.all(requests);
+    assert.equal(campaign, null);
+    assert.equal(manifest, null);
+    assert.equal(candidates, fallbackCandidates);
+    assert.equal(mission, null);
+    assert.deepEqual(receivedSignals, Array.from({ length: 4 }, () => controller.signal));
+    assert.equal(controller.signal.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio strict live-refresh helpers reject required GET failures without fallbacks", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const receivedSignals: Array<AbortSignal | null | undefined> = [];
+  globalThis.fetch = async (_input, init) => {
+    receivedSignals.push(init?.signal);
+    return new Response(JSON.stringify({ detail: "projection unavailable" }), {
+      headers: { "Content-Type": "application/json" },
+      status: 503,
+    });
+  };
+
+  try {
+    const results = await Promise.allSettled([
+      getCampaignControlCenterRequired("campaign_1", controller.signal),
+      getStudioWorkspaceManifestRequired("C:/authorized/studio", controller.signal),
+      getStudioWorkspaceMissionRequired("C:/authorized/studio", "run_1", controller.signal),
+      listStudioWorkspaceCandidatesRequired(
+        "C:/authorized/studio",
+        "run_1",
+        controller.signal,
+      ),
+    ]);
+
+    assert.deepEqual(results.map((result) => result.status), [
+      "rejected",
+      "rejected",
+      "rejected",
+      "rejected",
+    ]);
+    assert.deepEqual(receivedSignals, Array.from({ length: 4 }, () => controller.signal));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("runSourceAuditScan posts only the local source audit request", async () => {
   const originalFetch = globalThis.fetch;
@@ -632,6 +935,205 @@ test("studio black-box lab helpers send only alias-only local review contracts",
   }
 });
 
+test("validation preflight helper is strict and bound to the requested run", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: unknown; url: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+      url: String(input),
+    });
+    return new Response(
+      JSON.stringify({
+        decision: { allowed: true, reason: "approved_validation_record" },
+        execution_started: false,
+        validation_run: {
+          allowed_to_execute: true,
+          id: "validation_local_lab",
+          preflight_passed: true,
+        },
+      }),
+      { status: 200 },
+    );
+  };
+  try {
+    const response = await preflightMythosValidationRun("validation_local_lab");
+    assert.equal(response.decision.allowed, true);
+    assert.equal(response.validation_run.id, "validation_local_lab");
+    assert.deepEqual(calls, [
+      {
+        body: {},
+        url: "http://localhost:8000/mythos/validation-runs/validation_local_lab/preflight",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio local-lab exact preflight sends the approval, lease, and original complete plan", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody: unknown = null;
+  let requestedUrl = "";
+  const completePlan = {
+    lease_preview: {
+      active_origin: "http://127.0.0.1:43110",
+      sessions: [
+        { account_alias: "account_a", ready: true, role_alias: "member", session_alias: "session_a" as const },
+        { account_alias: "account_b", ready: true, role_alias: "member", session_alias: "session_b" as const },
+      ],
+      workflows: [{
+        action: "read_only_replay" as const,
+        method: "GET" as const,
+        object_aliases: ["widget_a"],
+        origin: "http://127.0.0.1:43110",
+        route_template: "/widgets/{object}",
+        session_alias: "session_a" as const,
+        workflow_alias: "read_widget_a",
+      }],
+    },
+    operator_confirmed: true,
+    trace_review: [{
+      redacted: true as const,
+      response_schema_fingerprint: `sha256:${"a".repeat(64)}`,
+      route_template: "/widgets/{object}",
+      session_alias: "session_a",
+      workflow_alias: "read_widget_a",
+    }],
+    validation_run_id: "validation_local_lab",
+  };
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      approval_id: "approval_local_lab",
+      approved_session_alias: "session_b",
+      approved_workflow_alias: "read_widget_a",
+      complete_plan_digest: `sha256:${"d".repeat(64)}`,
+      execution_allowed: false,
+      expires_at: "2099-07-19T12:15:00Z",
+      lease_digest: `sha256:${"b".repeat(64)}`,
+      local_runner_dispatch_allowed: true,
+      plan_digest: "plan_sha256_local_lab",
+      report_submission_allowed: false,
+      scope_reference: `sha256:${"c".repeat(64)}`,
+      validation_run_id: "validation_local_lab",
+    }), { status: 200 });
+  };
+
+  try {
+    const response = await preflightStudioBlackBoxLabRun({
+      approval_id: "approval_local_lab",
+      complete_plan: completePlan,
+      complete_plan_digest: `sha256:${"d".repeat(64)}`,
+      lease_digest: `sha256:${"b".repeat(64)}`,
+    });
+
+    assert.equal(response.local_runner_dispatch_allowed, true);
+    assert.equal(
+      new URL(requestedUrl).pathname,
+      "/mythos/studio/black-box-lab/runs/preflight",
+    );
+    assert.deepEqual(requestedBody, {
+      approval_id: "approval_local_lab",
+      complete_plan: completePlan,
+      complete_plan_digest: `sha256:${"d".repeat(64)}`,
+      lease_digest: `sha256:${"b".repeat(64)}`,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("studio local-lab bounded result sends only the exact preflight and normalized trace", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody: unknown = null;
+  let requestedUrl = "";
+  const exactPreflight = {
+    approval_id: "approval_local_lab",
+    complete_plan: {
+      lease_preview: {
+        active_origin: "http://127.0.0.1:43110",
+        sessions: [
+          { account_alias: "account_a", ready: true, role_alias: "member", session_alias: "session_a" as const },
+          { account_alias: "account_b", ready: true, role_alias: "member", session_alias: "session_b" as const },
+        ],
+        workflows: [{
+          action: "read_only_replay" as const,
+          method: "GET" as const,
+          object_aliases: ["widget_a"],
+          origin: "http://127.0.0.1:43110",
+          route_template: "/widgets/{object}",
+          session_alias: "session_a" as const,
+          workflow_alias: "read_widget_a",
+        }],
+      },
+      operator_confirmed: true as const,
+      trace_review: [{
+        redacted: true as const,
+        response_schema_fingerprint: `sha256:${"a".repeat(64)}`,
+        route_template: "/widgets/{object}",
+        session_alias: "session_a" as const,
+        workflow_alias: "read_widget_a",
+      }],
+      validation_run_id: "validation_local_lab",
+    },
+    complete_plan_digest: `sha256:${"d".repeat(64)}`,
+    lease_digest: `sha256:${"b".repeat(64)}`,
+  };
+  const trace = {
+    aliases: {
+      account_alias: "account_b",
+      object_aliases: ["widget_a"],
+      role_alias: "member",
+      session_alias: "session_b",
+      workflow_alias: "read_widget_a",
+    },
+    method: "GET" as const,
+    parameters: [{ location: "path" as const, name: "object", value_type: "object_alias" as const }],
+    response_schema_fingerprint: `sha256:${"b".repeat(64)}`,
+    route_template: "/widgets/{object}",
+    status_class: "2xx" as const,
+    timing_bucket: "under_500ms" as const,
+  };
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input);
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      campaign_id: "campaign_local_lab",
+      difference_labels: ["response_schema_changed"],
+      evidence_ref_count: 1,
+      execution_allowed: false,
+      human_review_required: true,
+      pipeline_run_id: "pipeline_local_lab",
+      report_preview_refreshed: true,
+      report_submission_allowed: false,
+      result_digest: `sha256:${"e".repeat(64)}`,
+      submission_blocked: true,
+      validation_run_id: "validation_local_lab",
+      validation_status: "needs_evidence",
+    }), { status: 200 });
+  };
+
+  try {
+    const response = await recordStudioBlackBoxLabBoundedResult({ exact_preflight: exactPreflight, trace });
+
+    assert.equal(response.human_review_required, true);
+    assert.equal(response.submission_blocked, true);
+    assert.equal(
+      new URL(requestedUrl).pathname,
+      "/mythos/studio/black-box-lab/runs/bounded-result",
+    );
+    assert.deepEqual(requestedBody, { exact_preflight: exactPreflight, trace });
+    assert.doesNotMatch(
+      JSON.stringify(requestedBody),
+      /authorization|cookie|password|secret|storage_state|raw_headers|raw_body|token/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("studio remote black-box status is read-only and keeps both human gates blocked", async () => {
   const originalFetch = globalThis.fetch;
   let requestedUrl = "";
@@ -1026,6 +1528,11 @@ test("studio research API helper sends only the explicit candidate model opt-in"
           model: "gpt-4.1-mini",
           model_failure_reason: null,
           model_latency_ms: 3,
+          model_reasoner: "replay",
+          model_replay_binding: "bound",
+          model_request_key: "a".repeat(64),
+          model_response_digest: "b".repeat(64),
+          model_response_schema: "cross_source_candidate_model_v1",
           model_requested: true,
           model_status: "completed",
           prompt_hash: "prompt-hash",
@@ -1033,6 +1540,7 @@ test("studio research API helper sends only the explicit candidate model opt-in"
           provider: "openai",
           rejected_count: 0,
           report_submission_allowed: false,
+          raw_payload_processed: false,
           validation_allowed: false,
           working_candidate_count: 1,
         },
@@ -1057,6 +1565,7 @@ test("studio research API helper sends only the explicit candidate model opt-in"
     });
 
     assert.equal(run?.candidate_generation.model_status, "completed");
+    assert.equal(run?.candidate_generation.model_replay_binding, "bound");
     assert.deepEqual(requestBody, {
       candidate_model: {
         enabled: true,

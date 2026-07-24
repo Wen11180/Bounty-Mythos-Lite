@@ -1,5 +1,8 @@
 from datetime import UTC, datetime, timedelta
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine
@@ -7,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
+from app.config import get_settings
 from app.db_models import ApprovalRecord, CampaignRecord, ValidationRunRecord
 import app.main as main_module
 from app.main import app
@@ -15,6 +19,13 @@ from app.worker.tasks import run_agent_task
 
 
 client = TestClient(app)
+AUTONOMOUS_RESEARCH_CAPABILITY = "a" * 43
+
+
+def autonomous_research_headers() -> dict[str, str]:
+    return {
+        "X-Mythos-Autonomous-Research-Capability": AUTONOMOUS_RESEARCH_CAPABILITY
+    }
 
 
 def build_testing_session():
@@ -185,6 +196,1457 @@ def test_campaign_api_start_blocks_campaign_without_stored_scope_guard_rule(monk
             assert DatabaseRepository(session).list_campaign_tasks(campaign_id) == []
     finally:
         app.dependency_overrides.clear()
+
+
+def test_autonomous_runtime_tick_endpoint_uses_only_the_local_runtime_dispatcher(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Local autonomous tick campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": "sha256:" + "a" * 64,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+
+        calls = []
+
+        def fake_tick(campaign_id, *, repository, dispatcher):
+            calls.append((campaign_id, repository, dispatcher))
+            return {
+                "status": "dispatched",
+                "campaign_task_id": "campaign_task_runtime_test",
+                "stop_reason": None,
+                "source_snapshot_digest": "sha256:" + "a" * 64,
+                "execution_allowed": False,
+                "dispatch_allowed": False,
+                "validation_allowed": False,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+                "raw_payload_processed": False,
+                "raw_payload_in_dispatch": False,
+            }
+
+        monkeypatch.setattr(
+            main_module,
+            "tick_autonomous_research_campaign",
+            fake_tick,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module,
+            "tick_campaign",
+            lambda *_args, **_kwargs: pytest.fail("manual_campaign_tick_must_not_run"),
+        )
+
+        response = client.post(
+            f"/mythos/campaigns/{campaign.id}/autonomous-research/tick",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "dispatched"
+        assert response.json()["validation_allowed"] is False
+        assert response.json()["report_submission_allowed"] is False
+        assert len(calls) == 1
+        assert calls[0][0] == campaign.id
+        assert calls[0][2] is main_module.dispatch_agent_task
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_wakeup_endpoint_handoffs_to_the_shared_persisted_coordinator(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        calls = []
+
+        monkeypatch.setattr(
+            main_module,
+            "start_autonomous_research_wakeup_in_background",
+            lambda: calls.append("start") or True,
+            raising=False,
+        )
+        assert not hasattr(main_module, "run_autonomous_research_wakeup")
+
+        response = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 202
+        assert response.json() == {
+            "status": "accepted",
+            "stop_reason": "wakeup_accepted",
+            "processed_count": 0,
+            "outcome_counts": {},
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+        assert calls == ["start"]
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_research_http_endpoints_require_the_local_capability(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    calls = []
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        main_module,
+        "start_autonomous_research_wakeup_in_background",
+        lambda: calls.append("wakeup") or True,
+        raising=False,
+    )
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        missing = client.post("/mythos/campaigns/autonomous-wakeup")
+        foreign = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers={"Origin": "https://foreign.example.test"},
+        )
+        invalid = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers={
+                "X-Mythos-Autonomous-Research-Capability": "b" * 43,
+            },
+        )
+        tick = client.post(
+            "/mythos/campaigns/campaign_missing/autonomous-research/tick"
+        )
+        retry = client.post(
+            "/mythos/campaigns/campaign_missing/autonomous-research/tasks/task_missing/retry"
+        )
+
+        assert [
+            response.status_code for response in (missing, foreign, invalid, tick, retry)
+        ] == [403, 403, 403, 403, 403]
+        assert all(
+            response.json() == {"detail": "local_autonomous_capability_required"}
+            for response in (missing, foreign, invalid, tick, retry)
+        )
+        assert calls == []
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_wakeup_endpoint_accepts_a_coalesced_local_handoff(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        calls = []
+        monkeypatch.setattr(
+            main_module,
+            "start_autonomous_research_wakeup_in_background",
+            lambda: calls.append("coalesced") or False,
+            raising=False,
+        )
+        assert not hasattr(main_module, "run_autonomous_research_wakeup")
+
+        response = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 202
+        assert response.json()["status"] == "accepted"
+        assert response.json()["stop_reason"] == "wakeup_accepted"
+        assert response.json()["processed_count"] == 0
+        assert response.json()["outcome_counts"] == {}
+        assert all(
+            response.json()[field] is False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+        assert calls == ["coalesced"]
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_wakeup_endpoint_reports_a_fixed_handoff_failure(monkeypatch):
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+
+    def fail_start():
+        raise RuntimeError("token=not-for-response")
+
+    monkeypatch.setattr(
+        main_module,
+        "start_autonomous_research_wakeup_in_background",
+        fail_start,
+    )
+    try:
+        response = client.post(
+            "/mythos/campaigns/autonomous-wakeup",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "local_autonomous_wakeup_unavailable"}
+    finally:
+        get_settings.cache_clear()
+
+
+def test_autonomous_runtime_tick_endpoint_blocks_non_read_only_campaign(monkeypatch):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    monkeypatch.setattr(
+        main_module,
+        "dispatch_agent_task",
+        lambda **_kwargs: pytest.fail("non_read_only_runtime_must_not_dispatch"),
+    )
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Assisted local autonomous tick campaign",
+                autonomy_level="level_1_assisted",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": "sha256:" + "a" * 64,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+
+        response = client.post(
+            f"/mythos/campaigns/{campaign.id}/autonomous-research/tick",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "blocked"
+        assert response.json()["stop_reason"] == "autonomy_level_not_read_only"
+        with testing_session() as session:
+            assert DatabaseRepository(session).list_campaign_tasks(campaign.id) == []
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_runtime_retry_endpoint_requeues_only_after_explicit_request(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    dispatched_task_ids = []
+    monkeypatch.setattr(
+        main_module,
+        "dispatch_agent_task",
+        lambda *, campaign_task_id: dispatched_task_ids.append(campaign_task_id),
+    )
+    monkeypatch.setenv(
+        "AUTONOMOUS_RESEARCH_CAPABILITY", AUTONOMOUS_RESEARCH_CAPABILITY
+    )
+    get_settings.cache_clear()
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        source_snapshot_digest = "sha256:" + "a" * 64
+
+        def failing_dispatcher(**_kwargs):
+            raise RuntimeError("queue unavailable")
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Explicit autonomous retry campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": source_snapshot_digest,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+            failed = main_module.tick_autonomous_research_campaign(
+                campaign.id,
+                repository=repository,
+                dispatcher=failing_dispatcher,
+            )
+            assert failed["status"] == "blocked"
+            campaign_id = campaign.id
+            task_id = failed["campaign_task_id"]
+
+        response = client.post(
+            "/mythos/campaigns/"
+            f"{campaign_id}/autonomous-research/tasks/{task_id}/retry",
+            headers=autonomous_research_headers(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "dispatched"
+        assert response.json()["campaign_task_id"] == task_id
+        assert dispatched_task_ids == [task_id]
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            assert repository.get_campaign(campaign_id).status == "running"
+            assert next(
+                stored_task
+                for stored_task in repository.list_campaign_tasks(campaign_id)
+                if stored_task.id == task_id
+            ).status == "dispatched"
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+
+def test_autonomous_wakeup_candidates_are_db_bounded_and_minimally_projected(
+    monkeypatch,
+):
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        eligible_campaign_ids = []
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            for index in range(25):
+                campaign = repository.create_campaign(
+                    program_id="program_example",
+                    name=f"Eligible wakeup campaign {index}",
+                    autonomy_level="level_0_read_only",
+                    scope_status="in_scope",
+                    policy_text="Testing allowed",
+                    default_asset="api.example.com",
+                    created_by="operator",
+                    payload={"large_private_state": "x" * (70 * 1024)},
+                )
+                repository.update_campaign_status(campaign.id, "running")
+                eligible_campaign_ids.append(campaign.id)
+            paused = repository.create_campaign(
+                program_id="program_example",
+                name="Paused wakeup campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(paused.id, "paused")
+            repository.create_campaign(
+                program_id="program_example",
+                name="Assisted wakeup campaign",
+                autonomy_level="level_1_assisted",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            out_of_scope = repository.create_campaign(
+                program_id="program_example",
+                name="Out-of-scope wakeup campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="out_of_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            repository.update_campaign_status(out_of_scope.id, "running")
+
+        monkeypatch.setattr(
+            DatabaseRepository,
+            "list_campaigns",
+            lambda _self: pytest.fail("autonomous_wakeup_must_not_load_all_campaigns"),
+        )
+
+        first_page = client.get("/mythos/campaigns/autonomous-wakeup-candidates")
+
+        assert first_page.status_code == 200
+        assert len(first_page.content) < 64 * 1024
+        assert len(first_page.json()) == 20
+        assert all(
+            set(item) == {"id", "autonomy_level", "scope_status", "status"}
+            and item["autonomy_level"] == "level_0_read_only"
+            and item["scope_status"] == "in_scope"
+            and item["status"] == "running"
+            for item in first_page.json()
+        )
+        second_page = client.get(
+            "/mythos/campaigns/autonomous-wakeup-candidates",
+            params={"after_id": first_page.json()[-1]["id"]},
+        )
+        final_page = client.get(
+            "/mythos/campaigns/autonomous-wakeup-candidates",
+            params={"after_id": second_page.json()[-1]["id"]},
+        )
+
+        assert second_page.status_code == 200
+        assert len(second_page.json()) == 5
+        assert final_page.status_code == 200
+        assert final_page.json() == []
+        returned_ids = {
+            item["id"] for item in [*first_page.json(), *second_page.json()]
+        }
+        assert returned_ids == set(eligible_campaign_ids)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_autonomous_validation_handoff_recovers_running_campaign_for_review_without_execution():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            source_snapshot_digest = "sha256:" + "a" * 64
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Autonomous handoff review campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": source_snapshot_digest,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+            pipeline_run = repository.save_pipeline_run(
+                program_id=campaign.program_id,
+                asset=campaign.default_asset,
+                policy_text=campaign.policy_text_hash,
+                policy_text_is_hash=True,
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=1,
+                report_title=None,
+                payload={"campaign_id": campaign.id},
+            )
+            report_task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_review",
+                agent_type="report_agent",
+                title="Build submission-blocked report review",
+                input_refs=[f"pipeline_run:{pipeline_run.id}"],
+                payload={
+                    "runtime_schema": "autonomous_research_v1",
+                    "source_snapshot_digest": source_snapshot_digest,
+                    "pipeline_run_id": pipeline_run.id,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                    "raw_payload_in_dispatch": False,
+                },
+            )
+            report_task = repository.update_campaign_task_status(report_task.id, "completed")
+            assert report_task is not None
+            repository.save_pipeline_stage(
+                pipeline_run_id=pipeline_run.id,
+                campaign_id=campaign.id,
+                task_id=report_task.id,
+                stage_key="autonomous_report_review",
+                stage_order=40,
+                status="completed",
+                input_refs=[f"pipeline_run:{pipeline_run.id}"],
+                output_refs=[f"campaign_task:{report_task.id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason="human_review_required",
+                payload={
+                    "schema_version": "autonomous_report_review_v1",
+                    "pipeline_run_id": pipeline_run.id,
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "report_drafts": [
+                        {
+                            "candidate_id": "H-003",
+                            "status": "unverified_hypothesis",
+                            "submission_blocked": True,
+                            "human_review_required": True,
+                            "execution_allowed": False,
+                            "validation_allowed": False,
+                            "report_submission_allowed": False,
+                            "confirmed_vulnerability": False,
+                        }
+                    ],
+                    "raw_payload_processed": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                },
+            )
+            handoff = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="validation_handoff",
+                agent_type="human_review",
+                title="Review submission-blocked validation handoff",
+                input_refs=[
+                    f"pipeline_run:{pipeline_run.id}",
+                    f"campaign_task:{report_task.id}",
+                ],
+                payload={
+                    "schema_version": "autonomous_validation_handoff_v1",
+                    "pipeline_run_id": pipeline_run.id,
+                    "report_review_task_id": report_task.id,
+                    "source_snapshot_digest": source_snapshot_digest,
+                    "candidate_ids": ["H-001"],
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "approval_required": True,
+                    "allowed_to_execute": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            handoff = repository.update_campaign_task_status(
+                handoff.id,
+                "awaiting_approval",
+            )
+            assert handoff is not None
+            campaign_id = campaign.id
+            handoff_id = handoff.id
+
+        for action in ("start", "pause", "resume"):
+            response = client.post(f"/mythos/campaigns/{campaign_id}/{action}")
+
+            assert response.status_code == 409
+            assert response.json() == {"detail": "human_review_required"}
+
+        review_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/validation-handoffs/{handoff_id}/review",
+            json={
+                "decision": "accepted_for_manual_follow_up",
+                "reviewer": "lead_reviewer",
+                "reason": "Retain the redacted draft for manual follow-up only.",
+            },
+        )
+
+        assert review_response.status_code == 200
+        assert review_response.json()["id"] == handoff_id
+        assert review_response.json()["status"] == "completed"
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            reviewed_handoff = repository.session.get(type(handoff), handoff_id)
+            reviewed_campaign = repository.get_campaign(campaign_id)
+            assert reviewed_handoff is not None
+            assert reviewed_handoff.status == "completed"
+            assert reviewed_campaign is not None
+            assert reviewed_campaign.status == "completed"
+            assert repository.list_campaign_validation_runs(campaign_id) == []
+            assert repository.list_campaign_approval_records(campaign_id) == []
+            review_stages = [
+                stage
+                for stage in repository.list_campaign_pipeline_stages(campaign_id)
+                if stage.stage_key == "autonomous_validation_handoff_review"
+            ]
+            assert len(review_stages) == 1
+            assert review_stages[0].payload["decision"] == "accepted_for_manual_follow_up"
+            assert review_stages[0].payload["reason_recorded"] is True
+            assert review_stages[0].payload["execution_allowed"] is False
+            assert review_stages[0].payload["dispatch_allowed"] is False
+            assert review_stages[0].payload["validation_allowed"] is False
+            assert review_stages[0].payload["candidate_promotion_allowed"] is False
+            assert review_stages[0].payload["report_submission_allowed"] is False
+            assert "Retain the redacted draft" not in str(review_stages[0].payload)
+
+        replay_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/validation-handoffs/{handoff_id}/review",
+            json={
+                "decision": "accepted_for_manual_follow_up",
+                "reviewer": "lead_reviewer",
+                "reason": "Repeat review.",
+            },
+        )
+        resume_response = client.post(f"/mythos/campaigns/{campaign_id}/resume")
+
+        assert replay_response.status_code == 409
+        pause_response = client.post(f"/mythos/campaigns/{campaign_id}/pause")
+        assert resume_response.status_code == 409
+        assert resume_response.json() == {"detail": "campaign_not_resumable"}
+        assert pause_response.status_code == 409
+        assert pause_response.json() == {"detail": "campaign_not_pausable"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_autonomous_validation_handoff_can_queue_scope_bound_manual_validation():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            source_snapshot_digest = "sha256:" + "b" * 64
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Autonomous validation bridge campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": source_snapshot_digest,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "awaiting_review")
+            assert campaign is not None
+            pipeline_run = repository.save_pipeline_run(
+                program_id=campaign.program_id,
+                asset=campaign.default_asset,
+                policy_text=campaign.policy_text_hash,
+                policy_text_is_hash=True,
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=1,
+                report_title=None,
+                payload={"campaign_id": campaign.id},
+            )
+            report_task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_review",
+                agent_type="report_agent",
+                title="Build submission-blocked report review",
+                input_refs=[f"pipeline_run:{pipeline_run.id}"],
+                payload={"runtime_schema": "autonomous_research_v1"},
+            )
+            report_task = repository.update_campaign_task_status(report_task.id, "completed")
+            assert report_task is not None
+            handoff = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="validation_handoff",
+                agent_type="human_review",
+                title="Review submission-blocked validation handoff",
+                input_refs=[
+                    f"pipeline_run:{pipeline_run.id}",
+                    f"campaign_task:{report_task.id}",
+                ],
+                payload={
+                    "schema_version": "autonomous_validation_handoff_v1",
+                    "pipeline_run_id": pipeline_run.id,
+                    "report_review_task_id": report_task.id,
+                    "source_snapshot_digest": source_snapshot_digest,
+                    "candidate_ids": ["H-001"],
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "approval_required": True,
+                    "allowed_to_execute": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            handoff = repository.update_campaign_task_status(
+                handoff.id,
+                "awaiting_approval",
+            )
+            assert handoff is not None
+            campaign_id = campaign.id
+            handoff_id = handoff.id
+
+        response = client.post(
+            f"/mythos/campaigns/{campaign_id}/validation-handoffs/{handoff_id}/review",
+            json={
+                "decision": "accepted_for_manual_follow_up",
+                "reviewer": "lead_reviewer",
+                "reason": "Queue a manual, non-destructive validation plan.",
+                "validation_mode": "two_account_authorization_check",
+            },
+        )
+
+        assert response.status_code == 200
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            approvals = repository.list_campaign_approval_records(campaign_id)
+            validation_runs = repository.list_campaign_validation_runs(campaign_id)
+            review_stage = next(
+                stage
+                for stage in repository.list_campaign_pipeline_stages(campaign_id)
+                if stage.stage_key == "autonomous_validation_handoff_review"
+            )
+
+            assert len(approvals) == 1
+            assert approvals[0].status == "requested"
+            assert approvals[0].task_id == handoff_id
+            assert approvals[0].validation_mode == "two_account_authorization_check"
+            assert approvals[0].payload["source"] == "autonomous_validation_handoff"
+            assert approvals[0].payload["approval_required"] is True
+            assert approvals[0].payload["allowed_to_execute"] is False
+            assert approvals[0].payload["execution_allowed"] is False
+            assert approvals[0].payload["report_submission_allowed"] is False
+            assert len(validation_runs) == 1
+            assert validation_runs[0].approval_id == approvals[0].id
+            assert validation_runs[0].task_id == handoff_id
+            assert validation_runs[0].status == "awaiting_approval"
+            assert validation_runs[0].allowed_to_execute is False
+            assert validation_runs[0].payload["candidate_ids"] == ["H-001"]
+            assert validation_runs[0].payload["allowed_to_execute"] is False
+            assert validation_runs[0].payload["execution_allowed"] is False
+            assert validation_runs[0].payload["report_submission_allowed"] is False
+            assert f"approval:{approvals[0].id}" in review_stage.output_refs
+            assert f"validation_run:{validation_runs[0].id}" in review_stage.output_refs
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_autonomous_validation_handoff_rejects_validation_mode_outside_scope():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            source_snapshot_digest = "sha256:" + "c" * 64
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Out-of-scope validation bridge campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": source_snapshot_digest,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "awaiting_review")
+            assert campaign is not None
+            pipeline_run = repository.save_pipeline_run(
+                program_id=campaign.program_id,
+                asset=campaign.default_asset,
+                policy_text=campaign.policy_text_hash,
+                policy_text_is_hash=True,
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=1,
+                report_title=None,
+                payload={"campaign_id": campaign.id},
+            )
+            report_task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_review",
+                agent_type="report_agent",
+                title="Build submission-blocked report review",
+                input_refs=[f"pipeline_run:{pipeline_run.id}"],
+                payload={"runtime_schema": "autonomous_research_v1"},
+            )
+            report_task = repository.update_campaign_task_status(report_task.id, "completed")
+            assert report_task is not None
+            handoff = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="validation_handoff",
+                agent_type="human_review",
+                title="Review submission-blocked validation handoff",
+                input_refs=[
+                    f"pipeline_run:{pipeline_run.id}",
+                    f"campaign_task:{report_task.id}",
+                ],
+                payload={
+                    "schema_version": "autonomous_validation_handoff_v1",
+                    "pipeline_run_id": pipeline_run.id,
+                    "report_review_task_id": report_task.id,
+                    "source_snapshot_digest": source_snapshot_digest,
+                    "candidate_ids": ["H-002"],
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "approval_required": True,
+                    "allowed_to_execute": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            handoff = repository.update_campaign_task_status(
+                handoff.id,
+                "awaiting_approval",
+            )
+            assert handoff is not None
+            campaign_id = campaign.id
+            handoff_id = handoff.id
+
+        response = client.post(
+            f"/mythos/campaigns/{campaign_id}/validation-handoffs/{handoff_id}/review",
+            json={
+                "decision": "accepted_for_manual_follow_up",
+                "reviewer": "lead_reviewer",
+                "reason": "This mode is not authorized by the program rule.",
+                "validation_mode": "black_box_differential",
+            },
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "validation_not_allowed"}
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            persisted_handoff = repository.session.get(type(handoff), handoff_id)
+            persisted_campaign = repository.get_campaign(campaign_id)
+            assert persisted_handoff is not None
+            assert persisted_handoff.status == "awaiting_approval"
+            assert persisted_campaign is not None
+            assert persisted_campaign.status == "awaiting_review"
+            assert repository.list_campaign_approval_records(campaign_id) == []
+            assert repository.list_campaign_validation_runs(campaign_id) == []
+            assert not any(
+                stage.stage_key == "autonomous_validation_handoff_review"
+                for stage in repository.list_campaign_pipeline_stages(campaign_id)
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_autonomous_validation_result_is_imported_as_advisory_report_evidence():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            source_snapshot_digest = "sha256:" + "d" * 64
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Autonomous validation evidence import campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": source_snapshot_digest,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "awaiting_review")
+            assert campaign is not None
+            pipeline_run = repository.save_pipeline_run(
+                program_id=campaign.program_id,
+                asset=campaign.default_asset,
+                policy_text=campaign.policy_text_hash,
+                policy_text_is_hash=True,
+                scope_status="in_scope",
+                hypothesis_count=1,
+                blocked_count=1,
+                report_title=None,
+                payload={"campaign_id": campaign.id},
+            )
+            report_task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="report_review",
+                agent_type="report_agent",
+                title="Build submission-blocked report review",
+                input_refs=[f"pipeline_run:{pipeline_run.id}"],
+                payload={"runtime_schema": "autonomous_research_v1"},
+            )
+            report_task = repository.update_campaign_task_status(report_task.id, "completed")
+            assert report_task is not None
+            handoff = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="validation_handoff",
+                agent_type="human_review",
+                title="Review submission-blocked validation handoff",
+                input_refs=[
+                    f"pipeline_run:{pipeline_run.id}",
+                    f"campaign_task:{report_task.id}",
+                ],
+                payload={
+                    "schema_version": "autonomous_validation_handoff_v1",
+                    "pipeline_run_id": pipeline_run.id,
+                    "report_review_task_id": report_task.id,
+                    "source_snapshot_digest": source_snapshot_digest,
+                    "candidate_ids": ["H-003"],
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "approval_required": True,
+                    "allowed_to_execute": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            handoff = repository.update_campaign_task_status(
+                handoff.id,
+                "awaiting_approval",
+            )
+            assert handoff is not None
+            campaign_id = campaign.id
+            handoff_id = handoff.id
+            report_task_id = report_task.id
+            pipeline_run_id = pipeline_run.id
+
+        handoff_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/validation-handoffs/{handoff_id}/review",
+            json={
+                "decision": "accepted_for_manual_follow_up",
+                "reviewer": "lead_reviewer",
+                "reason": "Queue the approved non-destructive validation plan.",
+                "validation_mode": "two_account_authorization_check",
+            },
+        )
+        assert handoff_response.status_code == 200
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            approval = repository.list_campaign_approval_records(campaign_id)[0]
+            validation_run = repository.list_campaign_validation_runs(campaign_id)[0]
+            approval_id = approval.id
+            validation_run_id = validation_run.id
+
+        approval_response = client.post(
+            f"/mythos/approvals/{approval_id}/decisions",
+            json={
+                "decision": "approved",
+                "actor": "lead_reviewer",
+                "reason": "Approved for test accounts only.",
+            },
+        )
+        assert approval_response.status_code == 200
+        preflight_response = client.post(
+            f"/mythos/validation-runs/{validation_run_id}/preflight"
+        )
+        assert preflight_response.status_code == 200
+        assert preflight_response.json()["decision"]["allowed"] is True
+
+        result_response = client.post(
+            f"/mythos/validation-runs/{validation_run_id}/manual-results",
+            json={
+                "outcome": "observed",
+                "reviewer": "lead_reviewer",
+                "summary": "Observed with test accounts only; Authorization: Bearer secret-token",
+                "evidence_refs": ["sanitized_request_response"],
+            },
+        )
+
+        assert result_response.status_code == 200
+        assert result_response.json()["status"] == "evidence_recorded"
+        assert result_response.json()["allowed_to_execute"] is False
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            imported_stages = [
+                stage
+                for stage in repository.list_campaign_pipeline_stages(campaign_id)
+                if stage.stage_key == "autonomous_validation_evidence_import"
+            ]
+
+            assert len(imported_stages) == 1
+            imported = imported_stages[0]
+            assert imported.pipeline_run_id == pipeline_run_id
+            assert imported.task_id == handoff_id
+            assert imported.status == "evidence_recorded"
+            assert imported.safety_gate_state == "advisory_validation_evidence_only"
+            assert f"pipeline_run:{pipeline_run_id}" in imported.input_refs
+            assert f"campaign_task:{handoff_id}" in imported.input_refs
+            assert f"approval:{approval_id}" in imported.input_refs
+            assert f"validation_run:{validation_run_id}" in imported.input_refs
+            assert imported.payload["source"] == "autonomous_validation_handoff"
+            assert imported.payload["candidate_ids"] == ["H-003"]
+            assert imported.payload["evidence_ref_count"] == 1
+            assert imported.payload["allowed_to_execute"] is False
+            assert imported.payload["execution_allowed"] is False
+            assert imported.payload["dispatch_allowed"] is False
+            assert imported.payload["validation_allowed"] is False
+            assert imported.payload["candidate_promotion_allowed"] is False
+            assert imported.payload["report_submission_allowed"] is False
+            assert "secret-token" not in str(imported.payload)
+
+        stages_response = client.get(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages"
+        )
+        assert stages_response.status_code == 200
+        imported_response = next(
+            stage
+            for stage in stages_response.json()
+            if stage["stage_key"] == "autonomous_validation_evidence_import"
+        )
+        assert imported_response["payload"]["evidence_ref_count"] == 1
+        assert imported_response["payload"]["allowed_to_execute"] is False
+        assert imported_response["payload"]["execution_allowed"] is False
+        assert imported_response["payload"]["report_submission_allowed"] is False
+        assert "secret-token" not in str(imported_response)
+
+        revision_request = {
+            "reviewer": "lead_report_reviewer",
+            "rationale": "Attach the redacted validation evidence; Authorization: Bearer secret-token",
+        }
+        missing_report_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json=revision_request,
+        )
+        assert missing_report_response.status_code == 409
+        assert missing_report_response.json() == {
+            "detail": "autonomous_report_review_missing"
+        }
+
+        with testing_session() as session:
+            DatabaseRepository(session).save_pipeline_stage(
+                pipeline_run_id=pipeline_run_id,
+                campaign_id=campaign_id,
+                task_id=report_task_id,
+                stage_key="autonomous_report_review",
+                stage_order=40,
+                status="completed",
+                input_refs=[f"pipeline_run:{pipeline_run_id}"],
+                output_refs=[f"campaign_task:{handoff_id}"],
+                safety_gate_state="awaiting_review",
+                stop_reason="human_review_required",
+                payload={
+                    "schema_version": "autonomous_report_review_v1",
+                    "pipeline_run_id": pipeline_run_id,
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "report_drafts": [
+                        {
+                            "candidate_id": "H-003",
+                            "status": "unverified_hypothesis",
+                            "submission_blocked": True,
+                            "human_review_required": True,
+                            "execution_allowed": False,
+                            "validation_allowed": False,
+                            "report_submission_allowed": False,
+                            "confirmed_vulnerability": False,
+                        },
+                        {
+                            "candidate_id": "H-004",
+                            "status": "unverified_hypothesis",
+                            "submission_blocked": True,
+                            "human_review_required": True,
+                            "execution_allowed": False,
+                            "validation_allowed": False,
+                            "report_submission_allowed": False,
+                            "confirmed_vulnerability": False,
+                        },
+                    ],
+                    "raw_payload_processed": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                },
+            )
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            original_evidence_input_refs = list(evidence_stage.input_refs)
+            evidence_stage.input_refs = [
+                ref
+                for ref in evidence_stage.input_refs
+                if ref != f"validation_run:{validation_run_id}"
+            ]
+            session.add(evidence_stage)
+            session.commit()
+
+        missing_validation_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json=revision_request,
+        )
+        assert missing_validation_response.status_code == 409
+        assert missing_validation_response.json() == {
+            "detail": "validation_evidence_provenance_invalid"
+        }
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            evidence_stage.input_refs = original_evidence_input_refs
+            session.add(evidence_stage)
+            session.commit()
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            evidence_stage.input_refs = [
+                ref
+                for ref in original_evidence_input_refs
+                if ref != f"approval:{approval_id}"
+            ]
+            session.add(evidence_stage)
+            session.commit()
+
+        missing_approval_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json=revision_request,
+        )
+        assert missing_approval_response.status_code == 409
+        assert missing_approval_response.json() == {
+            "detail": "validation_evidence_provenance_invalid"
+        }
+
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            evidence_stage = repository.get_pipeline_stage(imported_response["id"])
+            assert evidence_stage is not None
+            evidence_stage.input_refs = original_evidence_input_refs
+            session.add(evidence_stage)
+            session.commit()
+
+        revision_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json=revision_request,
+        )
+
+        assert revision_response.status_code == 200
+        revision = revision_response.json()
+        assert revision["stage_key"] == "autonomous_report_revision"
+        assert revision["pipeline_run_id"] == pipeline_run_id
+        assert revision["task_id"] == handoff_id
+        assert f"pipeline_stage:{imported_response['id']}" in revision["input_refs"]
+        assert f"approval:{approval_id}" in revision["input_refs"]
+        assert f"validation_run:{validation_run_id}" in revision["input_refs"]
+        assert revision["payload"]["status"] == "submission_blocked_human_review"
+        assert revision["payload"]["report_draft_count"] == 2
+        assert revision["payload"]["candidate_count"] == 1
+        assert revision["payload"]["candidate_ids"] == ["H-003"]
+        assert revision["payload"]["validation_evidence_ref_count"] == 1
+        assert revision["payload"]["validation_outcome"] == "observed"
+        assert revision["payload"]["validation_result_review"] == {
+            "source_type": "manual_safe_observation",
+            "redaction_status": "redacted",
+            "evidence_quality": "adequate",
+            "quality_score": 45,
+            "promotion_review_ready": False,
+            "quality_reasons": [
+                "manual_result_recorded",
+                "has_report_safe_evidence",
+                "sensitive_material_redacted",
+                "promotion_blocked_by_redaction_review",
+            ],
+            "safe_evidence_ref_count": 1,
+            "unsafe_evidence_ref_count": 0,
+        }
+        assert revision["payload"]["human_review_required"] is True
+        assert revision["payload"]["execution_allowed"] is False
+        assert revision["payload"]["candidate_promotion_allowed"] is False
+        assert revision["payload"]["report_submission_allowed"] is False
+        assert "secret-token" not in str(revision)
+
+        repeated_revision_response = client.post(
+            f"/mythos/campaigns/{campaign_id}/pipeline-stages/{imported_response['id']}/report-revisions",
+            json={
+                "reviewer": "lead_report_reviewer",
+                "rationale": "Attach the same redacted validation evidence.",
+            },
+        )
+        assert repeated_revision_response.status_code == 200
+        assert repeated_revision_response.json()["id"] == revision["id"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_autonomous_validation_handoff_review_fails_closed_for_unsafe_payload():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            source_snapshot_digest = "sha256:" + "a" * 64
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Unsafe autonomous handoff campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+                payload={
+                    **validation_scope_guard_payload(),
+                    "source_snapshot_digest": source_snapshot_digest,
+                },
+            )
+            campaign = repository.update_campaign_status(campaign.id, "running")
+            assert campaign is not None
+            handoff = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="validation_handoff",
+                agent_type="human_review",
+                title="Unsafe validation handoff",
+                payload={
+                    "schema_version": "autonomous_validation_handoff_v1",
+                    "source_snapshot_digest": source_snapshot_digest,
+                    "submission_blocked": True,
+                    "human_review_required": True,
+                    "approval_required": True,
+                    "allowed_to_execute": False,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": True,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            handoff = repository.update_campaign_task_status(
+                handoff.id,
+                "awaiting_approval",
+            )
+            assert handoff is not None
+            campaign_id = campaign.id
+            handoff_id = handoff.id
+
+        response = client.post(
+            f"/mythos/campaigns/{campaign_id}/validation-handoffs/{handoff_id}/review",
+            json={
+                "decision": "dismissed",
+                "reviewer": "lead_reviewer",
+                "reason": "Unsafe persisted permission flag.",
+            },
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "autonomous_validation_handoff_invalid"}
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            persisted_handoff = repository.session.get(type(handoff), handoff_id)
+            persisted_campaign = repository.get_campaign(campaign_id)
+            assert persisted_handoff is not None
+            assert persisted_handoff.status == "awaiting_approval"
+            assert persisted_campaign is not None
+            assert persisted_campaign.status == "running"
+            assert not any(
+                stage.stage_key == "autonomous_validation_handoff_review"
+                for stage in repository.list_campaign_pipeline_stages(campaign_id)
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_autonomous_validation_handoff_review_has_one_winner_across_sessions(tmp_path):
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'handoff-review.sqlite'}",
+        connect_args={"check_same_thread": False, "timeout": 5},
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(bind=engine)
+    with testing_session() as session:
+        seed_sample_data(session)
+        repository = DatabaseRepository(session)
+        source_snapshot_digest = "sha256:" + "a" * 64
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Atomic autonomous handoff review campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Testing allowed",
+            default_asset="api.example.com",
+            created_by="operator",
+            payload={
+                **validation_scope_guard_payload(),
+                "source_snapshot_digest": source_snapshot_digest,
+            },
+        )
+        campaign = repository.update_campaign_status(campaign.id, "awaiting_review")
+        assert campaign is not None
+        pipeline_run = repository.save_pipeline_run(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=1,
+            report_title=None,
+            payload={"campaign_id": campaign.id},
+        )
+        handoff = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="validation_handoff",
+            agent_type="human_review",
+            title="Atomic validation handoff",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload={"schema_version": "autonomous_validation_handoff_v1"},
+        )
+        handoff = repository.update_campaign_task_status(
+            handoff.id,
+            "awaiting_approval",
+        )
+        assert handoff is not None
+        campaign_id = campaign.id
+        handoff_id = handoff.id
+        pipeline_run_id = pipeline_run.id
+
+    barrier = Barrier(2)
+
+    def complete_review(decision: str) -> bool:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            barrier.wait(timeout=5)
+            result = repository.complete_autonomous_validation_handoff_review(
+                campaign_id=campaign_id,
+                task_id=handoff_id,
+                pipeline_run_id=pipeline_run_id,
+                input_refs=[f"pipeline_run:{pipeline_run_id}"],
+                payload={
+                    "schema_version": "autonomous_validation_handoff_review_v1",
+                    "idempotency_key": f"handoff-review:{handoff_id}",
+                    "decision": decision,
+                    "execution_allowed": False,
+                    "dispatch_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                    "raw_payload_processed": False,
+                },
+            )
+            return result is not None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                complete_review,
+                ("accepted_for_manual_follow_up", "dismissed"),
+            )
+        )
+
+    assert results.count(True) == 1
+    with testing_session() as session:
+        repository = DatabaseRepository(session)
+        persisted_task = repository.session.get(type(handoff), handoff_id)
+        persisted_campaign = repository.get_campaign(campaign_id)
+        stages = [
+            stage
+            for stage in repository.list_pipeline_stages_for_run(pipeline_run_id)
+            if stage.stage_key == "autonomous_validation_handoff_review"
+        ]
+        assert persisted_task is not None
+        assert persisted_task.status == "completed"
+        assert persisted_campaign is not None
+        assert persisted_campaign.status == "completed"
+        assert len(stages) == 1
+        assert stages[0].payload["decision"] in {
+            "accepted_for_manual_follow_up",
+            "dismissed",
+        }
 
 
 def test_campaign_api_creates_lists_and_controls_campaign_lifecycle(monkeypatch):
@@ -1014,6 +2476,109 @@ def test_campaign_api_lists_pipeline_stages_without_payload_leaks():
         assert "secret-token" not in str(stages)
         assert "session=secret" not in str(stages)
         assert "authorization" not in str(stages).lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_campaign_pipeline_stages_project_terminal_agent_timing_and_redacted_errors():
+    testing_session = build_testing_session()
+
+    def override_get_session():
+        with testing_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with testing_session() as session:
+            repository = DatabaseRepository(session)
+            campaign = repository.create_campaign(
+                program_id="program_example",
+                name="Timeline timing projection campaign",
+                autonomy_level="level_0_read_only",
+                scope_status="in_scope",
+                policy_text="Testing allowed",
+                default_asset="api.example.com",
+                created_by="operator",
+            )
+            task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type="campaign_observation",
+                agent_type="orchestrator_agent",
+                title="Observe campaign",
+                input_refs=[f"campaign:{campaign.id}"],
+                payload={},
+            )
+            agent_run = repository.save_agent_run(
+                campaign_id=campaign.id,
+                task_id=task.id,
+                agent_type="orchestrator_agent",
+                status="failed",
+                input_refs=[f"campaign_task:{task.id}"],
+                output_refs=[],
+                tool_calls=[],
+                safety_gate_state="blocked",
+                stop_reason="api_key=timeline-secret",
+                payload={},
+            )
+            agent_run.created_at = datetime(2026, 7, 22, 9, 0, tzinfo=UTC)
+            agent_run.finished_at = agent_run.created_at + timedelta(seconds=42)
+            session.commit()
+
+            terminal_stage = repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=task.id,
+                stage_key="campaign_observation",
+                stage_order=0,
+                status="failed",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[f"agent_run:{agent_run.id}"],
+                safety_gate_state="blocked",
+                stop_reason="dispatch_failed",
+                payload={},
+            )
+            fallback_stage = repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=task.id,
+                stage_key="campaign_tick",
+                stage_order=1,
+                status="failed",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[],
+                safety_gate_state="blocked",
+                stop_reason="dispatch_failed",
+                payload={},
+            )
+            pending_stage = repository.save_pipeline_stage(
+                pipeline_run_id=None,
+                campaign_id=campaign.id,
+                task_id=None,
+                stage_key="campaign_tick",
+                stage_order=2,
+                status="dispatched",
+                input_refs=[f"campaign:{campaign.id}"],
+                output_refs=[],
+                safety_gate_state="allowed",
+                stop_reason=None,
+                payload={},
+            )
+            campaign_id = campaign.id
+            terminal_stage_id = terminal_stage.id
+            fallback_stage_id = fallback_stage.id
+            pending_stage_id = pending_stage.id
+
+        response = client.get(f"/mythos/campaigns/{campaign_id}/pipeline-stages")
+
+        assert response.status_code == 200
+        stages = {stage["id"]: stage for stage in response.json()}
+        assert stages[terminal_stage_id]["duration_seconds"] == 42
+        assert stages[terminal_stage_id]["error_summary"] == "[REDACTED]"
+        assert stages[fallback_stage_id]["duration_seconds"] == 42
+        assert stages[fallback_stage_id]["error_summary"] == "[REDACTED]"
+        assert stages[pending_stage_id]["duration_seconds"] is None
+        assert stages[pending_stage_id]["error_summary"] is None
+        assert "timeline-secret" not in str(stages)
     finally:
         app.dependency_overrides.clear()
 
@@ -2522,6 +4087,8 @@ def test_campaign_research_queue_materializes_autonomous_hunt_candidates():
             {
                 "campaign_id": campaign_id,
                 "created_at": materialized_stages[0]["created_at"],
+                "duration_seconds": None,
+                "error_summary": None,
                 "id": materialized_stages[0]["id"],
                 "input_refs": [
                     f"campaign:{campaign_id}",

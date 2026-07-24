@@ -1,0 +1,7 @@
+{
+  "artifact_kind": "discard_receipt",
+  "discard_completed": true,
+  "outcome_class": "third_party_data",
+  "run_status": "discarded",
+  "tool_run_id": "toolrun_discard_1"
+}

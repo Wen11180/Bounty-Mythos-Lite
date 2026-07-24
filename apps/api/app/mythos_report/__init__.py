@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.bounded_result_claims import TrustedBoundedResultClaim
 from app.db_models import PipelineRunRecord
 from app.provenance import ProvenanceEdge
 
@@ -58,6 +59,86 @@ BLACK_BOX_REVIEW_EVIDENCE_REFS = {
     "sanitized_cross_account_diff",
     "sanitized_parent_child_matrix",
 }
+
+
+def build_autopilot_report_review_packet(
+    *,
+    draft: object,
+    evidence_bundle: object,
+) -> dict:
+    """Export a review-only Autopilot packet after exact lineage matching."""
+
+    from app.bounty_autopilot.evidence_judge import SubmissionBlockedReportDraft
+    from app.evidence import AutopilotEvidenceBundle
+
+    if not isinstance(draft, SubmissionBlockedReportDraft):
+        raise TypeError("typed_autopilot_report_draft_required")
+    if not isinstance(evidence_bundle, AutopilotEvidenceBundle):
+        raise TypeError("typed_autopilot_evidence_bundle_required")
+    if (
+        draft.hypothesis_id != evidence_bundle.hypothesis_id
+        or draft.campaign_id != evidence_bundle.campaign_id
+        or draft.branch_id != evidence_bundle.branch_id
+        or draft.observation_ids != (evidence_bundle.observation_id,)
+        or draft.lineage_digest != evidence_bundle.lineage_digest
+        or draft.evidence_grade is not evidence_bundle.evidence_grade
+        or tuple(sorted(draft.evidence_refs))
+        != tuple(sorted(evidence_bundle.evidence_refs))
+        or not draft.lineage_complete
+        or not evidence_bundle.lineage_complete
+    ):
+        raise ValueError("autopilot_lineage_mismatch")
+    safe_title = safe_preview_text(draft.title)
+    safe_summary = safe_preview_text(draft.summary)
+    if safe_title != draft.title or safe_summary != draft.summary:
+        raise ValueError("autopilot_report_copy_unsafe")
+
+    return {
+        "schema_version": "bounty_autopilot_report_review_v1",
+        "report_id": draft.report_id,
+        "hypothesis_id": draft.hypothesis_id,
+        "status": "review_ready",
+        "human_review_required": True,
+        "submission_blocked": True,
+        "automatic_submission_allowed": False,
+        "report_submission_allowed": False,
+        "submitted": False,
+        "lineage_complete": True,
+        "campaign_id": draft.campaign_id,
+        "evidence_grade": draft.evidence_grade.value,
+        "evidence_refs": list(draft.evidence_refs),
+        "lineage": {
+            "lineage_digest": evidence_bundle.lineage_digest,
+            "observation_id": evidence_bundle.observation_id,
+            "authorization_id": evidence_bundle.authorization_id,
+            "authorization_digest": evidence_bundle.authorization_digest,
+            "scope_snapshot_digest": evidence_bundle.scope_snapshot_digest,
+            "asset_id": evidence_bundle.asset_id,
+            "asset_identity_digest": evidence_bundle.asset_identity_digest,
+            "branch_id": evidence_bundle.branch_id,
+            "plan_id": evidence_bundle.plan_id,
+            "plan_digest": evidence_bundle.plan_digest,
+            "risk_decision_id": evidence_bundle.risk_decision_id,
+            "risk_tier": str(evidence_bundle.risk_tier),
+            "recipe_id": evidence_bundle.recipe_id,
+            "recipe_version": evidence_bundle.recipe_version,
+            "recipe_definition_digest": evidence_bundle.recipe_definition_digest,
+            "lease_id": evidence_bundle.lease_id,
+            "reservation_id": evidence_bundle.reservation_id,
+            "session_generation": evidence_bundle.session_generation,
+            "tool_run_id": evidence_bundle.tool_run_id,
+        },
+        "report_draft": {
+            "title": safe_title,
+            "summary": safe_summary,
+            "evidence_gap_codes": list(draft.evidence_gap_codes),
+            "safety_notes": [
+                "submission_blocked",
+                "human_review_required",
+                "sanitized_owned_account_or_canary_evidence_only",
+            ],
+        },
+    }
 
 
 def build_black_box_report_review_packet(candidate: dict) -> dict:
@@ -168,7 +249,11 @@ class ClaimReviewDecisionResponse(BaseModel):
     reviewed_at: str
 
 
-def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewResponse:
+def build_report_preview_response(
+    record: PipelineRunRecord,
+    *,
+    trusted_bounded_result_claims: tuple[TrustedBoundedResultClaim, ...] = (),
+) -> ReportPreviewResponse:
     payload = record.payload
     report_draft = payload.get("report_draft")
     if not isinstance(report_draft, dict):
@@ -206,6 +291,14 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
     manual_observation_missing_safe_evidence_claim_ids = (
         manual_observation_claim_ids_missing_safe_evidence(payload)
     )
+    bounded_result_claims = [
+        {
+            "claim_id": claim.claim_id,
+            "text": claim.text,
+            "provenance_refs": list(claim.provenance_refs),
+        }
+        for claim in trusted_bounded_result_claims
+    ]
 
     human_review_required = True
     submission_blocked = True
@@ -223,7 +316,11 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
             model_reasoning_lines(hypotheses, invariants)
         ),
         unverified_claims=safe_preview_lines(
-            unverified_claim_lines(report_draft, validation_gate)
+            unverified_claim_lines(
+                report_draft,
+                validation_gate,
+                bounded_result_claims=bounded_result_claims,
+            )
         ),
     )
 
@@ -259,6 +356,7 @@ def build_report_preview_response(record: PipelineRunRecord) -> ReportPreviewRes
             manual_observation_missing_safe_evidence_claim_ids=(
                 manual_observation_missing_safe_evidence_claim_ids
             ),
+            bounded_result_claims=bounded_result_claims,
         ),
         safety_notes=safe_string_list(report_draft.get("safety_notes", [])),
         evidence_refs=evidence_refs,
@@ -337,7 +435,12 @@ def model_reasoning_lines(hypotheses: list, invariants: list) -> list[str]:
     return lines or ["No model reasoning was recorded for this run."]
 
 
-def unverified_claim_lines(report_draft: dict, validation_gate: dict) -> list[str]:
+def unverified_claim_lines(
+    report_draft: dict,
+    validation_gate: dict,
+    *,
+    bounded_result_claims: list[dict[str, object]],
+) -> list[str]:
     lines = [
         str(report_draft.get("actual_result", "Actual result still requires safe validation evidence.")),
         "This preview is not submission-ready until human review approves the validation evidence.",
@@ -345,6 +448,7 @@ def unverified_claim_lines(report_draft: dict, validation_gate: dict) -> list[st
     gate_status = validation_gate.get("status")
     if gate_status and gate_status != "approved":
         lines.append(f"Validation gate is {gate_status}; live execution remains blocked.")
+    lines.extend(str(claim["text"]) for claim in bounded_result_claims)
     return lines
 
 
@@ -608,6 +712,7 @@ def claim_ledger_entries(
     impact_observation_claim_ids: set[str] | None = None,
     boundary_matrix_observation_claim_ids: set[str] | None = None,
     manual_observation_missing_safe_evidence_claim_ids: set[str] | None = None,
+    bounded_result_claims: list[dict[str, object]] | None = None,
 ) -> list[ClaimLedgerEntry]:
     entries: list[ClaimLedgerEntry] = []
     provenance_refs_by_claim_type = provenance_refs_by_claim_type or {}
@@ -620,6 +725,11 @@ def claim_ledger_entries(
     manual_observation_missing_safe_evidence_claim_ids = (
         manual_observation_missing_safe_evidence_claim_ids or set()
     )
+    bounded_claims_by_text: dict[str, list[dict[str, object]]] = {}
+    for claim in bounded_result_claims or []:
+        text = claim.get("text")
+        if isinstance(text, str):
+            bounded_claims_by_text.setdefault(text, []).append(claim)
     claim_groups = (
         (
             "observed_fact",
@@ -650,6 +760,18 @@ def claim_ledger_entries(
     for claim_type, lines, group_evidence_refs, provenance_refs, provenance_edges in claim_groups:
         for index, line in enumerate(lines, start=1):
             claim_id = f"claim_{claim_type}_{index}"
+            claim_provenance_refs = provenance_refs
+            bounded_matches = bounded_claims_by_text.get(line, [])
+            if claim_type == "unverified_claim" and bounded_matches:
+                bounded_claim = bounded_matches.pop(0)
+                bounded_claim_id = bounded_claim.get("claim_id")
+                bounded_provenance_refs = bounded_claim.get("provenance_refs")
+                if isinstance(bounded_claim_id, str) and isinstance(
+                    bounded_provenance_refs,
+                    list,
+                ):
+                    claim_id = bounded_claim_id
+                    claim_provenance_refs = bounded_provenance_refs
             review_decision = review_decisions.get(claim_id)
             manual_evidence_refs = manual_evidence_refs_by_claim.get(claim_id, [])
             impact_evidence_refs = impact_evidence_refs_by_claim.get(claim_id, [])
@@ -674,7 +796,7 @@ def claim_ledger_entries(
             safe_evidence_refs = unique_preview_refs(
                 safe_preview_lines([*group_evidence_refs, *manual_evidence_refs])
             )
-            safe_provenance_refs = safe_preview_lines(provenance_refs)
+            safe_provenance_refs = safe_preview_lines(claim_provenance_refs)
             blockers = claim_readiness_blockers(
                 claim_type=claim_type,
                 evidence_refs=safe_evidence_refs,

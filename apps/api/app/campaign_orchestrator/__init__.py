@@ -256,10 +256,10 @@ def campaign_elapsed_minutes(
     paused_seconds = payload.get("budget_paused_seconds", 0)
     if not isinstance(paused_seconds, (int, float)) or isinstance(paused_seconds, bool):
         paused_seconds = 0
-    if campaign.status == "paused":
+    if campaign.status in {"paused", "awaiting_review"}:
         paused_at = _payload_datetime(payload.get("budget_paused_at"))
         if paused_at is not None:
-            paused_seconds += max(0, (current - paused_at).total_seconds())
+            current = paused_at
     elapsed_seconds = max(0, (current - started_at).total_seconds() - paused_seconds)
     return elapsed_seconds / 60
 

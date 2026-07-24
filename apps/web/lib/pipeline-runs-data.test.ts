@@ -522,48 +522,38 @@ test("deriveIntelligenceRadar summarizes refutation review pressure", () => {
   assert.equal(radar.refutedHypothesisCount, 1);
 });
 
-test("dashboard radar keeps unsafe requirements visible beside memory lessons", async () => {
+test("dashboard keeps safety pressure visible without execution or submission controls", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   );
+  const overview = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../components/control-center/control-center-overview.tsx", import.meta.url), "utf8"),
+  );
 
-  assert.match(page, /label="Memory lessons"/);
-  assert.match(page, /value=\{intelligenceRadar\.reusableLessonCount\}/);
-  assert.match(page, /label="Unsafe requirements"/);
-  assert.match(page, /value=\{intelligenceRadar\.unsafeOrRedactedRequirementCount\}/);
-  assert.match(page, /label="Unverified hypotheses"/);
-  assert.match(page, /value=\{intelligenceRadar\.unverifiedHypothesisCount\}/);
-  assert.match(page, /Refutation review needed/);
-  assert.match(page, /Review gate still required/);
-  assert.doesNotMatch(page, /Approval or review still required/);
-  assert.doesNotMatch(page, /Kept out of report chain/);
-  assert.doesNotMatch(page, /executeValidation|approveValidation|submitReport/);
+  assert.match(page, /getControlCenterOverview/);
+  assert.match(overview, /高价值保留候选/);
+  assert.match(overview, /等待人工批准/);
+  assert.match(overview, /安全与政策阻断/);
+  assert.match(overview, /仍需反证与人工复核/);
+  assert.doesNotMatch(`${page}\n${overview}`, /executeValidation|approveValidation|submitReport/);
 });
 
-test("dashboard redacts legacy finding and brain display fields", async () => {
+test("dashboard renders only the display-safe control-center projection", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   );
+  const mapper = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("./control-center-data.ts", import.meta.url), "utf8"),
+  );
 
-  assert.match(page, /safeDisplay/);
-  assert.match(page, /formatLabel/);
-  assert.match(page, /safeDisplay\(finding\.title/);
-  assert.match(page, /safeDisplay\(brainProfile\.program_name/);
-  assert.match(page, /safeDisplay\(surface\.surface_key/);
-  assert.match(page, /safeDisplay\(surface\.paths\[0\]/);
-  assert.match(page, /safeDisplay\(lesson\.surface_pattern/);
-  assert.match(page, /safeDisplay\(signal\.playbook_id/);
-  assert.match(page, /safeDisplay\(signal\.surface_key/);
-  assert.doesNotMatch(page, /\{finding\.title\}/);
-  assert.doesNotMatch(page, /\{brainProfile\.program_name\}/);
-  assert.doesNotMatch(page, /\{surface\.surface_key\}/);
-  assert.doesNotMatch(page, /\{surface\.paths\[0\]/);
-  assert.doesNotMatch(page, /\{lesson\.surface_pattern\}/);
-  assert.doesNotMatch(page, /\{signal\.playbook_id\}/);
-  assert.doesNotMatch(page, /\{signal\.surface_key/);
+  assert.match(page, /mapControlCenterOverview/);
+  assert.match(mapper, /reportSubmissionAllowed: false/);
+  assert.match(mapper, /submissionBlocked: true/);
+  assert.match(mapper, /humanReviewRequired: true/);
+  assert.doesNotMatch(page, /getFindings|getMythosBrainProgram|getReports/);
 });
 
-test("dashboard labels fallback pipeline runs as demo data", async () => {
+test("dashboard does not use legacy pipeline-run demo fallbacks", async () => {
   const liveRun = {
     asset: "api.example.com",
     blocked_count: 0,
@@ -590,93 +580,47 @@ test("dashboard labels fallback pipeline runs as demo data", async () => {
     fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /pipelineRunDataMode/);
-  assert.match(page, /Demo data/);
-  assert.match(page, /Mythos Evidence Snapshot/);
-  assert.match(page, /sample Mythos research audit summaries/);
-  assert.match(page, /audits ready/);
-  assert.match(page, /Audit ID/);
-  assert.match(page, /Evidence refs/);
-  assert.doesNotMatch(page, />Evidence</);
-  assert.match(page, />\s*Review\s*</);
-  assert.match(page, />\s*Review validation\s*</);
-  assert.doesNotMatch(page, />\s*Validate\s*</);
-  assert.doesNotMatch(page, /Pipeline Runs \/ Evidence Snapshot/);
-  assert.doesNotMatch(page, /pipeline run records were returned/);
-  assert.doesNotMatch(page, /sample Mythos run summaries/);
-  assert.doesNotMatch(page, /runs ready/);
-  assert.doesNotMatch(page, /Run ID/);
-  assert.doesNotMatch(page, />\s*Run\s*</);
+  assert.match(page, /getControlCenterOverview/);
+  assert.match(page, /createOfflineControlCenterSnapshot/);
+  assert.doesNotMatch(page, /resolvePipelineRunRows|fallbackPipelineRuns|Demo data/);
 });
 
-test("dashboard labels fallback shell data as demo data", async () => {
+test("dashboard live request failure stays visibly offline instead of becoming demo data", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /dashboardDataMode/);
-  assert.match(page, /programs === fallbackPrograms/);
-  assert.match(page, /findings === fallbackFindings/);
-  assert.match(page, /reports === fallbackReports/);
-  assert.match(page, /brainProfile === fallbackBrainProfile/);
-  assert.match(page, /const scopeGuardDecision = fallbackScopeGuardDecision/);
-  assert.doesNotMatch(page, /evaluateScopeGuard/);
-  assert.match(page, /Demo data/);
-  assert.match(page, /sample Mythos workspace summaries/);
-  assert.doesNotMatch(page, /fallback records/);
+  assert.match(page, /catch \(error\)/);
+  assert.match(page, /createOfflineControlCenterSnapshot/);
+  assert.doesNotMatch(page, /fallbackPrograms|fallbackFindings|fallbackReports|fallbackScopeGuardDecision/);
+  assert.doesNotMatch(page, /Demo data/);
 });
 
 test("dashboard labels Scope Guard state as review state, not clearance", async () => {
-  const page = await import("node:fs/promises").then((fs) =>
-    fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  const overview = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../components/control-center/control-center-overview.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Scope Guard decision/);
-  assert.match(page, /Scope Guard reviewed/);
-  assert.match(page, /Scope Guard blocked/);
-  assert.doesNotMatch(page, /Scope Guard clear/);
-  assert.doesNotMatch(page, /\? "Allowed" : "Blocked"/);
+  assert.match(overview, /Scope Guard 优先/);
+  assert.match(overview, /Scope Guard 与安全门/);
+  assert.match(overview, /等待人工批准/);
+  assert.doesNotMatch(overview, /Scope Guard clear|Scope Guard 放行/);
 });
 
 test("dashboard navigation uses Mythos review workspace labels", async () => {
-  const page = await import("node:fs/promises").then((fs) =>
-    fs.readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  const overview = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../components/control-center/control-center-overview.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Review Gate/);
-  assert.doesNotMatch(page, /Approval Review/);
-  assert.match(page, /Program Scope/);
-  assert.match(page, /Attack Surface Map/);
-  assert.match(page, /Hypothesis Board/);
-  assert.match(page, /Report Readiness/);
-  assert.match(page, /Mythos Brain/);
-  assert.match(page, /Scope Guard/);
-  assert.match(page, /Source Audit/);
-  assert.match(page, /href: "\/source-audit"/);
-  assert.match(page, /resolveNavigationHref/);
-  assert.match(page, /activeCampaignId/);
-  assert.match(page, /if \(!activeCampaignId\) \{\s*return "\/campaigns";\s*\}/);
-  assert.equal(page.match(/campaignPath: "attack-surface-map"/g)?.length ?? 0, 1);
-  assert.equal(page.match(/campaignPath: "hypothesis-board"/g)?.length ?? 0, 1);
-  assert.equal(page.match(/campaignPath: "report-drafts"/g)?.length ?? 0, 1);
-  assert.doesNotMatch(page, /activeCampaignId = programs\[0\]\?\.id/);
-  assert.doesNotMatch(page, /href=\{item\.href \?\? "#"\}/);
-  assert.doesNotMatch(page, /href="#"/);
-  assert.doesNotMatch(page, /label: "Programs"/);
-  assert.doesNotMatch(page, /label: "Assets"/);
-  assert.doesNotMatch(page, /label: "Target Map"/);
-  assert.doesNotMatch(page, /label: "API Model"/);
-  assert.doesNotMatch(page, /label: "Business Flows"/);
-  assert.doesNotMatch(page, /label: "Invariant Review"/);
-  assert.doesNotMatch(page, /label: "Hypotheses"/);
-  assert.doesNotMatch(page, /label: "Validation Plans"/);
-  assert.doesNotMatch(page, /label: "Finding Candidates"/);
-  assert.doesNotMatch(page, /label: "Findings"/);
-  assert.doesNotMatch(page, /label: "Manual Submission Gate"/);
-  assert.doesNotMatch(page, /label: "Reports"/);
-  assert.doesNotMatch(page, /label: "Submissions"/);
-  assert.doesNotMatch(page, /label: "Knowledge Base"/);
-  assert.doesNotMatch(page, /label: "Settings \/ Policy Guard"/);
+  assert.match(overview, /label: "研究任务"/);
+  assert.match(overview, /label: "漏洞候选"/);
+  assert.match(overview, /label: "验证批准"/);
+  assert.match(overview, /label: "报告草稿"/);
+  assert.match(overview, /label: "Scope Guard"/);
+  assert.match(overview, /href: "\/source-audit"/);
+  assert.match(overview, /if \(!campaign\) \{\s*return navigation;\s*\}/);
+  assert.match(overview, /Campaign 工作区导航已禁用/);
+  assert.doesNotMatch(overview, /href: "#"|href="#"/);
 });
 
 test("source audit page starts only the local human-gated audit flow", async () => {

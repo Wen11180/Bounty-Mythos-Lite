@@ -78,7 +78,10 @@ def run_candidate_hunter_typescript_release_gate(
         session=session,
         model_runtime_factory=runtime_factory,
     )
-    development = _suite_result(development_run)
+    development = _suite_result(
+        development_run,
+        require_bound_replay=mode == "replay",
+    )
     result["development"] = development
     if development["status"] != "passed":
         return result
@@ -91,7 +94,10 @@ def run_candidate_hunter_typescript_release_gate(
         session=session,
         model_runtime_factory=runtime_factory,
     )
-    release = _suite_result(release_run)
+    release = _suite_result(
+        release_run,
+        require_bound_replay=mode == "replay",
+    )
     result["release"] = release
     if release["status"] == "passed":
         result["status"] = "passed"
@@ -131,7 +137,11 @@ def _runtime_factory(
     return live_runtime
 
 
-def _suite_result(run: dict[str, Any]) -> dict[str, Any]:
+def _suite_result(
+    run: dict[str, Any],
+    *,
+    require_bound_replay: bool,
+) -> dict[str, Any]:
     evaluation = run.get("evaluation")
     if not isinstance(evaluation, dict):
         evaluation = {}
@@ -174,6 +184,19 @@ def _suite_result(run: dict[str, Any]) -> dict[str, Any]:
                         "reason": (
                             "model_status:"
                             f"{_safe_text(generation.get('model_status')) or 'missing'}"
+                        ),
+                    }
+                )
+            if (
+                require_bound_replay
+                and generation.get("model_replay_binding") != "bound"
+            ):
+                model_failures.append(
+                    {
+                        "case_id": case_id,
+                        "reason": (
+                            "model_replay_binding:"
+                            f"{_safe_text(generation.get('model_replay_binding')) or 'missing'}"
                         ),
                     }
                 )

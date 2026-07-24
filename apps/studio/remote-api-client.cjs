@@ -18,6 +18,8 @@ function createRemoteLeaseApiClient({
   async function post(leaseDigest, operation, payload) {
     const origin = exactLoopbackApiOrigin(getBaseUrl());
     const digest = remoteLeaseDigest(leaseDigest);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
       response = await fetchImpl(
@@ -27,23 +29,28 @@ function createRemoteLeaseApiClient({
           headers: { "content-type": "application/json" },
           method: "POST",
           redirect: "error",
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: controller.signal,
         },
       );
     } catch {
+      clearTimeout(timeout);
       throw new Error("remote_lease_api_request_failed");
-    }
-    if (!response?.ok) {
-      throw new Error("remote_lease_api_request_failed");
-    }
-    const body = await response.text();
-    if (Buffer.byteLength(body, "utf8") > maxResponseBytes) {
-      throw new Error("remote_lease_api_response_too_large");
     }
     try {
-      return JSON.parse(body);
-    } catch {
-      throw new Error("remote_lease_api_response_invalid");
+      if (!response?.ok) {
+        throw new Error("remote_lease_api_request_failed");
+      }
+      const body = await response.text();
+      if (Buffer.byteLength(body, "utf8") > maxResponseBytes) {
+        throw new Error("remote_lease_api_response_too_large");
+      }
+      try {
+        return JSON.parse(body);
+      } catch {
+        throw new Error("remote_lease_api_response_invalid");
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

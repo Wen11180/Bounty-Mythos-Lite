@@ -18,9 +18,62 @@ import type {
   StudioMissionSummary,
   StudioWorkspaceManifest,
 } from "./studio-data";
+import type {
+  ProgramRuleRegistrationInput,
+  ProgramRuleReviewInput,
+  ProgramRuleSnapshot,
+  ProgramRuleSnapshotDiff,
+  ProgramRuleSource,
+  ProgramScopeRule,
+} from "./program-rule-data";
 
-const API_BASE_URL =
+export type {
+  ProgramRuleRegistrationInput,
+  ProgramRuleReviewInput,
+  ProgramRuleSnapshot,
+  ProgramRuleSnapshotDiff,
+  ProgramRuleSource,
+  ProgramScopeRule,
+} from "./program-rule-data";
+
+const buildApiBaseUrl =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+
+export function resolveRuntimeApiBaseUrl(
+  desktopBaseUrl: string | null | undefined,
+  fallback: string,
+): string {
+  if (!desktopBaseUrl) {
+    return fallback;
+  }
+  try {
+    const url = new URL(desktopBaseUrl);
+    if (
+      url.protocol !== "http:" ||
+      !["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname) ||
+      !url.port ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      return fallback;
+    }
+    return url.origin;
+  } catch {
+    return fallback;
+  }
+}
+
+export function getRuntimeApiBaseUrl(): string {
+  const desktopBaseUrl = typeof window === "undefined"
+    ? null
+    : (window as Window & {
+        mythosStudio?: { apiBaseUrl?: string | null };
+      }).mythosStudio?.apiBaseUrl;
+  return resolveRuntimeApiBaseUrl(desktopBaseUrl, buildApiBaseUrl);
+}
 
 export type ScopeStatus = "in_scope" | "out_of_scope" | "needs_review";
 export type PolicyStatus = "allowed" | "blocked" | "needs_review";
@@ -57,6 +110,104 @@ export type Program = {
 export type CampaignListItem = CampaignControlCenter["campaign"] & {
   budget?: CampaignControlCenter["budget"];
   policy_text_hash?: string;
+};
+
+export type ControlCenterOverviewResponse = {
+  data_mode: "live";
+  generated_at: string;
+  snapshot_version: string;
+  empty_state: boolean;
+  metrics: {
+    running_task_count: number;
+    retained_high_value_candidate_count: number;
+    approval_pressure_count: number;
+    safety_block_count: number;
+  };
+  agent_stages: Array<{
+    stage: string;
+    status: string;
+    record_count: number;
+  }>;
+  authorized_assets: Array<{
+    campaign_id: string;
+    asset: string;
+    scope_status: string;
+    campaign_status: string;
+  }>;
+  campaigns: Array<{
+    id: string;
+    name: string;
+    status: string;
+    scope_status: string;
+    safe_next_action: string;
+    blocked_reasons: string[];
+  }>;
+  candidates: Array<{
+    candidate_id: string;
+    campaign_id: string;
+    pipeline_run_id: string;
+    rank: number;
+    vuln_type: string;
+    affected_endpoint: string;
+    affected_code_path: string | null;
+    evidence_trace_status: string;
+    human_validation_readiness: string;
+    report_submission_allowed: false;
+  }>;
+  research_quality: {
+    retention_rate: number | null;
+    refutation_kill_rate: number | null;
+    evidence_completeness: number | null;
+    median_human_review_seconds: number | null;
+  };
+  autonomous_wakeup?: {
+    status:
+      | "not_started"
+      | "active"
+      | "healthy"
+      | "degraded"
+      | "expired_lease"
+      | "invalid_lease"
+      | "stale";
+    last_heartbeat_at: string | null;
+    heartbeat_age_seconds: number | null;
+    lease_active: boolean;
+    lease_expires_at: string | null;
+    has_more_campaigns: boolean;
+    scheduled_interval_seconds: number;
+    last_cycle_completed_at: string | null;
+    last_cycle_status: "not_finished" | "completed" | "failed";
+    last_cycle_stop_reason:
+      | "wakeup_candidate_invalid"
+      | "wakeup_candidate_query_failed"
+      | "wakeup_campaign_tick_failed"
+      | null;
+    last_cycle_processed_count: number;
+    last_cycle_outcome_counts: Record<string, number>;
+    execution_allowed: false;
+    dispatch_allowed: false;
+    validation_allowed: false;
+    candidate_promotion_allowed: false;
+    report_submission_allowed: false;
+  } | null;
+  report_readiness: {
+    available: boolean;
+    status: string;
+    pipeline_run_id?: string | null;
+    title?: string | null;
+    claim_count?: number | null;
+    evidence_ref_count?: number | null;
+    human_review_required: boolean;
+    submission_blocked: boolean;
+    report_submission_allowed: false;
+  };
+  recent_events: Array<{
+    event_id: string;
+    campaign_id: string;
+    event_type: string;
+    status: string;
+    occurred_at: string;
+  }>;
 };
 
 export type AuthorizedCampaignLaunchInput = {
@@ -581,12 +732,104 @@ export type StudioBlackBoxLabRunApprovalRequest = {
 export type StudioBlackBoxLabRunApprovalResponse = {
   approval_id: string;
   approval_status: "approved";
+  approved_session_alias: string;
+  approved_workflow_alias: string;
+  complete_plan_digest: string;
   execution_allowed: false;
+  expires_at: string;
   lease_digest: string;
   local_runner_dispatch_allowed: true;
+  plan_digest: string;
   reason: "bounded_local_lab_run_approved";
   report_submission_allowed: false;
+  scope_reference: string;
   validation_run_id: string;
+};
+
+export type StudioBlackBoxLabCompletePlan = {
+  lease_preview: StudioBlackBoxLabLeasePreviewRequest;
+  operator_confirmed: true;
+  trace_review: StudioBlackBoxLabTraceReviewRequest[];
+  validation_run_id: string;
+};
+
+export type StudioBlackBoxLabRunPreflightRequest = {
+  approval_id: string;
+  complete_plan: StudioBlackBoxLabCompletePlan;
+  complete_plan_digest: string;
+  lease_digest: string;
+};
+
+export type StudioBlackBoxLabRunPreflightResponse = {
+  approval_id: string;
+  approved_session_alias: string;
+  approved_workflow_alias: string;
+  complete_plan_digest: string;
+  execution_allowed: false;
+  expires_at: string;
+  lease_digest: string;
+  local_runner_dispatch_allowed: true;
+  plan_digest: string;
+  report_submission_allowed: false;
+  scope_reference: string;
+  validation_run_id: string;
+};
+
+export type StudioBlackBoxLabBoundedTraceAliases = {
+  account_alias: string;
+  object_aliases: string[];
+  role_alias: string;
+  session_alias: "session_a" | "session_b";
+  workflow_alias: string;
+};
+
+export type StudioBlackBoxLabBoundedTraceParameter = {
+  location: "path";
+  name: string;
+  value_type: "object_alias";
+};
+
+export type StudioBlackBoxLabBoundedTrace = {
+  aliases: StudioBlackBoxLabBoundedTraceAliases;
+  method: "GET" | "HEAD";
+  parameters: StudioBlackBoxLabBoundedTraceParameter[];
+  response_schema_fingerprint: string;
+  route_template: string;
+  status_class: "1xx" | "2xx" | "3xx" | "4xx" | "5xx";
+  timing_bucket: "under_100ms" | "under_500ms" | "under_2s" | "over_2s";
+};
+
+export type StudioBlackBoxLabBoundedResultRequest = {
+  exact_preflight: StudioBlackBoxLabRunPreflightRequest;
+  trace: StudioBlackBoxLabBoundedTrace;
+};
+
+export type StudioBlackBoxLabBoundedResultResponse = {
+  campaign_id: string;
+  difference_labels: Array<"response_schema_changed" | "response_schema_unchanged">;
+  evidence_ref_count: number;
+  execution_allowed: false;
+  human_review_required: true;
+  pipeline_run_id: string;
+  report_preview_refreshed: boolean;
+  report_submission_allowed: false;
+  result_digest: string;
+  submission_blocked: true;
+  validation_run_id: string;
+  validation_status: string;
+};
+
+export type MythosValidationRunPreflightResponse = {
+  decision: {
+    allowed: boolean;
+    reason: string;
+  };
+  execution_started: false;
+  validation_run: {
+    allowed_to_execute: boolean;
+    id: string;
+    preflight_passed: boolean;
+  };
 };
 
 export type StudioBlackBoxRemoteStatusResponse = {
@@ -641,6 +884,22 @@ export type StudioCandidateGenerationSummary = {
   model_failure_reason: string | null;
   prompt_hash: string;
   model_latency_ms: number | null;
+  model_request_key: string;
+  model_response_digest: string;
+  model_response_schema: "" | "cross_source_candidate_model_v1";
+  model_reasoner:
+    | "not_requested"
+    | "registry"
+    | "replay"
+    | "custom"
+    | "unavailable";
+  model_replay_binding:
+    | "not_requested"
+    | "not_applicable"
+    | "bound"
+    | "mismatch"
+    | "legacy_unbound"
+    | "invalid";
   baseline_count: number;
   proposed_count: number;
   accepted_count: number;
@@ -651,6 +910,7 @@ export type StudioCandidateGenerationSummary = {
   validation_allowed: false;
   candidate_promotion_allowed: false;
   report_submission_allowed: false;
+  raw_payload_processed: false;
 };
 
 export type StudioWorkspaceRunResponse = {
@@ -1103,9 +1363,9 @@ export type ReasoningMemoryPlaybook = {
   candidate_context_count: number;
 };
 
-async function apiGet<T>(path: string, fallback: T): Promise<T> {
+async function apiGet<T>(path: string, fallback: T, signal?: AbortSignal): Promise<T> {
   try {
-    const response = await fetch(new URL(path, API_BASE_URL), { cache: "no-store" });
+    const response = await fetch(new URL(path, getRuntimeApiBaseUrl()), { cache: "no-store", signal });
 
     if (!response.ok) {
       return fallback;
@@ -1117,10 +1377,31 @@ async function apiGet<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+async function apiGetRequired<T>(path: string, signal?: AbortSignal): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, getRuntimeApiBaseUrl()), { cache: "no-store", signal });
+  } catch {
+    throw apiNetworkError(`GET ${path} failed`);
+  }
+  if (!response.ok) {
+    throw await apiResponseError(response, `GET ${path} failed`);
+  }
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiRequestError(
+      `GET ${path} returned an invalid response`,
+      response.status,
+      "invalid_response",
+    );
+  }
+}
+
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(new URL(path, API_BASE_URL), {
+    response = await fetch(new URL(path, getRuntimeApiBaseUrl()), {
       body: JSON.stringify(body),
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
@@ -1210,8 +1491,98 @@ export function getPrograms(fallback: Program[]): Promise<Program[]> {
   return apiGet("/programs", fallback);
 }
 
+export function listProgramRuleSources(): Promise<ProgramRuleSource[]> {
+  return apiGetRequired("/program-rule-sources");
+}
+
+export function registerProgramRuleSource(
+  input: ProgramRuleRegistrationInput,
+): Promise<ProgramRuleSource> {
+  return apiPost("/program-rule-sources", input);
+}
+
+export function getProgramRuleSource(sourceId: string): Promise<ProgramRuleSource> {
+  return apiGetRequired(`/program-rule-sources/${encodeURIComponent(sourceId)}`);
+}
+
+export function refreshProgramRuleSource(sourceId: string): Promise<ProgramRuleSource> {
+  return apiPost(`/program-rule-sources/${encodeURIComponent(sourceId)}/refresh`, {});
+}
+
+export function listProgramRuleSnapshots(sourceId: string): Promise<ProgramRuleSnapshot[]> {
+  return apiGetRequired(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots`,
+  );
+}
+
+export function getProgramRuleSnapshotDiff(
+  sourceId: string,
+  snapshotId: string,
+): Promise<ProgramRuleSnapshotDiff> {
+  return apiGetRequired(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots/${encodeURIComponent(snapshotId)}/diff`,
+  );
+}
+
+export function approveProgramRuleSnapshot(
+  sourceId: string,
+  snapshotId: string,
+  input: ProgramRuleReviewInput,
+): Promise<ProgramRuleSnapshot> {
+  return apiPost(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots/${encodeURIComponent(snapshotId)}/approve`,
+    input,
+  );
+}
+
+export function rejectProgramRuleSnapshot(
+  sourceId: string,
+  snapshotId: string,
+  input: ProgramRuleReviewInput,
+): Promise<ProgramRuleSnapshot> {
+  return apiPost(
+    `/program-rule-sources/${encodeURIComponent(sourceId)}/snapshots/${encodeURIComponent(snapshotId)}/reject`,
+    input,
+  );
+}
+
+export function listProgramScopeRules(programId: string): Promise<ProgramScopeRule[]> {
+  return apiGetRequired(`/programs/${encodeURIComponent(programId)}/scope-rules`);
+}
+
 export function getCampaigns(fallback: CampaignListItem[]): Promise<CampaignListItem[]> {
   return apiGet("/mythos/campaigns", fallback);
+}
+
+export async function getControlCenterOverview(
+  campaignId?: string,
+  signal?: AbortSignal,
+): Promise<ControlCenterOverviewResponse> {
+  const url = new URL("/mythos/control-center/overview", getRuntimeApiBaseUrl());
+  if (campaignId) {
+    url.searchParams.set("campaign_id", campaignId);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, { cache: "no-store", signal });
+  } catch {
+    throw apiNetworkError("GET /mythos/control-center/overview failed");
+  }
+
+  if (!response.ok) {
+    throw await apiResponseError(response, "GET /mythos/control-center/overview failed");
+  }
+
+  try {
+    return (await response.json()) as ControlCenterOverviewResponse;
+  } catch {
+    throw new ApiRequestError(
+      "GET /mythos/control-center/overview returned an invalid response",
+      response.status,
+      "invalid_response",
+    );
+  }
 }
 
 export async function launchAuthorizedCampaign(
@@ -1232,10 +1603,22 @@ export async function launchAuthorizedCampaign(
 export function getCampaignControlCenter(
   campaignId: string,
   fallback: CampaignControlCenter | null,
+  signal?: AbortSignal,
 ): Promise<CampaignControlCenter | null> {
   return apiGet(
     `/mythos/campaigns/${encodeURIComponent(campaignId)}/control-center`,
     fallback,
+    signal,
+  );
+}
+
+export function getCampaignControlCenterRequired(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<CampaignControlCenter> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/control-center`,
+    signal,
   );
 }
 
@@ -1369,8 +1752,29 @@ export function previewStudioBlackBoxLabLease(
 
 export function approveStudioBlackBoxLabRun(
   request: StudioBlackBoxLabRunApprovalRequest,
-): Promise<StudioBlackBoxLabRunApprovalResponse | null> {
+): Promise<StudioBlackBoxLabRunApprovalResponse> {
   return apiPost("/mythos/studio/black-box-lab/runs/approve", request);
+}
+
+export function preflightStudioBlackBoxLabRun(
+  request: StudioBlackBoxLabRunPreflightRequest,
+): Promise<StudioBlackBoxLabRunPreflightResponse> {
+  return apiPost("/mythos/studio/black-box-lab/runs/preflight", request);
+}
+
+export function recordStudioBlackBoxLabBoundedResult(
+  request: StudioBlackBoxLabBoundedResultRequest,
+): Promise<StudioBlackBoxLabBoundedResultResponse> {
+  return apiPost("/mythos/studio/black-box-lab/runs/bounded-result", request);
+}
+
+export function preflightMythosValidationRun(
+  validationRunId: string,
+): Promise<MythosValidationRunPreflightResponse> {
+  return apiPost(
+    `/mythos/validation-runs/${encodeURIComponent(validationRunId)}/preflight`,
+    {},
+  );
 }
 
 export function getStudioBlackBoxRemoteStatus(): Promise<StudioBlackBoxRemoteStatusResponse> {
@@ -1389,9 +1793,18 @@ export function getStudioBlackBoxRemoteStatus(): Promise<StudioBlackBoxRemoteSta
 export function getStudioWorkspaceManifest(
   workspacePath: string,
   fallback: StudioWorkspaceManifest | null,
+  signal?: AbortSignal,
 ): Promise<StudioWorkspaceManifest | null> {
   const query = new URLSearchParams({ workspace_path: workspacePath });
-  return apiGet(`/mythos/studio/workspaces/manifest?${query}`, fallback);
+  return apiGet(`/mythos/studio/workspaces/manifest?${query}`, fallback, signal);
+}
+
+export function getStudioWorkspaceManifestRequired(
+  workspacePath: string,
+  signal?: AbortSignal,
+): Promise<StudioWorkspaceManifest> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  return apiGetRequired(`/mythos/studio/workspaces/manifest?${query}`, signal);
 }
 
 export function importStudioWorkspaceArtifact(
@@ -1416,24 +1829,50 @@ export function listStudioWorkspaceCandidates(
   workspacePath: string,
   runId: string | null,
   fallback: StudioWorkspaceCandidatesResponse,
+  signal?: AbortSignal,
 ): Promise<StudioWorkspaceCandidatesResponse> {
   const query = new URLSearchParams({ workspace_path: workspacePath });
   if (runId) {
     query.set("run_id", runId);
   }
-  return apiGet(`/mythos/studio/workspaces/candidates?${query}`, fallback);
+  return apiGet(`/mythos/studio/workspaces/candidates?${query}`, fallback, signal);
+}
+
+export function listStudioWorkspaceCandidatesRequired(
+  workspacePath: string,
+  runId: string | null,
+  signal?: AbortSignal,
+): Promise<StudioWorkspaceCandidatesResponse> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  return apiGetRequired(`/mythos/studio/workspaces/candidates?${query}`, signal);
 }
 
 export function getStudioWorkspaceMission(
   workspacePath: string,
   runId: string | null,
   fallback: StudioWorkspaceMissionResponse | null,
+  signal?: AbortSignal,
 ): Promise<StudioWorkspaceMissionResponse | null> {
   const query = new URLSearchParams({ workspace_path: workspacePath });
   if (runId) {
     query.set("run_id", runId);
   }
-  return apiGet(`/mythos/studio/workspaces/mission?${query}`, fallback);
+  return apiGet(`/mythos/studio/workspaces/mission?${query}`, fallback, signal);
+}
+
+export function getStudioWorkspaceMissionRequired(
+  workspacePath: string,
+  runId: string | null,
+  signal?: AbortSignal,
+): Promise<StudioWorkspaceMissionResponse> {
+  const query = new URLSearchParams({ workspace_path: workspacePath });
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  return apiGetRequired(`/mythos/studio/workspaces/mission?${query}`, signal);
 }
 
 export function getStudioWorkspaceMissionHandoff(
@@ -1483,7 +1922,7 @@ async function runSourceAuditScanRequest(
 ): Promise<SourceAuditScanResponse | null> {
   let response: Response;
   try {
-    response = await fetch(new URL("/mythos/source-audit/scans", API_BASE_URL), {
+    response = await fetch(new URL("/mythos/source-audit/scans", getRuntimeApiBaseUrl()), {
       body: JSON.stringify(sourceAuditScanRequestBody(request)),
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
@@ -1619,7 +2058,7 @@ async function createFindingCandidateRequest(runId: string): Promise<Finding | n
   let response: Response;
   try {
     response = await fetch(
-      new URL(`/mythos/pipeline/runs/${encodeURIComponent(runId)}/finding-candidates`, API_BASE_URL),
+      new URL(`/mythos/pipeline/runs/${encodeURIComponent(runId)}/finding-candidates`, getRuntimeApiBaseUrl()),
       {
         body: JSON.stringify({}),
         cache: "no-store",
@@ -1853,4 +2292,152 @@ export function evaluateScopeGuard(
   request: ScopeGuardRequest,
 ): Promise<ScopeGuardDecision> {
   return apiPost("/scope-guard/evaluate", { rule, request });
+}
+
+export async function getAutopilotCampaignProjection(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot`,
+    signal,
+  );
+}
+
+export type AutopilotEmergencyStopPreparation = {
+  confirmation_nonce: string;
+  expires_at: string;
+};
+
+export async function prepareAutopilotEmergencyStop(
+  campaignId: string,
+  request: { actor?: string; reason?: string } = {},
+): Promise<AutopilotEmergencyStopPreparation> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/emergency-stop/prepare`,
+    {
+      actor: request.actor ?? "operator",
+      reason: request.reason ?? "emergency_stop",
+    },
+  );
+}
+
+export async function getAutopilotAssets(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/assets`,
+    signal,
+  );
+}
+
+export async function postAutopilotEmergencyStop(
+  campaignId: string,
+  request: { actor?: string; confirmation_nonce: string; reason?: string },
+): Promise<Record<string, unknown>> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/emergency-stop`,
+    {
+      actor: request.actor ?? "operator",
+      confirmation_nonce: request.confirmation_nonce,
+      reason: request.reason ?? "emergency_stop",
+    },
+  );
+}
+
+export async function getAutopilotBranches(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/branches`,
+    signal,
+  );
+}
+
+export async function getAutopilotBudgets(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/budgets`,
+    signal,
+  );
+}
+
+export async function getAutopilotApprovals(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/approvals`,
+    signal,
+  );
+}
+
+export async function getAutopilotEvents(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/events`,
+    signal,
+  );
+}
+
+export type AutopilotSteeringRequest =
+  | {
+      branch_id: string;
+      directive: "set_priority";
+      priority: number;
+      reason?: string;
+    }
+  | {
+      branch_id: string;
+      directive: "add_hypothesis_guidance";
+      hypothesis_guidance: string;
+      reason?: string;
+    };
+
+export async function postAutopilotSteering(
+  campaignId: string,
+  request: AutopilotSteeringRequest,
+): Promise<Record<string, unknown>> {
+  const body = request.directive === "set_priority"
+    ? {
+        branch_id: request.branch_id,
+        directive: request.directive,
+        priority: request.priority,
+        reason: request.reason ?? "operator_steering",
+      }
+    : {
+        branch_id: request.branch_id,
+        directive: request.directive,
+        hypothesis_guidance: request.hypothesis_guidance,
+        reason: request.reason ?? "operator_steering",
+      };
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/steering`,
+    body,
+  );
+}
+
+export async function postAutopilotApprovalDecision(
+  campaignId: string,
+  approvalId: string,
+  request: {
+    decision: "approved" | "denied";
+    actor?: string;
+    reason?: string;
+  },
+): Promise<Record<string, unknown>> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/approvals/${encodeURIComponent(approvalId)}/decision`,
+    {
+      decision: request.decision,
+      actor: request.actor ?? "operator",
+      reason: request.reason ?? "operator_decision",
+    },
+  );
 }

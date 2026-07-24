@@ -18,6 +18,7 @@ from app.intelligence_benchmark.release_fixtures import (
 from app.intelligence_benchmark.release_runner import (
     ReleaseRunnerError,
     normalize_studio_candidates_for_release_v1,
+    run_candidate_hunter_authorized_lab_package,
     run_candidate_hunter_release_fixture,
     run_candidate_hunter_release_suite,
 )
@@ -30,6 +31,12 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "candidate_hunter_release"
 TYPESCRIPT_FIXTURE_ROOT = (
     Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release"
 )
+AUTHORIZED_LAB_FIXTURE_ROOT = (
+    Path(__file__).parent
+    / "fixtures"
+    / "authorized_lab_packages"
+    / "lab-authz-unguarded-notes"
+)
 
 
 def _session() -> Session:
@@ -40,6 +47,138 @@ def _session() -> Session:
     )
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+
+
+@pytest.mark.parametrize(
+    ("language", "code_name", "route", "operation_id", "code"),
+    [
+        (
+            "python",
+            "code.py",
+            "/local/python/records/{record_id}",
+            "read_python_record",
+            '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/local/python/records/{record_id}")
+def read_python_record(record_id: str):
+    return send_file(record_id)
+''',
+        ),
+        (
+            "go",
+            "code.go",
+            "/local/go/records/{record_id}",
+            "read_go_record",
+            '''
+func mount(r Router) { r.GET("/local/go/records/{record_id}", read_go_record) }
+
+func read_go_record() {
+    sendFile(recordID)
+}
+''',
+        ),
+    ],
+)
+def test_runner_accepts_authorized_multilang_lab_package(
+    tmp_path: Path,
+    language: str,
+    code_name: str,
+    route: str,
+    operation_id: str,
+    code: str,
+):
+    package_root = tmp_path / f"{language}-lab-package"
+    inputs = package_root / "inputs"
+    inputs.mkdir(parents=True)
+    for name, body in {
+        "scope.json": json.dumps(
+            {
+                "fixture_id": f"lab-{language}-r4m2",
+                "allowed_repos": ["${STAGED_CODE_ROOT}"],
+                "allowed_routes": [route],
+                "local_only": True,
+            }
+        ),
+        "policy.md": "Authorized local static review only.",
+        "api.json": json.dumps(
+            {
+                "openapi": "3.0.0",
+                "paths": {route: {"get": {"operationId": operation_id}}},
+            }
+        ),
+        "traffic.har.json": '{"log":{"version":"1.2","entries":[]}}',
+        code_name: code,
+    }.items():
+        (inputs / name).write_text(body, encoding="utf-8")
+    (package_root / "package.json").write_text(
+        json.dumps(
+            {
+                "package_id": f"lab-{language}-unguarded-record",
+                "risk_family": "authorization",
+                "expected_disposition": "retain",
+                "authorized_for_local_research": True,
+                "contains_real_user_data": False,
+                "contains_secrets": False,
+                "inputs": [
+                    {"kind": "scope", "path": "inputs/scope.json"},
+                    {"kind": "policy", "path": "inputs/policy.md"},
+                    {"kind": "api", "path": "inputs/api.json"},
+                    {"kind": "har", "path": "inputs/traffic.har.json"},
+                    {"kind": "code", "path": f"inputs/{code_name}"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    session = _session()
+    try:
+        result = run_candidate_hunter_authorized_lab_package(
+            package_root,
+            workspace_root=tmp_path / "studio-workspaces",
+            session=session,
+        )
+    finally:
+        session.close()
+
+    assert result["loop_audit"]["status"] == "ready"
+    assert result["evaluation"]["status"] == "skipped_no_gold"
+    decision = result["normalized_output"]["candidate_decisions"][0]
+    assert decision["candidate_id"] == "H-001"
+    assert decision["root_cause_id"] == (
+        f"missing_object_ownership_check:{operation_id}"
+    )
+    assert decision["disposition"] == "retained"
+    assert f"code:{code_name}:{operation_id}" in decision["evidence_refs"]
+    assert result["normalized_output"]["final_candidates"][0][
+        "execution_allowed"
+    ] is False
+    assert result["normalized_output"]["final_candidates"][0][
+        "report_submission_allowed"
+    ] is False
+
+
+def test_runner_uses_applicable_metric_evaluation_for_authorized_lab_gold(tmp_path: Path):
+    session = _session()
+    try:
+        result = run_candidate_hunter_authorized_lab_package(
+            AUTHORIZED_LAB_FIXTURE_ROOT,
+            workspace_root=tmp_path / "studio-workspaces",
+            session=session,
+        )
+    finally:
+        session.close()
+
+    evaluation = result["evaluation"]
+    assert evaluation["version"] == "candidate_hunter_authorized_lab_v1"
+    assert evaluation["status"] == "passed"
+    assert evaluation["not_applicable_metrics"] == [
+        "effective_refutation_rate",
+        "duplicate_suppression_rate",
+    ]
+    assert evaluation["safety_failures"] == []
 
 
 def test_normalizer_preserves_observed_candidate_fields_without_inventing_decisions():
@@ -259,7 +398,7 @@ def test_runner_executes_typescript_case_with_replay_runtime(tmp_path: Path):
     assert case.case_id.lower() not in serialized_fact_pack
     assert case.suite not in serialized_fact_pack
     assert (
-        replay_payload["proposals"][0]["impact_rationale"].lower()
+        replay_payload["response"]["proposals"][0]["impact_rationale"].lower()
         not in serialized_fact_pack
     )
     forbidden_control_keys = {
@@ -301,7 +440,10 @@ def test_runner_keeps_invalid_replay_safe_and_marks_model_review(tmp_path: Path)
     runtime = release_runner_module.ReleaseCaseModelRuntime(
         provider=ProviderName.OPENAI,
         model="fixture-replay-v1",
-        reasoner=ReplayCandidateReasoner(load_release_fixture_replay(case)),
+        reasoner=ReplayCandidateReasoner(
+            load_release_fixture_replay(case),
+            allow_legacy_unbound=True,
+        ),
         audit_mode="replay",
     )
     session = _session()

@@ -1,0 +1,112 @@
+{
+  "ai_error_category": null,
+  "ai_prompt_sha256": null,
+  "ai_status": "not_requested",
+  "evidence": [
+    {
+      "document_sha256": "1139f8129c03ea3a27f09190ddde13ec47a0b6805869b4bffaecb18c84c00563",
+      "evidence_id": "06797ca94c5894aa0a686bebf7db73dd3a72e3e87954d9366c636bb80e67eefa",
+      "excerpt": "Automation is limited to 5 requests per minute.",
+      "locator": "text:6"
+    },
+    {
+      "document_sha256": "1139f8129c03ea3a27f09190ddde13ec47a0b6805869b4bffaecb18c84c00563",
+      "evidence_id": "1f741a26bdfa366cbf3f19448958ae2e259b8ba7bf91436c8e5679db9ed180c4",
+      "excerpt": "Denial of service is prohibited.",
+      "locator": "list:0"
+    },
+    {
+      "document_sha256": "1139f8129c03ea3a27f09190ddde13ec47a0b6805869b4bffaecb18c84c00563",
+      "evidence_id": "25b4399a3879b1fe3f7ab50c1d17ff1699cc3a9b9b275aa7928ab1e365fa9a82",
+      "excerpt": "In scope | api.example.test",
+      "locator": "table:0:1"
+    },
+    {
+      "document_sha256": "1139f8129c03ea3a27f09190ddde13ec47a0b6805869b4bffaecb18c84c00563",
+      "evidence_id": "35312c1818b5c50fa8cdd9270f80d4456891661e200072f9db657c6d6bda1f1c",
+      "excerpt": "Denial of service is prohibited.",
+      "locator": "text:5"
+    },
+    {
+      "document_sha256": "1139f8129c03ea3a27f09190ddde13ec47a0b6805869b4bffaecb18c84c00563",
+      "evidence_id": "572a364e92141b08c66b5b6d9bcebf5ea091f365697a9c46f00ee9a085dd47ec",
+      "excerpt": "Public OpenAPI document",
+      "locator": "anchor:0"
+    },
+    {
+      "document_sha256": "1139f8129c03ea3a27f09190ddde13ec47a0b6805869b4bffaecb18c84c00563",
+      "evidence_id": "b2977a78feb21151be49a4e5334e133b7a39317d0bb190d4d31b0e978628d0a7",
+      "excerpt": "Automation is limited to 5 requests per minute.",
+      "locator": "list:1"
+    },
+    {
+      "document_sha256": "1139f8129c03ea3a27f09190ddde13ec47a0b6805869b4bffaecb18c84c00563",
+      "evidence_id": "d433eed90b0eedd001238b6027d7b4d03d09d436479ba2bb6e3d2232b59d8616",
+      "excerpt": "api.example.test",
+      "locator": "text:4"
+    }
+  ],
+  "linked_artifacts": [
+    {
+      "evidence_ids": [
+        "572a364e92141b08c66b5b6d9bcebf5ea091f365697a9c46f00ee9a085dd47ec"
+      ],
+      "kind": "openapi",
+      "normalized_sha256": "191b1c93b27cce4b4da80b74adb6104d358ad71a9ad5efbaae38481dba2bc77d",
+      "openapi_like": {
+        "paths": {
+          "/v1/widgets/{widget_id}": {
+            "get": {}
+          },
+          "/v1/widgets/{widget_id}/notes": {
+            "post": {}
+          }
+        }
+      },
+      "promotion_allowed": false,
+      "url": "https://rules.example.test/openapi.yaml",
+      "url_sha256": "fd7cd2f18930c816b0ae53477722e63f4dfff69210e1da22b89aa9bacd770b12"
+    }
+  ],
+  "review_issues": [],
+  "review_state": "ready",
+  "rules": [
+    {
+      "allowed_validation": [],
+      "asset": "api.example.test",
+      "asset_kind": "exact_host",
+      "automation": "limited",
+      "automation_evidence_ids": [
+        "06797ca94c5894aa0a686bebf7db73dd3a72e3e87954d9366c636bb80e67eefa",
+        "b2977a78feb21151be49a4e5334e133b7a39317d0bb190d4d31b0e978628d0a7"
+      ],
+      "human_approval_required": true,
+      "prohibited": [
+        "DoS"
+      ],
+      "prohibited_evidence_ids": {
+        "DoS": [
+          "1f741a26bdfa366cbf3f19448958ae2e259b8ba7bf91436c8e5679db9ed180c4",
+          "35312c1818b5c50fa8cdd9270f80d4456891661e200072f9db657c6d6bda1f1c"
+        ]
+      },
+      "rate_limit": {
+        "evidence_ids": [
+          "06797ca94c5894aa0a686bebf7db73dd3a72e3e87954d9366c636bb80e67eefa",
+          "b2977a78feb21151be49a4e5334e133b7a39317d0bb190d4d31b0e978628d0a7"
+        ],
+        "period": 1,
+        "requests": 5,
+        "unit": "minute"
+      },
+      "review_issues": [],
+      "review_state": "ready",
+      "scope_evidence_ids": [
+        "25b4399a3879b1fe3f7ab50c1d17ff1699cc3a9b9b275aa7928ab1e365fa9a82",
+        "d433eed90b0eedd001238b6027d7b4d03d09d436479ba2bb6e3d2232b59d8616"
+      ],
+      "scope_status": "in_scope",
+      "specificity": 2
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
 from app.intelligence_benchmark.release_fixtures import (
     INPUT_KINDS,
     ReleaseFixtureCase,
@@ -18,6 +19,7 @@ class AuthorizedLabPackageError(ValueError):
 
 
 PACKAGE_MANIFEST_NAMES = ("package.json", "case.json")
+SUPPORTED_AUTHORIZED_CODE_SUFFIXES = SUPPORTED_CODE_SOURCE_SUFFIXES
 
 
 def load_authorized_lab_package(package_root: Path) -> ReleaseFixtureCase:
@@ -146,8 +148,12 @@ def _input_specs(metadata: dict[str, Any], package_id: str) -> tuple[tuple[str, 
         relative_path = relative_path.strip()
         if kind not in INPUT_KINDS:
             raise AuthorizedLabPackageError(f"{package_id}:unsupported_input_kind")
-        if kind == "code" and Path(relative_path).suffix.lower() != ".ts":
-            raise AuthorizedLabPackageError(f"{package_id}:typescript_code_required")
+        if (
+            kind == "code"
+            and Path(relative_path).suffix.lower()
+            not in SUPPORTED_AUTHORIZED_CODE_SUFFIXES
+        ):
+            raise AuthorizedLabPackageError(f"{package_id}:supported_code_required")
         if kind in kinds or relative_path in paths:
             raise AuthorizedLabPackageError(f"{package_id}:duplicate_input")
         if not relative_path.startswith("inputs/"):

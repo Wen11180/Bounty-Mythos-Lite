@@ -1,30 +1,38 @@
 {
-  "schema_version": "cross_source_candidate_model_v1",
-  "proposals": [
-    {
-      "vulnerability_family": "authorization",
-      "affected_endpoint": {
-        "method": "GET",
-        "path": "/local/cards/r5n7/:cardId"
-      },
-      "affected_code_path": {
-        "source_path": "code.ts",
-        "symbol_name": "readCard"
-      },
-      "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
-      "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
-      "evidence_requirements": [
-        "Review the cited route and handler boundary."
-      ],
-      "refutation_questions": [
-        "Does an observed upstream control enforce the applicable boundary?"
-      ],
-      "root_cause_summary": "missing_object_ownership_check",
-      "risk_estimate": "high",
-      "cited_fact_refs": [
-        "code:code.ts:readCard",
-        "api:GET:/local/cards/r5n7/{cardId}"
-      ]
-    }
-  ]
+  "schema_version": "cross_source_candidate_fixture_replay_v1",
+  "fact_pack_input_digest": "3ddfaa92922d33a5106013eb917b63a8d14ec1fce4621cd0b26f6ba6f1f7621d",
+  "provider": "openai",
+  "model": "fixture-replay-v1",
+  "response": {
+    "schema_version": "cross_source_candidate_model_v1",
+    "proposals": [
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "GET",
+          "path": "/local/cards/r5n7/:cardId"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "readCard"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "high",
+        "cited_fact_refs": [
+          "code:code.ts:readCard",
+          "api:GET:/local/cards/r5n7/{cardId}"
+        ]
+      }
+    ]
+  },
+  "response_digest": "56ea9418eb89a6386b31b420964cc9a18b6804f69060559d46c8c22cede026d7"
 }

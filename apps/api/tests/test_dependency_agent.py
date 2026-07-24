@@ -3,11 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from shutil import copytree, ignore_patterns
 
+import pytest
+
+import app.dependency_agent as dependency_agent
 from app.dependency_agent import (
+    DependencyAgentError,
     STATUS_OK,
     STATUS_SKIPPED,
     attach_dependency_profile_to_bridge_result,
+    build_dependency_input_manifest,
     build_dependency_profile,
+    dependency_input_manifest_matches,
 )
 from app.industrial_scheduler import build_industrial_scheduler_plan
 
@@ -189,6 +195,107 @@ def test_secretish_dependency_filenames_skipped():
     assert "express" in packages
     assert "evil" not in packages
     assert profile.execution_allowed is False
+
+
+def test_dependency_profile_and_manifest_fail_closed_on_input_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    package_root = tmp_path / "authorized-package"
+    inputs = package_root / "inputs"
+    inputs.mkdir(parents=True)
+    (inputs / "first.py").write_text("import requests\n", encoding="utf-8")
+    (inputs / "second.py").write_text("import httpx\n", encoding="utf-8")
+    monkeypatch.setattr(dependency_agent, "_MAX_DEPENDENCY_INPUT_FILES", 1)
+
+    with pytest.raises(DependencyAgentError, match="dependency_input_limit_exceeded"):
+        build_dependency_input_manifest(package_root)
+
+    profile = build_dependency_profile(package_root=package_root)
+
+    assert profile.status == STATUS_SKIPPED
+    assert "dependency_input_limit_exceeded" in profile.notes
+    assert profile.execution_allowed is False
+    assert profile.validation_allowed is False
+    assert profile.report_submission_allowed is False
+
+
+def test_dependency_input_limit_counts_nonmatching_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    package_root = tmp_path / "authorized-package"
+    inputs = package_root / "inputs"
+    inputs.mkdir(parents=True)
+    for index in range(3):
+        (inputs / f"note-{index}.txt").write_text("ignored\n", encoding="utf-8")
+    monkeypatch.setattr(dependency_agent, "_MAX_DEPENDENCY_INPUT_FILES", 1)
+
+    with pytest.raises(DependencyAgentError, match="dependency_input_limit_exceeded"):
+        build_dependency_input_manifest(package_root)
+
+    profile = build_dependency_profile(package_root=package_root)
+
+    assert profile.status == STATUS_SKIPPED
+    assert "dependency_input_limit_exceeded" in profile.notes
+
+
+def test_dependency_input_manifest_binds_case_id_metadata(tmp_path: Path):
+    package_root = tmp_path / "authorized-package"
+    package_root.mkdir()
+    case = package_root / "case.json"
+    case.write_text('{"case_id": "case-a"}', encoding="utf-8")
+
+    manifest = build_dependency_input_manifest(package_root)
+    profile = build_dependency_profile(package_root=package_root)
+
+    assert profile.package_id == "case-a"
+    assert [entry["source_path"] for entry in manifest] == ["case.json"]
+    assert dependency_input_manifest_matches(package_root, manifest) is True
+
+    case.write_text('{"case_id": "case-b"}', encoding="utf-8")
+
+    assert dependency_input_manifest_matches(package_root, manifest) is False
+
+
+def test_dependency_profile_fails_closed_on_external_scan_root_symlink(tmp_path: Path):
+    package_root = tmp_path / "authorized-package"
+    package_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "source.py").write_text("import requests\n", encoding="utf-8")
+    inputs_link = package_root / "inputs"
+    try:
+        inputs_link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(DependencyAgentError, match="dependency_input_path_escape"):
+        build_dependency_input_manifest(package_root)
+
+    profile = build_dependency_profile(package_root=package_root)
+
+    assert profile.status == STATUS_SKIPPED
+    assert "dependency_input_path_escape" in profile.notes
+
+
+def test_dependency_profile_fails_closed_on_scan_directory_cycle(tmp_path: Path):
+    package_root = tmp_path / "authorized-package"
+    inputs = package_root / "inputs"
+    inputs.mkdir(parents=True)
+    loop = inputs / "loop"
+    try:
+        loop.symlink_to(inputs, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(DependencyAgentError, match="dependency_input_path_cycle"):
+        build_dependency_input_manifest(package_root)
+
+    profile = build_dependency_profile(package_root=package_root)
+
+    assert profile.status == STATUS_SKIPPED
+    assert "dependency_input_path_cycle" in profile.notes
 
 
 def test_industrial_scheduler_includes_dependency_after_intake():

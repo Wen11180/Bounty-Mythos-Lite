@@ -4,6 +4,7 @@ from app.candidate_hunter_loop import (
     advance_candidate_hunter_round,
     build_candidate_hunter_observations,
 )
+from app.codebase_map import CodebaseFactCandidate
 
 
 def _safe_flags(observations: dict) -> dict:
@@ -204,6 +205,67 @@ async function other(req: Request, res: Response) {
     assert result["evidence_requests"]
     missing = result["evidence_requests"][0]["missing_evidence"]
     assert "artifact:code" in missing or "gap_provenance" in missing or "evidence_trace" in missing
+
+
+def test_template_candidate_does_not_absorb_static_route_evidence():
+    candidate_route = "/records/{record_id}/{anything}"
+    cited_route = "/records/{record_id}/export"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {candidate_route}",
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.py",
+                        "symbol_name": "export_record",
+                        "route_method": "GET",
+                        "route_path": cited_route,
+                        "root_cause": "missing_object_ownership_check",
+                    },
+                    {
+                        "fact_type": "api_surface",
+                        "artifact_kind": "api",
+                        "route_method": "GET",
+                        "route_path": cited_route,
+                    },
+                    {"fact_type": "har_context", "artifact_kind": "har"},
+                ],
+            }
+        ],
+        code_files=[],
+        supplemental_code_facts=[
+            CodebaseFactCandidate(
+                fact_type="route_handler",
+                source_path="routes.py",
+                symbol_name="export_record",
+                route_method="GET",
+                route_path=cited_route,
+                authz_hint=None,
+                sensitivity_label="authorized_local_code",
+                payload={"handler": "export_record", "line": 1},
+            )
+        ],
+        surface_facts=[],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state, result = _advance(observations)
+
+    assert state["observed_artifact_kinds"] == ["scope", "policy", "har"]
+    assert "code:routes.py:export_record:authorization_gap_candidate" not in state[
+        "source_fact_refs"
+    ]
+    assert f"api:GET:{cited_route}" not in state["source_fact_refs"]
+    assert state["evidence_trace_status"] == "needs_evidence"
+    assert result["final_candidates"] == []
 
 
 def test_invented_code_path_without_observed_handler_never_retains():

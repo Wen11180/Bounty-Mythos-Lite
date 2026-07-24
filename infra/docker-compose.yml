@@ -41,6 +41,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      PROGRAM_RULE_AI_PROVIDER: ${PROGRAM_RULE_AI_PROVIDER:-}
+      PROGRAM_RULE_AI_MODEL: ${PROGRAM_RULE_AI_MODEL:-}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -53,12 +55,29 @@ services:
     build:
       context: ../apps/api
     command: celery -A app.worker.celery_app.celery_app worker --loglevel=info --pool=solo
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://bounty:bounty@postgres:5432/bounty_mythos
       REDIS_URL: redis://redis:6379/0
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    build:
+      context: ../apps/api
+    command: celery -A app.worker.celery_app.celery_app beat --loglevel=info --schedule=/var/lib/celery/celerybeat-schedule
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://bounty:bounty@postgres:5432/bounty_mythos
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - celery_beat_data:/var/lib/celery
     depends_on:
       redis:
         condition: service_healthy
@@ -78,3 +97,4 @@ services:
 
 volumes:
   postgres_data:
+  celery_beat_data:

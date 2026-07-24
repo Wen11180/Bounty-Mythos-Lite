@@ -1,16 +1,25 @@
 {
   "name": "@bounty-mythos/studio",
   "version": "0.1.0",
+  "description": "Local, review-gated security research control center.",
+  "author": "Bounty Mythos-Lite Contributors",
   "private": true,
+  "productName": "BountyMythosLite",
   "main": "main.cjs",
   "scripts": {
+    "make": "node package-runtime.cjs && electron-forge make",
+    "package": "node package-runtime.cjs && electron-forge package",
     "start": "electron .",
     "test": "node --test *.test.cjs"
   },
   "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-squirrel": "7.11.2",
     "electron": "^43.0.0"
   },
   "dependencies": {
+    "electron-squirrel-startup": "1.0.1",
+    "ipaddr.js": "2.4.0",
     "playwright": "1.61.1"
   }
 }

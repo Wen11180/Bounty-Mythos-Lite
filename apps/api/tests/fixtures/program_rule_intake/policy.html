@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <style>.RAW_HTML_SENTINEL { display: none; }</style>
+    <script>RAW_HTML_SENTINEL = "must never survive";</script>
+  </head>
+  <body>
+    <h1>Example Security Program</h1>
+    <div hidden>hidden-token@example.com</div>
+    <div aria-hidden="true">Hidden customer_id: 12345</div>
+    <form>Authorization: Bearer form-secret</form>
+
+    <p>In scope assets</p>
+    <table>
+      <tr><th>Status</th><th>Asset</th></tr>
+      <tr><td>In scope</td><td>api.example.com</td></tr>
+    </table>
+
+    <ul>
+      <li>Denial of service is prohibited.</li>
+      <li>Automation is limited to 5 requests per minute.</li>
+    </ul>
+
+    <a href="/openapi.yaml">Public OpenAPI document</a>
+    <a href="//example.com/protocol-relative.json">Rejected protocol-relative link</a>
+    <a href="https://other.example/rules.json">Rejected cross-origin link</a>
+    <a href="/archive.json" download>Rejected attachment</a>
+
+    <p>
+      Contact security@example.com. Authorization: Bearer top-secret-token.
+      Cookie: session=secret-cookie.
+      eyJhbGciOiJIUzI1NiJ9.e30.signature123
+    </p>
+  </body>
+</html>

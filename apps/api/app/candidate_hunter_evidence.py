@@ -8,7 +8,12 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
+from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
 from app.db_models import AgentRunRecord, CampaignTaskRecord, PipelineStageRecord
+from app.studio_workspace import (
+    StudioWorkspaceAccessError,
+    load_authorized_campaign_inputs,
+)
 
 
 SAFETY_FIELDS = (
@@ -23,17 +28,9 @@ TASK_SCHEMA_VERSION = "candidate_hunter_evidence_task_v1"
 RESULT_SCHEMA_VERSION = "candidate_hunter_evidence_result_v1"
 ATTEMPT_SCHEMA_VERSION = "candidate_hunter_evidence_attempt_v1"
 INSPECTOR_TOOL = "candidate_hunter_local_evidence_inspector"
-AUTHORIZED_SOURCE_SUFFIXES = {
-    ".py",
+AUTHORIZED_SOURCE_SUFFIXES = set(SUPPORTED_CODE_SOURCE_SUFFIXES) | {
     ".js",
     ".jsx",
-    ".ts",
-    ".tsx",
-    ".go",
-    ".java",
-    ".kt",
-    ".rb",
-    ".php",
 }
 MAX_AUTHORIZED_SOURCE_FILES = 20
 MAX_AUTHORIZED_SOURCE_CHARS = 20_000
@@ -74,7 +71,9 @@ def materialize_evidence_inspection_task(
     owner_task_id = _text(getattr(owner_task, "id", ""))
     stage_id = _text(getattr(evidence_request_stage, "id", ""))
     campaign_payload = _safe_payload(getattr(campaign, "payload", {}))
-    source_snapshot_digest = _text(campaign_payload.get("source_snapshot_digest"))
+    source_snapshot_digest = _bare_source_snapshot_digest(
+        campaign_payload.get("source_snapshot_digest")
+    )
     if not pipeline_run_id or not campaign_id or not owner_task_id or not stage_id:
         raise ValueError("evidence_owner_invalid")
     if not source_snapshot_digest:
@@ -104,8 +103,14 @@ def materialize_evidence_inspection_task(
         state_digest=state_digest,
     )
     task_id = f"campaign_task_{idempotency_key}"
+    owner_payload = _safe_payload(getattr(owner_task, "payload", {}))
+    runtime_owner = (
+        getattr(owner_task, "task_type", "") == "candidate_refutation"
+        and owner_payload.get("runtime_schema") == "autonomous_research_v1"
+    )
     payload = {
         "schema_version": TASK_SCHEMA_VERSION,
+        "execution_lease_required": runtime_owner,
         "pipeline_run_id": pipeline_run_id,
         "evidence_request_stage_id": stage_id,
         "owner_task_id": owner_task_id,
@@ -127,7 +132,16 @@ def materialize_evidence_inspection_task(
         evidence_request_stage_id=stage_id,
         payload=payload,
     )
-    repository.update_campaign_task_status(owner_task_id, "needs_evidence", output_refs=[])
+    if not (
+        runtime_owner
+        and isinstance(getattr(owner_task, "execution_claim_id", None), str)
+        and owner_task.execution_claim_id
+    ):
+        repository.update_campaign_task_status(
+            owner_task_id,
+            "needs_evidence",
+            output_refs=[],
+        )
     return task
 
 
@@ -148,11 +162,16 @@ def run_evidence_inspection_task(*, repository: Any, task_id: str) -> dict[str, 
                 task=task,
                 stop_reason="result_stage_integrity_invalid",
             )
-        repository.update_campaign_task_status(
-            task.id,
-            "completed",
-            output_refs=[f"pipeline_stage:{existing_result.id}"],
-        )
+        if not _complete_existing_evidence_result(
+            repository=repository,
+            task=task,
+            result_stage=existing_result,
+        ):
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
         return {
             "status": "completed",
             "task_id": task.id,
@@ -202,6 +221,13 @@ def run_evidence_inspection_task(*, repository: Any, task_id: str) -> dict[str, 
         context=context,
         payload=result_payload,
     )
+    if result_stage is None:
+        return {
+            "status": "running",
+            "task_id": task.id,
+            "agent_run_id": agent_run.id,
+            "stop_reason": "execution_lease_lost",
+        }
     return {
         "status": "completed",
         "task_id": task.id,
@@ -209,6 +235,44 @@ def run_evidence_inspection_task(*, repository: Any, task_id: str) -> dict[str, 
         "result_stage_id": result_stage.id,
         "stop_reason": None,
     }
+
+
+def _complete_existing_evidence_result(
+    *,
+    repository: Any,
+    task: CampaignTaskRecord,
+    result_stage: PipelineStageRecord,
+) -> bool:
+    execution_claim_id = task.execution_claim_id
+    if execution_claim_id is None:
+        repository.update_campaign_task_status(
+            task.id,
+            "completed",
+            output_refs=[f"pipeline_stage:{result_stage.id}"],
+        )
+        return True
+    renewed_task = repository.renew_campaign_task_execution_lease(
+        task.id,
+        execution_claim_id=execution_claim_id,
+    )
+    if renewed_task is None:
+        return False
+    agent_run = repository.session.get(AgentRunRecord, execution_claim_id)
+    completed_execution = repository.finish_campaign_task_execution(
+        task_id=renewed_task.id,
+        execution_claim_id=execution_claim_id,
+        task_status="completed",
+        task_output_refs=[
+            f"agent_run:{execution_claim_id}",
+            f"pipeline_stage:{result_stage.id}",
+        ],
+        agent_status="completed",
+        agent_output_refs=[f"pipeline_stage:{result_stage.id}"],
+        safety_gate_state="safe",
+        stop_reason=None,
+        payload=_safe_payload(getattr(agent_run, "payload", {})),
+    )
+    return completed_execution is not None
 
 
 def resume_candidate_hunter_after_evidence(
@@ -232,12 +296,42 @@ def resume_candidate_hunter_after_evidence(
     result_stage = _canonical_result_stage(repository, task)
     task_payload = _safe_payload(task.payload)
     pipeline_run_id = _text(task_payload.get("pipeline_run_id"))
+    source_snapshot_digest = _bare_source_snapshot_digest(
+        task_payload.get("source_snapshot_digest")
+    )
     pipeline_run = repository.get_pipeline_run(pipeline_run_id)
     campaign = repository.get_campaign(task.campaign_id)
     owner_task = repository.session.get(
         CampaignTaskRecord,
         _text(task_payload.get("owner_task_id")),
     )
+    linked_owner_task = _linked_runtime_owner_for_evidence_block(
+        repository=repository,
+        task=task,
+    )
+    if linked_owner_task is not None and campaign is not None:
+        runtime_stop_reason = _runtime_owner_stop_reason(
+            repository=repository,
+            campaign=campaign,
+            owner_task=linked_owner_task,
+        )
+        if runtime_stop_reason is not None:
+            repository.update_campaign_task_status(
+                linked_owner_task.id,
+                "blocked",
+                output_refs=[],
+            )
+            return {
+                "status": "blocked",
+                "pipeline_run_id": pipeline_run_id,
+                "round_count": 0,
+                "stage_refs": [],
+                "state_digest": "",
+                "stop_reason": runtime_stop_reason,
+                "final_candidates": [],
+                "candidate_decisions": [],
+                **_false_safety_fields(),
+            }
     if (
         result_stage is None
         or pipeline_run is None
@@ -273,6 +367,7 @@ def resume_candidate_hunter_after_evidence(
         snapshot_stage=snapshot_stage,
         result_stage=result_stage,
         campaign=campaign,
+        source_snapshot_digest=source_snapshot_digest,
     )
     if candidate_states is None:
         repository.update_campaign_task_status(owner_task.id, "blocked", output_refs=[])
@@ -303,11 +398,27 @@ def resume_candidate_hunter_after_evidence(
     )
 
 
+def _runtime_owner_stop_reason(
+    *,
+    repository: Any,
+    campaign: Any,
+    owner_task: CampaignTaskRecord,
+) -> str | None:
+    from app.autonomous_research_runtime import autonomous_research_task_stop_reason
+
+    return autonomous_research_task_stop_reason(
+        task=owner_task,
+        campaign=campaign,
+        repository=repository,
+    )
+
+
 def _resumed_candidate_states(
     *,
     snapshot_stage: PipelineStageRecord | None,
     result_stage: PipelineStageRecord,
     campaign: Any,
+    source_snapshot_digest: str,
 ) -> list[dict[str, Any]] | None:
     if snapshot_stage is None:
         return None
@@ -323,6 +434,7 @@ def _resumed_candidate_states(
     if manifest is None or not _result_facts_are_valid(
         result_payload=result_payload,
         source_manifest=manifest,
+        source_snapshot_digest=source_snapshot_digest,
     ):
         return None
     new_fact_refs = {
@@ -365,9 +477,17 @@ def _result_facts_are_valid(
     *,
     result_payload: dict[str, Any],
     source_manifest: list[dict[str, str]],
+    source_snapshot_digest: str,
 ) -> bool:
-    source_snapshot_digest = _text(result_payload.get("source_snapshot_digest"))
-    if not source_snapshot_digest or _source_snapshot_digest(source_manifest) != source_snapshot_digest:
+    result_snapshot_digest = _bare_source_snapshot_digest(
+        result_payload.get("source_snapshot_digest")
+    )
+    if (
+        not source_snapshot_digest
+        or result_snapshot_digest != source_snapshot_digest
+        or _text(result_payload.get("source_manifest_digest"))
+        != _source_manifest_digest(source_manifest)
+    ):
         return False
     facts = result_payload.get("new_facts")
     if not isinstance(facts, list):
@@ -391,7 +511,8 @@ def _result_facts_are_valid(
             or not observed_fact_ref
             or fact.get("artifact_kind") != "code"
             or fact.get("extractor_version") != "candidate_hunter_evidence_v1"
-            or fact.get("source_snapshot_digest") != source_snapshot_digest
+            or _bare_source_snapshot_digest(fact.get("source_snapshot_digest"))
+            != source_snapshot_digest
             or not source_path
             or file_digests.get(source_path) != source_file_digest
             or not fact_type
@@ -400,7 +521,7 @@ def _result_facts_are_valid(
             return False
         derived_payload: dict[str, Any] = {
             "extractor_version": "candidate_hunter_evidence_v1",
-            "source_snapshot_digest": source_snapshot_digest,
+            "source_snapshot_digest": result_snapshot_digest,
             "source_path": source_path,
             "source_file_digest": source_file_digest,
             "fact_type": fact_type,
@@ -461,6 +582,26 @@ def _merge_result_state(
         or update.get("reanalysis_status") != "completed"
     ):
         return None
+    snapshot_shared_root_kind_raw = snapshot.get("shared_root_kind")
+    update_shared_root_kind_raw = update.get("shared_root_kind")
+    if (
+        "shared_root_kind" in snapshot
+        and not _is_valid_shared_root_kind(snapshot_shared_root_kind_raw)
+    ) or (
+        "shared_root_kind" in update
+        and not _is_valid_shared_root_kind(update_shared_root_kind_raw)
+    ):
+        return None
+    snapshot_shared_root_kind = _safe_shared_root_kind(
+        snapshot_shared_root_kind_raw
+    )
+    update_shared_root_kind = _safe_shared_root_kind(update_shared_root_kind_raw)
+    if (
+        snapshot_shared_root_kind
+        and update_shared_root_kind
+        and snapshot_shared_root_kind != update_shared_root_kind
+    ):
+        return None
     merged = dict(snapshot)
     if not original_root_cause_id:
         if not updated_root_cause_id:
@@ -475,6 +616,13 @@ def _merge_result_state(
             if field.endswith("_ref") and updated_value not in updated_refs:
                 return None
             merged[field] = updated_value
+    if not snapshot_shared_root_kind and update_shared_root_kind:
+        if not (
+            _safe_text(merged.get("shared_root"))
+            and _safe_text(merged.get("shared_root_evidence_ref"))
+        ):
+            return None
+        merged["shared_root_kind"] = update_shared_root_kind
     merged["source_fact_refs"] = updated_refs
     merged["observed_artifact_kinds"] = updated_kinds
     merged["required_artifact_kinds"] = required_kinds
@@ -509,7 +657,9 @@ def _inspection_context(
     request_stage_id = _text(payload.get("evidence_request_stage_id"))
     owner_task_id = _text(payload.get("owner_task_id"))
     state_digest = _text(payload.get("state_digest"))
-    source_snapshot_digest = _text(payload.get("source_snapshot_digest"))
+    source_snapshot_digest = _bare_source_snapshot_digest(
+        payload.get("source_snapshot_digest")
+    )
     if not all(
         (
             pipeline_run_id,
@@ -541,11 +691,24 @@ def _inspection_context(
     if campaign.policy_text_hash != pipeline_run.policy_text_hash:
         return None, "policy_changed"
 
+    runtime_stop_reason = _runtime_owner_stop_reason(
+        repository=repository,
+        campaign=campaign,
+        owner_task=owner_task,
+    )
+    if runtime_stop_reason is not None:
+        return None, runtime_stop_reason
+
     campaign_payload = _safe_payload(campaign.payload)
+    owner_payload = _safe_payload(owner_task.payload)
     if (
         campaign_payload.get("pipeline_run_id") != pipeline_run.id
+        and owner_payload.get("pipeline_run_id") != pipeline_run.id
         or not _has_false_safety_fields(campaign_payload)
-        or campaign_payload.get("source_snapshot_digest") != source_snapshot_digest
+        or _bare_source_snapshot_digest(
+            campaign_payload.get("source_snapshot_digest")
+        )
+        != source_snapshot_digest
         or INSPECTOR_TOOL
         not in _safe_string_list(campaign_payload.get("inspector_tool_allowlist"))
         or INSPECTOR_TOOL not in _safe_string_list(campaign.allowed_tools)
@@ -573,25 +736,56 @@ def _inspection_context(
     if snapshot_stage is None:
         return None, "snapshot_stage_invalid"
 
-    source_root = _authorized_source_root(
-        pipeline_run=pipeline_run,
-        campaign=campaign,
-        campaign_payload=campaign_payload,
-    )
-    if source_root is None:
-        return None, "scope_guard_changed"
     source_manifest = _safe_source_manifest(campaign_payload.get("source_manifest"))
     if source_manifest is None:
         return None, "source_manifest_invalid"
-
-    try:
-        code_files = _collect_authorized_evidence_files(source_root)
-    except OSError:
-        return None, "source_snapshot_unavailable"
+    workspace_snapshot = campaign_payload.get("workspace_snapshot")
+    if workspace_snapshot is not None:
+        try:
+            workspace_inputs = load_authorized_campaign_inputs(workspace_snapshot)
+        except (OSError, StudioWorkspaceAccessError, ValueError) as exc:
+            return None, (
+                "workspace_snapshot_changed"
+                if str(exc) == "workspace_snapshot_changed"
+                else "workspace_snapshot_invalid"
+            )
+        if _bare_source_snapshot_digest(
+            workspace_inputs.get("source_snapshot_digest")
+        ) != source_snapshot_digest:
+            return None, "source_snapshot_changed"
+        workspace_manifest = _safe_source_manifest(
+            workspace_inputs.get("source_manifest")
+        )
+        if workspace_manifest is None or workspace_manifest != source_manifest:
+            return None, "source_snapshot_changed"
+        source_root = _workspace_authorized_source_root(
+            workspace_inputs=workspace_inputs,
+            campaign_payload=campaign_payload,
+        )
+        if source_root is None:
+            return None, "scope_guard_changed"
+        code_files = workspace_inputs.get("code_files")
+        if not isinstance(code_files, list):
+            return None, "workspace_snapshot_invalid"
+    else:
+        source_root = _authorized_source_root(
+            pipeline_run=pipeline_run,
+            campaign=campaign,
+            campaign_payload=campaign_payload,
+        )
+        if source_root is None:
+            return None, "scope_guard_changed"
+        try:
+            code_files = _collect_authorized_evidence_files(source_root)
+        except OSError:
+            return None, "source_snapshot_unavailable"
     actual_manifest = _snapshot_manifest(code_files)
     if actual_manifest is None or actual_manifest != source_manifest:
         return None, "source_snapshot_changed"
-    if _source_snapshot_digest(actual_manifest) != source_snapshot_digest:
+    if (
+        workspace_snapshot is None
+        and _source_snapshot_digest(actual_manifest) != source_snapshot_digest
+    ):
         return None, "source_snapshot_changed"
 
     return {
@@ -629,6 +823,28 @@ def _authorized_source_root(
     if not root.is_dir() or root != saved_root or root != default_root:
         return None
     return root
+
+
+def _workspace_authorized_source_root(
+    *,
+    workspace_inputs: dict[str, Any],
+    campaign_payload: dict[str, Any],
+) -> Path | None:
+    saved_scope = campaign_payload.get("saved_scope_guard")
+    if not isinstance(saved_scope, dict) or saved_scope.get("scope_status") != "in_scope":
+        return None
+    authorized_root = _text(saved_scope.get("authorized_local_root"))
+    workspace_root = _text(workspace_inputs.get("authorized_local_root"))
+    if not authorized_root or not workspace_root:
+        return None
+    try:
+        saved_root = Path(authorized_root).resolve(strict=True)
+        resolved_workspace_root = Path(workspace_root).resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved_workspace_root.is_dir() or resolved_workspace_root != saved_root:
+        return None
+    return resolved_workspace_root
 
 
 def _snapshot_stage_for_request(
@@ -670,7 +886,14 @@ def _claim_inspection(
     task: CampaignTaskRecord,
     campaign: Any,
 ) -> tuple[AgentRunRecord | None, str]:
-    if campaign.status in {"paused", "blocked", "canceled", "completed", "failed"}:
+    if campaign.status in {
+        "paused",
+        "awaiting_review",
+        "blocked",
+        "canceled",
+        "completed",
+        "failed",
+    }:
         return None, f"campaign_{campaign.status}"
     budget_stop = _evidence_budget_stop_reason(repository, campaign, task.id)
     if budget_stop is not None:
@@ -683,6 +906,28 @@ def _claim_inspection(
 
     active = repository.find_active_agent_run_for_task(task.id)
     if active is not None:
+        active_payload = _safe_payload(active.payload)
+        if active_payload.get("worker_execution_claim") is True:
+            prior_attempts = [
+                run
+                for run in repository.list_campaign_agent_runs(campaign.id)
+                if run.task_id == task.id
+            ]
+            active.agent_type = "candidate_hunter_evidence_specialist"
+            active.input_refs = list(task.input_refs)
+            active.tool_calls = [{"tool": INSPECTOR_TOOL, "mode": "local_read_only"}]
+            active.safety_gate_state = "safe"
+            active.stop_reason = None
+            active.payload = {
+                "schema_version": "candidate_hunter_evidence_agent_run_v1",
+                "attempt": len(prior_attempts),
+                "token_usage": {"total_tokens": 0},
+                **_false_safety_fields(),
+            }
+            repository.session.add(active)
+            repository.session.commit()
+            repository.session.refresh(active)
+            return active, "claimed"
         return None, "inspection_already_running"
     prior_attempts = [
         run
@@ -898,6 +1143,10 @@ def _candidate_input_from_snapshot(state: dict[str, Any]) -> dict[str, Any] | No
         return None
     root_cause, _, symbol_name = root_cause_id.partition(":")
     source_path, source_symbol = _snapshot_code_reference(state)
+    if not source_path:
+        source_path = _safe_relative_path(state.get("hypothesis_source_path"))
+    if not source_symbol:
+        source_symbol = _safe_text(state.get("hypothesis_symbol_name"))
     candidate = {
         "hypothesis_id": candidate_id,
         "vuln_type": vuln_type,
@@ -965,6 +1214,31 @@ def _candidate_state_update(
     source_fact_refs = _ordered_unique(
         [*original_refs, *observed_refs, *evidence_fact_refs]
     )
+    original_shared_root = _safe_text(original.get("shared_root"))
+    original_shared_root_ref = _safe_text(
+        original.get("shared_root_evidence_ref")
+    )
+    observed_shared_root = _safe_text(observed.get("shared_root"))
+    observed_shared_root_ref = observed_fact_refs.get(
+        _safe_text(observed.get("shared_root_evidence_ref")),
+        _safe_text(observed.get("shared_root_evidence_ref")),
+    )
+    shared_root_kind = _safe_shared_root_kind(original.get("shared_root_kind"))
+    observed_shared_root_kind = _safe_shared_root_kind(
+        observed.get("shared_root_kind")
+    )
+    if (
+        not shared_root_kind
+        and observed_shared_root_kind
+        and (
+            not original_shared_root or original_shared_root == observed_shared_root
+        )
+        and (
+            not original_shared_root_ref
+            or original_shared_root_ref == observed_shared_root_ref
+        )
+    ):
+        shared_root_kind = observed_shared_root_kind
     update = {
         "candidate_id": _safe_text(original.get("candidate_id")),
         "candidate_key": _safe_text(original.get("candidate_key")),
@@ -988,15 +1262,11 @@ def _candidate_state_update(
             _safe_text(observed.get("gap_evidence_ref")),
             _safe_text(observed.get("gap_evidence_ref")),
         ),
-        "shared_root": _safe_text(original.get("shared_root"))
-        or _safe_text(observed.get("shared_root")),
-        "shared_root_evidence_ref": _safe_text(
-            original.get("shared_root_evidence_ref")
-        )
-        or observed_fact_refs.get(
-            _safe_text(observed.get("shared_root_evidence_ref")),
-            _safe_text(observed.get("shared_root_evidence_ref")),
+        "shared_root": original_shared_root or observed_shared_root,
+        "shared_root_evidence_ref": (
+            original_shared_root_ref or observed_shared_root_ref
         ),
+        "shared_root_kind": shared_root_kind,
         "refutation_questions": _safe_string_list(
             original.get("refutation_questions")
         ),
@@ -1074,7 +1344,7 @@ def _commit_evidence_result(
     agent_run: AgentRunRecord,
     context: dict[str, Any],
     payload: dict[str, Any],
-) -> PipelineStageRecord:
+) -> PipelineStageRecord | None:
     idempotency_key = _text(payload.get("idempotency_key"))
     stage_id = f"pipeline_stage_{idempotency_key}"
     existing = repository.session.get(PipelineStageRecord, stage_id)
@@ -1096,6 +1366,31 @@ def _commit_evidence_result(
         stop_reason=None,
         payload=payload,
     )
+    if task.execution_claim_id is not None:
+        if task.execution_claim_id != agent_run.id:
+            return None
+        renewed_task = repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=agent_run.id,
+        )
+        if renewed_task is None:
+            return None
+        completed_execution = repository.finish_campaign_task_execution(
+            task_id=renewed_task.id,
+            execution_claim_id=agent_run.id,
+            task_status="completed",
+            task_output_refs=[f"agent_run:{agent_run.id}", f"pipeline_stage:{stage.id}"],
+            agent_status="completed",
+            agent_output_refs=[f"pipeline_stage:{stage.id}"],
+            safety_gate_state="safe",
+            stop_reason=None,
+            payload=_safe_payload(agent_run.payload),
+            additional_records=[stage],
+        )
+        if completed_execution is None:
+            return None
+        return repository.session.get(PipelineStageRecord, stage.id)
+
     agent_run.status = "completed"
     agent_run.output_refs = [f"pipeline_stage:{stage.id}"]
     agent_run.safety_gate_state = "safe"
@@ -1130,6 +1425,28 @@ def _record_failed_inspection(
     ).hexdigest()
     stage_id = f"pipeline_stage_{idempotency_key}"
     stage = repository.session.get(PipelineStageRecord, stage_id)
+    stage_is_new = stage is None
+    execution_claim_id = task.execution_claim_id
+    if execution_claim_id is not None:
+        if execution_claim_id != agent_run.id:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "agent_run_id": agent_run.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        renewed_task = repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=execution_claim_id,
+        )
+        if renewed_task is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "agent_run_id": agent_run.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        task = renewed_task
     if stage is None:
         stage = PipelineStageRecord(
             id=stage_id,
@@ -1155,17 +1472,66 @@ def _record_failed_inspection(
                 **_false_safety_fields(),
             },
         )
+    owner_task = _linked_runtime_owner_for_evidence_block(
+        repository=repository,
+        task=task,
+        validated_context=context,
+    )
+    if owner_task is not None:
+        owner_output_refs = [
+            ref for ref in owner_task.output_refs if isinstance(ref, str)
+        ]
+        evidence_ref = f"campaign_task:{task.id}"
+        if evidence_ref not in owner_output_refs:
+            owner_output_refs.append(evidence_ref)
+        owner_task.status = "blocked"
+        owner_task.output_refs = owner_output_refs
+        owner_task.payload = {
+            **_safe_payload(owner_task.payload),
+            "blocked_by_evidence_task_id": task.id,
+            "blocked_stop_reason": stop_reason,
+        }
+        repository.session.add(owner_task)
+
+    if execution_claim_id is not None:
+        finished_execution = repository.finish_campaign_task_execution(
+            task_id=task.id,
+            execution_claim_id=execution_claim_id,
+            task_status="blocked",
+            task_output_refs=[f"agent_run:{agent_run.id}", f"pipeline_stage:{stage.id}"],
+            agent_status="failed",
+            agent_output_refs=[],
+            safety_gate_state="blocked",
+            stop_reason=stop_reason,
+            payload=_safe_payload(agent_run.payload),
+            additional_records=[stage] if stage_is_new else None,
+        )
+        if finished_execution is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "agent_run_id": agent_run.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        return {
+            "status": "blocked",
+            "task_id": task.id,
+            "agent_run_id": agent_run.id,
+            "stop_reason": stop_reason,
+        }
+
+    if stage_is_new:
         repository.session.add(stage)
     agent_run.status = "failed"
     agent_run.safety_gate_state = "blocked"
     agent_run.stop_reason = stop_reason
     agent_run.finished_at = datetime.now(UTC)
-    task.status = "retryable"
+    task.status = "blocked"
     task.output_refs = [f"agent_run:{agent_run.id}", f"pipeline_stage:{stage.id}"]
     repository.session.add_all([agent_run, task])
     repository.session.commit()
     return {
-        "status": "retryable",
+        "status": "blocked",
         "task_id": task.id,
         "agent_run_id": agent_run.id,
         "stop_reason": stop_reason,
@@ -1214,18 +1580,197 @@ def _result_stage_is_valid(stage: PipelineStageRecord, task: CampaignTaskRecord)
     )
 
 
+def completed_evidence_result_is_valid(
+    *,
+    repository: Any,
+    task: CampaignTaskRecord,
+) -> bool:
+    if (
+        task.task_type != "candidate_hunter_evidence_inspection"
+        or task.status != "completed"
+    ):
+        return False
+    result_stage = _canonical_result_stage(repository, task)
+    return result_stage is not None and _result_stage_is_valid(result_stage, task)
+
+
 def _block_evidence_task(
     *,
     repository: Any,
     task: CampaignTaskRecord,
     stop_reason: str,
 ) -> dict[str, Any]:
-    repository.update_campaign_task_status(task.id, "blocked", output_refs=[])
+    execution_claim_id = task.execution_claim_id
+    active_run = (
+        repository.session.get(AgentRunRecord, execution_claim_id)
+        if execution_claim_id is not None
+        else repository.find_active_agent_run_for_task(task.id)
+    )
+    if execution_claim_id is not None:
+        if active_run is None or active_run.task_id != task.id:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        renewed_task = repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=execution_claim_id,
+        )
+        if renewed_task is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        task = renewed_task
+    output_refs: list[str] = []
+    if active_run is not None and active_run.campaign_id == task.campaign_id:
+        output_refs.append(f"agent_run:{active_run.id}")
+
+    owner_task = _linked_runtime_owner_for_evidence_block(
+        repository=repository,
+        task=task,
+    )
+    if owner_task is not None:
+        owner_output_refs = [
+            ref for ref in owner_task.output_refs if isinstance(ref, str)
+        ]
+        evidence_ref = f"campaign_task:{task.id}"
+        if evidence_ref not in owner_output_refs:
+            owner_output_refs.append(evidence_ref)
+        owner_task.status = "blocked"
+        owner_task.output_refs = owner_output_refs
+        owner_task.payload = {
+            **_safe_payload(owner_task.payload),
+            "blocked_by_evidence_task_id": task.id,
+            "blocked_stop_reason": stop_reason,
+        }
+        repository.session.add(owner_task)
+
+    if execution_claim_id is not None:
+        finished_execution = repository.finish_campaign_task_execution(
+            task_id=task.id,
+            execution_claim_id=execution_claim_id,
+            task_status="blocked",
+            task_output_refs=output_refs,
+            agent_status="blocked",
+            agent_output_refs=[],
+            safety_gate_state="blocked",
+            stop_reason=stop_reason,
+            payload={
+                "schema_version": "candidate_hunter_evidence_agent_run_v1",
+                "token_usage": {"total_tokens": 0},
+                **_false_safety_fields(),
+            },
+        )
+        if finished_execution is None:
+            return {
+                "status": "running",
+                "task_id": task.id,
+                "stop_reason": "execution_lease_lost",
+            }
+        return {
+            "status": "blocked",
+            "task_id": task.id,
+            "stop_reason": stop_reason,
+        }
+
+    if active_run is not None and active_run.campaign_id == task.campaign_id:
+        active_run.status = "blocked"
+        active_run.output_refs = []
+        active_run.safety_gate_state = "blocked"
+        active_run.stop_reason = stop_reason
+        active_run.payload = {
+            "schema_version": "candidate_hunter_evidence_agent_run_v1",
+            "token_usage": {"total_tokens": 0},
+            **_false_safety_fields(),
+        }
+        active_run.finished_at = datetime.now(UTC)
+        repository.session.add(active_run)
+    task.status = "blocked"
+    task.output_refs = output_refs
+    repository.session.add(task)
+    repository.session.commit()
     return {
         "status": "blocked",
         "task_id": task.id,
         "stop_reason": stop_reason,
     }
+
+
+def _linked_runtime_owner_for_evidence_block(
+    *,
+    repository: Any,
+    task: CampaignTaskRecord,
+    validated_context: dict[str, Any] | None = None,
+) -> CampaignTaskRecord | None:
+    task_payload = _safe_payload(task.payload)
+    owner_task_id = _text(task_payload.get("owner_task_id"))
+    context_owner = (
+        validated_context.get("owner_task")
+        if isinstance(validated_context, dict)
+        else None
+    )
+    owner_task = (
+        context_owner
+        if isinstance(context_owner, CampaignTaskRecord)
+        and context_owner.id == owner_task_id
+        else repository.session.get(CampaignTaskRecord, owner_task_id)
+    )
+    if owner_task is None:
+        return None
+    owner_payload = _safe_payload(owner_task.payload)
+    task_snapshot_digest = _bare_source_snapshot_digest(
+        task_payload.get("source_snapshot_digest")
+    )
+    owner_snapshot_digest = _bare_source_snapshot_digest(
+        owner_payload.get("source_snapshot_digest")
+    )
+    if validated_context is not None:
+        context_campaign = validated_context.get("campaign")
+        context_pipeline_run = validated_context.get("pipeline_run")
+        pipeline_run_id = _text(getattr(context_pipeline_run, "id", ""))
+        if (
+            _text(getattr(context_campaign, "id", "")) != task.campaign_id
+            or task_payload.get("pipeline_run_id") != pipeline_run_id
+            or (
+                owner_payload.get("pipeline_run_id") != pipeline_run_id
+                and f"pipeline_run:{pipeline_run_id}" not in owner_task.input_refs
+            )
+        ):
+            return None
+        task_snapshot_digest = owner_snapshot_digest
+    if (
+        (
+            validated_context is None
+            and (
+                task_payload.get("schema_version") != TASK_SCHEMA_VERSION
+                or not _has_false_safety_fields(task_payload)
+            )
+        )
+        or owner_task.campaign_id != task.campaign_id
+        or owner_task.task_type != "candidate_refutation"
+        or owner_task.status
+        not in {"awaiting_evidence", "needs_evidence", "running", "blocked"}
+        or owner_payload.get("runtime_schema") != "autonomous_research_v1"
+        or not _has_false_safety_fields(owner_payload)
+        or owner_payload.get("raw_payload_in_dispatch") is not False
+        or (
+            validated_context is None
+            and task_payload.get("pipeline_run_id")
+            != owner_payload.get("pipeline_run_id")
+        )
+        or not task_snapshot_digest
+        or task_snapshot_digest != owner_snapshot_digest
+    ):
+        return None
+    if owner_task.status == "blocked" and (
+        owner_payload.get("blocked_by_evidence_task_id") != task.id
+        or not _text(owner_payload.get("blocked_stop_reason"))
+    ):
+        return None
+    return owner_task
 
 
 def _safe_source_manifest(value: object) -> list[dict[str, str]] | None:
@@ -1276,7 +1821,7 @@ def _collect_authorized_evidence_files(root: Path) -> list[dict[str, str]]:
         if content.strip():
             files.append(
                 {
-                    "path": str(candidate),
+                    "path": candidate.relative_to(resolved_root).as_posix(),
                     "content": content[:MAX_AUTHORIZED_SOURCE_CHARS],
                 }
             )
@@ -1289,7 +1834,7 @@ def _snapshot_manifest(code_files: list[dict[str, str]]) -> list[dict[str, str]]
     for item in code_files:
         path = item.get("path") if isinstance(item, dict) else None
         content = item.get("content") if isinstance(item, dict) else None
-        source_path = _safe_relative_path(Path(path).name) if isinstance(path, str) else ""
+        source_path = _safe_relative_path(path) if isinstance(path, str) else ""
         if not source_path or not isinstance(content, str) or source_path in seen_paths:
             return None
         seen_paths.add(source_path)
@@ -1305,6 +1850,15 @@ def _snapshot_manifest(code_files: list[dict[str, str]]) -> list[dict[str, str]]
 def _source_snapshot_digest(manifest: list[dict[str, str]]) -> str:
     serialized = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
     return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _bare_source_snapshot_digest(value: object) -> str:
+    digest = _text(value).lower()
+    if digest.startswith("sha256:"):
+        digest = digest.removeprefix("sha256:")
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        return ""
+    return digest
 
 
 def _source_manifest_digest(manifest: list[dict[str, str]]) -> str:
@@ -1448,6 +2002,17 @@ def _safe_artifact_kinds(value: object) -> list[str]:
     )
 
 
+def _safe_shared_root_kind(value: object) -> str:
+    kind = value.strip() if isinstance(value, str) else ""
+    return kind if kind in {"service", "direct_sink"} else ""
+
+
+def _is_valid_shared_root_kind(value: object) -> bool:
+    return isinstance(value, str) and (
+        not value.strip() or bool(_safe_shared_root_kind(value))
+    )
+
+
 def _safe_targets(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -1545,6 +2110,7 @@ def _text(value: object) -> str:
 
 
 __all__ = [
+    "completed_evidence_result_is_valid",
     "materialize_evidence_inspection_task",
     "resume_candidate_hunter_after_evidence",
     "run_evidence_inspection_task",

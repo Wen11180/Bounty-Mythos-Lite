@@ -1754,6 +1754,20 @@ test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", (
   assert.doesNotMatch(JSON.stringify(summaries), /Approval required/i);
 });
 
+test("toCampaignTimelineSummaries exposes safe timing and error summaries", () => {
+  const summaries = toCampaignTimelineSummaries([
+    {
+      ...controlCenter.pipeline_stages[0],
+      duration_seconds: 42,
+      error_summary: "api_key=timeline-secret",
+    },
+  ]);
+
+  assert.equal(summaries[0]?.durationSeconds, 42);
+  assert.equal(summaries[0]?.errorSummary, "[redacted]");
+  assert.doesNotMatch(JSON.stringify(summaries), /timeline-secret|api_key/i);
+});
+
 test("toCampaignTimelineSummaries highlights manual validation result stages without refs", () => {
   const summaries = toCampaignTimelineSummaries([
     {
@@ -4435,6 +4449,12 @@ test("campaign timeline page reads pipeline stage records and stays read-only", 
   assert.doesNotMatch(page, /Pipeline timeline/);
   assert.match(page, /<span>Input refs<\/span>/);
   assert.match(page, /<span>Output refs<\/span>/);
+  assert.match(page, /<span>Duration<\/span>/);
+  assert.match(page, /<span>Error<\/span>/);
+  assert.match(page, /formatDuration/);
+  assert.match(page, /stage\.durationSeconds/);
+  assert.match(page, /stage\.errorSummary/);
+  assert.match(page, /Not recorded/);
   assert.doesNotMatch(page, /<span>Inputs<\/span>/);
   assert.doesNotMatch(page, /<span>Outputs<\/span>/);
   assert.match(page, /manualValidationResultCount/);

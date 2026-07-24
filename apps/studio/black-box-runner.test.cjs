@@ -693,6 +693,242 @@ test("run_trial replays an internally recorded active route without returning va
   assert.doesNotMatch(JSON.stringify(result), new RegExp(`${OBJECT_ID}|private-value`));
 });
 
+test("[hardening] app exit waits for asynchronous child termination", async () => {
+  const termination = deferred();
+  const calls = { exit: [], kill: 0 };
+  const handler = createAppExitHandler({
+    closeSessions: async () => {},
+    exit(code) {
+      calls.exit.push(code);
+    },
+    killChildren() {
+      calls.kill += 1;
+      return termination.promise;
+    },
+  });
+
+  const shutdown = handler({ preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(calls.kill, 1);
+  assert.deepEqual(calls.exit, []);
+
+  termination.resolve();
+  await shutdown;
+
+  assert.deepEqual(calls.exit, [0]);
+});
+
+test("packaged sessions use only the prevalidated bundled Chromium executable", async () => {
+  const fixture = createFixture({
+    browserExecutablePath: "C:\\Program Files\\BountyMythosLite\\resources\\playwright\\chromium\\chrome.exe",
+  });
+
+  await fixture.runner.createSessions(sessionRequest());
+
+  assert.deepEqual(fixture.browserType.launchCalls, [{
+    executablePath: "C:\\Program Files\\BountyMythosLite\\resources\\playwright\\chromium\\chrome.exe",
+    headless: false,
+  }]);
+});
+
+test("[hardening] one successful local trial is consumed until sessions close", async () => {
+  const fixture = createFixture();
+  const requestUrl = await prepareRecordedTrial(fixture);
+  fixture.browser.contexts[1].fetchResponse = new FakeResponse({
+    status: 403,
+    url: requestUrl,
+  });
+  const payload = {
+    session_alias: "session_b",
+    workflow_alias: "workflow_a",
+  };
+
+  const first = await fixture.runner.runTrial(payload);
+  assert.equal(first.event, "trial_result");
+  await assert.rejects(
+    fixture.runner.runTrial(payload),
+    /trial_already_consumed/,
+  );
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 1);
+
+  await fixture.runner.closeSessions("operator_stop");
+  await fixture.runner.createSessions(sessionRequest());
+  await fixture.runner.startRecording({ sessions_ready: true, workflows: [workflow()] });
+  const nextRequestUrl = `${ACTIVE_ORIGIN}/widgets/${OBJECT_ID}`;
+  const nextRequest = new FakeRequest({ url: nextRequestUrl });
+  emitExchange(fixture.browser.contexts[2].page, {
+    request: nextRequest,
+    response: new FakeResponse({ request: nextRequest, status: 200, url: nextRequestUrl }),
+  });
+  await fixture.runner.flush();
+  await fixture.runner.stopRecording();
+  fixture.browser.contexts[3].fetchResponse = new FakeResponse({
+    status: 403,
+    url: nextRequestUrl,
+  });
+
+  const afterClose = await fixture.runner.runTrial(payload);
+  assert.equal(afterClose.event, "trial_result");
+  assert.equal(fixture.browser.contexts[3].fetchCalls.length, 1);
+});
+
+test("[hardening] a local trial is consumed before response metadata is parsed", async () => {
+  const fixture = createFixture();
+  const requestUrl = await prepareRecordedTrial(fixture);
+  const response = new FakeResponse({ status: 200, url: requestUrl });
+  response.headerValue = async () => {
+    throw new Error("response_metadata_failed");
+  };
+  fixture.browser.contexts[1].fetchResponse = response;
+  const payload = {
+    session_alias: "session_b",
+    workflow_alias: "workflow_a",
+  };
+
+  await assert.rejects(
+    fixture.runner.runTrial(payload),
+    /response_metadata_failed/,
+  );
+  await assert.rejects(
+    fixture.runner.runTrial(payload),
+    /trial_already_consumed/,
+  );
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 1);
+});
+
+test("[hardening] an approval expiring at the fetch boundary consumes the local attempt without fetching", async () => {
+  const baseNow = Date.parse("2026-07-14T12:00:00Z");
+  let expireDuringRun = false;
+  let runNowCalls = 0;
+  const fixture = createFixture({
+    now: () => {
+      if (!expireDuringRun) {
+        return baseNow;
+      }
+      runNowCalls += 1;
+      return runNowCalls < 4 ? baseNow : baseNow + 2_000;
+    },
+  });
+  await preparePlanBoundLocalTrial(fixture);
+  expireDuringRun = true;
+  const payload = {
+    approval_expires_at: new Date(baseNow + 1_000).toISOString(),
+    complete_plan_digest: `sha256:${"a".repeat(64)}`,
+    local_plan_binding: localPlanBinding(),
+    session_alias: "session_b",
+    workflow_alias: "workflow_a",
+  };
+
+  const result = await fixture.runner.runTrial(payload);
+  const repeated = await fixture.runner.runTrial(payload);
+
+  assert.deepEqual(result, { event: "stop", reason: "lease_expired", terminal: true });
+  assert.deepEqual(repeated, result);
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 0);
+});
+
+test("[hardening] approval expiry aborts a pending local fetch without a late trial result", async () => {
+  const fixture = createFixture();
+  await preparePlanBoundLocalTrial(fixture);
+  const fetch = deferred();
+  fixture.browser.contexts[1].fetchHandler = () => fetch.promise;
+  const payload = {
+    approval_expires_at: "2026-07-14T12:01:00.000Z",
+    complete_plan_digest: `sha256:${"a".repeat(64)}`,
+    local_plan_binding: localPlanBinding(),
+    session_alias: "session_b",
+    workflow_alias: "workflow_a",
+  };
+
+  const trial = fixture.runner.runTrial(payload);
+  await Promise.resolve();
+  await fixture.clock.fireNextTimer();
+  const result = await trial;
+
+  assert.deepEqual(result, { event: "stop", reason: "lease_expired", terminal: true });
+  assert.deepEqual(fixture.events, [result]);
+  assert.deepEqual(
+    fixture.browser.contexts.map((context) => context.closeCalls),
+    [1, 1],
+  );
+  assert.deepEqual(await fixture.runner.runTrial(payload), result);
+
+  fetch.resolve(new FakeResponse({
+    status: 200,
+    url: `${ACTIVE_ORIGIN}/widgets/${OBJECT_ID}`,
+  }));
+  await Promise.resolve();
+  assert.deepEqual(fixture.events, [result]);
+});
+
+test("[hardening] closing a pending local fetch clears its approval deadline", async () => {
+  const fixture = createFixture();
+  await preparePlanBoundLocalTrial(fixture);
+  const fetch = deferred();
+  fixture.browser.contexts[1].fetchHandler = () => fetch.promise;
+  const trial = fixture.runner.runTrial({
+    approval_expires_at: "2026-07-14T12:01:00.000Z",
+    complete_plan_digest: `sha256:${"a".repeat(64)}`,
+    local_plan_binding: localPlanBinding(),
+    session_alias: "session_b",
+    workflow_alias: "workflow_a",
+  }).catch((error) => error);
+  await Promise.resolve();
+  assert.equal(fixture.clock.pendingTimerCount(), 2);
+
+  await fixture.runner.closeSessions("operator_stop");
+  assert.equal(fixture.clock.pendingTimerCount(), 0);
+  fetch.reject(new Error("context closed"));
+  assert.match((await trial).message, /trial_cancelled/);
+  assert.deepEqual(fixture.events, []);
+});
+
+test("[hardening] exact local preflight binding reaches only the matching recorded workflow", async () => {
+  const fixture = createFixture();
+  const requestUrl = await preparePlanBoundLocalTrial(fixture);
+  fixture.browser.contexts[1].fetchResponse = new FakeResponse({
+    status: 403,
+    url: requestUrl,
+  });
+
+  const result = await fixture.runner.runTrial({
+    approval_expires_at: "2026-07-14T12:01:00.000Z",
+    complete_plan_digest: `sha256:${"a".repeat(64)}`,
+    local_plan_binding: localPlanBinding(),
+    session_alias: "session_b",
+    workflow_alias: "workflow_a",
+  });
+
+  assert.equal(result.event, "trial_result");
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 1);
+});
+
+test("[hardening] exact local preflight binding rejects runtime route drift before fetch", async () => {
+  const fixture = createFixture();
+  await preparePlanBoundLocalTrial(fixture);
+  fixture.browser.contexts[1].fetchResponse = new FakeResponse({
+    status: 403,
+    url: `${ACTIVE_ORIGIN}/widgets/${OBJECT_ID}`,
+  });
+  const binding = localPlanBinding();
+
+  await assert.rejects(
+    fixture.runner.runTrial({
+      approval_expires_at: "2026-07-14T12:01:00.000Z",
+      complete_plan_digest: `sha256:${"a".repeat(64)}`,
+      local_plan_binding: {
+        ...binding,
+        workflow: { ...binding.workflow, route_template: "/other/{object}" },
+      },
+      session_alias: "session_b",
+      workflow_alias: "workflow_a",
+    }),
+    /local_plan_binding_mismatch/,
+  );
+  assert.equal(fixture.browser.contexts[1].fetchCalls.length, 0);
+});
+
 test("run_trial stops on an off-origin Location without returning the header value", async () => {
   const fixture = createFixture();
   await fixture.runner.createSessions(sessionRequest());
@@ -1419,6 +1655,26 @@ function workflow(overrides = {}) {
   };
 }
 
+function localPlanBinding(overrides = {}) {
+  return {
+    active_origin: ACTIVE_ORIGIN,
+    sessions: [
+      { account_alias: "account_a", role_alias: "member", session_alias: "session_a" },
+      { account_alias: "account_b", role_alias: "member", session_alias: "session_b" },
+    ],
+    workflow: {
+      action: "read_only_replay",
+      method: "GET",
+      object_aliases: ["widget_a"],
+      origin: ACTIVE_ORIGIN,
+      route_template: "/widgets/{object}",
+      session_alias: "session_a",
+      workflow_alias: "workflow_a",
+    },
+    ...overrides,
+  };
+}
+
 function remoteSessionRequest(overrides = {}) {
   const activeOrigin = overrides.active_origin ?? REMOTE_ORIGIN;
   const authority = {
@@ -1561,6 +1817,7 @@ function createFixture(options = {}) {
   const events = [];
   const runner = createBlackBoxRunner({
     authorizeRemoteRequest: options.authorizeRemoteRequest,
+    browserExecutablePath: options.browserExecutablePath,
     browserType,
     clearTimer: clock.clearTimer,
     completeRemoteRequest: options.completeRemoteRequest,
@@ -1568,7 +1825,7 @@ function createFixture(options = {}) {
     emit(event) {
       events.push(event);
     },
-    now: clock.now,
+    now: options.now ?? clock.now,
     setTimer: clock.setTimer,
     stopRemoteLease: options.stopRemoteLease,
   });
@@ -1778,6 +2035,23 @@ async function prepareRecordedTrial(fixture) {
   return requestUrl;
 }
 
+async function preparePlanBoundLocalTrial(fixture) {
+  await fixture.runner.createSessions(sessionRequest());
+  await fixture.runner.startRecording({
+    sessions_ready: true,
+    workflows: [workflow({ query_parameters: [] })],
+  });
+  const requestUrl = `${ACTIVE_ORIGIN}/widgets/${OBJECT_ID}`;
+  const request = new FakeRequest({ url: requestUrl });
+  emitExchange(fixture.browser.contexts[0].page, {
+    request,
+    response: new FakeResponse({ request, status: 200, url: requestUrl }),
+  });
+  await fixture.runner.flush();
+  await fixture.runner.stopRecording();
+  return requestUrl;
+}
+
 async function prepareRemoteRecordedTrial(fixture, leaseOverrides = {}) {
   const requestPayload = remoteSessionRequest(leaseOverrides);
   fixture.remoteLeaseDigest = requestPayload.remote_lease.lease_digest;
@@ -1816,6 +2090,9 @@ function createManualClock(initialNow) {
     },
     now() {
       return current;
+    },
+    pendingTimerCount() {
+      return timers.size;
     },
     setTimer(callback, delay) {
       const id = nextId;

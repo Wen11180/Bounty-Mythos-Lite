@@ -1,0 +1,103 @@
+name: program-rule-intake-gate
+
+on:
+  push:
+    paths:
+      - "apps/api/app/program_rule_intake/**"
+      - "apps/api/tests/fixtures/program_rule_intake/**"
+      - "apps/api/tests/test_program_rule_*.py"
+      - "apps/studio/program-rule-*"
+      - "apps/studio/main.cjs"
+      - "apps/studio/preload.cjs"
+      - "apps/web/app/studio/program-rule-intake.tsx"
+      - "apps/web/e2e/program-rule-intake.spec.ts"
+      - "apps/web/lib/program-rule-*"
+      - "infra/docker-compose.yml"
+      - ".github/workflows/program-rule-intake-gate.yml"
+  pull_request:
+    paths:
+      - "apps/api/app/program_rule_intake/**"
+      - "apps/api/tests/fixtures/program_rule_intake/**"
+      - "apps/api/tests/test_program_rule_*.py"
+      - "apps/studio/program-rule-*"
+      - "apps/studio/main.cjs"
+      - "apps/studio/preload.cjs"
+      - "apps/web/app/studio/program-rule-intake.tsx"
+      - "apps/web/e2e/program-rule-intake.spec.ts"
+      - "apps/web/lib/program-rule-*"
+      - "infra/docker-compose.yml"
+      - ".github/workflows/program-rule-intake-gate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          cache-dependency-path: |
+            apps/studio/package-lock.json
+            apps/web/package-lock.json
+          node-version: "22"
+
+      - name: Install backend dependencies
+        working-directory: apps/api
+        run: python -m pip install -r requirements.txt
+      - name: Backend program-rule gate
+        working-directory: apps/api
+        run: >-
+          python -m pytest
+          tests/test_program_rule_intake.py
+          tests/test_program_rule_repository.py
+          tests/test_program_rule_api.py
+          tests/test_program_rule_scope_gate.py
+          tests/test_program_rule_release_gate.py
+          -q --tb=line
+
+      - name: Install and test Studio
+        working-directory: apps/studio
+        run: |
+          npm ci
+          npm test
+
+      - name: Install Web and Chromium
+        working-directory: apps/web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Web unit, lint, and production build
+        working-directory: apps/web
+        run: |
+          npm test
+          npm run lint
+          npm run build
+      - name: Local-only program-rule E2E
+        working-directory: apps/web
+        run: npx playwright test e2e/program-rule-intake.spec.ts --workers=1
+
+      - name: Compose configuration
+        run: docker compose -f infra/docker-compose.yml config --quiet
+      - name: Forbidden production capability scan
+        shell: bash
+        run: |
+          if grep -InE 'launchPersistentContext|recordHar|recordVideo|storageState|page\.evaluate|NODE_TLS_REJECT_UNAUTHORIZED|ignoreHTTPSErrors' \
+            apps/studio/program-rule-api-client.cjs \
+            apps/studio/program-rule-network.cjs \
+            apps/studio/program-rule-refresh-pump.cjs \
+            apps/studio/program-rule-renderer.cjs \
+            apps/studio/program-rule-runner.cjs; then
+            exit 1
+          fi
+          if grep -RInE 'execution_allowed.*true|lease_grant_allowed.*true|scope_change_allowed.*true|review_bypass_allowed.*true|report_submission_allowed.*true' apps/api/app/program_rule_intake apps/web/app/studio/program-rule-intake.tsx; then
+            exit 1
+          fi

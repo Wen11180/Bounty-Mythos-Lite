@@ -10,7 +10,7 @@ Educational authorized lab package for G13 package-root trials.
 - No production code, no live host, no real user records
 
 Why not a full public repo (Juice Shop, crAPI, etc.)?
-1. Current A+B mapper expects TypeScript Express-style code surfaces and known sinks.
+1. The A+B mapper accepts supported local source surfaces; this fixture uses a TypeScript Express-style snapshot and known sinks.
 2. Fixture sanitizer rejects external URLs and secret-shaped text.
 3. Project safety rules forbid treating public targets as scan targets.
 

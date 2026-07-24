@@ -38,6 +38,11 @@ def test_database_schema_includes_core_tables():
         "scanner_runs",
         "validation_runs",
     } <= tables
+    assert {
+        "program_rule_sources",
+        "program_rule_snapshots",
+        "program_scope_rules",
+    } <= tables
 
 
 def test_repository_reads_seeded_programs_findings_and_reports():

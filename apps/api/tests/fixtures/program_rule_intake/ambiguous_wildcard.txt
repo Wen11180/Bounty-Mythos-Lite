@@ -1,0 +1,4 @@
+In scope: api*.example.com
+In scope: api.example.com
+Out of scope: api.example.com
+Automation is limited to 2 requests per minute.

@@ -107,12 +107,12 @@ is mapped on the right.
 | Required research field | Current source | Status |
 | --- | --- | --- |
 | Affected endpoint | `route.method` + `route.path` | **Present** |
-| Affected code path | partly via `source_fact_refs` / `root_cause_id` symbol | **Partial** — no dedicated `affected_code_path` field |
+| Affected code path | `affected_code_path` backed by a cited `code:` `source_fact_refs` entry | **Present** — uncited paths request code evidence and cannot enter a report draft |
 | Vulnerability type | `vuln_type` | **Present** |
-| Why high impact | not first-class on final projection | **Gap** |
-| Evidence needed | missing kinds / evidence tasks; not always on final card | **Partial** |
-| Refutation questions | `refutation_questions` on candidate state; default questions exist | **Partial** — not always on final retained projection |
-| Safe validation plan | `safe_validation_plan` | **Present** (generic default) |
+| Why high impact | source hypothesis `impact_rationale` + `impact_score` | **Partial** — code-derived profiles persist potential impact to retained cards and report drafts; human review still determines actual impact |
+| Evidence needed | source hypothesis `evidence_needed` plus missing kinds / evidence tasks | **Partial** — code-derived profiles persist their requirements to retained cards and report drafts |
+| Refutation questions | source hypothesis `refutation_questions` on retained candidate state | **Partial** — code-derived profiles persist specific questions; other inputs retain a safe fallback |
+| Safe validation plan | source hypothesis `safe_validation_plan` | **Present** — code-derived profiles retain offline-only steps; generic fallback remains for sparse inputs |
 | Safety blockers | `safety_blockers` + allow flags false | **Present** |
 | Report draft readiness | `report_submission_allowed: false`, `next_allowed_action` | **Present / blocked** |
 | Evidence traceability | `source_fact_refs`, `evidence_trace_status=traceable` | **Present** for retain path |
@@ -253,7 +253,7 @@ Status key: **Done** / **Partial** / **Missing** / **Frozen**
 | G4 | Held-out auth-family refute hard cases | Done (Day3) | - | Regression only |
 | G5 | Invented path fail-closed | Done (Day2) | - | Regression only |
 | G6 | Release suite metric gate | Done | - | Do not loosen thresholds |
-| G7 | Final card: dedicated affected code path | Partial | L3 | Optional: project handler/source from evidence refs without new tables |
+| G7 | Final card: dedicated affected code path | Done | - | Keep cited-code-path loop, projection, and report-bridge regressions green |
 | G8 | Final card: impact rationale | Missing | L3/H3/H7 | Only if operator trial shows retain is "correct but unconvincing" |
 | G9 | Final card: specific evidence-needed list | Partial | L3 | Surface missing kinds already computed by loop |
 | G10 | Final card: refutation_questions on retained projection | Partial | L3/H5 | Promote existing state questions into retained projection |

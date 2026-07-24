@@ -5,7 +5,7 @@ Copy this directory to a new folder (do not edit the smoke package in place).
 1. Replace `package_id` and route/code with authorized local artifacts.
 2. Keep safety flags false for real-user-data/secrets.
 3. Keep `allowed_repos: ["${STAGED_CODE_ROOT}"]`.
-4. Code must be TypeScript (`.ts`) for the current A+B mapper.
+4. Code must use a supported source suffix: `.py`, `.ts`, `.tsx`, `.mts`, `.cts`, `.java`, `.go`, `.rb`, `.cs`, `.php`, `.kt`, `.rs`, or `.scala`.
 5. Avoid literal text `real user data`, bearer tokens, cookies, or external http(s) URLs in package files.
 6. Run:
 

@@ -761,6 +761,7 @@ def _text(value: Any) -> str:
 
 
 from app.intelligence_benchmark.release_v1 import (
+    evaluate_candidate_hunter_authorized_lab_v1,
     evaluate_candidate_hunter_release_suite_v1,
     evaluate_candidate_hunter_release_v1,
 )
@@ -768,6 +769,7 @@ from app.intelligence_benchmark.release_v1 import (
 
 __all__ = [
     "build_studio_expectations_template",
+    "evaluate_candidate_hunter_authorized_lab_v1",
     "evaluate_candidate_hunter_release_suite_v1",
     "evaluate_candidate_hunter_release_v1",
     "evaluate_studio_candidates",

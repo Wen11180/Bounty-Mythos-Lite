@@ -6,6 +6,8 @@ const {
   createStudioLaunchConfig,
   findAvailablePort,
   startupErrorHtml,
+  waitForApiHealth,
+  waitForStudio,
   waitForUrl,
 } = require("./launcher.cjs");
 
@@ -48,16 +50,150 @@ test("waitForUrl rejects when the local service never becomes ready", async () =
   }
 });
 
-test("startupErrorHtml escapes startup failure details", () => {
-  const html = startupErrorHtml(new Error("<token> & bearer"));
+test("waitForApiHealth accepts only the exact local health response", async (t) => {
+  for (const [name, statusCode, body] of [
+    ["expected", 200, JSON.stringify({ status: "ok", service: "bounty-mythos-api" })],
+    ["wrong service", 200, JSON.stringify({ status: "ok", service: "other" })],
+    ["extra field", 200, JSON.stringify({ status: "ok", service: "bounty-mythos-api", version: "1" })],
+    ["malformed JSON", 200, "not-json"],
+    ["non-200", 503, "token=not-for-diagnostics"],
+    ["oversized", 200, "x".repeat(16 * 1024)],
+  ]) {
+    await t.test(name, async () => {
+      const server = http.createServer((_, response) => {
+        response.writeHead(statusCode, { "content-type": "application/json" });
+        response.end(body);
+      });
+      await listen(server);
+      const url = `http://127.0.0.1:${server.address().port}/health`;
 
-  assert.match(html, /Mythos Studio could not start/);
-  assert.match(html, /&lt;token&gt; &amp; bearer/);
-  assert.doesNotMatch(html, /<token>/);
+      try {
+        if (name === "expected") {
+          await assert.doesNotReject(
+            waitForApiHealth(url, { intervalMs: 5, requestTimeoutMs: 100, timeoutMs: 500 }),
+          );
+        } else {
+          await assert.rejects(
+            waitForApiHealth(url, { intervalMs: 5, requestTimeoutMs: 100, timeoutMs: 500 }),
+            (error) => (
+              error?.code === "api_unhealthy"
+              && !/token|diagnostics/i.test(error.message)
+            ),
+          );
+        }
+      } finally {
+        server.close();
+      }
+    });
+  }
 });
 
-test("startupErrorHtml gives local recovery steps", () => {
-  const html = startupErrorHtml(new Error("service failed"));
+test("waitForStudio accepts only HTTP 200 without inspecting its response body", async () => {
+  const server = http.createServer((_, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<main>local Studio</main>");
+  });
+  await listen(server);
+  const url = `http://127.0.0.1:${server.address().port}/studio`;
+
+  try {
+    await assert.doesNotReject(
+      waitForStudio(url, { intervalMs: 5, requestTimeoutMs: 100, timeoutMs: 500 }),
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test("strict local readiness maps bad responses, timeouts, and early exits to fixed codes", async (t) => {
+  await t.test("web response", async () => {
+    const server = http.createServer((_, response) => {
+      response.writeHead(201);
+      response.end("not ready");
+    });
+    await listen(server);
+    const url = `http://127.0.0.1:${server.address().port}/studio`;
+
+    try {
+      await assert.rejects(
+        waitForStudio(url, { intervalMs: 5, requestTimeoutMs: 100, timeoutMs: 500 }),
+        (error) => error?.code === "web_unhealthy",
+      );
+    } finally {
+      server.close();
+    }
+  });
+
+  await t.test("deadline", async () => {
+    const server = http.createServer(() => {});
+    await listen(server);
+    const url = `http://127.0.0.1:${server.address().port}/health`;
+
+    try {
+      await assert.rejects(
+        waitForApiHealth(url, { intervalMs: 5, requestTimeoutMs: 20, timeoutMs: 60 }),
+        (error) => error?.code === "api_timeout",
+      );
+    } finally {
+      server.close();
+    }
+  });
+
+  await t.test("early API exit", async () => {
+    await assert.rejects(
+      waitForApiHealth("http://127.0.0.1:1/health", {
+        getStartupFailure: () => "api_exited",
+        intervalMs: 5,
+        requestTimeoutMs: 100,
+        timeoutMs: 500,
+      }),
+      (error) => error?.code === "api_exited",
+    );
+  });
+});
+
+test("waitForApiHealth enforces its total deadline while a response continues streaming", async () => {
+  const server = http.createServer((_, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    const stream = setInterval(() => response.write(" "), 5);
+    const end = setTimeout(() => {
+      clearInterval(stream);
+      response.end("not-json");
+    }, 250);
+    response.once("close", () => {
+      clearInterval(stream);
+      clearTimeout(end);
+    });
+  });
+  await listen(server);
+  const url = `http://127.0.0.1:${server.address().port}/health`;
+  const startedAt = Date.now();
+
+  try {
+    await assert.rejects(
+      waitForApiHealth(url, { intervalMs: 5, requestTimeoutMs: 20, timeoutMs: 60 }),
+      (error) => error?.code === "api_timeout",
+    );
+    assert.ok(Date.now() - startedAt < 200);
+  } finally {
+    server.close();
+  }
+});
+
+test("startupErrorHtml renders only the fixed startup diagnostic projection", () => {
+  const html = startupErrorHtml({
+    code: "api_unhealthy",
+    detail: "C:\\Users\\operator\\token=<secret>",
+  });
+
+  assert.match(html, /Mythos Studio could not start/);
+  assert.match(html, /Diagnostic code:\s*<code>api_unhealthy<\/code>/);
+  assert.match(html, /No research, validation, or report submission was started/);
+  assert.doesNotMatch(html, /Users|token|secret/i);
+});
+
+test("startupErrorHtml gives development-only local recovery steps", () => {
+  const html = startupErrorHtml({ code: "startup_unknown" }, { packaged: false });
 
   assert.match(html, /Check local prerequisites/);
   assert.match(html, /apps\/api/);
@@ -66,6 +202,14 @@ test("startupErrorHtml gives local recovery steps", () => {
   assert.match(html, /npm install/);
   assert.match(html, /apps\/studio/);
   assert.match(html, /npm start/);
+});
+
+test("startupErrorHtml keeps packaged recovery steps free of source install commands", () => {
+  const html = startupErrorHtml({ code: "state_unwritable" }, { packaged: true });
+
+  assert.match(html, /Diagnostic code:\s*<code>state_unwritable<\/code>/);
+  assert.match(html, /Restart the installed app/);
+  assert.doesNotMatch(html, /python -m pip|npm install|apps\/api|apps\/web/i);
 });
 
 test("findAvailablePort returns the preferred port when it is free", async () => {
@@ -87,6 +231,13 @@ test("findAvailablePort skips an occupied preferred port", async () => {
   } finally {
     server.close();
   }
+});
+
+test("findAvailablePort maps an exhausted local port search to port_unavailable", async () => {
+  await assert.rejects(
+    findAvailablePort(8000, { maxAttempts: 0 }),
+    (error) => error?.code === "port_unavailable",
+  );
 });
 
 test("createStudioLaunchConfig uses available local ports and API URLs", async () => {

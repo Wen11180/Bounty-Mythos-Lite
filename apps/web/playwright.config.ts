@@ -14,19 +14,52 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: `npm run build && npm run start -- --hostname 127.0.0.1 --port ${webPort}`,
+    command: "npm run build && node scripts/start-e2e-server.mjs",
     env: {
       API_BASE_URL: `http://127.0.0.1:${mockApiPort}`,
+      HOSTNAME: "127.0.0.1",
       NEXT_PUBLIC_API_BASE_URL: `http://127.0.0.1:${mockApiPort}`,
+      PORT: String(webPort),
     },
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120_000,
     url: `http://127.0.0.1:${webPort}`,
   },
   projects: [
     {
       name: "chromium",
+      testIgnore: /control-center\.visual\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "visual-1680",
+      testMatch: /control-center\.visual\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        colorScheme: "dark",
+        deviceScaleFactor: 1,
+        viewport: { width: 1680, height: 944 },
+      },
+    },
+    {
+      name: "visual-1440",
+      testMatch: /control-center\.visual\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        colorScheme: "dark",
+        deviceScaleFactor: 1,
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      name: "visual-390",
+      testMatch: /control-center\.visual\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        colorScheme: "dark",
+        deviceScaleFactor: 1,
+        viewport: { width: 390, height: 844 },
+      },
     },
   ],
 });

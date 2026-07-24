@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import io
 import json
@@ -8,7 +9,7 @@ import pytest
 from app.main import app
 from app.mythos_chat import run_chat
 from app.cli import main as cli_main
-from app.codebase_map import CodebaseFactCandidate
+from app.codebase_map import CodebaseFactCandidate, map_authorized_code_files
 from app.config import get_settings
 from app.db import Base
 from app.db import get_session
@@ -20,6 +21,7 @@ from app.source_audit import (
     SourceAuditBlocked,
     StaticFinding,
     build_finding_json,
+    build_source_audit_pipeline_payload,
     build_source_hypotheses,
     collect_authorized_code_files,
     load_scope_policy,
@@ -849,7 +851,7 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_group_id_f
     assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
 
 
-def test_run_source_audit_raises_authorization_hypothesis_for_agent_tool_execution_without_authz(
+def test_run_source_audit_raises_agent_tool_authorization_hypothesis_for_execution_without_policy(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -877,12 +879,28 @@ def test_run_source_audit_raises_authorization_hypothesis_for_agent_tool_executi
     )
 
     assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
-        "authorization"
+        "agent_tool_authz_gap"
     ]
     assert result.hypotheses[0].location == "POST /agents/{agent_id}/tools/execute"
+    assert "tool-policy check" in result.hypotheses[0].reason
+    assert "tool-policy checks before dispatch" in result.hypotheses[0].evidence_needed[0]
+    assert "tool-policy check may run before dispatch" in result.hypotheses[0].false_positive_checks[0]
+
+    payload = build_source_audit_pipeline_payload(result)
+    assert payload["hypotheses"][0]["validation_mode"] == "offline_agent_tool_policy_review"
+    assert payload["invariants"] == [
+        {
+            "invariant": (
+                "AI agents may only invoke tools and resources explicitly authorized for the "
+                "current user, agent policy, and task context."
+            ),
+            "source": "H-001",
+        }
+    ]
+    assert payload["hunter_intelligence"]["assessments"][0]["playbook_id"] == "agent_tool_authorization"
 
 
-def test_run_source_audit_raises_authorization_hypothesis_for_agent_tool_dispatch_without_authz(
+def test_run_source_audit_raises_agent_tool_authorization_hypothesis_for_dispatch_without_policy(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -910,12 +928,12 @@ def test_run_source_audit_raises_authorization_hypothesis_for_agent_tool_dispatc
     )
 
     assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
-        "authorization"
+        "agent_tool_authz_gap"
     ]
     assert result.hypotheses[0].location == "POST /agents/{agent_id}/tools/dispatch"
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_agent_id_filter(
+def test_run_source_audit_raises_agent_tool_authorization_hypothesis_for_agent_id_filter_without_policy(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -945,7 +963,176 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_agent_id_f
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "agent_tool_authz_gap"
+    ]
+
+
+def test_run_source_audit_does_not_raise_agent_tool_authorization_hypothesis_for_tool_policy(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                "",
+                '@router.post("/agents/{agent_id}/tools/execute")',
+                "def run_agent_tool(agent_id: str, tool_name: str, current_user):",
+                "    assert_tool_allowed(agent_id, tool_name)",
+                "    return execute_agent_tool(agent_id, tool_name)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
     assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
+
+
+@pytest.mark.parametrize(
+    (
+        "root_cause",
+        "vuln_type",
+        "validation_mode",
+        "playbook_id",
+        "invariant",
+        "reason_fragment",
+        "evidence_fragment",
+        "false_positive_fragment",
+    ),
+    [
+        pytest.param(
+            "missing_command_injection_validation",
+            "command_injection",
+            "offline_command_execution_boundary_review",
+            "command_execution_boundary",
+            (
+                "Command selection and arguments must be constrained by an explicit local allowlist "
+                "or structured validation before command-execution sinks."
+            ),
+            "command execution",
+            "command allowlist",
+            "command allowlist",
+            id="command-execution",
+        ),
+        pytest.param(
+            "missing_unsafe_deserialization_guard",
+            "unsafe_deserialization",
+            "offline_deserialization_policy_review",
+            "unsafe_deserialization_boundary",
+            "Serialized input must pass an explicit type and loader policy before unsafe deserialization sinks.",
+            "unsafe deserialization",
+            "serialized-payload validation",
+            "safe loader",
+            id="unsafe-deserialization",
+        ),
+        pytest.param(
+            "missing_file_upload_validation",
+            "file_upload",
+            "offline_file_upload_policy_review",
+            "file_upload_boundary",
+            (
+                "Uploaded files must pass explicit type, filename, and storage policy checks "
+                "before upload-storage sinks."
+            ),
+            "file-upload",
+            "upload validation",
+            "upload validation",
+            id="file-upload",
+        ),
+        pytest.param(
+            "missing_server_authoritative_amount_check",
+            "business_logic",
+            "offline_server_amount_policy_review",
+            "money_flow_tampering",
+            (
+                "Financial amounts, credits, and refunds must be derived from trusted server-side "
+                "order or account state before financial action sinks."
+            ),
+            "server-authoritative amount",
+            "server-side amount derivation",
+            "server-side amount derivation",
+            id="server-authoritative-money-flow",
+        ),
+        pytest.param(
+            "missing_jwt_verification",
+            "jwt_authentication_bypass",
+            "offline_jwt_verification_review",
+            "jwt_authentication_boundary",
+            (
+                "JWT claims must be signature-verified and validated before they "
+                "influence sensitive operations."
+            ),
+            "JWT signature verification",
+            "JWT signature verification",
+            "JWT verification",
+            id="jwt-verification",
+        ),
+    ],
+)
+def test_source_audit_preserves_specialized_static_gap_profiles(
+    tmp_path,
+    root_cause,
+    vuln_type,
+    validation_mode,
+    playbook_id,
+    invariant,
+    reason_fragment,
+    evidence_fragment,
+    false_positive_fragment,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "from fastapi import APIRouter\nrouter = APIRouter()\n",
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+    baseline = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+    hypotheses = build_source_hypotheses(
+        [
+            CodebaseFactCandidate(
+                fact_type="authorization_gap_candidate",
+                source_path="routes.py",
+                symbol_name="run_sensitive_operation",
+                route_method="POST",
+                route_path="/operations",
+                authz_hint="missing_handler_specialized_check",
+                sensitivity_label="high",
+                payload={
+                    "handler": "run_sensitive_operation",
+                    "root_cause": root_cause,
+                    "sink_count": 1,
+                },
+            )
+        ],
+        [],
+    )
+
+    assert [hypothesis.vuln_type for hypothesis in hypotheses] == [vuln_type]
+    assert reason_fragment in hypotheses[0].reason
+    assert evidence_fragment in hypotheses[0].evidence_needed[0]
+    assert false_positive_fragment in hypotheses[0].false_positive_checks[0]
+
+    payload = build_source_audit_pipeline_payload(replace(baseline, hypotheses=hypotheses))
+    assert payload["hypotheses"][0]["validation_mode"] == validation_mode
+    assert payload["invariants"][0]["invariant"] == invariant
+    assert payload["hunter_intelligence"]["assessments"][0]["playbook_id"] == playbook_id
 
 
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_owner_filter_authz(
@@ -5009,3 +5196,34 @@ def test_load_scope_policy_accepts_bug_bounty_yaml_fields(tmp_path):
             ],
         },
     }
+
+
+def test_build_source_hypotheses_labels_graphql_operations_without_http_verb():
+    mapped = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    hypotheses = build_source_hypotheses(mapped.facts, [])
+
+    assert len(hypotheses) == 1
+    hypothesis = hypotheses[0]
+    assert hypothesis.location == "GraphQL query record"
+    assert hypothesis.source_facts[0]["entrypoint_kind"] == "graphql_operation"
+    assert hypothesis.source_facts[0]["graphql_operation_type"] == "query"
+    assert hypothesis.source_facts[0]["graphql_operation_name"] == "record"
