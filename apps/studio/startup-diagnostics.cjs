@@ -75,6 +75,9 @@ function resolveDevelopmentDataDirectory(databaseUrl, cwd) {
     if (/^[A-Za-z]:[\\/]/u.test(databasePath)) {
       return path.win32.dirname(databasePath).replace(/[\\/]/gu, path.sep);
     }
+    if (/^[A-Za-z]:[\\/]/u.test(cwd)) {
+      return path.win32.dirname(path.win32.resolve(cwd, databasePath)).replace(/[\\/]/gu, path.sep);
+    }
     return path.dirname(path.resolve(cwd, databasePath));
   } catch {
     return null;
