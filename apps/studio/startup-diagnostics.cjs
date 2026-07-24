@@ -71,7 +71,11 @@ function resolveDevelopmentDataDirectory(databaseUrl, cwd) {
     return null;
   }
   try {
-    return path.dirname(path.resolve(cwd, decodeURIComponent(match[1])));
+    const databasePath = decodeURIComponent(match[1]);
+    if (path.win32.isAbsolute(databasePath) && !path.isAbsolute(databasePath)) {
+      return path.win32.dirname(databasePath);
+    }
+    return path.dirname(path.resolve(cwd, databasePath));
   } catch {
     return null;
   }

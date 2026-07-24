@@ -203,7 +203,10 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
     if (!activeConfig || !activePaths || typeof execFile !== "function") {
       throw new Error("desktop_maintenance_unavailable");
     }
-    if (typeof selectedPath !== "string" || !path.isAbsolute(selectedPath)) {
+    if (
+      typeof selectedPath !== "string"
+      || !(path.isAbsolute(selectedPath) || path.win32.isAbsolute(selectedPath))
+    ) {
       throw new Error("desktop_maintenance_path_invalid");
     }
     const config = activeConfig;

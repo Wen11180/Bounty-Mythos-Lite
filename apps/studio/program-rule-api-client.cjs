@@ -42,7 +42,6 @@ function createProgramRuleApiClient({
     let options = {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
     };
     if (payload !== undefined) {
       let body;
@@ -61,44 +60,50 @@ function createProgramRuleApiClient({
       };
     }
 
-    let response;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      response = await fetchImpl(`${origin}${path}`, options);
-    } catch {
-      throw apiError("program_rule_api_request_failed");
-    }
-    let responseOk;
-    let responseStatus;
-    try {
-      responseOk = response?.ok === true;
-      responseStatus = response?.status;
-    } catch {
-      throw apiError("program_rule_api_request_failed");
-    }
-    if (!responseOk) {
-      if (responseKind === "normalized" && responseStatus === 422) {
-        try {
-          const detail = await readJsonResponse(response);
-          if (
-            hasExactKeys(detail, ["detail"])
-            && detail.detail === "browser_render_required"
-          ) {
-            throw apiError("browser_render_required");
-          }
-        } catch (error) {
-          if (error instanceof ProgramRuleApiError && error.code === "browser_render_required") {
-            throw error;
+      let response;
+      try {
+        response = await fetchImpl(`${origin}${path}`, { ...options, signal: controller.signal });
+      } catch {
+        throw apiError("program_rule_api_request_failed");
+      }
+      let responseOk;
+      let responseStatus;
+      try {
+        responseOk = response?.ok === true;
+        responseStatus = response?.status;
+      } catch {
+        throw apiError("program_rule_api_request_failed");
+      }
+      if (!responseOk) {
+        if (responseKind === "normalized" && responseStatus === 422) {
+          try {
+            const detail = await readJsonResponse(response);
+            if (
+              hasExactKeys(detail, ["detail"])
+              && detail.detail === "browser_render_required"
+            ) {
+              throw apiError("browser_render_required");
+            }
+          } catch (error) {
+            if (error instanceof ProgramRuleApiError && error.code === "browser_render_required") {
+              throw error;
+            }
           }
         }
+        throw apiError("program_rule_api_request_failed");
       }
-      throw apiError("program_rule_api_request_failed");
-    }
 
-    const parsed = await readJsonResponse(response);
-    if (!validateResponse(responseKind, parsed)) {
-      throw apiError("program_rule_api_response_invalid");
+      const parsed = await readJsonResponse(response);
+      if (!validateResponse(responseKind, parsed)) {
+        throw apiError("program_rule_api_response_invalid");
+      }
+      return parsed;
+    } finally {
+      clearTimeout(timeout);
     }
-    return parsed;
   }
 
   return {
