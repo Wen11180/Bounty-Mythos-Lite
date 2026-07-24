@@ -1,8 +1,11 @@
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.black_box_hunter import WorkflowPathParameter, _normalize_route_template
+from app.bounty_autopilot.contracts import RiskTier, StrictContract
+from app.bounty_autopilot.observations import ObservationGrade
 
 
 SUPPORTED_EVIDENCE_TYPES = {
@@ -90,6 +93,49 @@ class EvidenceBundle(BaseModel):
     safety_notes: list[str] = Field(default_factory=lambda: DEFAULT_SAFETY_NOTES.copy())
 
 
+class AutopilotEvidenceBundle(StrictContract):
+    """Bounded evidence projection with the complete Autopilot authority chain."""
+
+    finding_id: str
+    hypothesis_id: str
+    campaign_id: str
+    observation_id: str
+    refutation_lineage_digest: str
+    lineage_digest: str
+    authorization_id: str
+    authorization_digest: str
+    scope_snapshot_digest: str
+    asset_id: str
+    asset_identity_digest: str
+    branch_id: str
+    plan_id: str
+    plan_digest: str
+    risk_decision_id: str
+    risk_tier: RiskTier
+    recipe_id: str
+    recipe_version: str
+    recipe_definition_digest: str
+    lease_id: str
+    reservation_id: str
+    session_generation: int = Field(ge=1)
+    tool_run_id: str
+    endpoint_method: str
+    endpoint_route_template: str
+    occurred_at: datetime
+    evidence_grade: ObservationGrade
+    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=16)
+    safety_notes: tuple[str, ...] = (
+        "owned_accounts_or_canary_only",
+        "sanitized_projection_only",
+        "automated_evidence_capped_at_l3",
+    )
+    lineage_complete: Literal[True] = True
+    raw_content_retained: Literal[False] = False
+    human_review_required: Literal[True] = True
+    submission_blocked: Literal[True] = True
+    automatic_submission_allowed: Literal[False] = False
+
+
 def build_evidence_bundle(finding_id: str, items: list[dict]) -> EvidenceBundle:
     evidence_items: list[EvidenceItem] = []
 
@@ -114,6 +160,73 @@ def build_evidence_bundle(finding_id: str, items: list[dict]) -> EvidenceBundle:
         summary=f"Evidence bundle for {finding_id} with {len(evidence_items)} item(s).",
         items=evidence_items,
         safety_notes=DEFAULT_SAFETY_NOTES.copy(),
+    )
+
+
+def build_autopilot_evidence_bundle(
+    *,
+    observation: object,
+    judge_result: object,
+) -> AutopilotEvidenceBundle:
+    """Build report-safe evidence only from typed retained Autopilot lineage."""
+
+    from app.bounty_autopilot.evidence_judge import (
+        EvidenceJudgeResult,
+        EvidenceJudgeVerdict,
+        evidence_lineage_digest,
+    )
+    from app.bounty_autopilot.observations import ObservationRecord
+
+    if not isinstance(observation, ObservationRecord):
+        raise TypeError("typed_autopilot_observation_required")
+    if not isinstance(judge_result, EvidenceJudgeResult):
+        raise TypeError("typed_autopilot_judge_result_required")
+    if (
+        judge_result.verdict is not EvidenceJudgeVerdict.RETAINED_CANDIDATE
+        or judge_result.evidence_grade is not ObservationGrade.L3_ACTIONABLE
+        or observation.grade is not judge_result.evidence_grade
+        or observation.third_party_data_discarded
+        or not observation.evidence_refs
+        or not judge_result.lineage_complete
+        or judge_result.campaign_id != observation.campaign_id
+        or judge_result.branch_id != observation.branch_id
+        or judge_result.observation_ids != (observation.observation_id,)
+        or judge_result.lineage_digest
+        != evidence_lineage_digest(
+            observations=(observation,),
+            refutation_lineage_digest=judge_result.refutation_lineage_digest,
+        )
+    ):
+        raise ValueError("retained_sanitized_l3_autopilot_evidence_required")
+    return AutopilotEvidenceBundle(
+        finding_id=f"autopilot_evidence_{observation.observation_id}",
+        hypothesis_id=judge_result.hypothesis_id,
+        campaign_id=observation.campaign_id,
+        observation_id=observation.observation_id,
+        refutation_lineage_digest=judge_result.refutation_lineage_digest,
+        lineage_digest=judge_result.lineage_digest,
+        authorization_id=observation.authorization_id,
+        authorization_digest=observation.authorization_digest,
+        scope_snapshot_digest=observation.scope_snapshot_digest,
+        asset_id=observation.asset_id,
+        asset_identity_digest=observation.asset_identity_digest,
+        branch_id=observation.branch_id,
+        plan_id=observation.plan_id,
+        plan_digest=observation.plan_digest,
+        risk_decision_id=observation.risk_decision_id,
+        risk_tier=observation.risk_tier,
+        recipe_id=observation.recipe_ref.recipe_id,
+        recipe_version=observation.recipe_ref.version,
+        recipe_definition_digest=observation.recipe_ref.definition_digest,
+        lease_id=observation.lease_id,
+        reservation_id=observation.reservation_id,
+        session_generation=observation.session_generation,
+        tool_run_id=observation.tool_run_id,
+        endpoint_method=observation.endpoint.method,
+        endpoint_route_template=observation.endpoint.route_template,
+        occurred_at=observation.occurred_at,
+        evidence_grade=observation.grade,
+        evidence_refs=observation.evidence_refs,
     )
 
 
@@ -173,7 +286,9 @@ def _is_secret_like(value: str) -> bool:
 
 
 __all__ = [
+    "AutopilotEvidenceBundle",
     "EvidenceBundle",
     "EvidenceItem",
+    "build_autopilot_evidence_bundle",
     "build_evidence_bundle",
 ]

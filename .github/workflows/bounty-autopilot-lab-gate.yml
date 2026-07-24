@@ -1,0 +1,73 @@
+name: bounty-autopilot-lab-gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/bounty-autopilot-lab-gate.yml"
+      - "apps/api/**"
+      - "apps/studio/**"
+      - "apps/web/**"
+      - "infra/docker-compose.yml"
+      - "docs/BOUNTY_AUTOPILOT_LAB.md"
+  push:
+    paths:
+      - ".github/workflows/bounty-autopilot-lab-gate.yml"
+      - "apps/api/**"
+      - "apps/studio/**"
+      - "apps/web/**"
+      - "infra/docker-compose.yml"
+      - "docs/BOUNTY_AUTOPILOT_LAB.md"
+
+permissions:
+  contents: read
+
+jobs:
+  lab-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+          python-version: "3.12"
+      - name: Install API deps
+        run: python -m pip install -r apps/api/requirements.txt
+      - name: Autopilot pure + durable tests
+        run: python -m pytest apps/api/tests/test_bounty_autopilot_*.py -q
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          cache-dependency-path: |
+            apps/studio/package-lock.json
+            apps/web/package-lock.json
+          node-version: "22"
+      - name: Studio Autopilot unit tests
+        working-directory: apps/studio
+        run: |
+          npm ci
+          npm test
+      - name: Install Web and Chromium
+        working-directory: apps/web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Web unit, lint, build, and bundle gate
+        working-directory: apps/web
+        run: |
+          npm test
+          npm run lint
+          npm run build
+          npm run check:bundle
+      - name: Local-only Autopilot E2E
+        working-directory: apps/web
+        run: >-
+          npx playwright test
+          e2e/bounty-autopilot.spec.ts
+          e2e/bounty-autopilot-lab.spec.ts
+          --workers=1
+      - name: Isolation and Compose gate
+        run: |
+          docker info --format '{{json .ServerVersion}}' >/dev/null
+          docker compose -f infra/docker-compose.yml config --quiet

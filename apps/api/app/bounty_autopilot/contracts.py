@@ -21,8 +21,15 @@ from pydantic import (
 _SAFE_ID = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$", re.ASCII)
 _SAFE_ALIAS = re.compile(r"^[a-z][a-z0-9_-]{0,31}$", re.ASCII)
 _SAFE_OPERATOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$", re.ASCII)
+_OPAQUE_HANDLE = re.compile(r"^hdl_[0-9a-f]{48}$", re.ASCII)
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
+
+# Public aliases used by the durable execution-plane contracts.  Keeping these
+# bound to the same strict/frozen primitives avoids a second, weaker contract
+# hierarchy as later phases are layered onto the Phase 1 authority model.
+DIGEST_PATTERN = _SHA256
+SCHEMA_VERSION = "bounty-autopilot-authorization/v1"
 
 RiskTier = Literal["R0", "R1", "R2", "R3", "R4"]
 AutomaticRiskTier = Literal["R0", "R1", "R2"]
@@ -61,6 +68,17 @@ ProhibitedActionCategory = Literal[
 
 class FrozenContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+StrictContract = FrozenContract
+
+# A few execution-plane call sites use enum-style constants while the public
+# wire contract intentionally remains a Literal.  Attributes preserve that
+# ergonomic form without weakening strict string validation or serialization.
+for _risk_tier in ("R0", "R1", "R2", "R3", "R4"):
+    setattr(RiskTier, _risk_tier, _risk_tier)
+setattr(PolicyMode, "PASSIVE_ONLY", "passive_only")
+setattr(PolicyMode, "AUTHORIZED_LOCAL_LAB", "authorized_local_lab")
 
 
 class AutopilotBudgets(FrozenContract):
@@ -355,6 +373,62 @@ class CampaignAuthorization(FrozenContract):
         return campaign_authorization_digest(self)
 
 
+class AccountAliasProjection(FrozenContract):
+    account_alias: str = Field(min_length=1, max_length=32)
+    role_label: Literal["owned"] = "owned"
+    vault_generation: int = Field(ge=1)
+
+    @field_validator("account_alias")
+    @classmethod
+    def require_safe_alias(cls, value: str) -> str:
+        return _require_match(value, _SAFE_ALIAS, "safe_account_alias_required")
+
+
+class SessionHandleProjection(FrozenContract):
+    handle_id: str = Field(min_length=52, max_length=52)
+    campaign_id: str = Field(min_length=1, max_length=128)
+    account_alias: str = Field(min_length=1, max_length=32)
+    role_label: Literal["owned"] = "owned"
+    login_state: Literal["unknown", "logged_out", "logged_in", "expired", "locked"]
+    generation: int = Field(ge=1)
+    pod_id: str = Field(min_length=1, max_length=128)
+    issued_at: datetime
+    expires_at: datetime
+    revoked: bool = False
+    raw_secret_present: Literal[False] = False
+
+    @field_validator("handle_id")
+    @classmethod
+    def require_opaque_handle(cls, value: str) -> str:
+        return _require_match(value, _OPAQUE_HANDLE, "opaque_session_handle_required")
+
+    @field_validator("campaign_id", "pod_id")
+    @classmethod
+    def require_safe_binding_id(cls, value: str) -> str:
+        return _require_match(value, _SAFE_ID, "safe_session_binding_required")
+
+    @field_validator("account_alias")
+    @classmethod
+    def require_session_alias(cls, value: str) -> str:
+        return _require_match(value, _SAFE_ALIAS, "safe_account_alias_required")
+
+    @field_validator("issued_at", "expires_at")
+    @classmethod
+    def normalize_session_datetime(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timezone_aware_datetime_required")
+        return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def require_bounded_lifetime(self) -> SessionHandleProjection:
+        lifetime = (self.expires_at - self.issued_at).total_seconds()
+        if lifetime <= 0 or lifetime > 3600:
+            raise ValueError("session_lifetime_out_of_bounds")
+        if self.revoked and self.login_state not in {"expired", "logged_out", "locked"}:
+            raise ValueError("revoked_session_must_not_be_logged_in")
+        return self
+
+
 class RecipeSelection(FrozenContract):
     schema_version: Literal["bounty-autopilot-selection/v1"] = (
         "bounty-autopilot-selection/v1"
@@ -559,11 +633,13 @@ def _require_non_overlapping_windows(
 
 __all__ = [
     "ActionCategory",
+    "AccountAliasProjection",
     "ActiveHoursWindow",
     "AutopilotBudgets",
     "AuthorizedRiskDecision",
     "AwaitingExactApprovalRiskDecision",
     "CampaignAuthorization",
+    "DIGEST_PATTERN",
     "DeniedRiskDecision",
     "MethodClass",
     "MutationInventory",
@@ -576,6 +652,9 @@ __all__ = [
     "RecipeSelection",
     "RiskDecision",
     "RiskTier",
+    "SCHEMA_VERSION",
+    "StrictContract",
+    "SessionHandleProjection",
     "VersionedRecipe",
     "campaign_authorization_from_payload",
     "campaign_authorization_digest",

@@ -2,11 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildControlCenterEventsUrl,
   createControlCenterLiveController,
   executeControlCenterRefresh,
   type ControlCenterEventSource,
   type ControlCenterLiveState,
 } from "./control-center-live.ts";
+
+test("control-center events URL supports an optional campaign filter", () => {
+  assert.equal(
+    buildControlCenterEventsUrl("http://127.0.0.1:8000", "campaign / one"),
+    "http://127.0.0.1:8000/mythos/control-center/events?campaign_id=campaign+%2F+one",
+  );
+  assert.equal(
+    buildControlCenterEventsUrl("http://127.0.0.1:8000", null),
+    "http://127.0.0.1:8000/mythos/control-center/events",
+  );
+});
 
 type Listener = () => void;
 

@@ -1,0 +1,7 @@
+{
+  "all_leases_revoked": true,
+  "artifact_kind": "emergency_stop_drill",
+  "campaign_status": "stopped",
+  "released_reservations": 1,
+  "revoked_leases": 1
+}

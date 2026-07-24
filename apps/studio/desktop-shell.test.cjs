@@ -180,8 +180,13 @@ test("desktop shell wakes only the local read-only research runtime after startu
   );
   assert.match(
     main,
-    /closeSessions:\s*async \(reason\) => \{\s*await programRulePump\.close\(reason\);\s*await localResearchWakeup\.stop\(\);\s*await blackBoxRunner\.closeSessions\(reason\);\s*\}/s,
+    /closeSessions:\s*async \(reason\) => \{\s*await programRulePump\.close\(reason\);\s*await localResearchWakeup\.stop\(\);\s*await blackBoxRunner\.closeSessions\(reason\);\s*autopilotPodManager\.stopAll\(reason\);\s*autopilotSessionBroker\.revokeAll\(\);\s*\}/s,
   );
+  assert.match(main, /createAccountVault/);
+  assert.match(main, /createSessionBroker/);
+  assert.match(main, /ipcMain\.handle\("mythos:autopilot-emergency-stop-local"/);
+  assert.match(preload, /listAutopilotAliases/);
+  assert.match(preload, /emergencyStopAutopilotLocal/);
   assert.doesNotMatch(wakeup, /blackBoxRunner|BrowserWindow|createRemoteLeaseApiClient/);
   assert.doesNotMatch(preload, /AUTONOMOUS_RESEARCH_CAPABILITY/);
 });
@@ -207,6 +212,22 @@ test("desktop shell starts the bounded program-rule pump only after local servic
   );
   assert.equal(main.match(/app\.on\("before-quit"/gu)?.length, 1);
   assert.doesNotMatch(preload, /refreshProgramRules\([^)]*\w[^)]*\)/u);
+});
+
+test("Autopilot pod start resolves a server grant instead of trusting renderer booleans", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+  const preload = await fs.readFile(path.join(__dirname, "preload.cjs"), "utf8");
+
+  assert.match(main, /createAutopilotApiClient/);
+  assert.match(main, /await autopilotApi\.issuePodGrant\(/);
+  assert.match(main, /assertLabPodStart\(\{[\s\S]*grant,/);
+  assert.match(main, /createAutopilotPodManager/);
+  assert.match(main, /await autopilotPodManager\.start\(\{ grant: preflight\.grant \}\)/);
+  assert.doesNotMatch(main, /payload\.(?:policyMode|leaseActive|campaignAuthorized)/);
+  assert.match(
+    preload,
+    /startAutopilotPod\(\{ campaignId, podId, leaseId \}\)[\s\S]*\{ campaignId, podId, leaseId \}/,
+  );
 });
 
 test("Compose keeps infrastructure private and binds Studio HTTP services to loopback", async () => {

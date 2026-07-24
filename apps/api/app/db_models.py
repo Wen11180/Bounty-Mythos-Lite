@@ -383,6 +383,12 @@ class CampaignRecord(Base):
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     program_id: Mapped[str | None] = mapped_column(ForeignKey("programs.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    campaign_mode: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="legacy",
+        server_default="legacy",
+    )
     autonomy_level: Mapped[str] = mapped_column(String(100), nullable=False)
     scope_status: Mapped[str] = mapped_column(String(50), nullable=False)
     policy_text_hash: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -626,6 +632,9 @@ class ApprovalRecord(Base):
         nullable=False,
         default=lambda: datetime.now(UTC),
     )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_by_lease_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    single_use_nonce_digest: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     campaign: Mapped[CampaignRecord | None] = relationship()
     task: Mapped[CampaignTaskRecord | None] = relationship()
@@ -788,3 +797,611 @@ class LearningSignalRecord(Base):
     )
 
     program_record: Mapped[ProgramRecord] = relationship()
+
+class CampaignAuthorizationRecord(Base):
+    """Immutable Autopilot Campaign authorization generation."""
+
+    __tablename__ = "campaign_authorizations"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "generation",
+            name="uq_campaign_authorizations_campaign_generation",
+        ),
+        Index(
+            "ix_campaign_authorizations_campaign_current",
+            "campaign_id",
+            "is_current",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    schema_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    authorization_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    scope_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_snapshot_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    policy_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    operator_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revocation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class CampaignAssetRecord(Base):
+    """Immutable Autopilot asset identity with latest admission decision."""
+
+    __tablename__ = "campaign_assets"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "asset_id",
+            name="uq_campaign_assets_campaign_asset",
+        ),
+        Index("ix_campaign_assets_campaign_decision", "campaign_id", "admission_decision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    identity_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    scheme: Mapped[str] = mapped_column(String(16), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    path_authority: Mapped[str] = mapped_column(String(1024), nullable=False)
+    provenance: Mapped[str] = mapped_column(String(32), nullable=False)
+    admission_decision: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_snapshot_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    network_identity: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class CampaignAssetAdmissionEventRecord(Base):
+    """Append-only admission decisions for campaign assets."""
+
+    __tablename__ = "campaign_asset_admission_events"
+    __table_args__ = (
+        Index(
+            "ix_campaign_asset_admission_events_campaign_asset",
+            "campaign_id",
+            "asset_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    identity_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    decision: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_snapshot_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    network_identity: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class ResearchBranchRecord(Base):
+    """Independent research branch with optimistic concurrency version."""
+
+    __tablename__ = "research_branches"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "branch_id",
+            name="uq_research_branches_campaign_branch",
+        ),
+        Index("ix_research_branches_campaign_status", "campaign_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    risk_tier: Mapped[str] = mapped_column(String(8), nullable=False, default="R0")
+    hypothesis_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    parent_signal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    recipe_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recipe_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    account_aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    budget_counters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    stop_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class ValidationPlanRecord(Base):
+    """Immutable Autopilot validation plan."""
+
+    __tablename__ = "validation_plans"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "plan_id",
+            name="uq_validation_plans_campaign_plan",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    risk_tier: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class ExecutionLeaseRecord(Base):
+    """Durable Autopilot execution lease bound to an immutable plan."""
+
+    __tablename__ = "execution_leases"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "lease_id",
+            name="uq_execution_leases_campaign_lease",
+        ),
+        Index("ix_execution_leases_campaign_status", "campaign_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    lease_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    r3_approval_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class ExecutionRequestLedgerRecord(Base):
+    """Idempotent request reservation ledger for Autopilot leases."""
+
+    __tablename__ = "execution_request_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "lease_id",
+            "idempotency_key",
+            name="uq_execution_request_ledger_idempotency",
+        ),
+        Index(
+            "ix_execution_request_ledger_campaign_lease",
+            "campaign_id",
+            "lease_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    reservation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    lease_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotObservationRecord(Base):
+    """Sanitized Autopilot observations with plan lineage."""
+
+    __tablename__ = "autopilot_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "observation_id",
+            name="uq_autopilot_observations_campaign_obs",
+        ),
+        Index(
+            "ix_autopilot_observations_campaign_branch",
+            "campaign_id",
+            "branch_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    observation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    grade: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotRiskDecisionRecord(Base):
+    """Append-only, server-derived Autopilot risk decisions."""
+
+    __tablename__ = "autopilot_risk_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "risk_decision_id",
+            name="uq_autopilot_risk_decisions_campaign_decision",
+        ),
+        Index(
+            "ix_autopilot_risk_decisions_campaign_branch",
+            "campaign_id",
+            "branch_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    risk_decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    authorization_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    authorization_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    scope_snapshot_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    recipe_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    recipe_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    recipe_definition_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    risk_tier: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotToolRunRecord(Base):
+    """Sanitized Tool Run trace with all execution authority references."""
+
+    __tablename__ = "autopilot_tool_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "raw_content_retained = false",
+            name="ck_autopilot_tool_runs_raw_content_retained_false",
+        ),
+        CheckConstraint(
+            "raw_secret_retained = false",
+            name="ck_autopilot_tool_runs_raw_secret_retained_false",
+        ),
+        CheckConstraint(
+            "request_content_retained = false",
+            name="ck_autopilot_tool_runs_request_content_retained_false",
+        ),
+        CheckConstraint(
+            "response_content_retained = false",
+            name="ck_autopilot_tool_runs_response_content_retained_false",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            "tool_run_id",
+            name="uq_autopilot_tool_runs_campaign_run",
+        ),
+        Index(
+            "ix_autopilot_tool_runs_campaign_plan",
+            "campaign_id",
+            "plan_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    tool_run_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    authorization_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    authorization_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    scope_snapshot_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    asset_identity_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    risk_decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    risk_tier: Mapped[str] = mapped_column(String(8), nullable=False)
+    recipe_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    recipe_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    recipe_definition_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    lease_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    reservation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    session_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    isolation_profile: Mapped[str] = mapped_column(String(16), nullable=False)
+    gateway_decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    run_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    third_party_data_discarded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    raw_content_retained: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    raw_secret_retained: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    request_content_retained: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    response_content_retained: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotEvidenceClaimRecord(Base):
+    """Sanitized claim projection keyed to one or more observations."""
+
+    __tablename__ = "autopilot_evidence_claims"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "claim_id",
+            name="uq_autopilot_evidence_claims_campaign_claim",
+        ),
+        Index(
+            "ix_autopilot_evidence_claims_campaign_hypothesis",
+            "campaign_id",
+            "hypothesis_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    claim_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    hypothesis_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    observation_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    evidence_grade: Mapped[str] = mapped_column(String(32), nullable=False)
+    lineage_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    summary_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotRefutationDecisionRecord(Base):
+    """Independent refutation decision without response content or model reasoning."""
+
+    __tablename__ = "autopilot_refutation_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "decision_id",
+            name="uq_autopilot_refutation_decisions_campaign_decision",
+        ),
+        Index(
+            "ix_autopilot_refutation_decisions_campaign_hypothesis",
+            "campaign_id",
+            "hypothesis_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    case_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    hypothesis_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    observation_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    lineage_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotCandidateRevisionRecord(Base):
+    """Candidate revision lineage; an automated record cannot confirm a finding."""
+
+    __tablename__ = "autopilot_candidate_revisions"
+    __table_args__ = (
+        CheckConstraint(
+            "confirmed = false",
+            name="ck_autopilot_candidate_revisions_confirmed_false",
+        ),
+        CheckConstraint(
+            "candidate_promotion_allowed = false",
+            name="ck_autopilot_candidate_revisions_promotion_false",
+        ),
+        CheckConstraint(
+            "report_submission_allowed = false",
+            name="ck_autopilot_candidate_revisions_submission_false",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            "revision_id",
+            name="uq_autopilot_candidate_revisions_campaign_revision",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    hypothesis_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    evidence_claim_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    refutation_decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    judge_verdict: Mapped[str] = mapped_column(String(64), nullable=False)
+    lineage_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    candidate_promotion_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    report_submission_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotReportRevisionRecord(Base):
+    """Submission-blocked report revision lineage."""
+
+    __tablename__ = "autopilot_report_revisions"
+    __table_args__ = (
+        CheckConstraint(
+            "submission_blocked = true",
+            name="ck_autopilot_report_revisions_submission_blocked_true",
+        ),
+        CheckConstraint(
+            "automatic_submission_allowed = false",
+            name="ck_autopilot_report_revisions_automatic_submission_false",
+        ),
+        CheckConstraint(
+            "report_submission_allowed = false",
+            name="ck_autopilot_report_revisions_submission_false",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            "revision_id",
+            name="uq_autopilot_report_revisions_campaign_revision",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    report_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    evidence_claim_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    lineage_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    evidence_grade: Mapped[str] = mapped_column(String(32), nullable=False)
+    submission_blocked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    automatic_submission_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    report_submission_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
+class AutopilotHumanEvidenceReviewRecord(Base):
+    """Explicit human L4/L5 review record for a sanitized observation set."""
+
+    __tablename__ = "autopilot_human_evidence_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "automated_source = false",
+            name="ck_autopilot_human_evidence_reviews_automated_source_false",
+        ),
+        CheckConstraint(
+            "candidate_promotion_allowed = false",
+            name="ck_autopilot_human_evidence_reviews_promotion_false",
+        ),
+        CheckConstraint(
+            "report_submission_allowed = false",
+            name="ck_autopilot_human_evidence_reviews_submission_false",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            "review_id",
+            name="uq_autopilot_human_evidence_reviews_campaign_review",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    review_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    hypothesis_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    observation_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    grade: Mapped[str] = mapped_column(String(32), nullable=False)
+    decision_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    reviewer_alias: Mapped[str] = mapped_column(String(128), nullable=False)
+    automated_source: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    candidate_promotion_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    report_submission_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    campaign: Mapped[CampaignRecord] = relationship()

@@ -61,6 +61,86 @@ BLACK_BOX_REVIEW_EVIDENCE_REFS = {
 }
 
 
+def build_autopilot_report_review_packet(
+    *,
+    draft: object,
+    evidence_bundle: object,
+) -> dict:
+    """Export a review-only Autopilot packet after exact lineage matching."""
+
+    from app.bounty_autopilot.evidence_judge import SubmissionBlockedReportDraft
+    from app.evidence import AutopilotEvidenceBundle
+
+    if not isinstance(draft, SubmissionBlockedReportDraft):
+        raise TypeError("typed_autopilot_report_draft_required")
+    if not isinstance(evidence_bundle, AutopilotEvidenceBundle):
+        raise TypeError("typed_autopilot_evidence_bundle_required")
+    if (
+        draft.hypothesis_id != evidence_bundle.hypothesis_id
+        or draft.campaign_id != evidence_bundle.campaign_id
+        or draft.branch_id != evidence_bundle.branch_id
+        or draft.observation_ids != (evidence_bundle.observation_id,)
+        or draft.lineage_digest != evidence_bundle.lineage_digest
+        or draft.evidence_grade is not evidence_bundle.evidence_grade
+        or tuple(sorted(draft.evidence_refs))
+        != tuple(sorted(evidence_bundle.evidence_refs))
+        or not draft.lineage_complete
+        or not evidence_bundle.lineage_complete
+    ):
+        raise ValueError("autopilot_lineage_mismatch")
+    safe_title = safe_preview_text(draft.title)
+    safe_summary = safe_preview_text(draft.summary)
+    if safe_title != draft.title or safe_summary != draft.summary:
+        raise ValueError("autopilot_report_copy_unsafe")
+
+    return {
+        "schema_version": "bounty_autopilot_report_review_v1",
+        "report_id": draft.report_id,
+        "hypothesis_id": draft.hypothesis_id,
+        "status": "review_ready",
+        "human_review_required": True,
+        "submission_blocked": True,
+        "automatic_submission_allowed": False,
+        "report_submission_allowed": False,
+        "submitted": False,
+        "lineage_complete": True,
+        "campaign_id": draft.campaign_id,
+        "evidence_grade": draft.evidence_grade.value,
+        "evidence_refs": list(draft.evidence_refs),
+        "lineage": {
+            "lineage_digest": evidence_bundle.lineage_digest,
+            "observation_id": evidence_bundle.observation_id,
+            "authorization_id": evidence_bundle.authorization_id,
+            "authorization_digest": evidence_bundle.authorization_digest,
+            "scope_snapshot_digest": evidence_bundle.scope_snapshot_digest,
+            "asset_id": evidence_bundle.asset_id,
+            "asset_identity_digest": evidence_bundle.asset_identity_digest,
+            "branch_id": evidence_bundle.branch_id,
+            "plan_id": evidence_bundle.plan_id,
+            "plan_digest": evidence_bundle.plan_digest,
+            "risk_decision_id": evidence_bundle.risk_decision_id,
+            "risk_tier": str(evidence_bundle.risk_tier),
+            "recipe_id": evidence_bundle.recipe_id,
+            "recipe_version": evidence_bundle.recipe_version,
+            "recipe_definition_digest": evidence_bundle.recipe_definition_digest,
+            "lease_id": evidence_bundle.lease_id,
+            "reservation_id": evidence_bundle.reservation_id,
+            "session_generation": evidence_bundle.session_generation,
+            "tool_run_id": evidence_bundle.tool_run_id,
+        },
+        "report_draft": {
+            "title": safe_title,
+            "summary": safe_summary,
+            "evidence_gap_codes": list(draft.evidence_gap_codes),
+            "safety_notes": [
+                "submission_blocked",
+                "human_review_required",
+                "sanitized_owned_account_or_canary_evidence_only",
+            ],
+        },
+    }
+
+
 def build_black_box_report_review_packet(candidate: dict) -> dict:
     """Build a review-only packet from a redacted black-box candidate."""
     if not isinstance(candidate, dict):

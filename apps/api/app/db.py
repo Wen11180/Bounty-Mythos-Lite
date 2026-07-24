@@ -205,7 +205,41 @@ def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
                             "active_execution_claim_id",
                             "legacy_active_task_count",
                         }.issubset(slot_columns):
-                            revision = "0019_campaign_local_tool_execution_slot"
+                            campaign_columns = {
+                                column["name"]
+                                for column in inspector.get_columns("campaigns")
+                            }
+                            audit_lineage_tables = {
+                                "autopilot_risk_decisions",
+                                "autopilot_tool_runs",
+                                "autopilot_evidence_claims",
+                                "autopilot_refutation_decisions",
+                                "autopilot_candidate_revisions",
+                                "autopilot_report_revisions",
+                                "autopilot_human_evidence_reviews",
+                            }
+                            if audit_lineage_tables.issubset(slot_tables):
+                                revision = "0024_bounty_autopilot_audit_lineage"
+                            elif "autopilot_observations" in slot_tables:
+                                revision = "0023_bounty_autopilot_evidence_lineage"
+                            elif {
+                                "validation_plans",
+                                "execution_leases",
+                                "execution_request_ledger",
+                            }.issubset(slot_tables):
+                                revision = "0022_bounty_autopilot_execution_authority"
+                            elif {
+                                "campaign_assets",
+                                "research_branches",
+                            }.issubset(slot_tables):
+                                revision = "0021_bounty_autopilot_assets_branches"
+                            elif (
+                                "campaign_mode" in campaign_columns
+                                and "campaign_authorizations" in slot_tables
+                            ):
+                                revision = "0020_bounty_autopilot_authority"
+                            else:
+                                revision = "0019_campaign_local_tool_execution_slot"
                         elif "tool_calls_reserved" in budget_columns:
                             revision = "0018_campaign_tool_call_reservations"
                         else:

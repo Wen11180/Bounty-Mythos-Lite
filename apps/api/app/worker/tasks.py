@@ -791,6 +791,12 @@ def _run_agent_task(
             task=task,
             repository=repository,
         )
+    if task.task_type == "autopilot_branch_continuation":
+        return _run_autopilot_branch_continuation_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+        )
     stop_reason = _agent_task_stop_reason(
         campaign=campaign,
         repository=repository,
@@ -984,6 +990,77 @@ def _run_agent_task(
     }
 
 
+def _run_autopilot_branch_continuation_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord | None,
+    repository: DatabaseRepository,
+) -> dict:
+    """Materialize a deterministic human handoff without creating a plan or lease."""
+
+    from app.autonomous_research_runtime import (
+        materialize_autopilot_branch_continuation_handoff,
+        record_autonomous_research_task_completion,
+    )
+
+    materialized, stop_reason = materialize_autopilot_branch_continuation_handoff(
+        task=task,
+        campaign=campaign,
+        repository=repository,
+    )
+    if materialized is None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=stop_reason or "plan_handoff_integrity_invalid",
+        )
+
+    branch = materialized["branch"]
+    handoff = materialized["handoff"]
+    output_refs = [
+        f"research_branch:{branch.branch_id}",
+        f"campaign_task:{handoff.id}",
+    ]
+    completed_execution = _finish_task_execution(
+        task=task,
+        repository=repository,
+        task_status="completed",
+        output_refs=output_refs,
+        agent_status="completed",
+        agent_output_refs=output_refs,
+        safety_gate_state="allowed",
+        stop_reason="awaiting_plan",
+        payload={
+            "raw_payload_processed": False,
+            "worker_mode": "autopilot_branch_plan_handoff_materializer",
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        },
+        renew_execution_lease=False,
+    )
+    if completed_execution is None:
+        return _execution_lease_lost_result(task=task, repository=repository)
+    completed_task, agent_run = completed_execution
+    record_autonomous_research_task_completion(
+        task=completed_task,
+        repository=repository,
+        terminal_stop_reason="awaiting_plan",
+    )
+    current_campaign = repository.get_campaign(completed_task.campaign_id)
+    if current_campaign is not None and current_campaign.status == "running":
+        repository.update_campaign_status(current_campaign.id, "awaiting_review")
+    return {
+        "status": "completed",
+        "task_id": completed_task.id,
+        "agent_run_id": agent_run.id,
+        "handoff_task_id": handoff.id,
+        "stop_reason": "awaiting_plan",
+    }
+
+
 def _runtime_workspace_inputs(
     *,
     task: CampaignTaskRecord,
@@ -1050,23 +1127,27 @@ def _finish_task_execution(
     safety_gate_state: str,
     stop_reason: str | None,
     payload: dict,
+    renew_execution_lease: bool = True,
 ) -> tuple[CampaignTaskRecord, AgentRunRecord] | None:
     if task.execution_claim_id is not None:
-        renewed_task = repository.renew_campaign_task_execution_lease(
-            task.id,
-            execution_claim_id=task.execution_claim_id,
-        )
-        if renewed_task is None:
-            return None
-        renewed_claim_id = renewed_task.execution_claim_id
-        if renewed_claim_id is None:
+        execution_task = task
+        if renew_execution_lease:
+            renewed_task = repository.renew_campaign_task_execution_lease(
+                task.id,
+                execution_claim_id=task.execution_claim_id,
+            )
+            if renewed_task is None:
+                return None
+            execution_task = renewed_task
+        execution_claim_id = execution_task.execution_claim_id
+        if execution_claim_id is None:
             return None
         return repository.finish_campaign_task_execution(
-            task_id=renewed_task.id,
-            execution_claim_id=renewed_claim_id,
+            task_id=execution_task.id,
+            execution_claim_id=execution_claim_id,
             task_status=task_status,
             task_output_refs=[
-                f"agent_run:{renewed_claim_id}",
+                f"agent_run:{execution_claim_id}",
                 *output_refs,
             ],
             agent_status=agent_status,
@@ -1074,6 +1155,7 @@ def _finish_task_execution(
             safety_gate_state=safety_gate_state,
             stop_reason=stop_reason,
             payload=payload,
+            require_active_execution_lease=not renew_execution_lease,
         )
 
     active_run = repository.find_active_agent_run_for_task(task.id)

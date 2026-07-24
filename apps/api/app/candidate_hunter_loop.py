@@ -78,6 +78,163 @@ SAFE_VALIDATION_STEP = (
 )
 
 
+def build_autopilot_candidate_projection(
+    *,
+    observation: object,
+    refutation: object,
+    judge_result: object,
+) -> dict[str, Any]:
+    """Bridge one typed Autopilot result into Candidate Hunter's safe projection."""
+
+    from app.bounty_autopilot.evidence_judge import (
+        EvidenceJudgeResult,
+        EvidenceJudgeVerdict,
+        evidence_lineage_digest,
+    )
+    from app.bounty_autopilot.observations import ObservationGrade, ObservationRecord
+    from app.bounty_autopilot.refutation import (
+        RefutationResult,
+        RefutationVerdict,
+        refutation_lineage_digest,
+    )
+
+    if not isinstance(observation, ObservationRecord):
+        raise TypeError("typed_autopilot_observation_required")
+    if not isinstance(refutation, RefutationResult):
+        raise TypeError("typed_autopilot_refutation_required")
+    if not isinstance(judge_result, EvidenceJudgeResult):
+        raise TypeError("typed_autopilot_judge_result_required")
+    if (
+        refutation.verdict is not RefutationVerdict.RETAINED
+        or judge_result.verdict is not EvidenceJudgeVerdict.RETAINED_CANDIDATE
+        or observation.grade is not ObservationGrade.L3_ACTIONABLE
+        or judge_result.evidence_grade is not observation.grade
+        or not observation.evidence_refs
+        or observation.third_party_data_discarded
+    ):
+        raise ValueError("retained_sanitized_l3_autopilot_result_required")
+    if (
+        refutation.hypothesis_id != judge_result.hypothesis_id
+        or refutation.branch_id != observation.branch_id
+        or judge_result.campaign_id != observation.campaign_id
+        or judge_result.branch_id != observation.branch_id
+        or judge_result.observation_ids != (observation.observation_id,)
+        or tuple(sorted(refutation.observations_cited))
+        != judge_result.observation_ids
+        or refutation.lineage_digest
+        != refutation_lineage_digest(
+            case_id=refutation.case_id,
+            hypothesis_id=refutation.hypothesis_id,
+            branch_id=refutation.branch_id,
+            observations_cited=refutation.observations_cited,
+            completed_checks=refutation.completed_checks,
+        )
+        or judge_result.refutation_lineage_digest != refutation.lineage_digest
+        or judge_result.lineage_digest
+        != evidence_lineage_digest(
+            observations=(observation,),
+            refutation_lineage_digest=refutation.lineage_digest,
+        )
+    ):
+        raise ValueError("autopilot_lineage_mismatch")
+
+    candidate_key = ":".join(
+        (
+            observation.campaign_id,
+            judge_result.hypothesis_id,
+            observation.observation_id,
+        )
+    )
+    candidate_id = f"autopilot_candidate_{sha256(candidate_key.encode('utf-8')).hexdigest()[:24]}"
+    affected_trace_ref = f"autopilot:observation:{observation.observation_id}"
+    source_fact_refs = [
+        affected_trace_ref,
+        f"autopilot:plan:{observation.plan_id}",
+        f"autopilot:lineage:{judge_result.lineage_digest}",
+    ]
+    lineage = {
+        "authorization_id": observation.authorization_id,
+        "authorization_digest": observation.authorization_digest,
+        "scope_snapshot_digest": observation.scope_snapshot_digest,
+        "asset_id": observation.asset_id,
+        "asset_identity_digest": observation.asset_identity_digest,
+        "branch_id": observation.branch_id,
+        "plan_id": observation.plan_id,
+        "plan_digest": observation.plan_digest,
+        "risk_decision_id": observation.risk_decision_id,
+        "risk_tier": str(observation.risk_tier),
+        "recipe_ref": observation.recipe_ref.model_dump(mode="json"),
+        "lease_id": observation.lease_id,
+        "reservation_id": observation.reservation_id,
+        "session_generation": observation.session_generation,
+        "tool_run_id": observation.tool_run_id,
+        "observation_id": observation.observation_id,
+    }
+    return {
+        "schema_version": "bounty_autopilot_candidate_v1",
+        "candidate_id": candidate_id,
+        "candidate_key": candidate_key,
+        "campaign_id": observation.campaign_id,
+        "hypothesis_id": judge_result.hypothesis_id,
+        "vuln_type": "authorization",
+        "root_cause_id": (
+            f"owned_account_authorization_differential:{observation.endpoint.route_template}"
+        ),
+        "rank": 1,
+        "status": "review_ready",
+        "human_review_required": True,
+        "evidence_grade": observation.grade.value,
+        "evidence_refs": list(observation.evidence_refs),
+        "route": {
+            "method": observation.endpoint.method,
+            "path": observation.endpoint.route_template,
+        },
+        "affected_trace_ref": affected_trace_ref,
+        "source_fact_refs": source_fact_refs,
+        "evidence_trace_status": "traceable",
+        "human_validation_readiness": "ready",
+        "refutation_questions": [
+            "Do independent owned-account observations preserve the same result?",
+            "Do current ownership and workflow controls refute this differential?",
+        ],
+        "validation_mode": "non_destructive_request_review",
+        "evidence_needed": list(observation.evidence_refs),
+        "impact_rationale": (
+            "A sanitized differential between two owned accounts requires human review."
+        ),
+        "impact_score": 50,
+        "safe_validation_plan": [
+            "Review the sanitized owned-account differential and current authorization trace.",
+            SAFE_VALIDATION_STEP,
+        ],
+        "next_allowed_action": "Human review of the cited sanitized lineage.",
+        "safety_blockers": [
+            "execute_live_validation",
+            "touch_real_user_data",
+            "submit_report",
+        ],
+        "broken_invariant": (
+            "Owned-object access must enforce the current account boundary before return."
+        ),
+        "why_still_alive": [
+            "An L3 owned-account differential survived all recorded refutation checks."
+        ],
+        "lineage": lineage,
+        "lineage_digest": judge_result.lineage_digest,
+        "lineage_complete": True,
+        "submission_blocked": True,
+        "human_confirmed": False,
+        "candidate_promotion_allowed": False,
+        "finding_promotion_allowed": False,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+        "submitted": False,
+    }
+
+
 def build_candidate_hunter_observations(
     *,
     pipeline_run_id: str,
@@ -4200,6 +4357,8 @@ def _safe_prior_candidate_projection(
         if (safe_ref := _safe_text(ref))
     ] if isinstance(value.get("source_fact_refs"), list) else []
     code_refs = [ref for ref in source_fact_refs if ref.startswith("code:")]
+    is_autopilot_projection = value.get("schema_version") == "bounty_autopilot_candidate_v1"
+    affected_trace_ref = _safe_text(value.get("affected_trace_ref"))
     affected_code_path = _safe_text(value.get("affected_code_path")) or (
         code_refs[0] if code_refs else ""
     )
@@ -4209,7 +4368,20 @@ def _safe_prior_candidate_projection(
         or not _safe_text(value.get("vuln_type"))
         or not safe_route
         or not source_fact_refs
-        or affected_code_path not in code_refs
+        or (
+            not is_autopilot_projection
+            and affected_code_path not in code_refs
+        )
+        or (
+            is_autopilot_projection
+            and (
+                not affected_trace_ref.startswith("autopilot:observation:")
+                or affected_trace_ref not in source_fact_refs
+                or value.get("lineage_complete") is not True
+                or value.get("submission_blocked") is not True
+                or value.get("raw_payload_processed") is not False
+            )
+        )
         or value.get("evidence_trace_status") != "traceable"
         or any(value.get(field) is not False for field in SAFETY_FIELDS[:-1])
     ):
@@ -4262,6 +4434,22 @@ def _safe_prior_candidate_projection(
         if isinstance(value.get("why_still_alive"), list)
         else [],
     }
+    if is_autopilot_projection:
+        projection.update(
+            {
+                "schema_version": "bounty_autopilot_candidate_v1",
+                "campaign_id": _safe_text(value.get("campaign_id")),
+                "hypothesis_id": _safe_text(value.get("hypothesis_id")),
+                "affected_trace_ref": affected_trace_ref,
+                "lineage": value.get("lineage") if isinstance(value.get("lineage"), dict) else {},
+                "lineage_digest": _safe_text(value.get("lineage_digest")),
+                "lineage_complete": True,
+                "submission_blocked": True,
+                "human_review_required": True,
+                "raw_payload_processed": False,
+                "submitted": False,
+            }
+        )
     if isinstance(value.get("falsification_summary"), dict):
         projection["falsification_summary"] = value["falsification_summary"]
     if isinstance(value.get("falsification_card"), dict):

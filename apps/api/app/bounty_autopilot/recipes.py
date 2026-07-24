@@ -127,11 +127,11 @@ _DEFAULT_RECIPES = (
         method_classes=("read_only",),
         required_account_aliases=2,
         max_budgets=AutopilotBudgets(
-            max_requests=8,
+            max_requests=2,
             max_concurrency=1,
             max_response_bytes=131_072,
             max_duration_seconds=120,
-            max_account_operations=4,
+            max_account_operations=2,
             max_cost_microusd=500_000,
         ),
         mutation_inventory=MutationInventory(
@@ -153,4 +153,10 @@ def default_recipe_registry() -> RecipeRegistry:
     return _DEFAULT_RECIPE_REGISTRY
 
 
-__all__ = ["RecipeRegistry", "default_recipe_registry"]
+def get_recipe(recipe_id: str, version: str) -> VersionedRecipe | None:
+    """Resolve only an exact, code-owned recipe version."""
+
+    return _DEFAULT_RECIPE_REGISTRY.get(recipe_id, version)
+
+
+__all__ = ["RecipeRegistry", "default_recipe_registry", "get_recipe"]

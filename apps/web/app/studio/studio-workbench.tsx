@@ -3,6 +3,7 @@
 import { FileDown, FolderOpen, FolderPlus, Play, ShieldCheck, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AutopilotCampaignSection } from "@/components/autopilot/autopilot-campaign-section";
 import { CandidateInspector } from "@/components/studio/candidate-inspector";
 import { EvidenceInspector } from "@/components/studio/evidence-inspector";
 import { MissionStageStrip } from "@/components/studio/mission-stage-strip";
@@ -97,6 +98,9 @@ type MythosStudioDesktopBridge = {
   closeBlackBoxSessions: () => Promise<string>;
   createBackup?: () => Promise<DesktopBackupResult>;
   createBlackBoxSessions: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
+  emergencyStopAutopilotLocal?: (payload: {
+    campaignId: string;
+  }) => Promise<{ revoked: true; revokedHandles: number }>;
   refreshProgramRules: () => Promise<SafeRefreshStatus>;
   restoreBackup?: () => Promise<DesktopBackupResult>;
   runBlackBoxTrial: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
@@ -1447,6 +1451,7 @@ export function StudioWorkbench() {
       <nav aria-label="Studio 工作区分区" className="grid gap-1">
         {[
           ["#studio-mission", "研究任务"],
+          ...(latestCampaignHunterId ? [["#studio-autopilot", "Autopilot"]] : []),
           ["#studio-artifacts", "授权材料"],
           ["#studio-lab", "安全验证"],
           ["#studio-candidates", "候选审查"],
@@ -1655,6 +1660,12 @@ export function StudioWorkbench() {
         activeStage={missionPanel.researchLoopStages.find((stage) => !/complete|done|passed/i.test(stage.status))?.key ?? ""}
         stages={missionPanel.researchLoopStages}
       />
+
+      {latestCampaignHunterId ? (
+        <section className="mt-5" id="studio-autopilot">
+          <AutopilotCampaignSection campaignId={latestCampaignHunterId} />
+        </section>
+      ) : null}
 
       <ResearchConversation
         messages={log}

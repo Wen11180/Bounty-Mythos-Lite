@@ -4,6 +4,7 @@ import { useCallback, useEffect } from "react";
 
 import { getControlCenterOverview, getRuntimeApiBaseUrl } from "@/lib/api";
 import {
+  buildControlCenterEventsUrl,
   createControlCenterLiveController,
   executeControlCenterRefresh,
   type ControlCenterLiveState,
@@ -20,14 +21,6 @@ interface LiveControlCenterProps {
   onConnectionState(state: ControlCenterLiveState): void;
   onRefreshError(message: string): void;
   onSnapshot(snapshot: ControlCenterSnapshot): void;
-}
-
-function controlCenterEventsUrl(campaignId?: string): string {
-  const url = new URL("/mythos/control-center/events", getRuntimeApiBaseUrl());
-  if (campaignId) {
-    url.searchParams.set("campaign_id", campaignId);
-  }
-  return url.toString();
 }
 
 export function LiveControlCenter({
@@ -52,7 +45,7 @@ export function LiveControlCenter({
 
   useEffect(() => {
     const controller = createControlCenterLiveController({
-      eventsUrl: controlCenterEventsUrl(campaignId),
+      eventsUrl: buildControlCenterEventsUrl(getRuntimeApiBaseUrl(), campaignId),
       eventSourceFactory: (url) => new EventSource(url),
       onStateChange: onConnectionState,
       refetch,

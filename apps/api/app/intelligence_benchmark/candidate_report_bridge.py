@@ -154,14 +154,27 @@ def build_submission_blocked_report_bundle(
     if not isinstance(candidate, dict):
         raise CandidateReportBridgeError("candidate_must_be_object")
     affected_code_path = str(candidate.get("affected_code_path") or "").strip()
+    affected_trace_ref = str(candidate.get("affected_trace_ref") or "").strip()
     source_fact_refs = candidate.get("source_fact_refs")
-    if (
-        affected_code_path.count(":") < 2
-        or not affected_code_path.startswith("code:")
-        or not isinstance(source_fact_refs, list)
-        or affected_code_path not in source_fact_refs
-    ):
-        raise CandidateReportBridgeError("affected_code_path_must_be_cited_source_fact")
+    has_cited_code_path = (
+        affected_code_path.count(":") >= 2
+        and affected_code_path.startswith("code:")
+        and isinstance(source_fact_refs, list)
+        and affected_code_path in source_fact_refs
+    )
+    has_autopilot_trace = (
+        candidate.get("schema_version") == "bounty_autopilot_candidate_v1"
+        and affected_trace_ref.startswith("autopilot:observation:")
+        and isinstance(source_fact_refs, list)
+        and affected_trace_ref in source_fact_refs
+        and candidate.get("lineage_complete") is True
+        and candidate.get("submission_blocked") is True
+        and candidate.get("raw_payload_processed") is False
+    )
+    if not has_cited_code_path and not has_autopilot_trace:
+        raise CandidateReportBridgeError(
+            "affected_code_path_must_be_cited_source_fact_or_autopilot_trace"
+        )
 
     hypothesis = candidate_to_hypothesis(candidate)
     refutation = RefutationResult(

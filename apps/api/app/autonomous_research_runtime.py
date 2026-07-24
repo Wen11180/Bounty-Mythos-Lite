@@ -56,6 +56,8 @@ _RETRYABLE_RUNTIME_FAILURE_STOP_REASONS = frozenset(
     }
 )
 _RUNTIME_FAILURE_STOP_REASONS = _RETRYABLE_RUNTIME_FAILURE_STOP_REASONS
+_AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE = "autopilot_branch_continuation"
+_AUTOPILOT_PLAN_MATERIALIZATION_TASK_TYPE = "autopilot_plan_materialization"
 _WORK_ITEMS = (
     {
         "task_type": "campaign_observation",
@@ -113,6 +115,12 @@ _WORK_ITEMS = (
         "agent_type": "report_agent",
         "title": "Build submission-blocked report review",
     },
+    {
+        "task_type": _AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE,
+        "agent_type": "branch_plan_agent",
+        "title": "Create plan-materialization handoff for selected research branch",
+        "branch_only": True,
+    },
 )
 _WORK_ITEM_TYPES = {work_item["task_type"] for work_item in _WORK_ITEMS}
 _EVIDENCE_TASK_TYPE = "candidate_hunter_evidence_inspection"
@@ -129,6 +137,7 @@ _HANDLED_WORK_ITEM_TYPES = {
     "candidate_refutation",
     "finding_dedup_and_rank",
     "report_review",
+    _AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE,
 }
 _SOURCE_SNAPSHOT_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _SAFE_STOP_REASON_PATTERN = re.compile(r"[a-z][a-z0-9_:-]{0,127}")
@@ -245,6 +254,20 @@ def tick_autonomous_research_campaign(
 
     task_type = selection["task_type"]
     source_snapshot_digest = selection["source_snapshot_digest"]
+    branch_binding = (
+        _branch_continuation_binding_from_value(selection)
+        if task_type == _AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE
+        else None
+    )
+    branch_id = branch_binding.branch_id if branch_binding is not None else None
+    branch_binding_digest = (
+        _branch_continuation_binding_digest(
+            binding=branch_binding,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        if branch_binding is not None
+        else None
+    )
     if task_type not in _HANDLED_WORK_ITEM_TYPES:
         _persist_runtime_preflight_stop(
             campaign=campaign,
@@ -277,6 +300,13 @@ def tick_autonomous_research_campaign(
         f"campaign:{campaign.id}",
         f"source_snapshot:{source_snapshot_digest}",
     ]
+    selection_input_refs = selection.get("input_refs")
+    if isinstance(selection_input_refs, list):
+        input_refs.extend(
+            ref
+            for ref in selection_input_refs
+            if isinstance(ref, str) and ref not in input_refs
+        )
     if task_type in {
         "cross_source_llm_advisory",
         "exploit_chain_reasoning",
@@ -402,6 +432,8 @@ def tick_autonomous_research_campaign(
         repository=repository,
         task_type=task_type,
         source_snapshot_digest=source_snapshot_digest,
+        branch_id=branch_id,
+        branch_binding_digest=branch_binding_digest,
     )
     if task is not None:
         if campaign.status == "running":
@@ -417,22 +449,31 @@ def tick_autonomous_research_campaign(
             campaign_id=campaign.id,
             task_type=task_type,
             source_snapshot_digest=source_snapshot_digest,
+            branch_id=branch_id,
+            branch_binding_digest=branch_binding_digest,
         ),
         campaign_id=campaign.id,
         task_type=task_type,
         agent_type=selection["agent_type"],
         title=selection["title"],
         input_refs=input_refs,
-        payload=_runtime_task_payload(
-            campaign_id=campaign.id,
-            task_type=task_type,
-            source_snapshot_digest=source_snapshot_digest,
-            pipeline_run_id=pipeline_run_id,
-            candidate_model_config=(
-                candidate_model_config
-                if task_type == "cross_source_llm_advisory"
-                else None
-            ),
+        payload=(
+            _autopilot_branch_continuation_task_payload(
+                binding=branch_binding,
+                source_snapshot_digest=source_snapshot_digest,
+            )
+            if task_type == _AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE
+            else _runtime_task_payload(
+                campaign_id=campaign.id,
+                task_type=task_type,
+                source_snapshot_digest=source_snapshot_digest,
+                pipeline_run_id=pipeline_run_id,
+                candidate_model_config=(
+                    candidate_model_config
+                    if task_type == "cross_source_llm_advisory"
+                    else None
+                ),
+            )
         ),
     )
     if not claimed:
@@ -914,21 +955,382 @@ def autonomous_research_task_stop_reason(
     return None
 
 
+def _research_branch_from_record(record) -> "ResearchBranch":
+    from app.bounty_autopilot.branches import (
+        BranchBudgetCounters,
+        BranchStatus,
+        ResearchBranch,
+    )
+    from app.bounty_autopilot.recipes import default_recipe_registry
+
+    recipe_ref = None
+    if record.recipe_id and record.recipe_version:
+        recipe = default_recipe_registry().get(record.recipe_id, record.recipe_version)
+        recipe_ref = recipe.ref if recipe is not None else None
+    budget_payload = record.budget_counters if isinstance(record.budget_counters, dict) else {}
+    return ResearchBranch(
+        branch_id=record.branch_id,
+        campaign_id=record.campaign_id,
+        asset_id=record.asset_id,
+        status=BranchStatus(record.status),
+        priority=int(record.priority),
+        recipe_ref=recipe_ref,
+        risk_tier=record.risk_tier,
+        hypothesis_id=record.hypothesis_id,
+        account_aliases=tuple(record.account_aliases or ()),
+        budget=BranchBudgetCounters.model_validate(budget_payload or {}),
+        stop_reason=record.stop_reason,
+        version=int(record.version),
+    )
+
+
+def _current_autopilot_branch_authorization(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    now: datetime | None,
+) -> tuple[Any | None, Any | None, str | None]:
+    from app.bounty_autopilot.authority import (
+        AuthorizationValidationError,
+        authorization_from_payload,
+        validate_current_authorization,
+    )
+
+    record = repository.get_current_campaign_authorization(campaign.id)
+    if record is None:
+        return None, None, "authorization_missing"
+    if record.revoked_at is not None or not record.is_current:
+        return None, None, "authorization_revoked"
+    try:
+        authorization = authorization_from_payload(record.payload)
+        if authorization.authorization_digest != record.authorization_digest:
+            return None, None, "authorization_digest_invalid"
+        validate_current_authorization(authorization, now=now)
+    except AuthorizationValidationError as exc:
+        return None, None, exc.reason
+    except Exception:  # noqa: BLE001 - persisted authority is fail-closed
+        return None, None, "authorization_digest_invalid"
+    return record, authorization, None
+
+
+def _select_autopilot_branch_work(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    now: datetime | None,
+) -> dict[str, Any] | None:
+    """Continue an eligible Autopilot branch while peers wait on R3/WAF/human."""
+
+    from app.bounty_autopilot.branches import (
+        BranchContinuationBinding,
+        BranchLimits,
+        select_next_branch,
+    )
+
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str) or not _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(
+        source_snapshot_digest
+    ):
+        return _blocked("source_snapshot_digest_required")
+    authorization_record, authorization, authorization_stop_reason = (
+        _current_autopilot_branch_authorization(
+            campaign=campaign,
+            repository=repository,
+            now=now,
+        )
+    )
+    if authorization_stop_reason is not None:
+        return _blocked(authorization_stop_reason)
+    assert authorization_record is not None
+    assert authorization is not None
+    configured_scope_digest = payload.get("scope_snapshot_digest")
+    if (
+        configured_scope_digest is not None
+        and configured_scope_digest != authorization.scope_snapshot_digest
+    ):
+        return _blocked("authorization_scope_stale")
+
+    branch_rows = repository.list_research_branches(campaign.id)
+    if not branch_rows:
+        return None
+    branches = [_research_branch_from_record(row) for row in branch_rows]
+    admitted = repository.list_admitted_campaign_asset_ids(
+        campaign.id,
+        scope_snapshot_digest=authorization.scope_snapshot_digest,
+    )
+    limits_payload = payload.get("branch_limits") if isinstance(payload.get("branch_limits"), dict) else {}
+    limits = BranchLimits(
+        campaign_max_requests=int(limits_payload.get("campaign_max_requests", 100)),
+        campaign_max_time_seconds=int(limits_payload.get("campaign_max_time_seconds", 3600)),
+        campaign_max_cost_units=int(limits_payload.get("campaign_max_cost_units", 100)),
+        per_asset_max_requests=int(limits_payload.get("per_asset_max_requests", 20)),
+        per_account_max_requests=int(limits_payload.get("per_account_max_requests", 10)),
+        per_hypothesis_max_requests=int(limits_payload.get("per_hypothesis_max_requests", 10)),
+    )
+    policy_drift = bool(payload.get("policy_drift"))
+    selection = select_next_branch(
+        branches,
+        limits=limits,
+        policy_drift=policy_drift,
+        admitted_asset_ids=admitted,
+    )
+    if selection.frozen_for_policy_drift:
+        return _blocked("policy_drift_freeze")
+    if selection.selected_branch_id is None:
+        return None
+    branch = next(
+        branch
+        for branch in branches
+        if branch.branch_id == selection.selected_branch_id
+    )
+    if branch.recipe_ref is None:
+        return _blocked("branch_recipe_required")
+    if branch.asset_id not in authorization.asset_ids:
+        return _blocked("authorization_asset_not_allowed")
+    if branch.recipe_ref not in authorization.recipe_refs:
+        return _blocked("authorization_recipe_not_allowed")
+    binding = BranchContinuationBinding(
+        campaign_id=campaign.id,
+        branch_id=branch.branch_id,
+        branch_version=branch.version,
+        authorization_id=authorization_record.id,
+        authorization_digest=authorization.authorization_digest,
+        scope_snapshot_digest=authorization.scope_snapshot_digest,
+        asset_id=branch.asset_id,
+        recipe_ref=branch.recipe_ref,
+        risk_tier=branch.risk_tier,
+        hypothesis_id=branch.hypothesis_id,
+    )
+    return {
+        "status": "ready",
+        "task_type": _AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE,
+        "agent_type": "branch_plan_agent",
+        "title": "Create plan-materialization handoff for selected research branch",
+        "action_id": "materialize_branch_plan_handoff",
+        "visible_waiting_branch_ids": list(selection.visible_waiting_branch_ids),
+        "source_snapshot_digest": source_snapshot_digest,
+        "input_refs": [
+            f"campaign_authorization:{authorization_record.id}",
+            f"asset:{branch.asset_id}",
+            f"research_branch:{branch.branch_id}",
+            "recipe:"
+            f"{branch.recipe_ref.recipe_id}@{branch.recipe_ref.version}:"
+            f"{branch.recipe_ref.definition_digest}",
+        ],
+        **binding.model_dump(mode="json"),
+        **_SAFETY_FIELDS,
+    }
+
+
+def materialize_autopilot_branch_continuation_handoff(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord | None,
+    repository: DatabaseRepository,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Revalidate a bound branch and create only its human plan handoff."""
+
+    from app.bounty_autopilot.recipes import default_recipe_registry
+
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    if (
+        task.task_type != _AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE
+        or payload.get("runtime_schema") != _RUNTIME_SCHEMA
+        or campaign is None
+    ):
+        return None, "malformed_runtime_task"
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str) or not _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(
+        source_snapshot_digest
+    ):
+        return None, "malformed_runtime_task"
+    try:
+        binding = _branch_continuation_binding_from_value(payload)
+    except ValueError:
+        return None, "malformed_runtime_task"
+    binding_digest = _branch_continuation_binding_digest(
+        binding=binding,
+        source_snapshot_digest=source_snapshot_digest,
+    )
+    if (
+        binding.campaign_id != campaign.id
+        or payload.get("binding_digest") != binding_digest
+        or payload.get("idempotency_key")
+        != _runtime_idempotency_key(
+            campaign_id=campaign.id,
+            task_type=_AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE,
+            source_snapshot_digest=source_snapshot_digest,
+            outcome="task",
+            branch_id=binding.branch_id,
+            branch_binding_digest=binding_digest,
+        )
+        or task.id
+        != _runtime_task_id(
+            campaign_id=campaign.id,
+            task_type=_AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE,
+            source_snapshot_digest=source_snapshot_digest,
+            branch_id=binding.branch_id,
+            branch_binding_digest=binding_digest,
+        )
+    ):
+        return None, "malformed_runtime_task"
+
+    campaign_stop_reason = autonomous_research_task_stop_reason(
+        task=task,
+        campaign=campaign,
+        repository=repository,
+        allow_awaiting_review=True,
+    )
+    if campaign_stop_reason is not None:
+        return None, campaign_stop_reason
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    if campaign_payload.get("source_snapshot_digest") != source_snapshot_digest:
+        return None, "source_snapshot_changed"
+    configured_scope_digest = campaign_payload.get("scope_snapshot_digest")
+    if (
+        configured_scope_digest is not None
+        and configured_scope_digest != binding.scope_snapshot_digest
+    ):
+        return None, "authorization_scope_stale"
+    if not any(
+        candidate.task_type == "validation_handoff"
+        and candidate.status == "awaiting_approval"
+        for candidate in repository.list_campaign_tasks(campaign.id)
+    ):
+        return None, "validation_handoff_not_awaiting_approval"
+
+    authorization_record, authorization, authorization_stop_reason = (
+        _current_autopilot_branch_authorization(
+            campaign=campaign,
+            repository=repository,
+            now=now,
+        )
+    )
+    if authorization_stop_reason is not None:
+        return None, authorization_stop_reason
+    assert authorization_record is not None
+    assert authorization is not None
+    if (
+        authorization_record.id != binding.authorization_id
+        or authorization.authorization_digest != binding.authorization_digest
+        or authorization.scope_snapshot_digest != binding.scope_snapshot_digest
+    ):
+        return None, "authorization_changed"
+    if binding.asset_id not in authorization.asset_ids:
+        return None, "authorization_asset_not_allowed"
+    if binding.recipe_ref not in authorization.recipe_refs:
+        return None, "authorization_recipe_not_allowed"
+    if binding.asset_id not in repository.list_admitted_campaign_asset_ids(
+        campaign.id,
+        scope_snapshot_digest=binding.scope_snapshot_digest,
+    ):
+        return None, "asset_not_admitted"
+
+    branch = repository.get_research_branch(
+        campaign_id=campaign.id,
+        branch_id=binding.branch_id,
+    )
+    registered_recipe = (
+        default_recipe_registry().get(branch.recipe_id, branch.recipe_version)
+        if branch is not None and branch.recipe_id and branch.recipe_version
+        else None
+    )
+    if (
+        branch is None
+        or branch.asset_id != binding.asset_id
+        or branch.risk_tier != str(binding.risk_tier)
+        or branch.hypothesis_id != binding.hypothesis_id
+        or registered_recipe is None
+        or registered_recipe.ref != binding.recipe_ref
+    ):
+        return None, "branch_changed"
+    if branch.status in {"queued", "active"}:
+        if branch.version != binding.branch_version:
+            return None, "branch_changed"
+    elif (
+        branch.status != "awaiting_human"
+        or branch.version != binding.branch_version + 1
+    ):
+        return None, "branch_changed"
+
+    handoff_id = _autopilot_branch_plan_handoff_id(
+        binding=binding,
+        source_snapshot_digest=source_snapshot_digest,
+    )
+    try:
+        branch, handoff = repository.materialize_autopilot_branch_plan_handoff(
+            campaign_id=campaign.id,
+            branch_id=binding.branch_id,
+            expected_branch_version=binding.branch_version,
+            authorization_id=binding.authorization_id,
+            authorization_digest=binding.authorization_digest,
+            scope_snapshot_digest=binding.scope_snapshot_digest,
+            source_snapshot_digest=source_snapshot_digest,
+            asset_id=binding.asset_id,
+            recipe_ref=binding.recipe_ref.model_dump(mode="json"),
+            risk_tier=str(binding.risk_tier),
+            hypothesis_id=binding.hypothesis_id,
+            handoff_id=handoff_id,
+            handoff_input_refs=_autopilot_branch_plan_handoff_input_refs(
+                binding=binding,
+                source_snapshot_digest=source_snapshot_digest,
+            ),
+            handoff_payload=_autopilot_branch_plan_handoff_payload(
+                binding=binding,
+                source_snapshot_digest=source_snapshot_digest,
+            ),
+            now=now,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        return (
+            None,
+            reason if _SAFE_STOP_REASON_PATTERN.fullmatch(reason) else "plan_handoff_integrity_invalid",
+        )
+    return {
+        "branch": branch,
+        "handoff": handoff,
+        "binding": binding,
+    }, None
+
+
 def select_autonomous_research_work(
     *,
     campaign: CampaignRecord,
     repository: DatabaseRepository,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    stop_reason = _campaign_stop_reason(campaign, repository, now=now)
-    if stop_reason is not None:
-        return _blocked(stop_reason)
-    if any(
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    campaign_mode = getattr(campaign, "campaign_mode", "legacy") or "legacy"
+    awaiting_validation_handoff = any(
         task.task_type == "validation_handoff" and task.status == "awaiting_approval"
         for task in repository.list_campaign_tasks(campaign.id)
-    ):
+    )
+    stop_reason = _campaign_stop_reason(
+        campaign,
+        repository,
+        now=now,
+        allow_awaiting_review=(
+            campaign_mode == "bounty_autopilot" and awaiting_validation_handoff
+        ),
+    )
+    if stop_reason is not None:
+        return _blocked(stop_reason)
+    if awaiting_validation_handoff:
+        # Legacy linear campaigns still stop. Autopilot keeps waiting branches
+        # visible and may continue an unrelated eligible research branch.
+        if campaign_mode != "bounty_autopilot":
+            return _blocked("human_review_required")
+        branch_selection = _select_autopilot_branch_work(
+            campaign=campaign,
+            repository=repository,
+            now=now,
+        )
+        if branch_selection is not None:
+            return branch_selection
         return _blocked("human_review_required")
-    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
     source_snapshot_digest = payload.get("source_snapshot_digest")
     if not isinstance(source_snapshot_digest, str) or not _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(
         source_snapshot_digest
@@ -1089,8 +1491,11 @@ def _runtime_work_items(
     return tuple(
         work_item
         for work_item in _WORK_ITEMS
-        if not work_item.get("requires_candidate_model")
+        if not work_item.get("branch_only")
+        and (
+            not work_item.get("requires_candidate_model")
         or candidate_model_config is not None
+        )
     )
 
 
@@ -1570,12 +1975,16 @@ def _failed_runtime_task_for_selection(
     repository: DatabaseRepository,
     task_type: str,
     source_snapshot_digest: str,
+    branch_id: str | None = None,
+    branch_binding_digest: str | None = None,
 ) -> CampaignTaskRecord | None:
     idempotency_key = _runtime_idempotency_key(
         campaign_id=campaign.id,
         task_type=task_type,
         source_snapshot_digest=source_snapshot_digest,
         outcome="task",
+        branch_id=branch_id,
+        branch_binding_digest=branch_binding_digest,
     )
     return next(
         (
@@ -2724,6 +3133,128 @@ def _runtime_task_payload(
     return payload
 
 
+def _branch_continuation_binding_from_value(value: Any) -> "BranchContinuationBinding":
+    from app.bounty_autopilot.branches import BranchContinuationBinding
+
+    if not isinstance(value, dict):
+        raise ValueError("branch_continuation_binding_invalid")
+    fields = BranchContinuationBinding.model_fields
+    try:
+        return BranchContinuationBinding.model_validate(
+            {field: value.get(field) for field in fields}
+        )
+    except Exception as exc:  # noqa: BLE001 - immutable task contract is fail-closed
+        raise ValueError("branch_continuation_binding_invalid") from exc
+
+
+def _branch_continuation_binding_digest(
+    *,
+    binding: "BranchContinuationBinding",
+    source_snapshot_digest: str,
+) -> str:
+    identity = ":".join(
+        (
+            binding.campaign_id,
+            binding.branch_id,
+            str(binding.branch_version),
+            binding.authorization_id,
+            binding.authorization_digest,
+            binding.scope_snapshot_digest,
+            binding.asset_id,
+            binding.recipe_ref.recipe_id,
+            binding.recipe_ref.version,
+            binding.recipe_ref.definition_digest,
+            str(binding.risk_tier),
+            binding.hypothesis_id or "",
+            source_snapshot_digest,
+        )
+    )
+    return f"sha256:{sha256(identity.encode('utf-8')).hexdigest()}"
+
+
+def _autopilot_branch_continuation_task_payload(
+    *,
+    binding: "BranchContinuationBinding",
+    source_snapshot_digest: str,
+) -> dict[str, Any]:
+    binding_payload = binding.model_dump(mode="json")
+    binding_digest = _branch_continuation_binding_digest(
+        binding=binding,
+        source_snapshot_digest=source_snapshot_digest,
+    )
+    return {
+        "runtime_schema": _RUNTIME_SCHEMA,
+        "source_snapshot_digest": source_snapshot_digest,
+        "action_id": "materialize_branch_plan_handoff",
+        "binding_digest": binding_digest,
+        "idempotency_key": _runtime_idempotency_key(
+            campaign_id=binding.campaign_id,
+            task_type=_AUTOPILOT_BRANCH_CONTINUATION_TASK_TYPE,
+            source_snapshot_digest=source_snapshot_digest,
+            outcome="task",
+            branch_id=binding.branch_id,
+            branch_binding_digest=binding_digest,
+        ),
+        "dispatch_contract": "id_only",
+        "raw_payload_in_dispatch": False,
+        **binding_payload,
+        **_SAFETY_FIELDS,
+    }
+
+
+def _autopilot_branch_plan_handoff_id(
+    *,
+    binding: "BranchContinuationBinding",
+    source_snapshot_digest: str,
+) -> str:
+    identity = ":".join(
+        (
+            _branch_continuation_binding_digest(
+                binding=binding,
+                source_snapshot_digest=source_snapshot_digest,
+            ),
+            _AUTOPILOT_PLAN_MATERIALIZATION_TASK_TYPE,
+        )
+    )
+    return "campaign_task_plan_" + sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _autopilot_branch_plan_handoff_input_refs(
+    *,
+    binding: "BranchContinuationBinding",
+    source_snapshot_digest: str,
+) -> list[str]:
+    return [
+        f"campaign:{binding.campaign_id}",
+        f"source_snapshot:{source_snapshot_digest}",
+        f"campaign_authorization:{binding.authorization_id}",
+        f"asset:{binding.asset_id}",
+        f"research_branch:{binding.branch_id}",
+        "recipe:"
+        f"{binding.recipe_ref.recipe_id}@{binding.recipe_ref.version}:"
+        f"{binding.recipe_ref.definition_digest}",
+    ]
+
+
+def _autopilot_branch_plan_handoff_payload(
+    *,
+    binding: "BranchContinuationBinding",
+    source_snapshot_digest: str,
+) -> dict[str, Any]:
+    return {
+        **binding.model_dump(mode="json"),
+        "schema_version": "autopilot-plan-materialization/v1",
+        "source_snapshot_digest": source_snapshot_digest,
+        "handoff_kind": "human_plan_materialization",
+        "idempotency_key": _branch_continuation_binding_digest(
+            binding=binding,
+            source_snapshot_digest=source_snapshot_digest,
+        ),
+        "human_approval_required": True,
+        **_SAFETY_FIELDS,
+    }
+
+
 def _candidate_refutation_advisory_artifact_refs(
     *,
     campaign: CampaignRecord,
@@ -2854,10 +3385,13 @@ def _runtime_idempotency_key(
     task_type: str,
     source_snapshot_digest: str,
     outcome: str,
+    branch_id: str | None = None,
+    branch_binding_digest: str | None = None,
 ) -> str:
-    identity = ":".join(
-        (campaign_id, source_snapshot_digest, task_type, outcome)
-    )
+    parts = [campaign_id, source_snapshot_digest, task_type, outcome]
+    if branch_id is not None or branch_binding_digest is not None:
+        parts.extend((branch_id or "", branch_binding_digest or ""))
+    identity = ":".join(parts)
     return f"sha256:{sha256(identity.encode('utf-8')).hexdigest()}"
 
 
@@ -2866,8 +3400,13 @@ def _runtime_task_id(
     campaign_id: str,
     task_type: str,
     source_snapshot_digest: str,
+    branch_id: str | None = None,
+    branch_binding_digest: str | None = None,
 ) -> str:
-    identity = ":".join((campaign_id, source_snapshot_digest, task_type))
+    parts = [campaign_id, source_snapshot_digest, task_type]
+    if branch_id is not None or branch_binding_digest is not None:
+        parts.extend((branch_id or "", branch_binding_digest or ""))
+    identity = ":".join(parts)
     return f"campaign_task_runtime_{sha256(identity.encode('utf-8')).hexdigest()}"
 
 

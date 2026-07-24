@@ -134,6 +134,55 @@ def decide_recipe_risk(
     )
 
 
+def classify_risk(
+    *,
+    recipe: VersionedRecipe | None,
+    action_categories: set[str] | frozenset[str] | tuple[str, ...],
+) -> RiskTier:
+    """Classify a bounded action set without accepting a caller downgrade."""
+
+    aliases: dict[str, RiskTier] = {
+        "dos": "R4",
+        "resource_exhaustion": "R4",
+        "credential_attack": "R4",
+        "social_engineering": "R4",
+        "destructive": "R4",
+        "persistence": "R4",
+        "malware": "R4",
+        "scope_bypass": "R4",
+        "gate_bypass": "R4",
+        "third_party_data": "R4",
+        "raw_secret_retention": "R4",
+        "automatic_report_submission": "R4",
+        "novel_active": "R3",
+        "reversible_owned_account_write": "R3",
+        "owned_account_read": "R2",
+        "two_owned_account_differential": "R2",
+        "browser_mapping": "R1",
+        "passive_analysis": "R0",
+    }
+    tiers: list[RiskTier] = [recipe.risk_floor if recipe is not None else "R0"]
+    if recipe is not None:
+        inventory = recipe.mutation_inventory
+        if inventory.prohibited_categories:
+            tiers.append("R4")
+        elif inventory.state_change:
+            tiers.append("R3")
+        elif inventory.two_owned_account_differential:
+            tiers.append("R2")
+        elif inventory.network_access:
+            tiers.append("R1")
+    for category in action_categories:
+        tier = aliases.get(category)
+        if tier is None and category in _CATEGORY_RISK:
+            tier = _CATEGORY_RISK[category]  # type: ignore[index]
+        if tier is None:
+            tiers.append("R3")
+        else:
+            tiers.append(tier)
+    return max(tiers, key=_RISK_RANK.__getitem__)
+
+
 def _effective_risk(
     recipe: VersionedRecipe | None, selection: RecipeSelection
 ) -> RiskTier:
@@ -288,4 +337,4 @@ def _denied(
     )
 
 
-__all__ = ["decide_recipe_risk"]
+__all__ = ["classify_risk", "decide_recipe_risk"]

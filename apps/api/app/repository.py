@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 import re
+import secrets
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -17,13 +18,26 @@ from app.db_models import (
     AgentRunRecord,
     ApprovalRecord,
     ArtifactRecord,
+    AutopilotCandidateRevisionRecord,
+    AutopilotEvidenceClaimRecord,
+    AutopilotHumanEvidenceReviewRecord,
+    AutopilotObservationRecord,
+    AutopilotRefutationDecisionRecord,
+    AutopilotReportRevisionRecord,
+    AutopilotRiskDecisionRecord,
+    AutopilotToolRunRecord,
     AutonomousResearchWakeupStateRecord,
+    CampaignAuthorizationRecord,
+    CampaignAssetRecord,
+    CampaignAssetAdmissionEventRecord,
     CampaignBudgetRecord,
     CampaignLocalToolExecutionSlotRecord,
     CampaignRecord,
     CampaignTaskRecord,
     CodebaseFactRecord,
     CodebaseMapRecord,
+    ExecutionLeaseRecord,
+    ExecutionRequestLedgerRecord,
     FindingRecord,
     LearningSignalRecord,
     LLMRunRecord,
@@ -34,7 +48,9 @@ from app.db_models import (
     ProgramScopeRuleRecord,
     ProgramRecord,
     ReportRecord,
+    ResearchBranchRecord,
     ScannerRunRecord,
+    ValidationPlanRecord,
     ValidationRunRecord,
 )
 from app.models import Finding, Program, ReportDraft
@@ -1438,11 +1454,16 @@ class DatabaseRepository:
         allowed_tools: list[str] | None = None,
         created_by: str,
         payload: dict | None = None,
+        campaign_mode: str = "legacy",
     ) -> CampaignRecord:
+        mode = _safe_display_value(campaign_mode or "legacy")
+        if mode not in {"legacy", "bounty_autopilot"}:
+            raise ValueError("unsupported_campaign_mode")
         record = CampaignRecord(
             id=f"campaign_{uuid4().hex}",
             program_id=program_id,
             name=_safe_display_value(name),
+            campaign_mode=mode,
             autonomy_level=_safe_display_value(autonomy_level),
             scope_status=_safe_display_value(scope_status),
             policy_text_hash=sha256(policy_text.encode("utf-8")).hexdigest(),
@@ -1457,6 +1478,2420 @@ class DatabaseRepository:
         self.session.commit()
         self.session.refresh(record)
         return record
+
+
+    def create_campaign_authorization(
+        self,
+        *,
+        campaign_id: str,
+        authorization_payload: dict,
+        issued_at: datetime | None = None,
+    ) -> CampaignAuthorizationRecord:
+        """Persist one immutable authorization generation and mark it current."""
+
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+        )
+
+        try:
+            auth = authorization_from_payload(authorization_payload)
+        except Exception as exc:  # noqa: BLE001 - map to typed reason
+            raise ValueError("authorization_payload_invalid") from exc
+        if auth.campaign_id != campaign_id:
+            raise ValueError("authorization_campaign_mismatch")
+
+        campaign = self.get_campaign(campaign_id)
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+
+        current_rows = self.session.scalars(
+            select(CampaignAuthorizationRecord).where(
+                CampaignAuthorizationRecord.campaign_id == campaign_id,
+                CampaignAuthorizationRecord.is_current.is_(True),
+            )
+        ).all()
+        next_generation = 1
+        max_generation = self.session.scalar(
+            select(func.max(CampaignAuthorizationRecord.generation)).where(
+                CampaignAuthorizationRecord.campaign_id == campaign_id
+            )
+        )
+        if max_generation is not None:
+            next_generation = int(max_generation) + 1
+        now = issued_at or datetime.now(UTC)
+        for row in current_rows:
+            row.is_current = False
+            row.revoked_at = now
+            row.revocation_reason = "superseded"
+
+        record = CampaignAuthorizationRecord(
+            id=f"campauth_{uuid4().hex}",
+            campaign_id=campaign_id,
+            generation=next_generation,
+            schema_version=auth.schema_version,
+            authorization_digest=auth.authorization_digest,
+            scope_snapshot_id=auth.scope_snapshot_id,
+            scope_snapshot_digest=auth.scope_snapshot_digest,
+            policy_digest=auth.policy_digest,
+            operator_id=auth.operator_identity,
+            payload=authorization_payload,
+            is_current=True,
+            issued_at=auth.issued_at,
+            expires_at=auth.expires_at,
+            revoked_at=None,
+            revocation_reason=None,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def get_current_campaign_authorization(
+        self,
+        campaign_id: str,
+    ) -> CampaignAuthorizationRecord | None:
+        return self.session.scalar(
+            select(CampaignAuthorizationRecord)
+            .where(
+                CampaignAuthorizationRecord.campaign_id == campaign_id,
+                CampaignAuthorizationRecord.is_current.is_(True),
+                CampaignAuthorizationRecord.revoked_at.is_(None),
+            )
+            .order_by(CampaignAuthorizationRecord.generation.desc())
+        )
+
+    def list_campaign_authorizations(
+        self,
+        campaign_id: str,
+    ) -> list[CampaignAuthorizationRecord]:
+        return list(
+            self.session.scalars(
+                select(CampaignAuthorizationRecord)
+                .where(CampaignAuthorizationRecord.campaign_id == campaign_id)
+                .order_by(CampaignAuthorizationRecord.generation.desc())
+            ).all()
+        )
+
+    def revoke_campaign_authorization(
+        self,
+        *,
+        campaign_id: str,
+        authorization_id: str,
+        reason: str,
+        revoked_at: datetime | None = None,
+    ) -> CampaignAuthorizationRecord | None:
+        record = self.session.get(CampaignAuthorizationRecord, authorization_id)
+        if record is None or record.campaign_id != campaign_id:
+            return None
+        now = revoked_at or datetime.now(UTC)
+        record.is_current = False
+        record.revoked_at = now
+        record.revocation_reason = _safe_display_value(reason)[:255]
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def upsert_campaign_asset_admission(
+        self,
+        *,
+        campaign_id: str,
+        admission: dict,
+        now: datetime | None = None,
+    ) -> CampaignAssetRecord:
+        """Persist latest asset admission and append an immutable event."""
+
+        from app.bounty_autopilot.asset_admission import AssetAdmissionRecord
+
+        record_model = AssetAdmissionRecord.model_validate_json(
+            json.dumps(admission, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        )
+        timestamp = now or datetime.now(UTC)
+        existing = self.session.scalar(
+            select(CampaignAssetRecord).where(
+                CampaignAssetRecord.campaign_id == campaign_id,
+                CampaignAssetRecord.asset_id == record_model.asset_id,
+            )
+        )
+        network = record_model.network.model_dump(mode="json")
+        if existing is None:
+            existing = CampaignAssetRecord(
+                id=f"campasset_{uuid4().hex}",
+                campaign_id=campaign_id,
+                asset_id=record_model.asset_id,
+                identity_digest=record_model.identity_digest,
+                scheme=record_model.identity.scheme,
+                host=record_model.identity.host,
+                port=record_model.identity.port,
+                path_authority=record_model.identity.path_authority,
+                provenance=record_model.identity.provenance.value,
+                admission_decision=record_model.decision.value,
+                scope_snapshot_digest=record_model.scope_snapshot_digest,
+                network_identity=network,
+                source=record_model.source,
+                reason=record_model.reason,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+                payload={},
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self.session.add(existing)
+        else:
+            existing.identity_digest = record_model.identity_digest
+            existing.scheme = record_model.identity.scheme
+            existing.host = record_model.identity.host
+            existing.port = record_model.identity.port
+            existing.path_authority = record_model.identity.path_authority
+            existing.provenance = record_model.identity.provenance.value
+            existing.admission_decision = record_model.decision.value
+            existing.scope_snapshot_digest = record_model.scope_snapshot_digest
+            existing.network_identity = network
+            existing.source = record_model.source
+            existing.reason = record_model.reason
+            existing.last_seen_at = timestamp
+            existing.updated_at = timestamp
+
+        event = CampaignAssetAdmissionEventRecord(
+            id=f"assetadm_{uuid4().hex}",
+            campaign_id=campaign_id,
+            asset_id=record_model.asset_id,
+            identity_digest=record_model.identity_digest,
+            decision=record_model.decision.value,
+            scope_snapshot_digest=record_model.scope_snapshot_digest,
+            network_identity=network,
+            source=record_model.source,
+            reason=record_model.reason,
+            recorded_at=timestamp,
+            payload={},
+        )
+        self.session.add(event)
+        self.session.commit()
+        self.session.refresh(existing)
+        return existing
+
+    def list_campaign_assets(self, campaign_id: str) -> list[CampaignAssetRecord]:
+        return list(
+            self.session.scalars(
+                select(CampaignAssetRecord)
+                .where(CampaignAssetRecord.campaign_id == campaign_id)
+                .order_by(CampaignAssetRecord.asset_id.asc())
+            ).all()
+        )
+
+    def list_admitted_campaign_asset_ids(
+        self,
+        campaign_id: str,
+        *,
+        scope_snapshot_digest: str,
+    ) -> set[str]:
+        rows = self.session.scalars(
+            select(CampaignAssetRecord).where(
+                CampaignAssetRecord.campaign_id == campaign_id,
+                CampaignAssetRecord.admission_decision == "admitted",
+                CampaignAssetRecord.scope_snapshot_digest == scope_snapshot_digest,
+            )
+        ).all()
+        return {row.asset_id for row in rows}
+
+    def create_research_branch(
+        self,
+        *,
+        campaign_id: str,
+        branch: dict,
+        now: datetime | None = None,
+    ) -> ResearchBranchRecord:
+        from app.bounty_autopilot.branches import ResearchBranch
+
+        model = ResearchBranch.model_validate_json(
+            json.dumps(branch, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        )
+        if model.campaign_id != campaign_id:
+            raise ValueError("branch_campaign_mismatch")
+        timestamp = now or datetime.now(UTC)
+        record = ResearchBranchRecord(
+            id=f"rbranch_{uuid4().hex}",
+            campaign_id=campaign_id,
+            branch_id=model.branch_id,
+            asset_id=model.asset_id,
+            status=model.status.value,
+            priority=model.priority,
+            risk_tier=model.risk_tier,
+            hypothesis_id=model.hypothesis_id,
+            parent_signal_id=None,
+            recipe_id=model.recipe_ref.recipe_id if model.recipe_ref else None,
+            recipe_version=model.recipe_ref.version if model.recipe_ref else None,
+            account_aliases=list(model.account_aliases),
+            budget_counters=model.budget.model_dump(mode="json"),
+            stop_reason=model.stop_reason,
+            version=model.version,
+            payload={},
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_research_branches(self, campaign_id: str) -> list[ResearchBranchRecord]:
+        return list(
+            self.session.scalars(
+                select(ResearchBranchRecord)
+                .where(ResearchBranchRecord.campaign_id == campaign_id)
+                .order_by(
+                    ResearchBranchRecord.priority.desc(),
+                    ResearchBranchRecord.branch_id.asc(),
+                )
+            ).all()
+        )
+
+    def get_research_branch(
+        self,
+        *,
+        campaign_id: str,
+        branch_id: str,
+    ) -> ResearchBranchRecord | None:
+        return self.session.scalar(
+            select(ResearchBranchRecord).where(
+                ResearchBranchRecord.campaign_id == campaign_id,
+                ResearchBranchRecord.branch_id == branch_id,
+            )
+        )
+
+    def transition_research_branch(
+        self,
+        *,
+        campaign_id: str,
+        branch_id: str,
+        new_status: str,
+        expected_version: int,
+        stop_reason: str | None = None,
+        now: datetime | None = None,
+    ) -> ResearchBranchRecord:
+        from app.bounty_autopilot.branches import (
+            BranchBudgetCounters,
+            BranchStatus,
+            ResearchBranch,
+            transition_branch,
+        )
+        from app.bounty_autopilot.contracts import RiskTier
+        from app.bounty_autopilot.recipes import default_recipe_registry
+
+        record = self.get_research_branch(
+            campaign_id=campaign_id,
+            branch_id=branch_id,
+        )
+        if record is None:
+            raise ValueError("branch_not_found")
+        recipe_ref = None
+        if record.recipe_id and record.recipe_version:
+            recipe = default_recipe_registry().get(
+                record.recipe_id,
+                record.recipe_version,
+            )
+            recipe_ref = recipe.ref if recipe is not None else None
+        budget_payload = record.budget_counters if isinstance(record.budget_counters, dict) else {}
+        current = ResearchBranch(
+            branch_id=record.branch_id,
+            campaign_id=record.campaign_id,
+            asset_id=record.asset_id,
+            status=BranchStatus(record.status),
+            priority=record.priority,
+            recipe_ref=recipe_ref,
+            risk_tier=record.risk_tier,
+            hypothesis_id=record.hypothesis_id,
+            account_aliases=tuple(record.account_aliases or ()),
+            budget=BranchBudgetCounters.model_validate_json(
+                json.dumps(
+                    budget_payload or {},
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            ),
+            stop_reason=record.stop_reason,
+            version=record.version,
+        )
+        updated = transition_branch(
+            current,
+            new_status=BranchStatus(new_status),
+            expected_version=expected_version,
+            stop_reason=stop_reason,
+        )
+        timestamp = now or datetime.now(UTC)
+        record.status = updated.status.value
+        record.stop_reason = updated.stop_reason
+        record.version = updated.version
+        record.updated_at = timestamp
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def materialize_autopilot_branch_plan_handoff(
+        self,
+        *,
+        campaign_id: str,
+        branch_id: str,
+        expected_branch_version: int,
+        authorization_id: str,
+        authorization_digest: str,
+        scope_snapshot_digest: str,
+        source_snapshot_digest: str,
+        asset_id: str,
+        recipe_ref: dict,
+        risk_tier: str,
+        hypothesis_id: str | None,
+        handoff_id: str,
+        handoff_input_refs: list[str],
+        handoff_payload: dict,
+        now: datetime | None = None,
+    ) -> tuple[ResearchBranchRecord, CampaignTaskRecord]:
+        """Atomically bind one selected branch to a human plan-materialization handoff."""
+
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+        from app.bounty_autopilot.contracts import RecipeRef
+        from app.bounty_autopilot.recipes import default_recipe_registry
+
+        timestamp = now or datetime.now(UTC)
+        campaign = self.get_campaign(campaign_id)
+        campaign_payload = (
+            campaign.payload
+            if campaign is not None and isinstance(campaign.payload, dict)
+            else {}
+        )
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        if campaign_payload.get("source_snapshot_digest") != source_snapshot_digest:
+            raise ValueError("source_snapshot_changed")
+        if not any(
+            task.task_type == "validation_handoff"
+            and task.status == "awaiting_approval"
+            for task in self.list_campaign_tasks(campaign_id)
+        ):
+            raise ValueError("validation_handoff_not_awaiting_approval")
+        auth_record = self.get_current_campaign_authorization(campaign_id)
+        if auth_record is None:
+            raise ValueError("authorization_missing")
+        if (
+            auth_record.id != authorization_id
+            or auth_record.authorization_digest != authorization_digest
+            or auth_record.scope_snapshot_digest != scope_snapshot_digest
+        ):
+            raise ValueError("authorization_changed")
+        try:
+            authorization = authorization_from_payload(auth_record.payload)
+            if authorization.authorization_digest != auth_record.authorization_digest:
+                raise ValueError("authorization_digest_invalid")
+            validate_current_authorization(
+                authorization,
+                now=timestamp,
+                expected_scope_snapshot_digest=scope_snapshot_digest,
+            )
+        except AuthorizationValidationError as exc:
+            raise ValueError(exc.reason) from exc
+        except ValueError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - persisted authority is fail-closed
+            raise ValueError("authorization_digest_invalid") from exc
+
+        try:
+            bound_recipe = RecipeRef.model_validate(recipe_ref)
+        except Exception as exc:  # noqa: BLE001 - task payload is an immutable contract
+            raise ValueError("branch_recipe_invalid") from exc
+        if asset_id not in authorization.asset_ids:
+            raise ValueError("authorization_asset_not_allowed")
+        if bound_recipe not in authorization.recipe_refs:
+            raise ValueError("authorization_recipe_not_allowed")
+        if asset_id not in self.list_admitted_campaign_asset_ids(
+            campaign_id,
+            scope_snapshot_digest=scope_snapshot_digest,
+        ):
+            raise ValueError("asset_not_admitted")
+
+        branch = self.get_research_branch(
+            campaign_id=campaign_id,
+            branch_id=branch_id,
+        )
+        if branch is None:
+            raise ValueError("branch_not_found")
+        registered_recipe = (
+            default_recipe_registry().get(branch.recipe_id, branch.recipe_version)
+            if branch.recipe_id and branch.recipe_version
+            else None
+        )
+        if (
+            branch.asset_id != asset_id
+            or branch.risk_tier != risk_tier
+            or branch.hypothesis_id != hypothesis_id
+            or registered_recipe is None
+            or registered_recipe.ref != bound_recipe
+        ):
+            raise ValueError("branch_changed")
+        if branch.status in {"queued", "active"}:
+            if branch.version != expected_branch_version:
+                raise ValueError("branch_changed")
+            branch.status = "awaiting_human"
+            branch.stop_reason = "awaiting_plan"
+            branch.version += 1
+            branch.updated_at = timestamp
+        elif (
+            branch.status != "awaiting_human"
+            or branch.version != expected_branch_version + 1
+        ):
+            raise ValueError("branch_changed")
+
+        handoff = self.session.get(CampaignTaskRecord, handoff_id)
+        if handoff is None:
+            handoff = CampaignTaskRecord(
+                id=_safe_display_value(handoff_id),
+                campaign_id=campaign_id,
+                task_type="autopilot_plan_materialization",
+                agent_type="human_plan_reviewer",
+                title="Materialize immutable plan for selected research branch",
+                status="awaiting_approval",
+                input_refs=_safe_display_value(handoff_input_refs),
+                output_refs=[],
+                payload=_safe_display_value(handoff_payload),
+            )
+            self.session.add(handoff)
+        elif not (
+            handoff.campaign_id == campaign_id
+            and handoff.task_type == "autopilot_plan_materialization"
+            and handoff.agent_type == "human_plan_reviewer"
+            and handoff.title == "Materialize immutable plan for selected research branch"
+            and handoff.status == "awaiting_approval"
+            and handoff.input_refs == handoff_input_refs
+            and handoff.output_refs == []
+            and handoff.payload == handoff_payload
+        ):
+            raise ValueError("plan_handoff_integrity_invalid")
+
+        try:
+            self.session.flush()
+        except IntegrityError:
+            self.session.rollback()
+            raise ValueError("plan_handoff_integrity_invalid") from None
+        return branch, handoff
+
+    def create_validation_plan(
+        self,
+        *,
+        campaign_id: str,
+        plan_payload: dict,
+        now: datetime | None = None,
+    ) -> ValidationPlanRecord:
+        """Persist an immutable validation plan (digest-bound payload)."""
+
+        from app.bounty_autopilot.plans import ValidationPlan, build_validation_plan
+
+        # Prefer re-building so digest is server-validated.
+        if "plan_digest" in plan_payload and "recipe_ref" in plan_payload:
+            try:
+                plan = ValidationPlan.model_validate_json(
+                    json.dumps(
+                        plan_payload,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+            except Exception:
+                plan = build_validation_plan(**{
+                    k: v for k, v in plan_payload.items() if k != "plan_digest"
+                })
+        else:
+            plan = build_validation_plan(**plan_payload)
+        if plan.campaign_id != campaign_id:
+            raise ValueError("campaign_id_mismatch")
+        existing = self.session.scalar(
+            select(ValidationPlanRecord).where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == plan.plan_id,
+            )
+        )
+        if existing is not None:
+            if existing.plan_digest != plan.plan_digest:
+                raise ValueError("plan_immutable_digest_conflict")
+            return existing
+        timestamp = now or datetime.now(UTC)
+        record = ValidationPlanRecord(
+            id=f"vplan_{uuid4().hex}",
+            campaign_id=campaign_id,
+            plan_id=plan.plan_id,
+            plan_digest=plan.plan_digest,
+            branch_id=plan.branch_id,
+            asset_id=plan.asset_id,
+            risk_tier=plan.risk_tier,
+            status="ready",
+            payload=plan.model_dump(mode="json"),
+            created_at=timestamp,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def materialize_validation_plan_from_handoff(
+        self,
+        *,
+        campaign_id: str,
+        handoff_id: str,
+        plan,
+        actor: str,
+        now: datetime | None = None,
+    ) -> ValidationPlanRecord:
+        from app.bounty_autopilot.plans import ValidationPlan
+
+        if not isinstance(plan, ValidationPlan):
+            raise TypeError("ValidationPlan required")
+        if plan.campaign_id != campaign_id:
+            raise ValueError("campaign_id_mismatch")
+        existing = self.get_validation_plan(
+            campaign_id=campaign_id,
+            plan_id=plan.plan_id,
+        )
+        if existing is not None:
+            if existing.plan_digest != plan.plan_digest:
+                raise ValueError("plan_immutable_digest_conflict")
+            reason = self.validation_plan_materialization_stop_reason(
+                campaign_id=campaign_id,
+                plan=plan,
+                handoff_id=handoff_id,
+                require_completed=True,
+                now=now,
+            )
+            if reason is not None:
+                raise ValueError(reason)
+            return existing
+
+        reason = self.validation_plan_materialization_stop_reason(
+            campaign_id=campaign_id,
+            plan=plan,
+            handoff_id=handoff_id,
+            require_completed=False,
+            now=now,
+        )
+        if reason is not None:
+            raise ValueError(reason)
+
+        timestamp = now or datetime.now(UTC)
+        handoff = self.session.get(CampaignTaskRecord, handoff_id)
+        branch = self.get_research_branch(
+            campaign_id=campaign_id,
+            branch_id=plan.branch_id,
+        )
+        assert handoff is not None
+        assert branch is not None
+        record = ValidationPlanRecord(
+            id=f"vplan_{uuid4().hex}",
+            campaign_id=campaign_id,
+            plan_id=plan.plan_id,
+            plan_digest=plan.plan_digest,
+            branch_id=plan.branch_id,
+            asset_id=plan.asset_id,
+            risk_tier=plan.risk_tier,
+            status="awaiting_r3" if plan.risk_tier == "R3" else "ready",
+            payload=plan.model_dump(mode="json"),
+            created_at=timestamp,
+        )
+        handoff.status = "completed"
+        handoff.output_refs = [
+            f"validation_plan:{plan.plan_id}",
+            f"operator_alias:{_safe_display_value(actor)}",
+        ]
+        branch.status = "awaiting_r3" if plan.risk_tier == "R3" else "queued"
+        branch.stop_reason = "awaiting_r3" if plan.risk_tier == "R3" else None
+        branch.version += 1
+        branch.updated_at = timestamp
+        self.session.add_all((record, handoff, branch))
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.get_validation_plan(
+                campaign_id=campaign_id,
+                plan_id=plan.plan_id,
+            )
+            if existing is None or existing.plan_digest != plan.plan_digest:
+                raise ValueError("plan_materialization_conflict") from None
+            reason = self.validation_plan_materialization_stop_reason(
+                campaign_id=campaign_id,
+                plan=plan,
+                handoff_id=handoff_id,
+                require_completed=True,
+                now=timestamp,
+            )
+            if reason is not None:
+                raise ValueError(reason) from None
+            return existing
+        self.session.refresh(record)
+        return record
+
+    def validation_plan_materialization_stop_reason(
+        self,
+        *,
+        campaign_id: str,
+        plan,
+        handoff_id: str | None = None,
+        require_completed: bool,
+        now: datetime | None = None,
+    ) -> str | None:
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+        from app.bounty_autopilot.lineage import (
+            AutopilotRiskDecisionRecord as RiskDecisionContract,
+        )
+        from app.bounty_autopilot.plans import ValidationPlan
+        from app.bounty_autopilot.recipes import default_recipe_registry
+
+        if not isinstance(plan, ValidationPlan) or plan.campaign_id != campaign_id:
+            return "validation_plan_invalid"
+        campaign = self.get_campaign(campaign_id)
+        if campaign is None:
+            return "campaign_not_found"
+        if (campaign.campaign_mode or "legacy") != "bounty_autopilot":
+            return "autopilot_campaign_required"
+        if self.campaign_is_emergency_stopped(campaign_id):
+            return "emergency_stopped"
+
+        handoffs = [
+            task
+            for task in self.list_campaign_tasks(campaign_id)
+            if task.task_type == "autopilot_plan_materialization"
+            and (handoff_id is None or task.id == handoff_id)
+            and (
+                f"validation_plan:{plan.plan_id}" in (task.output_refs or [])
+                if require_completed
+                else task.status == "awaiting_approval"
+            )
+        ]
+        if not handoffs:
+            return "plan_handoff_not_found"
+        if len(handoffs) != 1:
+            return "plan_handoff_ambiguous"
+        handoff = handoffs[0]
+        if require_completed and handoff.status != "completed":
+            return "plan_handoff_not_completed"
+        payload = handoff.payload if isinstance(handoff.payload, dict) else {}
+
+        authorization_record = self.get_current_campaign_authorization(campaign_id)
+        if authorization_record is None:
+            return "authorization_missing"
+        try:
+            authorization = authorization_from_payload(authorization_record.payload)
+            if authorization.authorization_digest != authorization_record.authorization_digest:
+                return "authorization_digest_invalid"
+            validate_current_authorization(
+                authorization,
+                now=now or datetime.now(UTC),
+                expected_scope_snapshot_digest=plan.scope_snapshot_digest,
+            )
+        except AuthorizationValidationError as exc:
+            return exc.reason
+        except Exception:  # noqa: BLE001 - persisted authority is fail-closed
+            return "authorization_digest_invalid"
+        if (
+            payload.get("schema_version") != "autopilot-plan-materialization/v1"
+            or payload.get("human_approval_required") is not True
+            or payload.get("campaign_id") != campaign_id
+            or payload.get("branch_id") != plan.branch_id
+            or payload.get("authorization_id") != authorization_record.id
+            or payload.get("authorization_digest") != plan.authorization_digest
+            or payload.get("scope_snapshot_digest") != plan.scope_snapshot_digest
+            or payload.get("asset_id") != plan.asset_id
+            or payload.get("recipe_ref") != plan.recipe_ref.model_dump(mode="json")
+            or payload.get("risk_tier") != plan.risk_tier
+            or payload.get("hypothesis_id") != plan.hypothesis_id
+        ):
+            return "plan_handoff_binding_mismatch"
+        if (
+            plan.authorization_digest != authorization.authorization_digest
+            or plan.asset_id not in authorization.asset_ids
+            or plan.recipe_ref not in authorization.recipe_refs
+            or any(alias not in authorization.account_aliases for alias in plan.account_aliases)
+        ):
+            return "plan_authorization_mismatch"
+
+        recipe = default_recipe_registry().get(
+            plan.recipe_ref.recipe_id,
+            plan.recipe_ref.version,
+        )
+        if recipe is None or recipe.ref != plan.recipe_ref:
+            return "registered_recipe_required"
+        if len(plan.account_aliases) != recipe.required_account_aliases:
+            return "recipe_account_alias_count_mismatch"
+        if (
+            plan.max_requests > min(recipe.max_budgets.max_requests, authorization.budgets.max_requests)
+            or plan.max_response_bytes
+            > min(
+                recipe.max_budgets.max_response_bytes,
+                authorization.budgets.max_response_bytes,
+            )
+            or plan.max_duration_seconds
+            > min(
+                recipe.max_budgets.max_duration_seconds,
+                authorization.budgets.max_duration_seconds,
+            )
+        ):
+            return "plan_budget_exceeded"
+        if "read_only" in recipe.method_classes and any(
+            method not in {"GET", "HEAD", "OPTIONS"} for method in plan.methods
+        ):
+            return "plan_method_not_allowed"
+
+        asset = self.session.scalar(
+            select(CampaignAssetRecord).where(
+                CampaignAssetRecord.campaign_id == campaign_id,
+                CampaignAssetRecord.asset_id == plan.asset_id,
+            )
+        )
+        if asset is None or (
+            asset.admission_decision != "admitted"
+            or asset.scope_snapshot_digest != plan.scope_snapshot_digest
+            or asset.scheme != plan.destination_scheme
+            or asset.host != plan.destination_host
+            or asset.port != plan.destination_port
+            or not _path_is_within_authority(
+                plan.destination_path,
+                asset.path_authority,
+            )
+        ):
+            return "plan_asset_not_current"
+
+        branch = self.get_research_branch(
+            campaign_id=campaign_id,
+            branch_id=plan.branch_id,
+        )
+        expected_branch_version = payload.get("branch_version")
+        expected_status = "awaiting_r3" if require_completed and plan.risk_tier == "R3" else (
+            "queued" if require_completed else "awaiting_human"
+        )
+        if branch is None or (
+            branch.asset_id != plan.asset_id
+            or branch.status != expected_status
+            or branch.risk_tier != plan.risk_tier
+            or branch.hypothesis_id != plan.hypothesis_id
+            or branch.recipe_id != plan.recipe_ref.recipe_id
+            or branch.recipe_version != plan.recipe_ref.version
+            or not isinstance(expected_branch_version, int)
+            or branch.version
+            != expected_branch_version + (2 if require_completed else 1)
+        ):
+            return "plan_branch_not_current"
+
+        required_risk_status = (
+            "awaiting_exact_approval" if plan.risk_tier == "R3" else "authorized"
+        )
+        for row in self.list_autopilot_risk_decisions(campaign_id):
+            try:
+                decision = RiskDecisionContract.model_validate_json(
+                    json.dumps(
+                        row.payload,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - malformed lineage never grants authority
+                continue
+            if (
+                decision.authorization_id == authorization_record.id
+                and decision.authorization_digest == plan.authorization_digest
+                and decision.scope_snapshot_digest == plan.scope_snapshot_digest
+                and decision.asset_id == plan.asset_id
+                and decision.branch_id == plan.branch_id
+                and decision.recipe_ref == plan.recipe_ref
+                and decision.risk_tier == plan.risk_tier
+                and decision.status == required_risk_status
+            ):
+                return None
+        return "risk_decision_missing"
+
+    def get_validation_plan(
+        self,
+        *,
+        campaign_id: str,
+        plan_id: str,
+    ) -> ValidationPlanRecord | None:
+        return self.session.scalar(
+            select(ValidationPlanRecord).where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == plan_id,
+            )
+        )
+
+    def list_validation_plans(self, campaign_id: str) -> list[ValidationPlanRecord]:
+        return list(
+            self.session.scalars(
+                select(ValidationPlanRecord)
+                .where(ValidationPlanRecord.campaign_id == campaign_id)
+                .order_by(ValidationPlanRecord.created_at.desc())
+            ).all()
+        )
+
+    def campaign_is_emergency_stopped(self, campaign_id: str) -> bool:
+        campaign = self.session.get(CampaignRecord, campaign_id)
+        return campaign is None or self._campaign_record_is_emergency_stopped(campaign)
+
+    @staticmethod
+    def _campaign_record_is_emergency_stopped(campaign: CampaignRecord) -> bool:
+        if campaign.status in {"stopped", "emergency_stopped"}:
+            return True
+        payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+        return bool(payload.get("emergency_stopped"))
+
+    def _lock_autopilot_campaign(
+        self,
+        campaign_id: str,
+    ) -> CampaignRecord | None:
+        return self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    def _claim_autopilot_execution_authority(self, campaign_id: str) -> bool:
+        campaign = self._lock_autopilot_campaign(campaign_id)
+        if campaign is None or self._campaign_record_is_emergency_stopped(campaign):
+            return False
+        claimed = self.session.execute(
+            update(CampaignRecord)
+            .where(
+                CampaignRecord.id == campaign_id,
+                CampaignRecord.status.not_in(("stopped", "emergency_stopped")),
+            )
+            .values(status=CampaignRecord.status)
+        )
+        return claimed.rowcount == 1
+
+    def issue_execution_lease(
+        self,
+        *,
+        campaign_id: str,
+        plan_id: str,
+        lease_id: str | None = None,
+        authorization_digest: str,
+        scope_snapshot_digest: str,
+        authorization_recipe_allowed: bool,
+        policy_mode: str,
+        approval_id: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[bool, str, ExecutionLeaseRecord | None]:
+        """Atomically re-check authority and issue a durable lease."""
+
+        from app.bounty_autopilot.contracts import PolicyMode, RecipeRef, RiskTier
+        from app.bounty_autopilot.leases import (
+            ExecutionLease,
+            LeaseStatus,
+            execution_lease_authority_stop_reason,
+            issue_execution_lease as pure_issue,
+        )
+        from app.bounty_autopilot.plans import ValidationPlan
+
+        timestamp = now or datetime.now(UTC)
+        now_iso = timestamp.isoformat()
+        if self.campaign_is_emergency_stopped(campaign_id):
+            return False, "emergency_stopped", None
+
+        plan_record = self.get_validation_plan(campaign_id=campaign_id, plan_id=plan_id)
+        if plan_record is None:
+            return False, "plan_not_found", None
+        plan = ValidationPlan.model_validate_json(
+            json.dumps(
+                plan_record.payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+
+        authority_stop_reason = execution_lease_authority_stop_reason(
+            plan=plan,
+            policy_mode=policy_mode,
+            authorization_recipe_allowed=authorization_recipe_allowed,
+            authorization_digest=authorization_digest,
+            scope_snapshot_digest=scope_snapshot_digest,
+        )
+        if authority_stop_reason is not None:
+            return False, authority_stop_reason, None
+
+        lease_key = lease_id or f"lease_{uuid4().hex}"
+        existing = self.session.scalar(
+            select(ExecutionLeaseRecord).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == lease_key,
+            )
+        )
+        if existing is not None:
+            try:
+                persisted_lease = ExecutionLease.model_validate_json(
+                    json.dumps(
+                        existing.payload,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - persisted authority is fail-closed
+                return False, "lease_integrity_invalid", None
+            if (
+                existing.status != LeaseStatus.ACTIVE.value
+                or persisted_lease.status != LeaseStatus.ACTIVE
+                or existing.revoked_at is not None
+            ):
+                return False, "lease_not_active", None
+            if (
+                plan_record.status != "issued"
+                or existing.lease_id != persisted_lease.lease_id
+                or existing.plan_id != persisted_lease.plan_id
+                or existing.plan_digest != persisted_lease.plan_digest
+                or existing.r3_approval_id != persisted_lease.r3_approval_id
+                or persisted_lease.lease_id != lease_key
+                or persisted_lease.plan_id != plan.plan_id
+                or persisted_lease.plan_digest != plan.plan_digest
+                or persisted_lease.campaign_id != campaign_id
+                or persisted_lease.authorization_digest != authorization_digest
+                or persisted_lease.scope_snapshot_digest != scope_snapshot_digest
+                or persisted_lease.asset_id != plan.asset_id
+                or persisted_lease.branch_id != plan.branch_id
+                or persisted_lease.recipe_ref != plan.recipe_ref
+                or persisted_lease.risk_tier != plan.risk_tier
+                or persisted_lease.max_requests != plan.max_requests
+            ):
+                return False, "lease_integrity_invalid", None
+            if plan.risk_tier == RiskTier.R3:
+                if not approval_id or approval_id != persisted_lease.r3_approval_id:
+                    return False, "approval_lease_mismatch", None
+                approval = self.session.get(ApprovalRecord, approval_id)
+                if (
+                    approval is None
+                    or approval.campaign_id != campaign_id
+                    or approval.plan_digest != plan.plan_digest
+                    or approval.status != "used"
+                    or approval.consumed_at is None
+                    or approval.consumed_by_lease_id != lease_key
+                ):
+                    return False, "approval_lease_mismatch", None
+            if not self._claim_autopilot_execution_authority(campaign_id):
+                self.session.rollback()
+                return False, "emergency_stopped", None
+            self.session.commit()
+            self.session.refresh(existing)
+            if existing.status != LeaseStatus.ACTIVE.value or existing.revoked_at is not None:
+                return False, "lease_not_active", None
+            return True, "already_issued", existing
+
+        # Durable single-use R3 consumption via CAS.
+        approval_token = None
+        approval_store = None
+        if plan.risk_tier == "R3":
+            if not approval_id:
+                return False, "r3_approval_required", None
+            approval = self.session.get(ApprovalRecord, approval_id)
+            if approval is None:
+                return False, "approval_not_found", None
+            if approval.campaign_id != campaign_id:
+                return False, "approval_campaign_mismatch", None
+            if approval.consumed_at is not None or approval.consumed_by_lease_id is not None:
+                return False, "approval_already_consumed", None
+            if approval.status not in {"approved", "used"}:
+                return False, "approval_not_approved", None
+            if approval.status == "used":
+                return False, "approval_already_consumed", None
+            expires_at = approval.expires_at
+            if expires_at is not None:
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=UTC)
+                if expires_at <= timestamp:
+                    return False, "approval_expired", None
+            if approval.plan_digest and approval.plan_digest != plan.plan_digest:
+                return False, "approval_plan_mismatch", None
+            payload = approval.payload if isinstance(approval.payload, dict) else {}
+            # Prefer call-time authority digests; payload may redaction-safe-filter
+            # keys that contain "authorization" / "token".
+            token_scope = scope_snapshot_digest
+            token_auth = authorization_digest
+            nonce = approval.single_use_nonce_digest
+            if not nonce:
+                candidate = payload.get("nonce_digest")
+                if isinstance(candidate, str) and candidate.startswith("sha256:"):
+                    nonce = candidate
+            if not nonce:
+                return False, "approval_nonce_required", None
+            from app.bounty_autopilot.leases import ApprovalStore, R3ApprovalToken
+
+            approval_token = R3ApprovalToken(
+                approval_id=approval.id,
+                plan_digest=plan.plan_digest,
+                scope_snapshot_digest=token_scope,
+                authorization_digest=token_auth,
+                account_aliases=tuple(payload.get("account_aliases") or ()),
+                nonce_digest=nonce,
+                expires_at=(
+                    approval.expires_at.isoformat()
+                    if approval.expires_at is not None
+                    else (timestamp + timedelta(hours=1)).isoformat()
+                ),
+            )
+            approval_store = ApprovalStore()
+            approval_store.put(approval_token)
+
+        result = pure_issue(
+            plan=plan,
+            policy_mode=policy_mode,
+            authorization_recipe_allowed=authorization_recipe_allowed,
+            authorization_digest=authorization_digest,
+            scope_snapshot_digest=scope_snapshot_digest,
+            lease_id=lease_key,
+            now_iso=now_iso,
+            emergency_stopped=False,
+            approval_store=approval_store,
+            approval_token=approval_token,
+        )
+        if not result.allowed or result.lease is None:
+            return False, result.reason, None
+
+        if not self._claim_autopilot_execution_authority(campaign_id):
+            self.session.rollback()
+            return False, "emergency_stopped", None
+
+        if plan.risk_tier == "R3" and approval_id:
+            cas = self.session.execute(
+                update(ApprovalRecord)
+                .where(ApprovalRecord.id == approval_id)
+                .where(ApprovalRecord.consumed_at.is_(None))
+                .where(ApprovalRecord.status == "approved")
+                .values(
+                    consumed_at=timestamp,
+                    consumed_by_lease_id=lease_key,
+                    status="used",
+                )
+            )
+            if cas.rowcount != 1:
+                self.session.rollback()
+                existing = self.session.scalar(
+                    select(ExecutionLeaseRecord).where(
+                        ExecutionLeaseRecord.campaign_id == campaign_id,
+                        ExecutionLeaseRecord.lease_id == lease_key,
+                    )
+                )
+                if existing is not None:
+                    return self.issue_execution_lease(
+                        campaign_id=campaign_id,
+                        plan_id=plan_id,
+                        lease_id=lease_key,
+                        authorization_digest=authorization_digest,
+                        scope_snapshot_digest=scope_snapshot_digest,
+                        authorization_recipe_allowed=authorization_recipe_allowed,
+                        policy_mode=policy_mode,
+                        approval_id=approval_id,
+                        now=timestamp,
+                    )
+                return False, "approval_already_consumed", None
+
+        lease = result.lease
+        record = ExecutionLeaseRecord(
+            id=f"lease_row_{uuid4().hex}",
+            campaign_id=campaign_id,
+            lease_id=lease.lease_id,
+            plan_id=lease.plan_id,
+            plan_digest=lease.plan_digest,
+            status=lease.status.value,
+            r3_approval_id=lease.r3_approval_id,
+            payload=lease.model_dump(mode="json"),
+            created_at=timestamp,
+            revoked_at=None,
+        )
+        self.session.add(record)
+        plan_record.status = "issued"
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(ExecutionLeaseRecord).where(
+                    ExecutionLeaseRecord.campaign_id == campaign_id,
+                    ExecutionLeaseRecord.lease_id == lease_key,
+                )
+            )
+            if existing is not None:
+                return self.issue_execution_lease(
+                    campaign_id=campaign_id,
+                    plan_id=plan_id,
+                    lease_id=lease_key,
+                    authorization_digest=authorization_digest,
+                    scope_snapshot_digest=scope_snapshot_digest,
+                    authorization_recipe_allowed=authorization_recipe_allowed,
+                    policy_mode=policy_mode,
+                    approval_id=approval_id,
+                    now=timestamp,
+                )
+            raise
+        self.session.refresh(record)
+        return True, "issued", record
+
+    def list_execution_leases(
+        self,
+        campaign_id: str,
+        *,
+        status: str | None = None,
+    ) -> list[ExecutionLeaseRecord]:
+        statement = select(ExecutionLeaseRecord).where(
+            ExecutionLeaseRecord.campaign_id == campaign_id
+        )
+        if status is not None:
+            statement = statement.where(ExecutionLeaseRecord.status == status)
+        return list(
+            self.session.scalars(
+                statement.order_by(ExecutionLeaseRecord.created_at.desc())
+            ).all()
+        )
+
+    def get_execution_lease(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+    ) -> ExecutionLeaseRecord | None:
+        return self.session.scalar(
+            select(ExecutionLeaseRecord).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == lease_id,
+            )
+        )
+
+    def reserve_execution_request(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+        reservation_payload: dict,
+        now: datetime | None = None,
+    ) -> ExecutionRequestLedgerRecord:
+        """Reserve a request under an active lease with idempotency."""
+
+        from app.bounty_autopilot.leases import ExecutionLease, LeaseStatus
+        from app.bounty_autopilot.request_ledger import RequestReservation
+
+        timestamp = now or datetime.now(UTC)
+        if self.campaign_is_emergency_stopped(campaign_id):
+            raise ValueError("emergency_stopped")
+        lease_record = self.get_execution_lease(campaign_id=campaign_id, lease_id=lease_id)
+        if lease_record is None:
+            raise ValueError("lease_not_found")
+        if lease_record.status != LeaseStatus.ACTIVE.value:
+            raise ValueError("lease_not_active")
+        lease = ExecutionLease.model_validate_json(
+            json.dumps(
+                lease_record.payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        reservation = RequestReservation.model_validate_json(
+            json.dumps(
+                reservation_payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        if reservation.lease_id != lease_id:
+            raise ValueError("lease_mismatch")
+        if reservation.plan_digest != lease.plan_digest:
+            raise ValueError("plan_digest_mismatch")
+
+        if not self._claim_autopilot_execution_authority(campaign_id):
+            self.session.rollback()
+            raise ValueError("emergency_stopped")
+
+        existing = self.session.scalar(
+            select(ExecutionRequestLedgerRecord).where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.lease_id == lease_id,
+                ExecutionRequestLedgerRecord.idempotency_key == reservation.idempotency_key,
+            )
+        )
+        if existing is not None:
+            self.session.commit()
+            self.session.refresh(existing)
+            return existing
+
+        # Budget from current ledger counts.
+        reserved_count = self.session.scalar(
+            select(func.count())
+            .select_from(ExecutionRequestLedgerRecord)
+            .where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.lease_id == lease_id,
+                ExecutionRequestLedgerRecord.status.in_(
+                    ["reserved", "sent", "completed", "awaiting_human"]
+                ),
+            )
+        ) or 0
+        if reserved_count >= lease.max_requests:
+            self.session.rollback()
+            raise ValueError("request_budget_exhausted")
+
+        record = ExecutionRequestLedgerRecord(
+            id=f"req_{uuid4().hex}",
+            campaign_id=campaign_id,
+            reservation_id=reservation.reservation_id,
+            lease_id=lease_id,
+            plan_digest=reservation.plan_digest,
+            idempotency_key=reservation.idempotency_key,
+            status=reservation.status.value,
+            payload=reservation.model_dump(mode="json"),
+            created_at=timestamp,
+            completed_at=None,
+        )
+        # Update lease reserved counter in payload.
+        payload = dict(lease_record.payload or {})
+        payload["requests_reserved"] = int(payload.get("requests_reserved") or 0) + 1
+        lease_record.payload = payload
+        self.session.add(record)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(ExecutionRequestLedgerRecord).where(
+                    ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                    ExecutionRequestLedgerRecord.lease_id == lease_id,
+                    ExecutionRequestLedgerRecord.idempotency_key
+                    == reservation.idempotency_key,
+                )
+            )
+            if existing is not None:
+                return existing
+            raise
+        self.session.refresh(record)
+        return record
+
+    def authorize_execution_request(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+        reservation_id: str,
+        method: str,
+        scheme: str,
+        host: str,
+        port: int,
+        path: str,
+        body_digest: str | None,
+        mutation_class: str,
+        resolved_ips: tuple[str, ...],
+        cname_chain: tuple[str, ...],
+        is_redirect: bool = False,
+        is_subresource: bool = False,
+        now: datetime | None = None,
+    ):
+        """Atomically bind a pre-send decision to current durable authority."""
+
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+        from app.bounty_autopilot.gateway import (
+            GatewayAuthorizeDecision,
+            GatewayAuthorizeRequest,
+            GatewayDecisionStatus,
+            GatewayOutcomeClass,
+            authorize_gateway_request,
+        )
+        from app.bounty_autopilot.leases import ExecutionLease, LeaseStatus
+        from app.bounty_autopilot.plans import ValidationPlan
+        from app.bounty_autopilot.recipes import default_recipe_registry
+        from app.bounty_autopilot.request_ledger import (
+            RequestReservation,
+            RequestReservationStatus,
+        )
+
+        timestamp = now or datetime.now(UTC)
+        if not self._claim_autopilot_execution_authority(campaign_id):
+            self.session.rollback()
+            raise ValueError("emergency_stopped")
+        try:
+            authorization_record = self.get_current_campaign_authorization(campaign_id)
+            if authorization_record is None:
+                raise ValueError("authorization_missing")
+            try:
+                authorization = authorization_from_payload(
+                    authorization_record.payload
+                )
+                if (
+                    authorization.authorization_digest
+                    != authorization_record.authorization_digest
+                ):
+                    raise AuthorizationValidationError(
+                        "authorization_digest_invalid"
+                    )
+                validate_current_authorization(authorization, now=timestamp)
+            except AuthorizationValidationError as exc:
+                raise ValueError(exc.reason) from exc
+            except Exception as exc:  # noqa: BLE001 - persisted authority fails closed
+                raise ValueError("authorization_digest_invalid") from exc
+
+            lease_record = self.get_execution_lease(
+                campaign_id=campaign_id,
+                lease_id=lease_id,
+            )
+            if lease_record is None:
+                raise ValueError("lease_not_found")
+            plan_record = self.get_validation_plan(
+                campaign_id=campaign_id,
+                plan_id=lease_record.plan_id,
+            )
+            if plan_record is None:
+                raise ValueError("plan_not_found")
+            reservation_record = self.session.scalar(
+                select(ExecutionRequestLedgerRecord).where(
+                    ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                    ExecutionRequestLedgerRecord.lease_id == lease_id,
+                    ExecutionRequestLedgerRecord.reservation_id == reservation_id,
+                )
+            )
+            if reservation_record is None:
+                raise ValueError("reservation_not_found")
+            if reservation_record.status != RequestReservationStatus.RESERVED.value:
+                raise ValueError("reservation_not_reserved")
+            asset = self.session.scalar(
+                select(CampaignAssetRecord).where(
+                    CampaignAssetRecord.campaign_id == campaign_id,
+                    CampaignAssetRecord.asset_id == plan_record.asset_id,
+                )
+            )
+            if asset is None:
+                raise ValueError("asset_not_found")
+
+            try:
+                plan = ValidationPlan.model_validate_json(
+                    json.dumps(
+                        plan_record.payload,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                lease = ExecutionLease.model_validate_json(
+                    json.dumps(
+                        lease_record.payload,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                reservation = RequestReservation.model_validate_json(
+                    json.dumps(
+                        reservation_record.payload,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - persisted lineage fails closed
+                raise ValueError("gateway_lineage_invalid") from exc
+
+            recipe = default_recipe_registry().get(
+                plan.recipe_ref.recipe_id,
+                plan.recipe_ref.version,
+            )
+            materialization_reason = self.validation_plan_materialization_stop_reason(
+                campaign_id=campaign_id,
+                plan=plan,
+                require_completed=True,
+                now=timestamp,
+            )
+            if materialization_reason is not None:
+                raise ValueError(materialization_reason)
+            if (
+                plan_record.status != "issued"
+                or lease_record.status != LeaseStatus.ACTIVE.value
+                or lease_record.revoked_at is not None
+                or lease.status is not LeaseStatus.ACTIVE
+                or lease.campaign_id != campaign_id
+                or lease.lease_id != lease_id
+                or lease.plan_id != plan.plan_id
+                or lease.plan_digest != plan.plan_digest
+                or lease.authorization_digest != authorization.authorization_digest
+                or lease.scope_snapshot_digest != authorization.scope_snapshot_digest
+                or plan.authorization_digest != authorization.authorization_digest
+                or plan.scope_snapshot_digest != authorization.scope_snapshot_digest
+                or plan.asset_id != asset.asset_id
+                or plan.asset_id not in authorization.asset_ids
+                or recipe is None
+                or recipe.ref != plan.recipe_ref
+                or plan.recipe_ref not in authorization.recipe_refs
+                or asset.admission_decision != "admitted"
+                or asset.scope_snapshot_digest != authorization.scope_snapshot_digest
+                or reservation.status is not RequestReservationStatus.RESERVED
+                or reservation.reservation_id != reservation_id
+                or reservation.lease_id != lease_id
+                or reservation.plan_id != plan.plan_id
+                or reservation.plan_digest != plan.plan_digest
+                or reservation.destination_host.lower() != host.lower()
+                or reservation.destination_port != port
+                or reservation.destination_path != path
+                or reservation.method != method.upper()
+                or reservation.mutation_class != mutation_class
+                or reservation.body_digest != body_digest
+                or plan.destination_scheme != scheme
+            ):
+                raise ValueError("gateway_lineage_invalid")
+
+            network_identity = (
+                asset.network_identity
+                if isinstance(asset.network_identity, dict)
+                else {}
+            )
+            expected_ips = tuple(
+                sorted(set(network_identity.get("resolved_ips") or ()))
+            )
+            actual_ips = tuple(sorted(set(resolved_ips)))
+            expected_cnames = tuple(
+                str(item).lower().rstrip(".")
+                for item in network_identity.get("cname_chain") or ()
+            )
+            actual_cnames = tuple(
+                str(item).lower().rstrip(".") for item in cname_chain
+            )
+            if actual_ips != expected_ips or actual_cnames != expected_cnames:
+                decision = GatewayAuthorizeDecision(
+                    status=GatewayDecisionStatus.BLOCKED,
+                    reason="network_identity_mismatch",
+                    outcome_class=GatewayOutcomeClass.DNS_REBIND,
+                )
+            else:
+                url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+                decision = authorize_gateway_request(
+                    plan=plan,
+                    lease=lease,
+                    request=GatewayAuthorizeRequest(
+                        url=f"{scheme}://{url_host}:{port}{path}",
+                        method=method,
+                        body_digest=body_digest,
+                        is_redirect=is_redirect,
+                        is_subresource=is_subresource,
+                        resolved_ips=resolved_ips,
+                    ),
+                    policy_mode=authorization.policy_mode,
+                    admitted_asset_id=asset.asset_id,
+                    current_scope_snapshot_digest=authorization.scope_snapshot_digest,
+                    asset_identity_digest_current=True,
+                    allowed_methods=plan.methods,
+                    emergency_stopped=False,
+                )
+
+            if decision.status is GatewayDecisionStatus.ALLOWED:
+                reservation_record.status = RequestReservationStatus.SENT.value
+                reservation_payload = dict(reservation_record.payload or {})
+                reservation_payload["status"] = RequestReservationStatus.SENT.value
+                reservation_record.payload = reservation_payload
+            self.session.commit()
+            return decision
+        except Exception:
+            self.session.rollback()
+            raise
+
+    def complete_execution_request(
+        self,
+        *,
+        campaign_id: str,
+        reservation_id: str,
+        outcome: str,
+        now: datetime | None = None,
+    ) -> ExecutionRequestLedgerRecord:
+        from app.bounty_autopilot.request_ledger import RequestReservationStatus
+
+        timestamp = now or datetime.now(UTC)
+        record = self.session.scalar(
+            select(ExecutionRequestLedgerRecord).where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.reservation_id == reservation_id,
+            )
+        )
+        if record is None:
+            raise ValueError("reservation_not_found")
+        if record.status == RequestReservationStatus.COMPLETED.value:
+            return record
+        try:
+            status = RequestReservationStatus(outcome)
+        except ValueError as exc:
+            raise ValueError("invalid_outcome") from exc
+        record.status = status.value
+        payload = dict(record.payload or {})
+        payload["status"] = status.value
+        record.payload = payload
+        if status in {
+            RequestReservationStatus.COMPLETED,
+            RequestReservationStatus.AWAITING_HUMAN,
+            RequestReservationStatus.EXPIRED,
+            RequestReservationStatus.REVOKED,
+            RequestReservationStatus.NO_SEND_FAILURE,
+        }:
+            record.completed_at = timestamp
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def emergency_stop_campaign(
+        self,
+        *,
+        campaign_id: str,
+        actor: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> dict:
+        """Stop campaign, revoke active leases, release safe unused reservations."""
+
+        timestamp = now or datetime.now(UTC)
+        result = self._apply_emergency_stop(
+            campaign_id=campaign_id,
+            actor=actor,
+            reason=reason,
+            timestamp=timestamp,
+        )
+        self.session.commit()
+        return result
+
+    def prepare_autopilot_emergency_stop(
+        self,
+        *,
+        campaign_id: str,
+        actor: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> dict:
+        timestamp = now or datetime.now(UTC)
+        if self.get_campaign(campaign_id) is None:
+            raise ValueError("campaign_not_found")
+        if self.campaign_is_emergency_stopped(campaign_id):
+            raise ValueError("campaign_already_stopped")
+        nonce = secrets.token_urlsafe(32)
+        nonce_digest = f"sha256:{sha256(nonce.encode('utf-8')).hexdigest()}"
+        expires_at = timestamp + timedelta(minutes=2)
+        self.create_approval_record(
+            campaign_id=campaign_id,
+            approval_type="autopilot_emergency_stop_confirmation",
+            actor=actor,
+            reason=reason,
+            requested_action="autopilot_emergency_stop",
+            safety_gate_state="awaiting_confirmation",
+            status="pending",
+            expires_at=expires_at,
+            payload={
+                "confirmation_actor": actor,
+                "confirmation_reason": reason,
+            },
+            single_use_nonce_digest=nonce_digest,
+        )
+        return {
+            "confirmation_nonce": nonce,
+            "expires_at": expires_at.isoformat(),
+        }
+
+    def confirm_autopilot_emergency_stop(
+        self,
+        *,
+        campaign_id: str,
+        actor: str,
+        reason: str,
+        confirmation_nonce: str,
+        now: datetime | None = None,
+    ) -> dict:
+        timestamp = now or datetime.now(UTC)
+        campaign = self._lock_autopilot_campaign(campaign_id)
+        if campaign is None or self._campaign_record_is_emergency_stopped(campaign):
+            self.session.rollback()
+            raise ValueError("campaign_already_stopped")
+        nonce_digest = (
+            f"sha256:{sha256(confirmation_nonce.encode('utf-8')).hexdigest()}"
+        )
+        confirmation = self.session.scalar(
+            select(ApprovalRecord).where(
+                ApprovalRecord.campaign_id == campaign_id,
+                ApprovalRecord.approval_type
+                == "autopilot_emergency_stop_confirmation",
+                ApprovalRecord.single_use_nonce_digest == nonce_digest,
+                ApprovalRecord.status.in_(("pending", "requested")),
+                ApprovalRecord.decided_at.is_(None),
+                ApprovalRecord.consumed_at.is_(None),
+                ApprovalRecord.expires_at.is_not(None),
+                ApprovalRecord.expires_at > timestamp,
+            )
+        )
+        payload = (
+            confirmation.payload
+            if confirmation is not None and isinstance(confirmation.payload, dict)
+            else {}
+        )
+        if confirmation is None or (
+            payload.get("confirmation_actor") != actor
+            or payload.get("confirmation_reason") != reason
+        ):
+            raise ValueError("emergency_stop_confirmation_invalid")
+        consumed = self.session.execute(
+            update(ApprovalRecord)
+            .where(ApprovalRecord.id == confirmation.id)
+            .where(ApprovalRecord.status.in_(("pending", "requested")))
+            .where(ApprovalRecord.decided_at.is_(None))
+            .where(ApprovalRecord.consumed_at.is_(None))
+            .values(
+                status="used",
+                decided_by=actor,
+                decision_reason=reason,
+                decided_at=timestamp,
+                consumed_at=timestamp,
+                consumed_by_lease_id="emergency_stop",
+            )
+        )
+        if consumed.rowcount != 1:
+            self.session.rollback()
+            raise ValueError("emergency_stop_confirmation_consumed")
+        try:
+            result = self._apply_emergency_stop(
+                campaign_id=campaign_id,
+                actor=actor,
+                reason=reason,
+                timestamp=timestamp,
+            )
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+        return result
+
+    def _apply_emergency_stop(
+        self,
+        *,
+        campaign_id: str,
+        actor: str,
+        reason: str,
+        timestamp: datetime,
+    ) -> dict:
+        campaign = self._lock_autopilot_campaign(campaign_id)
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        payload = dict(campaign.payload or {})
+        payload["emergency_stopped"] = True
+        payload["emergency_stopped_at"] = timestamp.isoformat()
+        payload["emergency_stopped_by"] = actor
+        payload["emergency_stop_reason"] = reason
+        campaign.payload = payload
+        campaign.status = "stopped"
+
+        revoked_leases = 0
+        for lease in self.session.scalars(
+            select(ExecutionLeaseRecord).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.status == "active",
+            )
+        ).all():
+            lease.status = "revoked"
+            lease.revoked_at = timestamp
+            lease_payload = dict(lease.payload or {})
+            lease_payload["status"] = "revoked"
+            lease_payload["emergency_stopped"] = True
+            lease.payload = lease_payload
+            revoked_leases += 1
+
+        released_reservations = 0
+        for reservation in self.session.scalars(
+            select(ExecutionRequestLedgerRecord).where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.status == "reserved",
+            )
+        ).all():
+            reservation.status = "revoked"
+            reservation.completed_at = timestamp
+            res_payload = dict(reservation.payload or {})
+            res_payload["status"] = "revoked"
+            reservation.payload = res_payload
+            released_reservations += 1
+
+        return {
+            "campaign_id": campaign_id,
+            "status": "stopped",
+            "revoked_leases": revoked_leases,
+            "released_reservations": released_reservations,
+            "emergency_stopped": True,
+            "actor": actor,
+            "reason": reason,
+        }
+
+    def steer_autopilot_branch(
+        self,
+        *,
+        campaign_id: str,
+        branch_id: str,
+        directive: str,
+        reason: str,
+        priority: int | None = None,
+        hypothesis_guidance: str | None = None,
+        now: datetime | None = None,
+    ) -> dict:
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+        from app.bounty_autopilot.recipes import default_recipe_registry
+
+        if self.campaign_is_emergency_stopped(campaign_id):
+            raise ValueError("emergency_stopped")
+        authorization_record = self.get_current_campaign_authorization(campaign_id)
+        if authorization_record is None:
+            raise ValueError("authorization_missing")
+        try:
+            authorization = authorization_from_payload(authorization_record.payload)
+            validate_current_authorization(authorization, now=now or datetime.now(UTC))
+        except AuthorizationValidationError as exc:
+            raise ValueError(exc.reason) from exc
+        branch = self.get_research_branch(
+            campaign_id=campaign_id,
+            branch_id=branch_id,
+        )
+        if branch is None:
+            raise ValueError("branch_not_found")
+        if branch.status in {"completed", "closed"}:
+            raise ValueError("branch_not_steerable")
+        recipe = (
+            default_recipe_registry().get(branch.recipe_id, branch.recipe_version)
+            if branch.recipe_id and branch.recipe_version
+            else None
+        )
+        if (
+            branch.asset_id not in authorization.asset_ids
+            or recipe is None
+            or recipe.ref not in authorization.recipe_refs
+            or branch.asset_id
+            not in self.list_admitted_campaign_asset_ids(
+                campaign_id,
+                scope_snapshot_digest=authorization.scope_snapshot_digest,
+            )
+        ):
+            raise ValueError("branch_authority_stale")
+
+        timestamp = now or datetime.now(UTC)
+        payload = dict(branch.payload or {})
+        if directive == "set_priority":
+            if priority is None or not 0 <= priority <= 100 or hypothesis_guidance is not None:
+                raise ValueError("set_priority_value_required")
+            branch.priority = priority
+        elif directive == "add_hypothesis_guidance":
+            if priority is not None or not hypothesis_guidance:
+                raise ValueError("hypothesis_guidance_value_required")
+            safe_guidance = _safe_display_value(hypothesis_guidance)
+            if safe_guidance != hypothesis_guidance:
+                raise ValueError("unsafe_hypothesis_guidance")
+            history = list(payload.get("hypothesis_guidance") or [])
+            history.append(
+                {
+                    "guidance": safe_guidance,
+                    "reason": _safe_display_value(reason),
+                    "recorded_at": timestamp.isoformat(),
+                }
+            )
+            payload["hypothesis_guidance"] = history[-20:]
+            branch.payload = payload
+        else:
+            raise ValueError("unsupported_steering_directive")
+        branch.version += 1
+        branch.updated_at = timestamp
+        self.session.add(branch)
+        self.session.commit()
+        self.session.refresh(branch)
+        return {
+            "campaign_id": campaign_id,
+            "branch_id": branch.branch_id,
+            "directive": directive,
+            "priority": branch.priority,
+            "branch_version": branch.version,
+            "status": "recorded",
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+
+    def build_autopilot_pod_grant(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+        pod_id: str,
+        now: datetime | None = None,
+    ) -> dict:
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+        from app.bounty_autopilot.leases import ExecutionLease, LeaseStatus
+        from app.bounty_autopilot.plans import ValidationPlan
+
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}", pod_id) is None:
+            raise ValueError("safe_pod_id_required")
+        timestamp = now or datetime.now(UTC)
+        if self.campaign_is_emergency_stopped(campaign_id):
+            raise ValueError("emergency_stopped")
+        authorization_record = self.get_current_campaign_authorization(campaign_id)
+        lease_row = self.get_execution_lease(
+            campaign_id=campaign_id,
+            lease_id=lease_id,
+        )
+        if authorization_record is None:
+            raise ValueError("authorization_missing")
+        if lease_row is None:
+            raise ValueError("lease_not_found")
+        plan_row = self.get_validation_plan(
+            campaign_id=campaign_id,
+            plan_id=lease_row.plan_id,
+        )
+        if plan_row is None:
+            raise ValueError("plan_not_found")
+        try:
+            authorization = authorization_from_payload(authorization_record.payload)
+            validate_current_authorization(
+                authorization,
+                now=timestamp,
+                expected_scope_snapshot_digest=lease_row.payload.get(
+                    "scope_snapshot_digest"
+                ),
+            )
+            lease = ExecutionLease.model_validate_json(
+                json.dumps(
+                    lease_row.payload,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            plan = ValidationPlan.model_validate_json(
+                json.dumps(
+                    plan_row.payload,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        except AuthorizationValidationError as exc:
+            raise ValueError(exc.reason) from exc
+        except Exception as exc:  # noqa: BLE001 - persisted authority is fail-closed
+            raise ValueError("pod_grant_lineage_invalid") from exc
+        materialization_reason = self.validation_plan_materialization_stop_reason(
+            campaign_id=campaign_id,
+            plan=plan,
+            require_completed=True,
+            now=timestamp,
+        )
+        if materialization_reason is not None:
+            raise ValueError(materialization_reason)
+        asset = self.session.scalar(
+            select(CampaignAssetRecord).where(
+                CampaignAssetRecord.campaign_id == campaign_id,
+                CampaignAssetRecord.asset_id == plan.asset_id,
+            )
+        )
+        if asset is None:
+            raise ValueError("asset_not_found")
+        if (
+            authorization.policy_mode != "authorized_local_lab"
+            or authorization.network_profile != "authorized_local_lab"
+            or lease_row.status != LeaseStatus.ACTIVE.value
+            or lease.status is not LeaseStatus.ACTIVE
+            or lease_row.revoked_at is not None
+            or lease.plan_digest != plan.plan_digest
+            or lease.authorization_digest != authorization.authorization_digest
+            or lease.scope_snapshot_digest != authorization.scope_snapshot_digest
+            or lease.asset_id != asset.asset_id
+        ):
+            raise ValueError("pod_grant_lineage_invalid")
+        if plan.container_profile not in {"docker_readonly_v1", "wsl_readonly_v1"}:
+            raise ValueError("pod_isolation_profile_required")
+
+        expires_at = min(
+            authorization.expires_at,
+            timestamp + timedelta(seconds=min(plan.max_duration_seconds, 3600)),
+        )
+        if expires_at <= timestamp:
+            raise ValueError("pod_grant_expired")
+        grant_digest = sha256(
+            f"{campaign_id}:{pod_id}:{lease_id}:{plan.plan_digest}".encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema_version": "bounty-autopilot-pod-grant/v1",
+            "grant_id": f"pod_grant_{grant_digest[:32]}",
+            "campaign_id": campaign_id,
+            "pod_id": pod_id,
+            "authorization_id": authorization_record.id,
+            "authorization_digest": authorization.authorization_digest,
+            "scope_snapshot_digest": authorization.scope_snapshot_digest,
+            "asset_id": asset.asset_id,
+            "asset_identity_digest": asset.identity_digest,
+            "branch_id": plan.branch_id,
+            "plan_id": plan.plan_id,
+            "plan_digest": plan.plan_digest,
+            "lease_id": lease.lease_id,
+            "lease_status": lease.status.value,
+            "recipe_ref": plan.recipe_ref.model_dump(mode="json"),
+            "policy_mode": authorization.policy_mode,
+            "network_profile": "gateway_only_v1",
+            "container_profile": plan.container_profile,
+            "issued_at": timestamp.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "report_submission_allowed": False,
+        }
+
+    def decide_autopilot_r3_approval(
+        self,
+        *,
+        campaign_id: str,
+        approval_id: str,
+        decision: str,
+        actor: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> ApprovalRecord:
+        from app.bounty_autopilot.plans import ValidationPlan
+
+        timestamp = now or datetime.now(UTC)
+        approval = self.session.get(ApprovalRecord, approval_id)
+        if approval is None or approval.campaign_id != campaign_id:
+            raise ValueError("approval_not_found")
+        if approval.approval_type != "r3_exact_plan":
+            raise ValueError("autopilot_r3_approval_required")
+        if decision not in {"approved", "denied"}:
+            raise ValueError("approval_decision_invalid")
+        if (
+            approval.status not in {"pending", "requested"}
+            or approval.decided_at is not None
+            or approval.consumed_at is not None
+            or approval.expires_at is None
+            or _as_utc(approval.expires_at) <= _as_utc(timestamp)
+            or not approval.single_use_nonce_digest
+        ):
+            raise ValueError("approval_not_active")
+        plan_row = self.session.scalar(
+            select(ValidationPlanRecord).where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_digest == approval.plan_digest,
+            )
+        )
+        if plan_row is None:
+            raise ValueError("approval_plan_not_found")
+        try:
+            plan = ValidationPlan.model_validate_json(
+                json.dumps(
+                    plan_row.payload,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - persisted plan is fail-closed
+            raise ValueError("approval_plan_invalid") from exc
+        payload = approval.payload if isinstance(approval.payload, dict) else {}
+        exact_diff = payload.get("exact_diff")
+        if (
+            plan.risk_tier != "R3"
+            or plan.r3_approval_id != approval.id
+            or approval.scope_reference != plan.scope_snapshot_digest
+            or approval.asset != plan.asset_id
+            or approval.validation_mode != plan.recipe_ref.recipe_id
+            or approval.requested_action != "autopilot_r3_exact_plan"
+            or sorted(payload.get("account_aliases") or [])
+            != sorted(plan.account_aliases)
+            or not isinstance(exact_diff, list)
+            or not exact_diff
+        ):
+            raise ValueError("approval_exact_plan_mismatch")
+        materialization_reason = self.validation_plan_materialization_stop_reason(
+            campaign_id=campaign_id,
+            plan=plan,
+            require_completed=True,
+            now=timestamp,
+        )
+        if materialization_reason is not None:
+            raise ValueError(materialization_reason)
+
+        result = self.session.execute(
+            update(ApprovalRecord)
+            .where(ApprovalRecord.id == approval.id)
+            .where(ApprovalRecord.status.in_(("pending", "requested")))
+            .where(ApprovalRecord.decided_at.is_(None))
+            .where(ApprovalRecord.consumed_at.is_(None))
+            .values(
+                status=decision,
+                decided_by=actor,
+                decision_reason=reason,
+                decided_at=timestamp,
+                safety_gate_state=(
+                    "exact_plan_approved" if decision == "approved" else "denied"
+                ),
+            )
+        )
+        if result.rowcount != 1:
+            self.session.rollback()
+            raise ValueError("approval_decision_conflict")
+        self.session.commit()
+        decided = self.session.get(ApprovalRecord, approval.id)
+        assert decided is not None
+        return decided
+
+    def append_autopilot_risk_decision(self, decision):
+        from app.bounty_autopilot.lineage import (
+            AutopilotRiskDecisionRecord as RiskDecisionContract,
+        )
+
+        if not isinstance(decision, RiskDecisionContract):
+            raise TypeError("AutopilotRiskDecisionRecord required")
+        payload = decision.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotRiskDecisionRecord,
+            identity_field="risk_decision_id",
+            identity_value=decision.risk_decision_id,
+            prefix="risk_row",
+            payload=payload,
+            values={
+                "campaign_id": decision.campaign_id,
+                "risk_decision_id": decision.risk_decision_id,
+                "authorization_id": decision.authorization_id,
+                "authorization_digest": decision.authorization_digest,
+                "scope_snapshot_digest": decision.scope_snapshot_digest,
+                "asset_id": decision.asset_id,
+                "branch_id": decision.branch_id,
+                "recipe_id": decision.recipe_ref.recipe_id,
+                "recipe_version": decision.recipe_ref.version,
+                "recipe_definition_digest": decision.recipe_ref.definition_digest,
+                "risk_tier": decision.risk_tier,
+                "status": decision.status,
+                "reason_code": decision.reason_code,
+                "created_at": decision.decided_at,
+            },
+        )
+
+    def append_autopilot_tool_run(self, tool_run):
+        from app.bounty_autopilot.lineage import (
+            AutopilotToolRunRecord as ToolRunContract,
+        )
+
+        if not isinstance(tool_run, ToolRunContract):
+            raise TypeError("AutopilotToolRunRecord required")
+        payload = tool_run.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotToolRunRecord,
+            identity_field="tool_run_id",
+            identity_value=tool_run.tool_run_id,
+            prefix="tool_run_row",
+            payload=payload,
+            values={
+                "campaign_id": tool_run.campaign_id,
+                "tool_run_id": tool_run.tool_run_id,
+                "authorization_id": tool_run.authorization_id,
+                "authorization_digest": tool_run.authorization_digest,
+                "scope_snapshot_digest": tool_run.scope_snapshot_digest,
+                "asset_id": tool_run.asset_id,
+                "asset_identity_digest": tool_run.asset_identity_digest,
+                "branch_id": tool_run.branch_id,
+                "plan_id": tool_run.plan_id,
+                "plan_digest": tool_run.plan_digest,
+                "risk_decision_id": tool_run.risk_decision_id,
+                "risk_tier": tool_run.risk_tier,
+                "recipe_id": tool_run.recipe_ref.recipe_id,
+                "recipe_version": tool_run.recipe_ref.version,
+                "recipe_definition_digest": tool_run.recipe_ref.definition_digest,
+                "lease_id": tool_run.lease_id,
+                "reservation_id": tool_run.reservation_id,
+                "session_generation": tool_run.session_generation,
+                "isolation_profile": tool_run.isolation_profile,
+                "gateway_decision": tool_run.gateway_decision,
+                "request_sent": tool_run.request_sent,
+                "run_status": tool_run.run_status,
+                "outcome_class": tool_run.outcome_class.value,
+                "outcome_code": tool_run.outcome_code,
+                "third_party_data_discarded": tool_run.third_party_data_discarded,
+                "raw_content_retained": False,
+                "raw_secret_retained": False,
+                "request_content_retained": False,
+                "response_content_retained": False,
+                "created_at": tool_run.occurred_at,
+            },
+        )
+
+    def create_autopilot_observation(self, observation):
+        from app.bounty_autopilot.observations import ObservationRecord
+
+        if not isinstance(observation, ObservationRecord):
+            raise TypeError("ObservationRecord required")
+        payload = observation.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotObservationRecord,
+            identity_field="observation_id",
+            identity_value=observation.observation_id,
+            prefix="obs_row",
+            payload=payload,
+            values={
+                "campaign_id": observation.campaign_id,
+                "observation_id": observation.observation_id,
+                "branch_id": observation.branch_id,
+                "plan_digest": observation.plan_digest,
+                "grade": observation.grade.value,
+                "outcome_class": observation.outcome_class.value,
+                "created_at": observation.occurred_at,
+            },
+        )
+
+    def append_autopilot_evidence_claim(self, claim):
+        from app.bounty_autopilot.lineage import EvidenceClaimRecord
+
+        if not isinstance(claim, EvidenceClaimRecord):
+            raise TypeError("EvidenceClaimRecord required")
+        payload = claim.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotEvidenceClaimRecord,
+            identity_field="claim_id",
+            identity_value=claim.claim_id,
+            prefix="claim_row",
+            payload=payload,
+            values={
+                "campaign_id": claim.campaign_id,
+                "claim_id": claim.claim_id,
+                "hypothesis_id": claim.hypothesis_id,
+                "observation_ids": list(claim.observation_ids),
+                "evidence_grade": claim.evidence_grade.value,
+                "lineage_digest": claim.lineage_digest,
+                "summary_code": claim.summary_code,
+                "created_at": claim.created_at,
+            },
+        )
+
+    def append_autopilot_refutation_decision(self, decision):
+        from app.bounty_autopilot.lineage import RefutationDecisionRecord
+
+        if not isinstance(decision, RefutationDecisionRecord):
+            raise TypeError("RefutationDecisionRecord required")
+        payload = decision.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotRefutationDecisionRecord,
+            identity_field="decision_id",
+            identity_value=decision.decision_id,
+            prefix="refutation_row",
+            payload=payload,
+            values={
+                "campaign_id": decision.campaign_id,
+                "decision_id": decision.decision_id,
+                "case_id": decision.case_id,
+                "hypothesis_id": decision.hypothesis_id,
+                "branch_id": decision.branch_id,
+                "observation_ids": list(decision.observation_ids),
+                "lineage_digest": decision.lineage_digest,
+                "verdict": decision.verdict.value,
+                "created_at": decision.created_at,
+            },
+        )
+
+    def append_autopilot_candidate_revision(self, revision):
+        from app.bounty_autopilot.lineage import CandidateRevisionRecord
+
+        if not isinstance(revision, CandidateRevisionRecord):
+            raise TypeError("CandidateRevisionRecord required")
+        payload = revision.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotCandidateRevisionRecord,
+            identity_field="revision_id",
+            identity_value=revision.revision_id,
+            prefix="candidate_revision_row",
+            payload=payload,
+            values={
+                "campaign_id": revision.campaign_id,
+                "revision_id": revision.revision_id,
+                "candidate_id": revision.candidate_id,
+                "hypothesis_id": revision.hypothesis_id,
+                "branch_id": revision.branch_id,
+                "evidence_claim_ids": list(revision.evidence_claim_ids),
+                "refutation_decision_id": revision.refutation_decision_id,
+                "judge_verdict": revision.judge_verdict.value,
+                "lineage_digest": revision.lineage_digest,
+                "confirmed": False,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+                "created_at": revision.created_at,
+            },
+        )
+
+    def append_autopilot_report_revision(self, revision):
+        from app.bounty_autopilot.lineage import ReportRevisionRecord
+
+        if not isinstance(revision, ReportRevisionRecord):
+            raise TypeError("ReportRevisionRecord required")
+        payload = revision.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotReportRevisionRecord,
+            identity_field="revision_id",
+            identity_value=revision.revision_id,
+            prefix="report_revision_row",
+            payload=payload,
+            values={
+                "campaign_id": revision.campaign_id,
+                "revision_id": revision.revision_id,
+                "report_id": revision.report_id,
+                "candidate_id": revision.candidate_id,
+                "evidence_claim_ids": list(revision.evidence_claim_ids),
+                "lineage_digest": revision.lineage_digest,
+                "evidence_grade": revision.evidence_grade.value,
+                "submission_blocked": True,
+                "automatic_submission_allowed": False,
+                "report_submission_allowed": False,
+                "created_at": revision.created_at,
+            },
+        )
+
+    def append_autopilot_human_evidence_review(self, review):
+        from app.bounty_autopilot.lineage import HumanEvidenceReviewRecord
+
+        if not isinstance(review, HumanEvidenceReviewRecord):
+            raise TypeError("HumanEvidenceReviewRecord required")
+        payload = review.model_dump(mode="json")
+        return self._append_autopilot_lineage_row(
+            model=AutopilotHumanEvidenceReviewRecord,
+            identity_field="review_id",
+            identity_value=review.review_id,
+            prefix="human_review_row",
+            payload=payload,
+            values={
+                "campaign_id": review.campaign_id,
+                "review_id": review.review_id,
+                "hypothesis_id": review.hypothesis_id,
+                "observation_ids": list(review.observation_ids),
+                "grade": review.grade.value,
+                "decision_code": review.decision_code,
+                "reviewer_alias": review.reviewer_alias,
+                "automated_source": False,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+                "created_at": review.reviewed_at,
+            },
+        )
+
+    def _append_autopilot_lineage_row(
+        self,
+        *,
+        model,
+        identity_field: str,
+        identity_value: str,
+        prefix: str,
+        payload: dict,
+        values: dict,
+    ):
+        campaign_id = values["campaign_id"]
+        if self.get_campaign(campaign_id) is None:
+            raise ValueError("campaign_not_found")
+        existing = self.session.scalar(
+            select(model).where(
+                model.campaign_id == campaign_id,
+                getattr(model, identity_field) == identity_value,
+            )
+        )
+        if existing is not None:
+            if existing.payload != payload:
+                raise ValueError("lineage_record_conflict")
+            return existing
+
+        row = model(id=f"{prefix}_{uuid4().hex}", payload=payload, **values)
+        self.session.add(row)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(model).where(
+                    model.campaign_id == campaign_id,
+                    getattr(model, identity_field) == identity_value,
+                )
+            )
+            if existing is None or existing.payload != payload:
+                raise ValueError("lineage_record_conflict") from None
+            return existing
+        self.session.refresh(row)
+        return row
+
+
+    def list_execution_request_ledger(
+        self,
+        campaign_id: str,
+    ) -> list[ExecutionRequestLedgerRecord]:
+        return list(
+            self.session.scalars(
+                select(ExecutionRequestLedgerRecord)
+                .where(ExecutionRequestLedgerRecord.campaign_id == campaign_id)
+                .order_by(ExecutionRequestLedgerRecord.created_at.desc())
+            ).all()
+        )
+
+    def list_autopilot_observations(
+        self,
+        campaign_id: str,
+    ) -> list[AutopilotObservationRecord]:
+        return list(
+            self.session.scalars(
+                select(AutopilotObservationRecord)
+                .where(AutopilotObservationRecord.campaign_id == campaign_id)
+                .order_by(AutopilotObservationRecord.created_at.desc())
+            ).all()
+        )
+
+    def list_autopilot_risk_decisions(self, campaign_id: str):
+        return self._list_autopilot_lineage_rows(
+            AutopilotRiskDecisionRecord, campaign_id
+        )
+
+    def list_autopilot_tool_runs(self, campaign_id: str):
+        return self._list_autopilot_lineage_rows(AutopilotToolRunRecord, campaign_id)
+
+    def list_autopilot_evidence_claims(self, campaign_id: str):
+        return self._list_autopilot_lineage_rows(
+            AutopilotEvidenceClaimRecord, campaign_id
+        )
+
+    def list_autopilot_refutation_decisions(self, campaign_id: str):
+        return self._list_autopilot_lineage_rows(
+            AutopilotRefutationDecisionRecord, campaign_id
+        )
+
+    def list_autopilot_candidate_revisions(self, campaign_id: str):
+        return self._list_autopilot_lineage_rows(
+            AutopilotCandidateRevisionRecord, campaign_id
+        )
+
+    def list_autopilot_report_revisions(self, campaign_id: str):
+        return self._list_autopilot_lineage_rows(
+            AutopilotReportRevisionRecord, campaign_id
+        )
+
+    def list_autopilot_human_evidence_reviews(self, campaign_id: str):
+        return self._list_autopilot_lineage_rows(
+            AutopilotHumanEvidenceReviewRecord, campaign_id
+        )
+
+    def _list_autopilot_lineage_rows(self, model, campaign_id: str):
+        return list(
+            self.session.scalars(
+                select(model)
+                .where(model.campaign_id == campaign_id)
+                .order_by(model.created_at.desc(), model.id.desc())
+            ).all()
+        )
 
     def list_campaigns(self) -> list[CampaignRecord]:
         return self.session.scalars(
@@ -3366,6 +5801,7 @@ class DatabaseRepository:
         status: str | None = None,
         expires_at: datetime | None = None,
         payload: dict | None = None,
+        single_use_nonce_digest: str | None = None,
     ) -> ApprovalRecord:
         record_id = _safe_display_value(approval_id) if approval_id is not None else (
             f"approval_{uuid4().hex}"
@@ -3389,6 +5825,9 @@ class DatabaseRepository:
             status=_approval_initial_status(status, campaign_id=campaign_id),
             expires_at=expires_at,
             payload=_safe_display_value(payload or {}),
+            single_use_nonce_digest=_safe_display_value(single_use_nonce_digest)
+            if single_use_nonce_digest is not None
+            else None,
         )
         self.session.add(record)
         try:
@@ -5317,7 +7756,10 @@ def _learning_signal_identity_hash(
 
 def _is_secret_key(value: str) -> bool:
     normalized = value.lower().replace("-", "_")
-    if normalized in TOKEN_USAGE_KEYS:
+    if normalized in TOKEN_USAGE_KEYS or normalized in {
+        "authorization_digest",
+        "authorization_id",
+    }:
         return False
     return any(
         marker in normalized
@@ -5535,6 +7977,15 @@ def _validated_policy_text_hash(value: str) -> str:
     ):
         raise ValueError("policy_text_hash_invalid")
     return normalized
+
+
+def _path_is_within_authority(path: str, authority: str) -> bool:
+    if not path.startswith("/") or not authority.startswith("/"):
+        return False
+    if authority == "/":
+        return True
+    prefix = authority.rstrip("/")
+    return path == prefix or path.startswith(f"{prefix}/")
 
 
 def _validation_result_safety_gate(outcome: str, *, safe_evidence_ref_count: int) -> str:

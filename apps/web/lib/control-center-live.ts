@@ -35,6 +35,17 @@ export interface ControlCenterLiveController {
   stop(): void;
 }
 
+export function buildControlCenterEventsUrl(
+  baseUrl: string,
+  campaignId?: string | null,
+): string {
+  const url = new URL("/mythos/control-center/events", baseUrl);
+  if (campaignId) {
+    url.searchParams.set("campaign_id", campaignId);
+  }
+  return url.toString();
+}
+
 export async function executeControlCenterRefresh<T>({
   load,
   onRefreshError,

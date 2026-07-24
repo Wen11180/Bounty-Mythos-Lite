@@ -92,6 +92,12 @@ class ExecutionAuthorizationRequest(BaseModel):
     scope_rule: ScopeGuardRule
     human_approved: bool = False
     execution_lease_active: bool = False
+    # Autopilot path: server-resolved authority IDs (optional for legacy callers).
+    campaign_id: str | None = Field(default=None, max_length=128)
+    plan_id: str | None = Field(default=None, max_length=128)
+    plan_digest: str | None = Field(default=None, max_length=100)
+    lease_id: str | None = Field(default=None, max_length=128)
+    authorization_digest: str | None = Field(default=None, max_length=100)
 
     @field_validator("tool_id")
     @classmethod
@@ -202,6 +208,19 @@ def authorize_tool_execution(
         return _blocked_decision(capability, "human_approval_required", scope_decision)
     if capability.execution_lease_required and not request.execution_lease_active:
         return _blocked_decision(capability, "execution_lease_required", scope_decision)
+
+    # Autopilot authority path: when plan_digest is present, require lease and auth digests.
+    if request.plan_digest is not None:
+        if not request.lease_id or not request.execution_lease_active:
+            return _blocked_decision(capability, "autopilot_lease_required", scope_decision)
+        if not request.authorization_digest:
+            return _blocked_decision(
+                capability, "autopilot_authorization_digest_required", scope_decision
+            )
+        if not request.plan_id or not request.campaign_id:
+            return _blocked_decision(
+                capability, "autopilot_plan_identity_required", scope_decision
+            )
 
     return ExecutionAuthorizationDecision(
         eligible=True,

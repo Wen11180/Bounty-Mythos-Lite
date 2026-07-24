@@ -2293,3 +2293,151 @@ export function evaluateScopeGuard(
 ): Promise<ScopeGuardDecision> {
   return apiPost("/scope-guard/evaluate", { rule, request });
 }
+
+export async function getAutopilotCampaignProjection(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot`,
+    signal,
+  );
+}
+
+export type AutopilotEmergencyStopPreparation = {
+  confirmation_nonce: string;
+  expires_at: string;
+};
+
+export async function prepareAutopilotEmergencyStop(
+  campaignId: string,
+  request: { actor?: string; reason?: string } = {},
+): Promise<AutopilotEmergencyStopPreparation> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/emergency-stop/prepare`,
+    {
+      actor: request.actor ?? "operator",
+      reason: request.reason ?? "emergency_stop",
+    },
+  );
+}
+
+export async function getAutopilotAssets(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/assets`,
+    signal,
+  );
+}
+
+export async function postAutopilotEmergencyStop(
+  campaignId: string,
+  request: { actor?: string; confirmation_nonce: string; reason?: string },
+): Promise<Record<string, unknown>> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/emergency-stop`,
+    {
+      actor: request.actor ?? "operator",
+      confirmation_nonce: request.confirmation_nonce,
+      reason: request.reason ?? "emergency_stop",
+    },
+  );
+}
+
+export async function getAutopilotBranches(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/branches`,
+    signal,
+  );
+}
+
+export async function getAutopilotBudgets(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/budgets`,
+    signal,
+  );
+}
+
+export async function getAutopilotApprovals(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/approvals`,
+    signal,
+  );
+}
+
+export async function getAutopilotEvents(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/events`,
+    signal,
+  );
+}
+
+export type AutopilotSteeringRequest =
+  | {
+      branch_id: string;
+      directive: "set_priority";
+      priority: number;
+      reason?: string;
+    }
+  | {
+      branch_id: string;
+      directive: "add_hypothesis_guidance";
+      hypothesis_guidance: string;
+      reason?: string;
+    };
+
+export async function postAutopilotSteering(
+  campaignId: string,
+  request: AutopilotSteeringRequest,
+): Promise<Record<string, unknown>> {
+  const body = request.directive === "set_priority"
+    ? {
+        branch_id: request.branch_id,
+        directive: request.directive,
+        priority: request.priority,
+        reason: request.reason ?? "operator_steering",
+      }
+    : {
+        branch_id: request.branch_id,
+        directive: request.directive,
+        hypothesis_guidance: request.hypothesis_guidance,
+        reason: request.reason ?? "operator_steering",
+      };
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/steering`,
+    body,
+  );
+}
+
+export async function postAutopilotApprovalDecision(
+  campaignId: string,
+  approvalId: string,
+  request: {
+    decision: "approved" | "denied";
+    actor?: string;
+    reason?: string;
+  },
+): Promise<Record<string, unknown>> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/approvals/${encodeURIComponent(approvalId)}/decision`,
+    {
+      decision: request.decision,
+      actor: request.actor ?? "operator",
+      reason: request.reason ?? "operator_decision",
+    },
+  );
+}

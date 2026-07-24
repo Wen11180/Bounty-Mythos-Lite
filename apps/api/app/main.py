@@ -120,6 +120,8 @@ from app.intelligence_benchmark import (
 from app.llm.base import LLMRequest, LLMResponse, ProviderName
 from app.llm.registry import UnknownProviderError, build_default_registry
 from app.models import Finding, Program, ReportDraft
+from app.bounty_autopilot.observations import ObservationRecord
+from app.bounty_autopilot.plans import ValidationPlan
 from app.mythos_brain import (
     LearningEvidenceQuality,
     LearningOutcome,
@@ -1450,6 +1452,8 @@ class CampaignCreateRequest(BaseModel):
     )
     created_by: str = Field(default="operator", min_length=1, max_length=255)
     budget: CampaignBudgetRequest | None = None
+    campaign_mode: Literal["legacy", "bounty_autopilot"] = "legacy"
+    autopilot_authorization: dict[str, Any] | None = None
 
 
 class CampaignBudgetResponse(BaseModel):
@@ -1476,6 +1480,7 @@ class CampaignResponse(BaseModel):
     program_id: str | None = None
     name: str
     status: str
+    campaign_mode: str = "legacy"
     autonomy_level: str
     scope_status: str
     policy_text_hash: str
@@ -1485,6 +1490,104 @@ class CampaignResponse(BaseModel):
     created_by: str
     created_at: str
     budget: CampaignBudgetResponse | None = None
+    current_authorization_digest: str | None = None
+
+
+class AutopilotValidationPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    handoff_id: str = Field(min_length=1, max_length=128)
+    plan: dict[str, Any]
+    actor: str = Field(default="operator", min_length=1, max_length=128)
+
+
+class AutopilotLeaseIssueRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=128)
+    lease_id: str | None = Field(default=None, max_length=128)
+    approval_id: str | None = Field(default=None, max_length=128)
+
+
+class AutopilotRequestReserveRequest(BaseModel):
+    lease_id: str = Field(min_length=1, max_length=128)
+    reservation: dict[str, Any]
+
+
+class AutopilotRequestCompleteRequest(BaseModel):
+    reservation_id: str = Field(min_length=1, max_length=128)
+    outcome: str = Field(min_length=1, max_length=64)
+
+
+class AutopilotGatewayAuthorizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lease_id: str = Field(min_length=1, max_length=128)
+    reservation_id: str = Field(min_length=1, max_length=128)
+    method: str = Field(min_length=1, max_length=16)
+    scheme: str = Field(min_length=1, max_length=16)
+    host: str = Field(min_length=1, max_length=253)
+    port: int = Field(ge=1, le=65535)
+    path: str = Field(min_length=1, max_length=1024)
+    body_digest: str | None = None
+    mutation_class: str = Field(default="none", max_length=64)
+    resolved_ips: tuple[str, ...] = Field(min_length=1, max_length=32)
+    cname_chain: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    is_redirect: bool = False
+    is_subresource: bool = False
+
+
+class AutopilotEmergencyStopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: str = Field(default="operator", min_length=1, max_length=255)
+    reason: str = Field(default="emergency_stop", min_length=1, max_length=512)
+    confirmation_nonce: str = Field(min_length=16, max_length=256)
+
+
+class AutopilotEmergencyStopPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: str = Field(default="operator", min_length=1, max_length=255)
+    reason: str = Field(default="emergency_stop", min_length=1, max_length=512)
+
+
+class AutopilotPodGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lease_id: str = Field(min_length=1, max_length=128)
+    pod_id: str = Field(min_length=1, max_length=128)
+
+
+class AutopilotApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approved", "denied"]
+    actor: str = Field(default="operator", min_length=1, max_length=128)
+    reason: str = Field(default="operator_decision", min_length=1, max_length=256)
+
+
+class AutopilotObservationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation: dict[str, Any]
+
+
+class AutopilotSteerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    directive: Literal["set_priority", "add_hypothesis_guidance"]
+    branch_id: str = Field(min_length=1, max_length=128)
+    priority: int | None = Field(default=None, ge=0, le=100)
+    hypothesis_guidance: str | None = Field(default=None, min_length=1, max_length=240)
+    reason: str = Field(default="operator_steer", min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def require_directive_value(self):
+        if self.directive == "set_priority":
+            if self.priority is None or self.hypothesis_guidance is not None:
+                raise ValueError("set_priority_value_required")
+        elif self.hypothesis_guidance is None or self.priority is not None:
+            raise ValueError("hypothesis_guidance_value_required")
+        return self
 
 
 class AutonomousWakeupCampaignResponse(BaseModel):
@@ -2077,6 +2180,13 @@ def create_mythos_campaign(
         payload["program_rule_provenance"] = resolution.provenance.model_dump(
             mode="json"
         )
+    if request.campaign_mode == "bounty_autopilot":
+        payload["campaign_mode"] = "bounty_autopilot"
+        if request.autopilot_authorization is None:
+            raise HTTPException(
+                status_code=400,
+                detail="autopilot_authorization_required",
+            )
     campaign = repository.create_campaign(
         program_id=request.program_id,
         name=request.name,
@@ -2088,7 +2198,38 @@ def create_mythos_campaign(
         allowed_tools=request.allowed_tools,
         created_by=request.created_by,
         payload=payload,
+        campaign_mode=request.campaign_mode,
     )
+    if request.campaign_mode == "bounty_autopilot":
+        try:
+            from app.bounty_autopilot.authority import (
+                build_campaign_authorization,
+            )
+            from app.bounty_autopilot.contracts import (
+                CampaignAuthorization,
+                campaign_authorization_payload,
+            )
+
+            create_auth = CampaignAuthorization.model_validate_json(
+                json.dumps({
+                    **request.autopilot_authorization,
+                    "campaign_id": campaign.id,
+                    "operator_identity": request.autopilot_authorization.get(
+                        "operator_identity", request.created_by
+                    ),
+                }, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+            )
+            built = build_campaign_authorization(create_auth)
+            repository.create_campaign_authorization(
+                campaign_id=campaign.id,
+                authorization_payload=campaign_authorization_payload(built),
+            )
+        except Exception as exc:  # noqa: BLE001
+            repository.update_campaign_status(campaign.id, "failed")
+            raise HTTPException(
+                status_code=400,
+                detail=getattr(exc, "reason", None) or str(exc) or "authorization_invalid",
+            ) from exc
     if request.budget is not None:
         repository.upsert_campaign_budget(
             campaign_id=campaign.id,
@@ -3231,6 +3372,32 @@ def start_mythos_campaign(
         raise HTTPException(status_code=409, detail="human_review_required")
     if campaign.status in {"canceled", "completed", "failed"}:
         raise HTTPException(status_code=409, detail="campaign_not_startable")
+    campaign_mode = getattr(campaign, "campaign_mode", None) or "legacy"
+    if campaign_mode == "bounty_autopilot":
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+
+        auth_record = repository.get_current_campaign_authorization(campaign_id)
+        if auth_record is None:
+            raise HTTPException(status_code=409, detail="authorization_missing")
+        if auth_record.revoked_at is not None or not auth_record.is_current:
+            raise HTTPException(status_code=409, detail="authorization_revoked")
+        try:
+            auth = authorization_from_payload(auth_record.payload)
+            if auth.authorization_digest != auth_record.authorization_digest:
+                raise AuthorizationValidationError("authorization_digest_invalid")
+            validate_current_authorization(auth, now=datetime.now(UTC))
+        except AuthorizationValidationError as exc:
+            raise HTTPException(status_code=409, detail=exc.reason) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=409, detail="authorization_digest_invalid"
+            ) from exc
+        campaign = _materialize_autopilot_source_snapshot(campaign, repository)
+
     campaign = repository.transition_campaign_status_if_currently(
         campaign_id,
         "running",
@@ -3244,11 +3411,18 @@ def start_mythos_campaign(
     )
     if campaign is None:
         raise HTTPException(status_code=409, detail="campaign_not_startable")
-    tick_result = tick_campaign(
-        campaign_id,
-        repository=repository,
-        dispatcher=dispatch_agent_task,
-    )
+    if campaign_mode == "bounty_autopilot":
+        tick_result = tick_autonomous_research_campaign(
+            campaign_id,
+            repository=repository,
+            dispatcher=dispatch_agent_task,
+        )
+    else:
+        tick_result = tick_campaign(
+            campaign_id,
+            repository=repository,
+            dispatcher=dispatch_agent_task,
+        )
     if tick_result["status"] == "blocked":
         campaign = repository.update_campaign_status(campaign_id, "blocked")
     return _campaign_response(campaign, repository)
@@ -3310,6 +3484,29 @@ def resume_mythos_campaign(
         agent_runs=repository.list_campaign_agent_runs(campaign.id),
     ):
         raise HTTPException(status_code=409, detail="budget_exhausted")
+    campaign_mode = getattr(campaign, "campaign_mode", None) or "legacy"
+    if campaign_mode == "bounty_autopilot":
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+
+        auth_record = repository.get_current_campaign_authorization(campaign_id)
+        if auth_record is None:
+            raise HTTPException(status_code=409, detail="authorization_missing")
+        try:
+            auth = authorization_from_payload(auth_record.payload)
+            if auth.authorization_digest != auth_record.authorization_digest:
+                raise AuthorizationValidationError("authorization_digest_invalid")
+            validate_current_authorization(auth, now=datetime.now(UTC))
+        except AuthorizationValidationError as exc:
+            raise HTTPException(status_code=409, detail=exc.reason) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=409, detail="authorization_digest_invalid"
+            ) from exc
+        campaign = _materialize_autopilot_source_snapshot(campaign, repository)
     campaign = repository.transition_campaign_status_if_currently(
         campaign_id,
         "running",
@@ -3324,6 +3521,703 @@ def resume_mythos_campaign(
     if campaign is None:
         raise HTTPException(status_code=409, detail="campaign_not_resumable")
     return _campaign_response(campaign, repository)
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/plans")
+def create_autopilot_validation_plan(
+    campaign_id: str,
+    request: AutopilotValidationPlanRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        plan = ValidationPlan.model_validate_json(
+            json.dumps(
+                request.plan,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        record = repository.materialize_validation_plan_from_handoff(
+            campaign_id=campaign_id,
+            handoff_id=request.handoff_id,
+            plan=plan,
+            actor=request.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "id": record.id,
+        "campaign_id": record.campaign_id,
+        "plan_id": record.plan_id,
+        "plan_digest": record.plan_digest,
+        "status": record.status,
+        "risk_tier": record.risk_tier,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/plans")
+def list_autopilot_validation_plans(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        {
+            "id": row.id,
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "branch_id": row.branch_id,
+            "asset_id": row.asset_id,
+            "risk_tier": row.risk_tier,
+            "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_validation_plans(campaign_id)
+    ]
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/leases")
+def issue_autopilot_execution_lease(
+    campaign_id: str,
+    request: AutopilotLeaseIssueRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    from app.bounty_autopilot.authority import (
+        AuthorizationValidationError,
+        authorization_from_payload,
+        validate_current_authorization,
+    )
+    from app.bounty_autopilot.plans import ValidationPlan
+
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    plan_record = repository.get_validation_plan(
+        campaign_id=campaign_id,
+        plan_id=request.plan_id,
+    )
+    if plan_record is None:
+        raise HTTPException(status_code=409, detail="plan_not_found")
+    authorization_record = repository.get_current_campaign_authorization(campaign_id)
+    if authorization_record is None:
+        raise HTTPException(status_code=409, detail="authorization_missing")
+    try:
+        authorization = authorization_from_payload(authorization_record.payload)
+        if authorization.authorization_digest != authorization_record.authorization_digest:
+            raise AuthorizationValidationError("authorization_digest_invalid")
+        validate_current_authorization(authorization, now=datetime.now(UTC))
+        plan = ValidationPlan.model_validate_json(
+            json.dumps(
+                plan_record.payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    except AuthorizationValidationError as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except Exception as exc:  # noqa: BLE001 - persisted contracts are fail-closed
+        raise HTTPException(
+            status_code=409,
+            detail="authorization_digest_invalid",
+        ) from exc
+    if plan.asset_id not in authorization.asset_ids:
+        raise HTTPException(status_code=409, detail="authorization_asset_not_allowed")
+    materialization_reason = repository.validation_plan_materialization_stop_reason(
+        campaign_id=campaign_id,
+        plan=plan,
+        require_completed=True,
+    )
+    if materialization_reason is not None:
+        raise HTTPException(status_code=409, detail=materialization_reason)
+    ok, reason, lease = repository.issue_execution_lease(
+        campaign_id=campaign_id,
+        plan_id=request.plan_id,
+        lease_id=request.lease_id,
+        authorization_digest=authorization.authorization_digest,
+        scope_snapshot_digest=authorization.scope_snapshot_digest,
+        authorization_recipe_allowed=plan.recipe_ref in authorization.recipe_refs,
+        policy_mode=authorization.policy_mode,
+        approval_id=request.approval_id,
+    )
+    if not ok or lease is None:
+        raise HTTPException(status_code=409, detail=reason)
+    return {
+        "allowed": True,
+        "reason": reason,
+        "lease_id": lease.lease_id,
+        "plan_id": lease.plan_id,
+        "plan_digest": lease.plan_digest,
+        "status": lease.status,
+        "r3_approval_id": lease.r3_approval_id,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/leases")
+def list_autopilot_execution_leases(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return [
+        {
+            "lease_id": row.lease_id,
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "status": row.status,
+            "r3_approval_id": row.r3_approval_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        }
+        for row in repository.list_execution_leases(campaign_id)
+    ]
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/requests/reserve")
+def reserve_autopilot_request(
+    campaign_id: str,
+    request: AutopilotRequestReserveRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        record = repository.reserve_execution_request(
+            campaign_id=campaign_id,
+            lease_id=request.lease_id,
+            reservation_payload=request.reservation,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "reservation_id": record.reservation_id,
+        "lease_id": record.lease_id,
+        "status": record.status,
+        "idempotency_key": record.idempotency_key,
+        "plan_digest": record.plan_digest,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/requests/complete")
+def complete_autopilot_request(
+    campaign_id: str,
+    request: AutopilotRequestCompleteRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        record = repository.complete_execution_request(
+            campaign_id=campaign_id,
+            reservation_id=request.reservation_id,
+            outcome=request.outcome,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "reservation_id": record.reservation_id,
+        "status": record.status,
+        "completed_at": record.completed_at.isoformat() if record.completed_at else None,
+    }
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/gateway/authorize")
+def authorize_autopilot_gateway(
+    campaign_id: str,
+    request: AutopilotGatewayAuthorizeRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        decision = repository.authorize_execution_request(
+            campaign_id=campaign_id,
+            lease_id=request.lease_id,
+            reservation_id=request.reservation_id,
+            method=request.method,
+            scheme=request.scheme,
+            host=request.host,
+            port=request.port,
+            path=request.path,
+            body_digest=request.body_digest,
+            mutation_class=request.mutation_class,
+            resolved_ips=request.resolved_ips,
+            cname_chain=request.cname_chain,
+            is_redirect=request.is_redirect,
+            is_subresource=request.is_subresource,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return decision.model_dump(mode="json")
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/pods/grant")
+def grant_autopilot_pod(
+    campaign_id: str,
+    request: AutopilotPodGrantRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.build_autopilot_pod_grant(
+            campaign_id=campaign_id,
+            lease_id=request.lease_id,
+            pod_id=request.pod_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/emergency-stop/prepare")
+def prepare_emergency_stop_autopilot_campaign(
+    campaign_id: str,
+    request: AutopilotEmergencyStopPrepareRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.prepare_autopilot_emergency_stop(
+            campaign_id=campaign_id,
+            actor=request.actor,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/emergency-stop")
+def emergency_stop_autopilot_campaign(
+    campaign_id: str,
+    request: AutopilotEmergencyStopRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.confirm_autopilot_emergency_stop(
+            campaign_id=campaign_id,
+            actor=request.actor,
+            reason=request.reason,
+            confirmation_nonce=request.confirmation_nonce,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/observations")
+def create_autopilot_observation(
+    campaign_id: str,
+    request: AutopilotObservationCreateRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        observation = ObservationRecord.model_validate_json(
+            json.dumps(
+                request.observation,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        if observation.campaign_id != campaign_id:
+            raise ValueError("campaign_id_mismatch")
+        record = repository.create_autopilot_observation(observation)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "observation_id": record.observation_id,
+        "branch_id": record.branch_id,
+        "plan_digest": record.plan_digest,
+        "grade": record.grade,
+        "outcome_class": record.outcome_class,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/observations")
+def list_autopilot_observations(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    rows = repository.list_autopilot_observations(campaign_id)
+    return {
+        "items": [
+            {
+                "observation_id": row.observation_id,
+                "branch_id": row.branch_id,
+                "plan_digest": row.plan_digest,
+                "grade": row.grade,
+                "outcome_class": row.outcome_class,
+                "payload": row.payload,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+            }
+            for row in rows
+        ],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot")
+def get_autopilot_campaign_projection(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Safe Autopilot projection for Control Center / Studio / CLI."""
+
+    from app.bounty_autopilot.projection import build_autopilot_projection
+
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    auth = repository.get_current_campaign_authorization(campaign_id)
+    auth_payload = dict(auth.payload or {}) if auth is not None else {}
+    if auth is not None:
+        auth_payload.setdefault("authorization_digest", auth.authorization_digest)
+        auth_payload.setdefault("scope_snapshot_digest", auth.scope_snapshot_digest)
+
+    assets = [
+        {
+            "asset_id": row.asset_id,
+            "status": row.admission_decision,
+            "host": row.host,
+            "scheme": row.scheme,
+            "port": row.port,
+            "admitted": str(row.admission_decision) == "admitted",
+            "identity": {
+                "host": row.host,
+                "scheme": row.scheme,
+                "port": row.port,
+                "path_authority": row.path_authority,
+            },
+        }
+        for row in repository.list_campaign_assets(campaign_id)
+    ]
+    branches = [
+        {
+            "branch_id": row.branch_id,
+            "asset_id": row.asset_id,
+            "status": row.status,
+            "priority": row.priority,
+            "risk_tier": row.risk_tier,
+            "reason": row.stop_reason
+            or (row.payload or {}).get("reason")
+            or (row.payload or {}).get("park_reason"),
+            "dependencies": (row.payload or {}).get("dependencies", []),
+            "handoff_from": (row.payload or {}).get("handoff_from"),
+            "handoff_to": (row.payload or {}).get("handoff_to"),
+            "specialist": (row.payload or {}).get("specialist"),
+        }
+        for row in repository.list_research_branches(campaign_id)
+    ]
+    plans = [
+        {
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "status": row.status,
+            "branch_id": row.branch_id,
+            "asset_id": row.asset_id,
+            "risk_tier": row.risk_tier,
+            "recipe_id": (row.payload or {}).get("recipe_ref", {}).get("recipe_id"),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_validation_plans(campaign_id)
+    ]
+    leases = [
+        {
+            "lease_id": row.lease_id,
+            "plan_id": row.plan_id,
+            "plan_digest": row.plan_digest,
+            "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_execution_leases(campaign_id)
+    ]
+    requests = [
+        {
+            "reservation_id": row.reservation_id,
+            "status": row.status,
+            "lease_id": row.lease_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_execution_request_ledger(campaign_id)
+    ]
+    observations = [
+        {
+            "observation_id": row.observation_id,
+            "branch_id": row.branch_id,
+            "tool_run_id": (row.payload or {}).get("tool_run_id"),
+            "outcome_class": row.outcome_class,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_observations(campaign_id)
+    ]
+    risk_decisions = [
+        {
+            "risk_decision_id": row.risk_decision_id,
+            "branch_id": row.branch_id,
+            "recipe_id": row.recipe_id,
+            "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_risk_decisions(campaign_id)
+    ]
+    tool_runs = [
+        {
+            "tool_run_id": row.tool_run_id,
+            "branch_id": row.branch_id,
+            "lease_id": row.lease_id,
+            "plan_id": row.plan_id,
+            "run_status": row.run_status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_tool_runs(campaign_id)
+    ]
+    refutations = [
+        {
+            "decision_id": row.decision_id,
+            "branch_id": row.branch_id,
+            "verdict": row.verdict,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_refutation_decisions(campaign_id)
+    ]
+    candidates = [
+        {
+            "candidate_id": row.candidate_id,
+            "branch_id": row.branch_id,
+            "judge_verdict": row.judge_verdict,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_candidate_revisions(campaign_id)
+    ]
+    reports = [
+        {
+            "report_id": row.report_id,
+            "candidate_id": row.candidate_id,
+            "status": "submission_blocked" if row.submission_blocked else "invalid",
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in repository.list_autopilot_report_revisions(campaign_id)
+    ]
+    now = datetime.now(UTC)
+    approvals = [
+        {
+            "approval_id": row.id,
+            "status": row.status,
+            "plan_digest": getattr(row, "plan_digest", None),
+            "risk_tier": getattr(row, "risk_tier", None),
+            "consumed": bool(getattr(row, "consumed_at", None)),
+            "expired": _autopilot_record_expired(row.expires_at, now),
+            "plan_changed": False,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "exact_diff": (
+                (row.payload or {}).get("exact_diff", [])
+                if row.approval_type == "r3_exact_plan"
+                else []
+            ),
+        }
+        for row in repository.list_campaign_approval_records(campaign_id)
+        if row.approval_type != "autopilot_emergency_stop_confirmation"
+    ]
+    authorization_budget = auth_payload.get("budgets") or {}
+    campaign_max_requests = int(authorization_budget.get("max_requests") or 0)
+    used_requests = len(requests)
+    budget_remaining = {
+        "asset_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "account_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "branch_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "hypothesis_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "recipe_requests_remaining": max(0, campaign_max_requests - used_requests),
+        "request_slots_remaining": max(0, campaign_max_requests - used_requests),
+        "time_seconds_remaining": authorization_budget.get("max_duration_seconds"),
+        "retry_attempts_remaining": 0,
+        "model_cost_units_remaining": authorization_budget.get("max_cost_microusd"),
+    }
+    projection = build_autopilot_projection(
+        campaign_id=campaign_id,
+        campaign_mode=getattr(campaign, "campaign_mode", None) or "bounty_autopilot",
+        emergency_stopped=repository.campaign_is_emergency_stopped(campaign_id),
+        authorization=auth_payload,
+        assets=assets,
+        branches=branches,
+        plans=plans,
+        leases=leases,
+        requests=requests,
+        observations=observations,
+        risk_decisions=risk_decisions,
+        tool_runs=tool_runs,
+        refutations=refutations,
+        candidates=candidates,
+        reports=reports,
+        approvals=approvals,
+        budget_remaining=budget_remaining,
+    )
+    return projection.model_dump(mode="json")
+
+
+def _autopilot_record_expired(value: datetime | None, now: datetime) -> bool:
+    if value is None:
+        return False
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=UTC)
+    return value <= now
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/assets")
+def list_autopilot_assets(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["assets"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/branches")
+def list_autopilot_branches(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["branches"],
+        "next_branch_id": projection["next_branch_id"],
+        "next_reason": projection["next_reason"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/budgets")
+def get_autopilot_budgets(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        **projection["budgets"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/approvals")
+def list_autopilot_approvals(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["approvals"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.get("/mythos/campaigns/{campaign_id}/autopilot/events")
+def list_autopilot_events(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    projection = get_autopilot_campaign_projection(campaign_id, session)
+    return {
+        "items": projection["events"],
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+@app.post("/mythos/campaigns/{campaign_id}/autopilot/steering")
+def steer_autopilot_campaign(
+    campaign_id: str,
+    request: AutopilotSteerRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Persist one bounded branch command against current server authority."""
+
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        return repository.steer_autopilot_branch(
+            campaign_id=campaign_id,
+            branch_id=request.branch_id,
+            directive=request.directive,
+            priority=request.priority,
+            hypothesis_guidance=request.hypothesis_guidance,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/autopilot/approvals/{approval_id}/decision"
+)
+def decide_autopilot_approval(
+    campaign_id: str,
+    approval_id: str,
+    request: AutopilotApprovalDecisionRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    repository = DatabaseRepository(session)
+    if repository.get_campaign(campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        approval = repository.decide_autopilot_r3_approval(
+            campaign_id=campaign_id,
+            approval_id=approval_id,
+            decision=request.decision,
+            actor=request.actor,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "approval_id": approval.id,
+        "status": approval.status,
+        "plan_digest": approval.plan_digest,
+        "decided_at": (
+            approval.decided_at.isoformat() if approval.decided_at is not None else None
+        ),
+        "consumed": approval.consumed_at is not None,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
 
 
 @app.post("/mythos/campaigns/{campaign_id}/autonomous-research/tick")
@@ -13405,15 +14299,67 @@ def _artifact_response(record: ArtifactRecord) -> ArtifactResponse:
     )
 
 
+
+def _materialize_autopilot_source_snapshot(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> CampaignRecord:
+    """Ensure autopilot campaigns carry a safe local source snapshot digest."""
+
+    from hashlib import sha256
+    import json
+
+    payload = dict(campaign.payload) if isinstance(campaign.payload, dict) else {}
+    existing = payload.get("source_snapshot_digest")
+    if isinstance(existing, str) and existing.startswith("sha256:"):
+        return campaign
+    material = {
+        "campaign_id": campaign.id,
+        "policy_text_hash": campaign.policy_text_hash,
+        "default_asset": campaign.default_asset,
+        "authorized_code_files": payload.get("authorized_code_files") or [],
+        "authorized_api_artifacts": [
+            {
+                "kind": item.get("kind"),
+                "source_name": item.get("source_name"),
+            }
+            for item in (payload.get("authorized_api_artifacts") or [])
+            if isinstance(item, dict)
+        ],
+        "authorization": None,
+    }
+    auth = repository.get_current_campaign_authorization(campaign.id)
+    if auth is not None:
+        material["authorization"] = {
+            "id": auth.id,
+            "digest": auth.authorization_digest,
+            "scope_snapshot_digest": auth.scope_snapshot_digest,
+        }
+    serialized = json.dumps(material, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    digest = f"sha256:{sha256(serialized.encode('utf-8')).hexdigest()}"
+    payload["source_snapshot_digest"] = digest
+    payload["campaign_mode"] = "bounty_autopilot"
+    if auth is not None:
+        payload["current_authorization_id"] = auth.id
+        payload["current_authorization_digest"] = auth.authorization_digest
+    campaign.payload = payload
+    repository.session.add(campaign)
+    repository.session.commit()
+    repository.session.refresh(campaign)
+    return campaign
+
+
 def _campaign_response(
     record: CampaignRecord,
     repository: DatabaseRepository,
 ) -> CampaignResponse:
+    current_auth = repository.get_current_campaign_authorization(record.id)
     return CampaignResponse(
         id=record.id,
         program_id=record.program_id,
         name=record.name,
         status=record.status,
+        campaign_mode=getattr(record, "campaign_mode", None) or "legacy",
         autonomy_level=record.autonomy_level,
         scope_status=record.scope_status,
         policy_text_hash=record.policy_text_hash,
@@ -13425,6 +14371,9 @@ def _campaign_response(
         budget=_campaign_budget_response(
             repository.get_campaign_budget(record.id),
             repository=repository,
+        ),
+        current_authorization_digest=(
+            current_auth.authorization_digest if current_auth is not None else None
         ),
     )
 

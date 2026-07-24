@@ -36,6 +36,11 @@ const { createProgramRuleApiClient } = require("./program-rule-api-client.cjs");
 const { createProgramRuleRefreshPump } = require("./program-rule-refresh-pump.cjs");
 const { createProgramRuleRunner } = require("./program-rule-runner.cjs");
 const { createRemoteLeaseApiClient } = require("./remote-api-client.cjs");
+const { createAccountVault } = require("./account-vault.cjs");
+const { createAutopilotApiClient } = require("./autopilot-api-client.cjs");
+const { createSessionBroker } = require("./autopilot-session-broker.cjs");
+const { assertLabPodStart } = require("./autopilot-pod.cjs");
+const { createAutopilotPodManager } = require("./autopilot-pod-manager.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
@@ -56,6 +61,9 @@ const remoteLeaseApi = createRemoteLeaseApiClient({
 const programRuleApi = createProgramRuleApiClient({
   getBaseUrl: () => studioApiBaseUrl,
 });
+const autopilotApi = createAutopilotApiClient({
+  getBaseUrl: () => studioApiBaseUrl,
+});
 const programRuleRunner = createProgramRuleRunner({ apiClient: programRuleApi });
 const programRulePump = createProgramRuleRefreshPump({ runner: programRuleRunner });
 const blackBoxRunner = createBlackBoxRunner({
@@ -68,6 +76,26 @@ const dispatchBlackBoxLine = createLocalLabDispatchHandler({
   getApiBaseUrl: () => studioApiBaseUrl,
   runRunner: (line) => blackBoxRunner.handleLine(line),
 });
+let accountVault = null;
+const autopilotSessionBroker = createSessionBroker({ getVault: () => accountVault });
+const autopilotPodManager = createAutopilotPodManager({
+  utilityProcess,
+  onPodExit: ({ campaign_id, reason }) => {
+    autopilotSessionBroker.revokeCampaign(campaign_id, reason);
+  },
+});
+
+function getAccountVault() {
+  if (accountVault === null) {
+    const { safeStorage } = require("electron");
+    accountVault = createAccountVault({
+      safeStorage,
+      userDataPath: app.getPath("userData"),
+      fs: require("node:fs"),
+    });
+  }
+  return accountVault;
+}
 
 function spawnChild(command, args, cwd, env = {}) {
   const { AUTONOMOUS_RESEARCH_CAPABILITY: _ignoredCapability, ...baseEnvironment } = process.env;
@@ -180,6 +208,8 @@ const handleBeforeQuit = createAppExitHandler({
     await programRulePump.close(reason);
     await localResearchWakeup.stop();
     await blackBoxRunner.closeSessions(reason);
+    autopilotPodManager.stopAll(reason);
+    autopilotSessionBroker.revokeAll();
   },
   exit: (code) => app.exit(code),
   killChildren,
@@ -208,7 +238,9 @@ function createWindow(apiBaseUrl) {
           window.webContents,
           (rendererGenerations.get(window.webContents) ?? 0) + 1,
         );
-        void blackBoxRunner.closeSessions("page_closed");
+        autopilotSessionBroker.revokeAll();
+        autopilotPodManager.stopAll("page_closed");
+      void blackBoxRunner.closeSessions("page_closed");
       }
     },
   );
@@ -217,7 +249,9 @@ function createWindow(apiBaseUrl) {
       window.webContents,
       (rendererGenerations.get(window.webContents) ?? 0) + 1,
     );
-    void blackBoxRunner.closeSessions("browser_crash");
+    autopilotSessionBroker.revokeAll();
+    autopilotPodManager.stopAll("browser_crash");
+      void blackBoxRunner.closeSessions("browser_crash");
   });
 
   return window;
@@ -271,6 +305,7 @@ ipcMain.handle("mythos:restore-backup", async (event) => {
   if (!archive || !await confirmDesktopRestore(dialog, browserWindow, archive)) {
     return { status: "cancelled" };
   }
+  autopilotSessionBroker.revokeAll("restore_started");
   await blackBoxRunner.closeSessions("operator_stop");
   try {
     const result = await packagedRuntime.restoreBackup(archive);
@@ -284,6 +319,120 @@ ipcMain.handle("mythos:restore-backup", async (event) => {
 
 ipcMain.handle("mythos:refresh-program-rules", () => {
   return programRulePump.kick();
+});
+
+
+ipcMain.handle("mythos:autopilot-vault-put", (_event, payload = {}) => {
+  const alias = payload && payload.alias;
+  const secret = payload && payload.secret;
+  const result = getAccountVault().putSecret(alias, secret);
+  if (payload.campaignId) {
+    autopilotPodManager.stopCampaign(
+      payload.campaignId,
+      "account_generation_changed",
+    );
+    autopilotSessionBroker.revokeCampaign(
+      payload.campaignId,
+      "account_generation_changed",
+    );
+  }
+  return result;
+});
+
+ipcMain.handle("mythos:autopilot-vault-list", () => {
+  return getAccountVault().listAliases();
+});
+
+ipcMain.handle("mythos:autopilot-session-issue", (_event, payload = {}) => {
+  getAccountVault();
+  return autopilotSessionBroker.issueHandle({
+    campaignId: payload.campaignId,
+    accountAlias: payload.accountAlias,
+    podId: payload.podId,
+  });
+});
+
+ipcMain.handle("mythos:autopilot-session-projection", (_event, payload = {}) => {
+  return autopilotSessionBroker.getProjection(payload && payload.handleId);
+});
+
+ipcMain.handle("mythos:autopilot-session-revoke", (_event, payload = {}) => {
+  return autopilotSessionBroker.revoke(payload && payload.handleId);
+});
+
+ipcMain.handle("mythos:autopilot-session-revoke-campaign", (_event, payload = {}) => {
+  autopilotPodManager.stopCampaign(
+    payload.campaignId,
+    payload.reason || "campaign_stopped",
+  );
+  return {
+    campaignId: payload.campaignId,
+    revoked: autopilotSessionBroker.revokeCampaign(
+      payload.campaignId,
+      payload.reason || "campaign_stopped",
+    ),
+  };
+});
+
+ipcMain.handle("mythos:autopilot-pod-start", async (_event, payload = {}) => {
+  const grant = await autopilotApi.issuePodGrant({
+    campaignId: payload.campaignId,
+    leaseId: payload.leaseId,
+    podId: payload.podId,
+  });
+  const isolationAvailable = await detectAutopilotIsolation();
+  const preflight = assertLabPodStart({
+    grant,
+    isolationAvailable,
+  });
+  if (!preflight.ok) {
+    return preflight;
+  }
+  try {
+    return {
+      ...preflight,
+      pod: await autopilotPodManager.start({ grant: preflight.grant }),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error?.message === "pod_already_active"
+        ? "pod_already_active"
+        : "pod_process_start_failed",
+    };
+  }
+});
+
+async function detectAutopilotIsolation() {
+  const dockerAvailable = await executableSucceeds(
+    "docker",
+    ["info", "--format", "{{json .ServerVersion}}"],
+  );
+  const wslAvailable = process.platform === "win32"
+    && await executableSucceeds("wsl.exe", ["--status"]);
+  return { dockerAvailable, wslAvailable };
+}
+
+async function executableSucceeds(command, args) {
+  try {
+    await execFileAsync(command, args, {
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+ipcMain.handle("mythos:autopilot-emergency-stop-local", (_event, payload = {}) => {
+  const stoppedPods = payload.campaignId
+    ? autopilotPodManager.stopCampaign(payload.campaignId, "emergency_stopped")
+    : autopilotPodManager.stopAll("emergency_stopped");
+  const revoked = payload.campaignId
+    ? autopilotSessionBroker.revokeCampaign(payload.campaignId, "emergency_stopped")
+    : autopilotSessionBroker.revokeAll("emergency_stopped");
+  return { revoked: true, revokedHandles: revoked, stoppedPods };
 });
 
 app.whenReady().then(async () => {
