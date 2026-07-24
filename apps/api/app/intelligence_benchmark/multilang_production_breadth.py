@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.candidate_hunter_loop import build_candidate_hunter_observations
+from app.codebase_map import map_authorized_code_files
 from app.intelligence_benchmark.ab_leadership_gate import (
     _auth_candidate,
     _run_round,
@@ -39,6 +40,10 @@ PATTERN_FAMILIES = (
     "injection_retain",
     "mass_assign_refute",
     "mass_assign_retain",
+    "jwt_verification_refute",
+    "jwt_verification_retain",
+    "jwt_distinct_claims_retain",
+    "jwt_guard_after_sink_retain",
 )
 
 # Languages with static multilang mappers or first-class AST paths.
@@ -67,6 +72,7 @@ def _probe(
     expected: str,
     root_cause: str = "missing_object_ownership_check",
     vuln_type: str = "authorization",
+    require_mapped_gap: bool = False,
 ) -> dict[str, Any]:
     surface, context = _surface_and_context(ROUTE)
     obs = build_candidate_hunter_observations(
@@ -86,13 +92,28 @@ def _probe(
     )
     decision = (_run_round(obs).get("candidate_decisions") or [{}])[0]
     disposition = str(decision.get("disposition") or "")
-    ok = disposition == expected
+    mapped_gap_observed = None
+    if require_mapped_gap:
+        mapped = map_authorized_code_files(
+            {"authorized_code_files": [{"path": path, "content": content}]}
+        )
+        mapped_gap_observed = any(
+            fact.fact_type == "authorization_gap_candidate"
+            and fact.payload.get("root_cause") == root_cause
+            for fact in mapped.facts
+        )
+    ok = disposition == expected and mapped_gap_observed is not False
     return {
         "language": language,
         "path": path,
         "expected": expected,
         "disposition": disposition,
         "ok": ok,
+        **(
+            {"mapped_gap_observed": mapped_gap_observed}
+            if require_mapped_gap
+            else {}
+        ),
         "execution_allowed": False,
         "report_submission_allowed": False,
     }
@@ -615,6 +636,18 @@ public IActionResult Proxy(int id, string url) {
             "proxy",
             """
 @GetMapping("/records/{recordId}")
+public Object proxy(String recordId, String serviceUrl, String attackerUrl) {
+  validateUrl(serviceUrl);
+  return fetch(attackerUrl);
+}
+""",
+        ),
+        (
+            "java",
+            "ProxyController.java",
+            "proxy",
+            """
+@GetMapping("/records/{recordId}")
 public Object proxy(String recordId, String url) {
   return fetch(url);
 }
@@ -1012,6 +1045,231 @@ def update_user_handler(record_id: str, payload: dict):
             }
         )
 
+    jwt_refute_cases = [
+        (
+            "python",
+            "reports.py",
+            "export_report",
+            """
+from fastapi import FastAPI
+import jwt
+
+app = FastAPI()
+
+@app.get("/records/{record_id}")
+def export_report(record_id: str, encoded_claims: str):
+    claims = jwt.decode(encoded_claims, options={"verify_signature": False})
+    verified_claims = jwt.verify(encoded_claims, verification_key)
+    return send_file(verified_claims["path"])
+""",
+        ),
+        (
+            "typescript",
+            "reports.ts",
+            "exportReport",
+            """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+router.get("/records/:recordId", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || "");
+  const verifiedClaims = jwt.verify(req.headers.authorization || "", verificationKey);
+  return sendFile(verifiedClaims.path);
+}
+""",
+        ),
+        (
+            "java",
+            "ReportsController.java",
+            "exportReport",
+            """
+@GetMapping("/records/{recordId}")
+public Object exportReport(String encodedClaims) {
+  DecodedJWT claims = JWT.decode(encodedClaims);
+  DecodedJWT verifiedClaims = JWT.verify(encodedClaims);
+  return sendFile(verifiedClaims.getClaim("path").asString());
+}
+""",
+        ),
+    ]
+    for language, path, symbol, content in jwt_refute_cases:
+        probes.append(
+            {
+                "pattern": "jwt_verification_refute",
+                **_probe(
+                    language=language,
+                    path=path,
+                    symbol=symbol,
+                    content=content,
+                    expected="refuted",
+                    root_cause="missing_jwt_verification",
+                    vuln_type="jwt_authentication_bypass",
+                ),
+            }
+        )
+
+    jwt_retain_cases = [
+        (
+            "python",
+            "reports.py",
+            "export_report",
+            """
+from fastapi import FastAPI
+import jwt
+
+app = FastAPI()
+
+@app.get("/records/{record_id}")
+def export_report(record_id: str, encoded_claims: str):
+    claims = jwt.decode(encoded_claims, options={"verify_signature": False})
+    return send_file(claims["path"])
+""",
+        ),
+        (
+            "typescript",
+            "reports.ts",
+            "exportReport",
+            """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+router.get("/records/:recordId", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || "");
+  return sendFile(claims?.path);
+}
+""",
+        ),
+        (
+            "java",
+            "ReportsController.java",
+            "exportReport",
+            """
+@GetMapping("/records/{recordId}")
+public Object exportReport(String encodedClaims) {
+  DecodedJWT claims = JWT.decode(encodedClaims);
+  return sendFile(claims.getClaim("path").asString());
+}
+""",
+        ),
+    ]
+    for language, path, symbol, content in jwt_retain_cases:
+        probes.append(
+            {
+                "pattern": "jwt_verification_retain",
+                **_probe(
+                    language=language,
+                    path=path,
+                    symbol=symbol,
+                    content=content,
+                    expected="retained",
+                    root_cause="missing_jwt_verification",
+                    vuln_type="jwt_authentication_bypass",
+                ),
+            }
+        )
+
+    # A verifier on the same token does not close the gap when the sensitive
+    # sink still uses a separately decoded, unverified claims object.
+    jwt_distinct_claims_cases = [
+        (
+            "python",
+            "reports.py",
+            "export_report",
+            """
+from fastapi import FastAPI
+import jwt
+
+app = FastAPI()
+
+@app.get("/records/{record_id}")
+def export_report(record_id: str, encoded_claims: str):
+    unsafe_claims = jwt.decode(encoded_claims, options={"verify_signature": False})
+    verified_claims = jwt.verify(encoded_claims, verification_key)
+    return send_file(unsafe_claims["path"])
+""",
+        ),
+        (
+            "typescript",
+            "reports.ts",
+            "exportReport",
+            """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+router.get("/records/:recordId", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const unsafeClaims = jwt.decode(req.headers.authorization || "");
+  const verifiedClaims = jwt.verify(req.headers.authorization || "", verificationKey);
+  return sendFile(unsafeClaims?.path);
+}
+""",
+        ),
+        (
+            "java",
+            "ReportsController.java",
+            "exportReport",
+            """
+@GetMapping("/records/{recordId}")
+public Object exportReport(String encodedClaims) {
+  DecodedJWT unsafeClaims = JWT.decode(encodedClaims);
+  DecodedJWT verifiedClaims = JWT.verify(encodedClaims);
+  return sendFile(unsafeClaims.getClaim("path").asString());
+}
+""",
+        ),
+    ]
+    for language, path, symbol, content in jwt_distinct_claims_cases:
+        probes.append(
+            {
+                "pattern": "jwt_distinct_claims_retain",
+                **_probe(
+                    language=language,
+                    path=path,
+                    symbol=symbol,
+                    content=content,
+                    expected="retained",
+                    root_cause="missing_jwt_verification",
+                    vuln_type="jwt_authentication_bypass",
+                    require_mapped_gap=True,
+                ),
+            }
+        )
+
+    probes.append(
+        {
+            "pattern": "jwt_guard_after_sink_retain",
+            **_probe(
+                language="python",
+                path="reports.py",
+                symbol="export_report",
+                content="""
+from fastapi import FastAPI
+import jwt
+
+app = FastAPI()
+
+@app.get("/records/{record_id}")
+def export_report(record_id: str, encoded_claims: str):
+    claims = jwt.decode(encoded_claims, options={"verify_signature": False})
+    exported = send_file(claims["path"])
+    jwt.verify(encoded_claims, verification_key)
+    return exported
+""",
+                expected="retained",
+                root_cause="missing_jwt_verification",
+                vuln_type="jwt_authentication_bypass",
+            ),
+        }
+    )
+
     return probes
 
 
@@ -1058,6 +1316,11 @@ def run_multilang_production_breadth_gate() -> dict[str, Any]:
                 "ok": ok,
                 "disposition": probe.get("disposition"),
                 "expected": probe.get("expected"),
+                **(
+                    {"mapped_gap_observed": probe["mapped_gap_observed"]}
+                    if "mapped_gap_observed" in probe
+                    else {}
+                ),
             }
         )
 

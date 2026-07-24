@@ -7,6 +7,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
+from app.dependency_agent import build_dependency_input_manifest
 
 
 WORKSPACE_DIRS = (
@@ -25,11 +26,12 @@ WORKSPACE_DIRS = (
     "reports",
     "runs",
 )
-CAMPAIGN_SNAPSHOT_SCHEMA_VERSION = "authorized_workspace_campaign_snapshot_v3"
+CAMPAIGN_SNAPSHOT_SCHEMA_VERSION = "authorized_workspace_campaign_snapshot_v4"
 CAMPAIGN_LEGACY_SNAPSHOT_SCHEMA_VERSIONS = frozenset(
     {
         "authorized_workspace_campaign_snapshot_v1",
         "authorized_workspace_campaign_snapshot_v2",
+        "authorized_workspace_campaign_snapshot_v3",
     }
 )
 CAMPAIGN_REQUIRED_ARTIFACT_KINDS = ("scope", "policy", "code", "api", "har")
@@ -37,6 +39,7 @@ CAMPAIGN_OPTIONAL_ADVISORY_ARTIFACT_KINDS = ("sarif", "sbom")
 CAMPAIGN_ADVISORY_ARTIFACT_KINDS_BY_SCHEMA = {
     "authorized_workspace_campaign_snapshot_v1": (),
     "authorized_workspace_campaign_snapshot_v2": ("sarif",),
+    "authorized_workspace_campaign_snapshot_v3": CAMPAIGN_OPTIONAL_ADVISORY_ARTIFACT_KINDS,
     CAMPAIGN_SNAPSHOT_SCHEMA_VERSION: CAMPAIGN_OPTIONAL_ADVISORY_ARTIFACT_KINDS,
 }
 CAMPAIGN_READY_REDACTION_STATUSES = frozenset({"not_required", "redacted"})
@@ -173,13 +176,15 @@ def build_authorized_campaign_snapshot(workspace_path: str | Path) -> dict[str, 
                 "content_digest": content_digest,
             }
         )
+    dependency_manifest = build_dependency_input_manifest(selected["code"])
 
-    snapshot = {
-        "schema_version": CAMPAIGN_SNAPSHOT_SCHEMA_VERSION,
-        "workspace_name": workspace.name,
-        "artifact_refs": artifact_refs,
-        "source_manifest": source_manifest,
-    }
+    snapshot = _campaign_snapshot_payload(
+        schema_version=CAMPAIGN_SNAPSHOT_SCHEMA_VERSION,
+        workspace_name=workspace.name,
+        artifact_refs=artifact_refs,
+        source_manifest=source_manifest,
+        dependency_manifest=dependency_manifest,
+    )
     snapshot["source_snapshot_digest"] = _campaign_snapshot_digest(snapshot)
     return snapshot
 
@@ -197,6 +202,12 @@ def load_authorized_campaign_inputs(snapshot: object) -> dict[str, Any]:
     code_files, source_manifest = _campaign_code_files(code_root)
 
     if source_manifest != validated["source_manifest"]:
+        raise ValueError("workspace_snapshot_changed")
+
+    dependency_manifest = validated["dependency_manifest"]
+    if validated["schema_version"] == CAMPAIGN_SNAPSHOT_SCHEMA_VERSION and (
+        build_dependency_input_manifest(code_root) != dependency_manifest
+    ):
         raise ValueError("workspace_snapshot_changed")
 
     for kind in CAMPAIGN_REQUIRED_ARTIFACT_KINDS:
@@ -232,12 +243,13 @@ def load_authorized_campaign_inputs(snapshot: object) -> dict[str, Any]:
             raise ValueError("workspace_snapshot_changed")
 
     if _campaign_snapshot_digest(
-        {
-            "schema_version": validated["schema_version"],
-            "workspace_name": workspace.name,
-            "artifact_refs": validated["artifact_refs"],
-            "source_manifest": source_manifest,
-        }
+        _campaign_snapshot_payload(
+            schema_version=validated["schema_version"],
+            workspace_name=workspace.name,
+            artifact_refs=validated["artifact_refs"],
+            source_manifest=source_manifest,
+            dependency_manifest=dependency_manifest,
+        )
     ) != validated["source_snapshot_digest"]:
         raise ValueError("workspace_snapshot_changed")
 
@@ -282,6 +294,11 @@ def load_authorized_campaign_inputs(snapshot: object) -> dict[str, Any]:
     return {
         "source_snapshot_digest": validated["source_snapshot_digest"],
         "source_manifest": source_manifest,
+        "dependency_input_manifest": (
+            dependency_manifest
+            if validated["schema_version"] == CAMPAIGN_SNAPSHOT_SCHEMA_VERSION
+            else None
+        ),
         "authorized_local_root": str(code_root),
         "code_files": code_files,
         "api_artifacts": api_artifacts,
@@ -567,6 +584,25 @@ def _campaign_snapshot_digest(snapshot: dict[str, object]) -> str:
     return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _campaign_snapshot_payload(
+    *,
+    schema_version: str,
+    workspace_name: str,
+    artifact_refs: list[dict[str, str]],
+    source_manifest: list[dict[str, str]],
+    dependency_manifest: list[dict[str, str]],
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": schema_version,
+        "workspace_name": workspace_name,
+        "artifact_refs": artifact_refs,
+        "source_manifest": source_manifest,
+    }
+    if schema_version == CAMPAIGN_SNAPSHOT_SCHEMA_VERSION:
+        payload["dependency_manifest"] = dependency_manifest
+    return payload
+
+
 def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         raise ValueError("workspace_snapshot_invalid")
@@ -575,6 +611,7 @@ def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
     source_snapshot_digest = snapshot.get("source_snapshot_digest")
     artifact_refs = snapshot.get("artifact_refs")
     source_manifest = snapshot.get("source_manifest")
+    dependency_manifest = snapshot.get("dependency_manifest")
     if (
         not isinstance(schema_version, str)
         or schema_version
@@ -588,6 +625,10 @@ def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
         or not _sha256_digest(source_snapshot_digest, prefixed=True)
         or not isinstance(artifact_refs, list)
         or not isinstance(source_manifest, list)
+        or (
+            schema_version == CAMPAIGN_SNAPSHOT_SCHEMA_VERSION
+            and not isinstance(dependency_manifest, list)
+        )
     ):
         raise ValueError("workspace_snapshot_invalid")
     artifact_kinds = [
@@ -632,12 +673,40 @@ def _validated_campaign_snapshot(snapshot: object) -> dict[str, Any]:
         safe_source_manifest.append(
             {"source_path": source_path, "content_digest": content_digest.lower()}
         )
+    safe_dependency_manifest = []
+    if schema_version == CAMPAIGN_SNAPSHOT_SCHEMA_VERSION:
+        assert isinstance(dependency_manifest, list)
+        seen_dependency_paths: set[str] = set()
+        for item in dependency_manifest:
+            if not isinstance(item, dict):
+                raise ValueError("workspace_snapshot_invalid")
+            source_path = _safe_campaign_relative_path(item.get("source_path"))
+            content_digest = item.get("content_digest")
+            if (
+                not source_path
+                or source_path in seen_dependency_paths
+                or not _sha256_digest(content_digest, prefixed=True)
+            ):
+                raise ValueError("workspace_snapshot_invalid")
+            seen_dependency_paths.add(source_path)
+            safe_dependency_manifest.append(
+                {
+                    "source_path": source_path,
+                    "content_digest": content_digest.lower(),
+                }
+            )
+        if safe_dependency_manifest != sorted(
+            safe_dependency_manifest,
+            key=lambda item: item["source_path"],
+        ):
+            raise ValueError("workspace_snapshot_invalid")
     return {
         "schema_version": schema_version,
         "workspace_name": workspace_name,
         "source_snapshot_digest": source_snapshot_digest.lower(),
         "artifact_refs": safe_artifact_refs,
         "source_manifest": safe_source_manifest,
+        "dependency_manifest": safe_dependency_manifest,
     }
 
 

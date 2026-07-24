@@ -41,9 +41,49 @@ def test_multilang_production_breadth_gate_passes_beyond_held_outs():
         "injection_retain",
         "mass_assign_refute",
         "mass_assign_retain",
+        "jwt_verification_refute",
+        "jwt_verification_retain",
+        "jwt_distinct_claims_retain",
+        "jwt_guard_after_sink_retain",
     ):
         assert family in result["patterns_hit"], family
     assert any("Not a full commercial" in note for note in result["non_claims"])
+
+
+def test_multilang_breadth_keeps_distinct_unverified_jwt_claims_candidates():
+    result = run_multilang_production_breadth_gate()
+    rows = [
+        row
+        for row in result["probe_rows"]
+        if row["pattern"] == "jwt_distinct_claims_retain"
+    ]
+
+    assert rows == [
+        {
+            "language": "python",
+            "pattern": "jwt_distinct_claims_retain",
+            "ok": True,
+            "disposition": "retained",
+            "expected": "retained",
+            "mapped_gap_observed": True,
+        },
+        {
+            "language": "typescript",
+            "pattern": "jwt_distinct_claims_retain",
+            "ok": True,
+            "disposition": "retained",
+            "expected": "retained",
+            "mapped_gap_observed": True,
+        },
+        {
+            "language": "java",
+            "pattern": "jwt_distinct_claims_retain",
+            "ok": True,
+            "disposition": "retained",
+            "expected": "retained",
+            "mapped_gap_observed": True,
+        },
+    ]
 
 
 def test_cli_multilang_production_breadth(tmp_path, capsys):

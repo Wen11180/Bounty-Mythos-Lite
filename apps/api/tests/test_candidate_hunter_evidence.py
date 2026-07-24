@@ -16,6 +16,7 @@ from app.candidate_hunter_evidence import (
     run_evidence_inspection_task,
 )
 from app.candidate_hunter_loop import (
+    advance_candidate_hunter_round,
     build_candidate_hunter_observations,
     run_candidate_hunter_loop,
 )
@@ -557,6 +558,9 @@ def verify_record_access(record_id: str, current_user):
             fact["fact_type"] == "ownership_guard"
             for fact in result_stage.payload["new_facts"]
         )
+        assert result_stage.payload["candidate_state_updates"][0][
+            "shared_root_kind"
+        ] == ""
         assert "return send_file" not in json.dumps(result_stage.payload)
         assert repository.session.get(type(task), task.id).status == "completed"
         agent_runs = repository.list_campaign_agent_runs(campaign.id)
@@ -892,6 +896,120 @@ def verify_record_access(record_id: str, current_user):
         session.close()
 
 
+def test_evidence_recovery_preserves_direct_sink_kind_for_resource_scoped_deduplication():
+    def snapshot(candidate_id: str, path: str, priority_score: int) -> dict[str, object]:
+        return {
+            "candidate_id": candidate_id,
+            "candidate_key": f"run-001:{candidate_id}",
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:download_record",
+            "route": {"method": "GET", "path": path},
+            "source_fact_refs": [
+                "scope:scope_context",
+                "policy:policy_context",
+                "code:RecordsController.cs:File",
+                f"api:GET:{path}",
+                f"har:GET:{path}",
+            ],
+            "observed_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+            "required_artifact_kinds": ["scope", "policy", "code", "api", "har"],
+            "evidence_trace_status": "traceable",
+            "priority_score": priority_score,
+            "gap_evidence_ref": "code:RecordsController.cs:File",
+            "shared_root": "",
+            "shared_root_evidence_ref": "",
+            "shared_root_kind": "",
+            "reanalysis_status": "pending",
+        }
+
+    def recovered(snapshot_state: dict[str, object]) -> dict[str, object]:
+        observed = {
+            **snapshot_state,
+            "shared_root": "File",
+            "shared_root_evidence_ref": "code:RecordsController.cs:File",
+            "shared_root_kind": "direct_sink",
+            "reanalysis_status": "completed",
+        }
+        update, _ = candidate_hunter_evidence._candidate_state_update(
+            original=snapshot_state,
+            observed=observed,
+            facts_by_ref={},
+            source_snapshot_digest="a" * 64,
+            file_digests={},
+        )
+        merged = candidate_hunter_evidence._merge_result_state(
+            snapshot=snapshot_state,
+            update=update,
+            new_fact_refs=set(),
+        )
+
+        assert update["shared_root_kind"] == "direct_sink"
+        assert merged is not None
+        return merged
+
+    record = recovered(snapshot("H-record", "/records/{record_id}", 80))
+    export = recovered(snapshot("H-export", "/exports/{export_id}", 70))
+    legacy = snapshot("H-legacy", "/records/{record_id}/file", 60)
+    legacy["shared_root"] = "File"
+    legacy["shared_root_evidence_ref"] = "code:RecordsController.cs:File"
+    legacy_recovered = recovered(legacy)
+    assert legacy_recovered["shared_root_kind"] == "direct_sink"
+
+    observed = {
+        **legacy,
+        "shared_root_kind": "direct_sink",
+        "reanalysis_status": "completed",
+    }
+    valid_update, _ = candidate_hunter_evidence._candidate_state_update(
+        original=legacy,
+        observed=observed,
+        facts_by_ref={},
+        source_snapshot_digest="a" * 64,
+        file_digests={},
+    )
+    invalid_snapshot = {**legacy, "shared_root_kind": 42}
+    invalid_update = {**valid_update, "shared_root_kind": ["direct_sink"]}
+    invalid_string_snapshot = {**legacy, "shared_root_kind": "secret"}
+    invalid_string_update = {**valid_update, "shared_root_kind": "secret"}
+    assert candidate_hunter_evidence._merge_result_state(
+        snapshot=invalid_snapshot,
+        update=valid_update,
+        new_fact_refs=set(),
+    ) is None
+    assert candidate_hunter_evidence._merge_result_state(
+        snapshot=legacy,
+        update=invalid_update,
+        new_fact_refs=set(),
+    ) is None
+    assert candidate_hunter_evidence._merge_result_state(
+        snapshot=invalid_string_snapshot,
+        update=valid_update,
+        new_fact_refs=set(),
+    ) is None
+    assert candidate_hunter_evidence._merge_result_state(
+        snapshot=legacy,
+        update=invalid_string_update,
+        new_fact_refs=set(),
+    ) is None
+
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[record, export],
+        observations={"candidate_states": [record, export], **_safe_payload()},
+        prior_decisions=[],
+    )
+
+    assert {candidate["candidate_id"] for candidate in result["final_candidates"]} == {
+        "H-record",
+        "H-export",
+    }
+    assert {
+        decision["candidate_id"]: decision["disposition"]
+        for decision in result["candidate_decisions"]
+    } == {"H-record": "retained", "H-export": "retained"}
+
+
 @pytest.mark.parametrize("resume_path", ("worker", "scheduler"))
 def test_runtime_evidence_dispatch_completes_and_resumes_owner(
     tmp_path,
@@ -984,6 +1102,35 @@ def verify_record_access(record_id: str, current_user):
             report_title=None,
             payload={"campaign_id": campaign.id, "hypotheses": [candidate]},
         )
+        for task_type, agent_type, title in (
+            (
+                "campaign_observation",
+                "orchestrator_agent",
+                "Observe authorized campaign state",
+            ),
+            (
+                "attack_surface_mapping",
+                "surface_mapper_agent",
+                "Map authorized attack surface",
+            ),
+        ):
+            prerequisite_task = repository.create_campaign_task(
+                campaign_id=campaign.id,
+                task_type=task_type,
+                agent_type=agent_type,
+                title=title,
+                input_refs=[f"pipeline_run:{pipeline_run.id}"],
+                payload=autonomous_research_runtime._runtime_task_payload(
+                    campaign_id=campaign.id,
+                    task_type=task_type,
+                    source_snapshot_digest=runtime_snapshot_digest,
+                    pipeline_run_id=pipeline_run.id,
+                ),
+            )
+            assert (
+                run_agent_task(prerequisite_task.id, repository=repository)["status"]
+                == "completed"
+            )
         chain_task = repository.create_campaign_task(
             campaign_id=campaign.id,
             task_type="exploit_chain_reasoning",
@@ -1001,6 +1148,34 @@ def verify_record_access(record_id: str, current_user):
         chain_result = run_agent_task(chain_task.id, repository=repository)
 
         assert chain_result["status"] == "completed"
+        variant_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="variant_analysis",
+            agent_type="variant_analysis_agent",
+            title="Plan sibling-variant review from safe hypotheses",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload=autonomous_research_runtime._runtime_task_payload(
+                campaign_id=campaign.id,
+                task_type="variant_analysis",
+                source_snapshot_digest=runtime_snapshot_digest,
+                pipeline_run_id=pipeline_run.id,
+            ),
+        )
+        assert run_agent_task(variant_task.id, repository=repository)["status"] == "completed"
+        deep_task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="deep_code_reasoning",
+            agent_type="deep_code_reasoning_agent",
+            title="Plan cross-file permission reasoning from safe hypotheses",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload=autonomous_research_runtime._runtime_task_payload(
+                campaign_id=campaign.id,
+                task_type="deep_code_reasoning",
+                source_snapshot_digest=runtime_snapshot_digest,
+                pipeline_run_id=pipeline_run.id,
+            ),
+        )
+        assert run_agent_task(deep_task.id, repository=repository)["status"] == "completed"
         owner_task = repository.create_campaign_task(
             campaign_id=campaign.id,
             task_type="candidate_refutation",

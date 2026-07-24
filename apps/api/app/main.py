@@ -70,6 +70,17 @@ from app.db_models import (
     ScannerRunRecord,
     ValidationRunRecord,
 )
+from app.execution_registry import (
+    ExecutionAuthorizationRequest,
+    ToolCapability,
+    default_execution_registry,
+)
+from app.execution_registry.local_runner import (
+    RegisteredLocalToolRun,
+    RegisteredLocalToolRunRequest,
+    local_tool_advisory_artifact_data,
+    run_registered_local_tool,
+)
 from app.campaign_orchestrator import (
     campaign_elapsed_minutes,
     campaign_token_used_from_runs,
@@ -186,6 +197,18 @@ from app.repository import (
     DatabaseRepository,
     _safe_asset_value,
     approval_record_is_active,
+)
+from app.research_director import (
+    ResearchDirectorContext,
+    ResearchDirectorPlan,
+    ResearchSignal,
+    build_research_director_plan,
+)
+from app.research_director.runtime import (
+    LOCAL_TOOL_TASK_SCHEMA,
+    LOCAL_TOOL_TASK_TYPE,
+    campaign_local_tool_approval_is_active,
+    ensure_campaign_local_tool_approval,
 )
 from app.scope_guard import (
     ScopeGuardDecision,
@@ -351,6 +374,10 @@ class StudioCandidateModelRequest(BaseModel):
         if self.enabled:
             if self.provider is None or self.model is None or not self.model.strip():
                 raise ValueError("enabled candidate model requires provider and model")
+            try:
+                CandidateModelConfig(provider=self.provider, model=self.model)
+            except ValueError as exc:
+                raise ValueError("candidate model is invalid") from exc
         elif self.provider is not None or self.model is not None:
             raise ValueError("disabled candidate model cannot include provider or model")
         return self
@@ -1332,6 +1359,7 @@ class StudioCampaignLaunchRequest(BaseModel):
     program_id: str | None = None
     name: str | None = Field(default=None, max_length=255)
     default_asset: str | None = Field(default=None, max_length=255)
+    candidate_model: StudioCandidateModelRequest | None = None
 
 
 class StudioCampaignSnapshotRefreshRequest(BaseModel):
@@ -1595,6 +1623,19 @@ class ScannerRunResponse(BaseModel):
     summary: str
     safety_gate_state: str
     created_at: str
+
+
+class ResearchDirectorLocalToolRunRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=100)
+    plan_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class ResearchDirectorLocalToolRunResponse(BaseModel):
+    source_snapshot_digest: str
+    result: RegisteredLocalToolRun
+    scanner_run: ScannerRunResponse | None = None
+    advisory_artifact_id: str | None = None
+    execution_started: bool = False
 
 
 class ValidationRunResponse(BaseModel):
@@ -1998,6 +2039,12 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "bounty-mythos-api"}
 
 
+@app.get("/mythos/execution-capabilities", response_model=list[ToolCapability])
+def list_mythos_execution_capabilities() -> list[ToolCapability]:
+    """Expose registered tool metadata without granting execution authority."""
+    return default_execution_registry().list_capabilities()
+
+
 @app.post("/mythos/campaigns", response_model=CampaignResponse)
 def create_mythos_campaign(
     request: CampaignCreateRequest,
@@ -2109,6 +2156,821 @@ def _current_campaign_scope_guard_rule(
     return (
         intersect_scope_guard_rules(stored, resolution.rule, asset=asset),
         None,
+    )
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/research-director/plan",
+    response_model=ResearchDirectorPlan,
+)
+def build_mythos_research_director_plan(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+) -> ResearchDirectorPlan:
+    """Create one snapshot-bound, non-executing next-action plan."""
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        campaign.default_asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
+    if rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+
+    try:
+        context = _research_director_context(
+            campaign=campaign,
+            rule=rule,
+            repository=repository,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    plan = build_research_director_plan(context)
+    _record_research_director_plan(
+        campaign=campaign,
+        plan=plan,
+        repository=repository,
+    )
+    return plan
+
+
+@app.post(
+    "/mythos/campaigns/{campaign_id}/research-director/local-tools/{tool_id}/run",
+    response_model=ResearchDirectorLocalToolRunResponse,
+)
+def run_mythos_research_director_local_tool(
+    campaign_id: str,
+    tool_id: str,
+    request: ResearchDirectorLocalToolRunRequest,
+    session: Session = Depends(get_session),
+) -> ResearchDirectorLocalToolRunResponse:
+    """Run the current plan's local adapter against a verified workspace snapshot."""
+    repository = DatabaseRepository(session)
+    campaign = repository.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.autonomy_level != "level_1_local_validation":
+        raise HTTPException(status_code=409, detail="local_execution_autonomy_required")
+    if campaign.status != "running":
+        raise HTTPException(status_code=409, detail="campaign_not_running")
+
+    plan_stage = _current_research_director_local_tool_plan(
+        campaign=campaign,
+        tool_id=tool_id,
+        request=request,
+        repository=repository,
+    )
+    if plan_stage is None:
+        raise HTTPException(status_code=409, detail="research_director_plan_not_current")
+    plan_payload = plan_stage.payload if isinstance(plan_stage.payload, dict) else {}
+    source_snapshot_digest = plan_payload.get("source_snapshot_digest")
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    if (
+        not isinstance(source_snapshot_digest, str)
+        or source_snapshot_digest != campaign_payload.get("source_snapshot_digest")
+    ):
+        raise HTTPException(status_code=409, detail="source_snapshot_changed")
+    if _has_active_research_director_local_tool_task(
+        campaign=campaign,
+        source_snapshot_digest=source_snapshot_digest,
+        excluded_task_id=_research_director_local_tool_task_id(request.plan_digest),
+        repository=repository,
+    ):
+        raise HTTPException(status_code=409, detail="active_local_tool_task")
+    workspace_snapshot = campaign_payload.get("workspace_snapshot")
+    if not isinstance(workspace_snapshot, dict):
+        raise HTTPException(status_code=409, detail="workspace_snapshot_required")
+    try:
+        workspace_inputs = load_authorized_campaign_inputs(workspace_snapshot)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="workspace_snapshot_invalid") from exc
+    if workspace_inputs.get("source_snapshot_digest") != source_snapshot_digest:
+        raise HTTPException(status_code=409, detail="source_snapshot_changed")
+    package_root = workspace_inputs.get("authorized_local_root")
+    if not isinstance(package_root, str) or not Path(package_root).is_dir():
+        raise HTTPException(status_code=409, detail="authorized_local_root_required")
+    dependency_input_manifest = workspace_inputs.get("dependency_input_manifest")
+    if tool_id == "dependency_sbom_local" and not isinstance(
+        dependency_input_manifest,
+        list,
+    ):
+        raise HTTPException(status_code=409, detail="dependency_snapshot_required")
+
+    rule, program_rule_reason = _current_campaign_scope_guard_rule(
+        repository,
+        campaign,
+        campaign.default_asset,
+    )
+    if program_rule_reason is not None:
+        raise HTTPException(status_code=409, detail=program_rule_reason)
+    if rule is None:
+        raise HTTPException(status_code=409, detail="scope_guard_rule_missing")
+    remaining_tool_calls = _research_director_remaining_tool_calls(
+        campaign=campaign,
+        repository=repository,
+    )
+    if remaining_tool_calls is not None and remaining_tool_calls <= 0:
+        raise HTTPException(status_code=409, detail="budget_exhausted")
+    execution_task = _ensure_research_director_local_tool_task(
+        campaign=campaign,
+        plan_stage=plan_stage,
+        tool_id=tool_id,
+        source_snapshot_digest=source_snapshot_digest,
+        repository=repository,
+    )
+    if execution_task is None:
+        raise HTTPException(status_code=409, detail="research_director_plan_consumed")
+    approval = ensure_campaign_local_tool_approval(
+        campaign=campaign,
+        task=execution_task,
+        source_snapshot_digest=source_snapshot_digest,
+        tool_id=tool_id,
+        plan_digest=request.plan_digest,
+        repository=repository,
+    )
+    if not campaign_local_tool_approval_is_active(approval):
+        if execution_task.status in {"queued", "ready"}:
+            execution_task = (
+                repository.transition_campaign_task_status_if_currently(
+                    execution_task.id,
+                    "awaiting_approval",
+                    allowed_current_statuses={"queued", "ready"},
+                    require_unclaimed_execution=True,
+                )
+                or execution_task
+            )
+        raise HTTPException(status_code=409, detail="human_approval_required")
+    execution_task = repository.claim_campaign_task_execution(execution_task.id)
+    if execution_task is None:
+        if _has_active_research_director_local_tool_task(
+            campaign=campaign,
+            source_snapshot_digest=source_snapshot_digest,
+            excluded_task_id=_research_director_local_tool_task_id(request.plan_digest),
+            repository=repository,
+        ):
+            raise HTTPException(status_code=409, detail="active_local_tool_task")
+        raise HTTPException(status_code=409, detail="research_director_plan_consumed")
+    if not _renew_research_director_local_tool_execution(
+        task=execution_task,
+        repository=repository,
+    ):
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    reservation = repository.reserve_campaign_local_tool_call(
+        campaign_id=campaign.id,
+        task_id=execution_task.id,
+        execution_claim_id=execution_task.execution_claim_id,
+        research_plan_id=request.plan_id,
+        research_plan_digest=request.plan_digest,
+        source_snapshot_digest=source_snapshot_digest,
+        tool_id=tool_id,
+    )
+    if reservation is None:
+        remaining_tool_calls = _research_director_remaining_tool_calls(
+            campaign=campaign,
+            repository=repository,
+        )
+        if remaining_tool_calls is not None and remaining_tool_calls <= 0:
+            _finish_research_director_local_tool_execution(
+                task=execution_task,
+                repository=repository,
+                status="blocked",
+                safety_gate_state="blocked",
+                stop_reason="budget_exhausted",
+                output_refs=[f"research_plan:{request.plan_id}"],
+                result=None,
+            )
+            raise HTTPException(status_code=409, detail="budget_exhausted")
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    try:
+        result = run_registered_local_tool(
+            RegisteredLocalToolRunRequest(
+                authorization=ExecutionAuthorizationRequest(
+                    tool_id=tool_id,
+                    asset=campaign.default_asset,
+                    campaign_allowed_tools=campaign.allowed_tools,
+                    scope_rule=rule,
+                    human_approved=campaign_local_tool_approval_is_active(approval),
+                ),
+                package_root=package_root,
+                package_id=campaign.id,
+                dependency_input_manifest=dependency_input_manifest,
+            )
+        )
+    except Exception as exc:
+        _finish_research_director_local_tool_execution(
+            task=execution_task,
+            repository=repository,
+            status="failed",
+            safety_gate_state="allowed",
+            stop_reason="local_tool_runtime_failed",
+            output_refs=[f"research_plan:{request.plan_id}"],
+            result=None,
+        )
+        raise HTTPException(status_code=503, detail="local_tool_runtime_failed") from exc
+    if not _renew_research_director_local_tool_execution(
+        task=execution_task,
+        repository=repository,
+    ):
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    advisory_artifact = None
+    if result.command_executed:
+        artifact_kind, artifact_summary, artifact_facts = (
+            local_tool_advisory_artifact_data(result)
+        )
+        advisory_artifact = repository.save_artifact(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            kind=artifact_kind,
+            source_type="registered_local_tool",
+            source_hash=_research_director_advisory_artifact_hash(
+                campaign_id=campaign.id,
+                source_snapshot_digest=source_snapshot_digest,
+                tool_id=tool_id,
+                command_hash=result.command_hash,
+            ),
+            ingestion_status="advisory_only",
+            provenance={
+                "source": "research_director_local_tool",
+                "campaign_id": campaign.id,
+                "tool_id": tool_id,
+                "source_snapshot_digest": source_snapshot_digest,
+                "research_plan_digest": request.plan_digest,
+                "raw_payload_processed": False,
+            },
+            payload_summary=artifact_summary,
+            derived_facts=artifact_facts,
+            commit=False,
+        )
+    scanner_run = None
+    if result.status != "blocked":
+        scanner_run = repository.save_scanner_run(
+            campaign_id=campaign.id,
+            codebase_map_id=None,
+            tool_name=tool_id,
+            command_hash=result.command_hash,
+            status=result.runner_status or result.status,
+            finding_count=result.finding_count,
+            candidate_count=0,
+            summary=(
+                f"Registered local {tool_id} run recorded as advisory evidence only."
+            ),
+            safety_gate_state="allowed",
+            payload={
+                "research_plan_id": request.plan_id,
+                "research_plan_digest": request.plan_digest,
+                "source_snapshot_digest": source_snapshot_digest,
+                "tool_id": tool_id,
+                "runner_status": result.runner_status,
+                "command_executed": result.command_executed,
+                "advisory_artifact_id": (
+                    advisory_artifact.id if advisory_artifact is not None else None
+                ),
+                "research_director_tool_run": True,
+                "tool_call_consumed": True,
+                "tool_call_reservation_agent_run_id": reservation.id,
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+                "raw_payload_processed": False,
+            },
+            commit=False,
+        )
+    run_stage = _record_research_director_local_tool_run(
+        campaign=campaign,
+        task=execution_task,
+        plan_stage=plan_stage,
+        result=result,
+        scanner_run_id=scanner_run.id if scanner_run is not None else None,
+        advisory_artifact_id=(
+            advisory_artifact.id if advisory_artifact is not None else None
+        ),
+        repository=repository,
+        commit=False,
+    )
+    execution_status = (
+        "blocked"
+        if result.status == "blocked"
+        else "failed"
+        if result.status == "failed"
+        else "completed"
+    )
+    if not _finish_research_director_local_tool_execution(
+        task=execution_task,
+        repository=repository,
+        status=execution_status,
+        safety_gate_state=("blocked" if result.status == "blocked" else "allowed"),
+        stop_reason=(None if result.status != "blocked" else result.authorization.reason),
+        output_refs=[
+            f"research_plan:{request.plan_id}",
+            f"pipeline_stage:{run_stage.id}",
+            *(
+                [f"scanner_run:{scanner_run.id}"]
+                if scanner_run is not None
+                else []
+            ),
+            *(
+                [f"artifact:{advisory_artifact.id}"]
+                if advisory_artifact is not None
+                else []
+            ),
+        ],
+        result=result,
+    ):
+        raise HTTPException(status_code=409, detail="local_tool_execution_lease_lost")
+    return ResearchDirectorLocalToolRunResponse(
+        source_snapshot_digest=source_snapshot_digest,
+        result=result,
+        scanner_run=(
+            _scanner_run_response(scanner_run) if scanner_run is not None else None
+        ),
+        advisory_artifact_id=(
+            advisory_artifact.id if advisory_artifact is not None else None
+        ),
+        execution_started=result.command_executed,
+    )
+
+
+def _current_research_director_local_tool_plan(
+    *,
+    campaign: CampaignRecord,
+    tool_id: str,
+    request: ResearchDirectorLocalToolRunRequest,
+    repository: DatabaseRepository,
+) -> PipelineStageRecord | None:
+    matches = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "research_director_plan"
+        and stage.status == "planned"
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("plan_id") == request.plan_id
+        and stage.payload.get("plan_digest") == request.plan_digest
+        and stage.payload.get("action_kind") == "local_tool"
+        and stage.payload.get("action_id") == tool_id
+        and stage.payload.get("plan_dispatch_allowed") is True
+    ]
+    if len(matches) != 1:
+        return None
+    consumed = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "research_director_local_tool_run"
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("research_plan_digest") == request.plan_digest
+    ]
+    return None if consumed else matches[0]
+
+
+def _ensure_research_director_local_tool_task(
+    *,
+    campaign: CampaignRecord,
+    plan_stage: PipelineStageRecord,
+    tool_id: str,
+    source_snapshot_digest: str,
+    repository: DatabaseRepository,
+) -> CampaignTaskRecord | None:
+    plan_payload = plan_stage.payload if isinstance(plan_stage.payload, dict) else {}
+    plan_id = plan_payload.get("plan_id")
+    plan_digest = plan_payload.get("plan_digest")
+    if not isinstance(plan_id, str) or not isinstance(plan_digest, str):
+        return None
+    task, _claimed = repository.claim_campaign_task(
+        task_id=_research_director_local_tool_task_id(plan_digest),
+        campaign_id=campaign.id,
+        task_type=LOCAL_TOOL_TASK_TYPE,
+        agent_type="registered_local_tool",
+        title=f"Run registered local {tool_id} analysis",
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+            f"research_plan:{plan_id}",
+        ],
+        payload={
+            "schema_version": LOCAL_TOOL_TASK_SCHEMA,
+            "execution_lease_required": True,
+            "research_plan_id": plan_id,
+            "research_plan_digest": plan_digest,
+            "source_snapshot_digest": source_snapshot_digest,
+            "tool_id": tool_id,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+    )
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    if (
+        task.campaign_id != campaign.id
+        or task.task_type != LOCAL_TOOL_TASK_TYPE
+        or task.agent_type != "registered_local_tool"
+        or task.status not in {"queued", "ready", "awaiting_approval"}
+        or task_payload.get("schema_version") != LOCAL_TOOL_TASK_SCHEMA
+        or task_payload.get("research_plan_id") != plan_id
+        or task_payload.get("research_plan_digest") != plan_digest
+        or task_payload.get("source_snapshot_digest") != source_snapshot_digest
+        or task_payload.get("tool_id") != tool_id
+    ):
+        return None
+    return task
+
+
+def _research_director_local_tool_task_id(plan_digest: str) -> str:
+    return "research_local_tool_" + plan_digest.removeprefix("sha256:")
+
+
+def _has_active_research_director_local_tool_task(
+    *,
+    campaign: CampaignRecord,
+    source_snapshot_digest: str,
+    excluded_task_id: str,
+    repository: DatabaseRepository,
+) -> bool:
+    return any(
+        task.id != excluded_task_id
+        and task.task_type == LOCAL_TOOL_TASK_TYPE
+        and task.status in {"dispatched", "running"}
+        and isinstance(task.payload, dict)
+        and task.payload.get("schema_version") == LOCAL_TOOL_TASK_SCHEMA
+        and task.payload.get("execution_lease_required") is True
+        and task.payload.get("source_snapshot_digest") == source_snapshot_digest
+        for task in repository.list_campaign_tasks(campaign.id)
+    )
+
+
+def _record_research_director_local_tool_run(
+    *,
+    campaign: CampaignRecord,
+    task: CampaignTaskRecord,
+    plan_stage: PipelineStageRecord,
+    result: RegisteredLocalToolRun,
+    scanner_run_id: str | None,
+    advisory_artifact_id: str | None,
+    repository: DatabaseRepository,
+    commit: bool = True,
+) -> PipelineStageRecord:
+    plan_payload = plan_stage.payload if isinstance(plan_stage.payload, dict) else {}
+    source_snapshot_digest = plan_payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str):
+        raise ValueError("source_snapshot_digest_required")
+    stage_status = "blocked" if result.status == "blocked" else result.status
+    return repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_key="research_director_local_tool_run",
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status=stage_status,
+        input_refs=[
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+            f"research_plan:{plan_payload.get('plan_id')}",
+        ],
+        output_refs=(
+            [
+                *(
+                    [f"scanner_run:{scanner_run_id}"]
+                    if scanner_run_id is not None
+                    else []
+                ),
+                *(
+                    [f"artifact:{advisory_artifact_id}"]
+                    if advisory_artifact_id is not None
+                    else []
+                ),
+            ]
+        ),
+        safety_gate_state=("allowed" if result.status != "blocked" else "blocked"),
+        stop_reason=(None if result.status != "blocked" else result.authorization.reason),
+        payload={
+            "research_plan_id": plan_payload.get("plan_id"),
+            "research_plan_digest": plan_payload.get("plan_digest"),
+            "source_snapshot_digest": source_snapshot_digest,
+            "tool_id": result.tool_id,
+            "runner_status": result.runner_status,
+            "command_hash": result.command_hash,
+            "command_executed": result.command_executed,
+            "finding_count": result.finding_count,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        },
+        commit=commit,
+    )
+
+
+def _renew_research_director_local_tool_execution(
+    *,
+    task: CampaignTaskRecord,
+    repository: DatabaseRepository,
+) -> bool:
+    return (
+        repository.renew_campaign_task_execution_lease(
+            task.id,
+            execution_claim_id=task.execution_claim_id,
+        )
+        is not None
+    )
+
+
+def _finish_research_director_local_tool_execution(
+    *,
+    task: CampaignTaskRecord,
+    repository: DatabaseRepository,
+    status: str,
+    safety_gate_state: str,
+    stop_reason: str | None,
+    output_refs: list[str],
+    result: RegisteredLocalToolRun | None,
+) -> bool:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    result_payload = {
+        "schema_version": LOCAL_TOOL_TASK_SCHEMA,
+        "research_plan_id": payload.get("research_plan_id"),
+        "research_plan_digest": payload.get("research_plan_digest"),
+        "source_snapshot_digest": payload.get("source_snapshot_digest"),
+        "tool_id": payload.get("tool_id"),
+        "runner_status": result.runner_status if result is not None else None,
+        "command_hash": result.command_hash if result is not None else None,
+        "command_executed": result.command_executed if result is not None else False,
+        "finding_count": result.finding_count if result is not None else 0,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+        "raw_payload_processed": False,
+        **repository.local_tool_call_reservation_metadata(
+            task_id=task.id,
+            execution_claim_id=task.execution_claim_id,
+        ),
+    }
+    return (
+        repository.finish_campaign_task_execution(
+            task_id=task.id,
+            execution_claim_id=task.execution_claim_id,
+            task_status=status,
+            task_output_refs=output_refs,
+            agent_status=status,
+            agent_output_refs=output_refs,
+            safety_gate_state=safety_gate_state,
+            stop_reason=stop_reason,
+            payload=result_payload,
+            require_active_execution_lease=True,
+        )
+        is not None
+    )
+
+
+def _research_director_advisory_artifact_hash(
+    *,
+    campaign_id: str,
+    source_snapshot_digest: str,
+    tool_id: str,
+    command_hash: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "campaign_id": campaign_id,
+            "source_snapshot_digest": source_snapshot_digest,
+            "tool_id": tool_id,
+            "command_hash": command_hash,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"sha256:{sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _research_director_context(
+    *,
+    campaign: CampaignRecord,
+    rule: ScopeGuardRule,
+    repository: DatabaseRepository,
+) -> ResearchDirectorContext:
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str):
+        raise ValueError("source_snapshot_digest_required")
+
+    saved_scope_guard = payload.get("saved_scope_guard")
+    authorized_local_root = (
+        saved_scope_guard.get("authorized_local_root")
+        if isinstance(saved_scope_guard, dict)
+        else None
+    )
+    has_authorized_local_root = isinstance(authorized_local_root, str) and bool(
+        authorized_local_root.strip()
+    )
+    completed_action_ids = [
+        record.tool_name
+        for record in repository.list_campaign_scanner_runs(campaign.id)
+        if isinstance(record.payload, dict)
+        and record.payload.get("research_director_tool_run") is True
+        and record.payload.get("tool_call_consumed") is True
+        and record.payload.get("source_snapshot_digest") == source_snapshot_digest
+    ]
+    completed_action_ids.extend(
+        run.payload["tool_call_reservation_tool_id"]
+        for run in repository.list_campaign_local_tool_call_reservations(campaign.id)
+        if isinstance(run.payload, dict)
+        and run.payload.get("tool_call_reservation_source_snapshot_digest")
+        == source_snapshot_digest
+        and isinstance(run.payload.get("tool_call_reservation_tool_id"), str)
+    )
+    signals = _research_director_signals(
+        campaign=campaign,
+        has_authorized_local_root=has_authorized_local_root,
+        repository=repository,
+    )
+    remaining_tool_calls = _research_director_remaining_tool_calls(
+        campaign=campaign,
+        repository=repository,
+    )
+
+    return ResearchDirectorContext(
+        campaign_id=campaign.id,
+        asset=campaign.default_asset,
+        autonomy_level=campaign.autonomy_level,
+        source_snapshot_digest=source_snapshot_digest,
+        scope_rule=rule,
+        campaign_allowed_tools=campaign.allowed_tools,
+        has_authorized_local_root=has_authorized_local_root,
+        local_execution_authorized=(
+            campaign.autonomy_level == "level_1_local_validation"
+            and campaign.status == "running"
+        ),
+        remaining_tool_calls=remaining_tool_calls,
+        completed_action_ids=completed_action_ids,
+        signals=signals,
+        human_review_required=campaign.status == "awaiting_review",
+    )
+
+
+def _research_director_signals(
+    *,
+    campaign: CampaignRecord,
+    has_authorized_local_root: bool,
+    repository: DatabaseRepository,
+) -> list[ResearchSignal]:
+    signals: list[ResearchSignal] = []
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    source_snapshot_digest = campaign_payload.get("source_snapshot_digest")
+    if not isinstance(source_snapshot_digest, str):
+        return signals
+    for artifact in repository.list_artifacts(
+        program_id=campaign.program_id,
+        asset=campaign.default_asset,
+    ):
+        provenance = artifact.provenance if isinstance(artifact.provenance, dict) else {}
+        derived_facts = (
+            artifact.derived_facts if isinstance(artifact.derived_facts, dict) else {}
+        )
+        findings = derived_facts.get("advisory_findings")
+        if (
+            artifact.source_type != "registered_local_tool"
+            or provenance.get("campaign_id") != campaign.id
+            or provenance.get("source_snapshot_digest")
+            != source_snapshot_digest
+        ):
+            continue
+        if isinstance(findings, list):
+            for index, finding in enumerate(findings[:20], start=1):
+                if not isinstance(finding, dict):
+                    continue
+                signals.append(
+                    ResearchSignal(
+                        signal_id=f"static_{artifact.id}_{index}",
+                        state="needs_evidence",
+                        priority=75,
+                        evidence_refs=[f"artifact:{artifact.id}"],
+                    )
+                )
+        dependency_advisories = derived_facts.get("dependency_advisories")
+        if (
+            getattr(artifact, "kind", None) == "dependency_sbom_advisory"
+            and provenance.get("tool_id") == "dependency_sbom_local"
+            and isinstance(dependency_advisories, list)
+        ):
+            for index, advisory in enumerate(dependency_advisories[:20], start=1):
+                if not isinstance(advisory, dict):
+                    continue
+                signals.append(
+                    ResearchSignal(
+                        signal_id=f"dependency_{artifact.id}_{index}",
+                        state="needs_evidence",
+                        priority=70,
+                        evidence_refs=[f"artifact:{artifact.id}"],
+                    )
+                )
+    static_hints: list[str] = []
+    if (
+        "static_analyzer" in campaign.allowed_tools
+        or "semgrep_local" in campaign.allowed_tools
+    ):
+        static_hints.append("semgrep_local")
+    if "codeql_local" in campaign.allowed_tools:
+        static_hints.append("codeql_local")
+    if "dependency_sbom_local" in campaign.allowed_tools:
+        static_hints.append("dependency_sbom_local")
+    for task in repository.list_campaign_tasks(campaign.id):
+        if task.status not in {"awaiting_evidence", "needs_evidence"}:
+            continue
+        signals.append(
+            ResearchSignal(
+                signal_id=f"evidence_{task.id}",
+                state="needs_evidence",
+                priority=90,
+                tool_hints=static_hints,
+                evidence_refs=[f"campaign_task:{task.id}"],
+            )
+        )
+    if has_authorized_local_root and static_hints:
+        signals.append(
+            ResearchSignal(
+                signal_id="source_snapshot_static_coverage",
+                state="open",
+                priority=60,
+                tool_hints=static_hints,
+                evidence_refs=[f"campaign:{campaign.id}"],
+            )
+        )
+    return signals
+
+
+def _research_director_remaining_tool_calls(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> int | None:
+    budget = repository.get_campaign_budget(campaign.id)
+    if budget is None or budget.tool_call_budget is None:
+        return None
+    return max(
+        0,
+        budget.tool_call_budget
+        - repository.campaign_local_tool_call_count(campaign.id),
+    )
+
+
+def _record_research_director_plan(
+    *,
+    campaign: CampaignRecord,
+    plan: ResearchDirectorPlan,
+    repository: DatabaseRepository,
+) -> None:
+    existing = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.stage_key == "research_director_plan"
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("plan_digest") == plan.plan_digest
+    ]
+    if existing:
+        return
+    stage_status = {
+        "ready": "planned",
+        "awaiting_human_review": "awaiting_review",
+        "blocked": "blocked",
+    }[plan.status]
+    source_ref = f"source_snapshot:{plan.source_snapshot_digest}"
+    payload = plan.model_dump(mode="json")
+    payload.update(
+        {
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "plan_dispatch_allowed": plan.dispatch_allowed,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+            "raw_payload_in_dispatch": False,
+        }
+    )
+    repository.save_pipeline_stage(
+        pipeline_run_id=None,
+        campaign_id=campaign.id,
+        task_id=None,
+        stage_key="research_director_plan",
+        stage_order=len(repository.list_campaign_pipeline_stages(campaign.id)),
+        status=stage_status,
+        input_refs=[f"campaign:{campaign.id}", source_ref],
+        output_refs=[f"research_plan:{plan.plan_id}"],
+        safety_gate_state=("advisory_plan_only" if stage_status != "blocked" else "blocked"),
+        stop_reason=plan.stop_reason,
+        payload=payload,
     )
 
 
@@ -6151,6 +7013,17 @@ def launch_mythos_studio_workspace_campaign(
         request.workspace_path,
     )
     payload["scope_guard_rule"] = scope_guard_rule.model_dump(mode="json")
+    if request.candidate_model is not None and request.candidate_model.enabled:
+        assert request.candidate_model.provider is not None
+        assert request.candidate_model.model is not None
+        model_config = CandidateModelConfig(
+            provider=request.candidate_model.provider,
+            model=request.candidate_model.model,
+        )
+        payload["candidate_model"] = {
+            "provider": model_config.provider.value,
+            "model": model_config.model,
+        }
     campaign = repository.create_campaign(
         program_id=program_id,
         name=request.name or f"Mythos Studio hunter: {manifest.get('name', 'workspace')}",

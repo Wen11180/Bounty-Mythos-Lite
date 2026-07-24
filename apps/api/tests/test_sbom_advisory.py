@@ -139,8 +139,8 @@ def export_file(file_id: str):
             fact["artifact_kind"]
             for fact in hypothesis["source_facts"]
             if fact["fact_type"] in {"route_handler", "dependency_signal"}
-        ] == ["code", "api", "sbom"]
-        assert "evidence_satisfied:reachable_dependency_advisory" in hypothesis[
+        ] == ["code", "api"]
+        assert "evidence_satisfied:reachable_dependency_advisory" not in hypothesis[
             "hunter_assessment"
         ]["reasons"]
         assert pipeline_run.payload["hypothesis_assessments"][0]["validation_plan"][
@@ -257,11 +257,6 @@ def export_file_for_user(file_id: str, current_user):
         )
         pipeline_run = repository.list_pipeline_runs_for_program("program_example")[0]
         hypothesis = pipeline_run.payload["hypotheses"][0]
-        dependency_source = next(
-            fact
-            for fact in hypothesis["source_facts"]
-            if fact["fact_type"] == "dependency_signal"
-        )
 
         assert dependency_fact.source_path == "apps/api/services/files.py"
         assert dependency_fact.payload["reachability"] == "direct_local_import"
@@ -269,9 +264,11 @@ def export_file_for_user(file_id: str, current_user):
             "apps/api/routes/files.py"
         ]
         assert dependency_fact.payload["route_reachability"] == "unique_static_call_path"
-        assert dependency_source["source_path"] == "apps/api/services/files.py"
-        assert dependency_source["route_reachability"] == "unique_static_call_path"
-        assert "evidence_satisfied:reachable_dependency_advisory" in hypothesis[
+        assert not any(
+            fact["fact_type"] == "dependency_signal"
+            for fact in hypothesis["source_facts"]
+        )
+        assert "evidence_satisfied:reachable_dependency_advisory" not in hypothesis[
             "hunter_assessment"
         ]["reasons"]
         assert pipeline_run.payload["hypothesis_assessments"][0]["validation_plan"][

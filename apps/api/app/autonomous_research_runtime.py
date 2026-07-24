@@ -6,6 +6,11 @@ from typing import Any
 from uuid import uuid4
 
 from app.campaign_orchestrator import campaign_elapsed_minutes, campaign_token_used_from_runs
+from app.cross_source_candidate_generator import (
+    CandidateModelConfig,
+    candidate_model_config_digest,
+    candidate_model_config_from_value,
+)
 from app.db_models import CampaignRecord, CampaignTaskRecord
 from app.program_rule_intake.scope_resolver import (
     intersect_scope_guard_rules,
@@ -73,9 +78,25 @@ _WORK_ITEMS = (
         "title": "Generate candidate hypotheses from safe facts",
     },
     {
+        "task_type": "cross_source_llm_advisory",
+        "agent_type": "cross_source_reasoner_agent",
+        "title": "Enrich existing hypotheses with bounded model advice",
+        "requires_candidate_model": True,
+    },
+    {
         "task_type": "exploit_chain_reasoning",
         "agent_type": "vuln_chain_builder_agent",
         "title": "Build plan-only vulnerability chains from safe hypotheses",
+    },
+    {
+        "task_type": "variant_analysis",
+        "agent_type": "variant_analysis_agent",
+        "title": "Plan sibling-variant review from safe hypotheses",
+    },
+    {
+        "task_type": "deep_code_reasoning",
+        "agent_type": "deep_code_reasoning_agent",
+        "title": "Plan cross-file permission reasoning from safe hypotheses",
     },
     {
         "task_type": "candidate_refutation",
@@ -101,15 +122,26 @@ _HANDLED_WORK_ITEM_TYPES = {
     "attack_surface_mapping",
     "security_invariant_generation",
     "hypothesis_generation",
+    "cross_source_llm_advisory",
     "exploit_chain_reasoning",
+    "variant_analysis",
+    "deep_code_reasoning",
     "candidate_refutation",
     "finding_dedup_and_rank",
     "report_review",
 }
 _SOURCE_SNAPSHOT_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _SAFE_STOP_REASON_PATTERN = re.compile(r"[a-z][a-z0-9_:-]{0,127}")
+_LEARNING_SIGNAL_ID_PATTERN = re.compile(
+    r"learning_signal_[A-Za-z0-9_-]{1,90}",
+    re.ASCII,
+)
 _MIN_RUNTIME_TICK_INTERVAL_SECONDS = 60
 _MAX_RUNTIME_WORK_ITEMS_PER_SNAPSHOT = 20
+_READ_ONLY_RESEARCH_AUTONOMY_LEVELS = {
+    "level_0_read_only",
+    "level_1_local_validation",
+}
 _FORBIDDEN_RUNTIME_PAYLOAD_KEYS = frozenset(
     {
         "authorized_code_files",
@@ -178,6 +210,18 @@ def tick_autonomous_research_campaign(
     if evidence_recovery is not None:
         return evidence_recovery
 
+    if campaign.autonomy_level == "level_1_local_validation":
+        from app.research_director.runtime import tick_campaign_local_execution
+
+        local_execution = tick_campaign_local_execution(
+            campaign=campaign,
+            repository=repository,
+            dispatcher=dispatcher,
+            now=now,
+        )
+        if local_execution is not None:
+            return local_execution
+
     selection = select_autonomous_research_work(
         campaign=campaign,
         repository=repository,
@@ -213,20 +257,41 @@ def tick_autonomous_research_campaign(
             stop_reason="runtime_task_handler_unavailable",
             source_snapshot_digest=source_snapshot_digest,
         )
+    candidate_model_config, candidate_model_stop_reason = (
+        _campaign_candidate_model_config(campaign)
+    )
+    if candidate_model_stop_reason is not None:
+        return _tick_result(
+            status="blocked",
+            stop_reason=candidate_model_stop_reason,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+    if task_type == "cross_source_llm_advisory" and candidate_model_config is None:
+        return _tick_result(
+            status="blocked",
+            stop_reason="candidate_model_config_missing",
+            source_snapshot_digest=source_snapshot_digest,
+        )
     pipeline_run_id = None
     input_refs = [
         f"campaign:{campaign.id}",
         f"source_snapshot:{source_snapshot_digest}",
     ]
     if task_type in {
+        "cross_source_llm_advisory",
         "exploit_chain_reasoning",
+        "variant_analysis",
+        "deep_code_reasoning",
         "candidate_refutation",
         "finding_dedup_and_rank",
         "report_review",
     }:
         prerequisite_task_type = {
+            "cross_source_llm_advisory": "hypothesis_generation",
             "exploit_chain_reasoning": "hypothesis_generation",
-            "candidate_refutation": "exploit_chain_reasoning",
+            "variant_analysis": "exploit_chain_reasoning",
+            "deep_code_reasoning": "variant_analysis",
+            "candidate_refutation": "deep_code_reasoning",
             "finding_dedup_and_rank": "candidate_refutation",
             "report_review": "finding_dedup_and_rank",
         }[task_type]
@@ -238,9 +303,15 @@ def tick_autonomous_research_campaign(
         )
         if pipeline_run_id is None:
             missing_input_stop_reason = (
-                "exploit_chain_input_missing"
+                "candidate_model_advisory_input_missing"
+                if task_type == "cross_source_llm_advisory"
+                else "exploit_chain_input_missing"
                 if task_type == "exploit_chain_reasoning"
                 else "exploit_chain_projection_missing"
+                if task_type == "variant_analysis"
+                else "variant_analysis_projection_missing"
+                if task_type == "deep_code_reasoning"
+                else "deep_code_reasoning_projection_missing"
                 if task_type == "candidate_refutation"
                 else "candidate_hunter_projection_missing"
             )
@@ -274,6 +345,58 @@ def tick_autonomous_research_campaign(
             stop_reason=tick_stop_reason,
             source_snapshot_digest=source_snapshot_digest,
         )
+    if task_type == "hypothesis_generation":
+        input_refs.extend(
+            _hypothesis_generation_learning_signal_refs(
+                campaign=campaign,
+                repository=repository,
+            )
+        )
+    if task_type == "cross_source_llm_advisory" and candidate_model_config is not None:
+        input_refs.append(
+            "candidate_model_config:"
+            + candidate_model_config_digest(candidate_model_config)
+        )
+    if task_type == "candidate_refutation":
+        if candidate_model_config is not None and pipeline_run_id is not None:
+            advisory_projection_refs = (
+                _candidate_refutation_advisory_projection_refs(
+                    campaign=campaign,
+                    repository=repository,
+                    source_snapshot_digest=source_snapshot_digest,
+                    pipeline_run_id=pipeline_run_id,
+                    candidate_model_config=candidate_model_config,
+                )
+            )
+            if not advisory_projection_refs:
+                _persist_runtime_preflight_stop(
+                    campaign=campaign,
+                    repository=repository,
+                    stop_reason="candidate_model_advisory_projection_missing",
+                    source_snapshot_digest=source_snapshot_digest,
+                )
+                return _tick_result(
+                    status="blocked",
+                    stop_reason="candidate_model_advisory_projection_missing",
+                    source_snapshot_digest=source_snapshot_digest,
+                )
+            input_refs.extend(advisory_projection_refs)
+        input_refs.extend(
+            _candidate_refutation_advisory_artifact_refs(
+                campaign=campaign,
+                repository=repository,
+                source_snapshot_digest=source_snapshot_digest,
+            )
+        )
+    if task_type == "finding_dedup_and_rank" and pipeline_run_id is not None:
+        input_refs.extend(
+            _finding_dedup_historical_report_stage_refs(
+                campaign=campaign,
+                repository=repository,
+                pipeline_run_id=pipeline_run_id,
+                source_snapshot_digest=source_snapshot_digest,
+            )
+        )
     task = _failed_runtime_task_for_selection(
         campaign=campaign,
         repository=repository,
@@ -305,6 +428,11 @@ def tick_autonomous_research_campaign(
             task_type=task_type,
             source_snapshot_digest=source_snapshot_digest,
             pipeline_run_id=pipeline_run_id,
+            candidate_model_config=(
+                candidate_model_config
+                if task_type == "cross_source_llm_advisory"
+                else None
+            ),
         ),
     )
     if not claimed:
@@ -337,6 +465,15 @@ def retry_autonomous_research_task(
     task = repository.session.get(CampaignTaskRecord, task_id)
     if task is None or task.campaign_id != campaign.id:
         return _tick_result(status="not_found", stop_reason="campaign_task_not_found")
+    if task.task_type == "research_director_local_tool_run":
+        from app.research_director.runtime import retry_campaign_local_tool_task
+
+        return retry_campaign_local_tool_task(
+            campaign.id,
+            task.id,
+            repository=repository,
+            dispatcher=dispatcher,
+        )
 
     payload = task.payload if isinstance(task.payload, dict) else {}
     source_snapshot_digest = payload.get("source_snapshot_digest")
@@ -715,7 +852,6 @@ def autonomous_research_task_stop_reason(
         campaign,
         repository,
         now=None,
-        excluding_task_id=task.id,
         allow_awaiting_review=allow_awaiting_review,
     )
     if campaign_stop_reason is not None:
@@ -736,8 +872,24 @@ def autonomous_research_task_stop_reason(
         return "malformed_runtime_task"
     if task_snapshot_digest != campaign_snapshot_digest:
         return "source_snapshot_changed"
+    if task.task_type == "cross_source_llm_advisory":
+        candidate_model_config, candidate_model_stop_reason = (
+            _campaign_candidate_model_config(campaign)
+        )
+        if candidate_model_stop_reason is not None:
+            return candidate_model_stop_reason
+        if candidate_model_config is None:
+            return "candidate_model_config_missing"
+        if not _runtime_task_has_candidate_model_config(
+            payload,
+            candidate_model_config,
+        ):
+            return "candidate_model_config_changed"
     if task.task_type in {
+        "cross_source_llm_advisory",
         "exploit_chain_reasoning",
+        "variant_analysis",
+        "deep_code_reasoning",
         "candidate_refutation",
         "finding_dedup_and_rank",
         "report_review",
@@ -745,9 +897,15 @@ def autonomous_research_task_stop_reason(
         payload.get("pipeline_run_id"), str
     ):
         return (
-            "exploit_chain_input_missing"
+            "candidate_model_advisory_input_missing"
+            if task.task_type == "cross_source_llm_advisory"
+            else "exploit_chain_input_missing"
             if task.task_type == "exploit_chain_reasoning"
             else "exploit_chain_projection_missing"
+            if task.task_type == "variant_analysis"
+            else "variant_analysis_projection_missing"
+            if task.task_type == "deep_code_reasoning"
+            else "deep_code_reasoning_projection_missing"
             if task.task_type == "candidate_refutation"
             else "candidate_hunter_projection_missing"
         )
@@ -776,6 +934,18 @@ def select_autonomous_research_work(
         source_snapshot_digest
     ):
         return _blocked("source_snapshot_digest_required")
+    candidate_model_config, candidate_model_stop_reason = (
+        _campaign_candidate_model_config(campaign)
+    )
+    if candidate_model_stop_reason is not None:
+        return _blocked(candidate_model_stop_reason)
+    if _has_candidate_model_advisory_config_mismatch(
+        campaign=campaign,
+        repository=repository,
+        source_snapshot_digest=source_snapshot_digest,
+        candidate_model_config=candidate_model_config,
+    ):
+        return _blocked("candidate_model_config_changed")
     if _has_malformed_runtime_stage(campaign=campaign, repository=repository):
         return _blocked("malformed_runtime_stage")
     if _has_runtime_stage_for_different_source_snapshot(
@@ -812,7 +982,7 @@ def select_autonomous_research_work(
         repository=repository,
         source_snapshot_digest=source_snapshot_digest,
     )
-    for work_item in _WORK_ITEMS:
+    for work_item in _runtime_work_items(candidate_model_config):
         if work_item["task_type"] not in completed_task_types:
             return {
                 "status": "ready",
@@ -828,10 +998,9 @@ def _campaign_stop_reason(
     repository: DatabaseRepository,
     *,
     now: datetime | None,
-    excluding_task_id: str | None = None,
     allow_awaiting_review: bool = False,
 ) -> str | None:
-    if campaign.autonomy_level != "level_0_read_only":
+    if campaign.autonomy_level not in _READ_ONLY_RESEARCH_AUTONOMY_LEVELS:
         return "autonomy_level_not_read_only"
     if campaign.scope_status != "in_scope":
         return "scope_not_in_scope"
@@ -874,7 +1043,6 @@ def _campaign_stop_reason(
         for value in (
             budget.time_budget_minutes,
             budget.token_budget,
-            budget.tool_call_budget,
         )
     ):
         return "budget_exhausted"
@@ -891,17 +1059,6 @@ def _campaign_stop_reason(
         >= budget.token_budget
     ):
         return "budget_exhausted"
-    if (
-        budget is not None
-        and budget.tool_call_budget is not None
-        and sum(
-            run.safety_gate_state == "allowed"
-            and (excluding_task_id is None or run.task_id != excluding_task_id)
-            for run in repository.list_campaign_agent_runs(campaign.id)
-        )
-        >= budget.tool_call_budget
-    ):
-        return "budget_exhausted"
     return None
 
 
@@ -910,6 +1067,77 @@ def _runtime_payload_is_safe(payload: dict[str, Any]) -> bool:
         all(payload.get(field) is False for field in _SAFETY_FIELDS)
         and not _contains_forbidden_runtime_payload_key(payload)
     )
+
+
+def _campaign_candidate_model_config(
+    campaign: CampaignRecord,
+) -> tuple[CandidateModelConfig | None, str | None]:
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    if "candidate_model" not in payload:
+        return None, None
+    config = candidate_model_config_from_value(payload.get("candidate_model"))
+    return (
+        (config, None)
+        if config is not None
+        else (None, "candidate_model_config_invalid")
+    )
+
+
+def _runtime_work_items(
+    candidate_model_config: CandidateModelConfig | None,
+) -> tuple[dict[str, str | bool], ...]:
+    return tuple(
+        work_item
+        for work_item in _WORK_ITEMS
+        if not work_item.get("requires_candidate_model")
+        or candidate_model_config is not None
+    )
+
+
+def _runtime_task_has_candidate_model_config(
+    payload: dict[str, Any],
+    config: CandidateModelConfig,
+) -> bool:
+    task_config = candidate_model_config_from_value(payload.get("candidate_model"))
+    return (
+        task_config is not None
+        and task_config == config
+        and payload.get("candidate_model_config_digest")
+        == candidate_model_config_digest(config)
+    )
+
+
+def _has_candidate_model_advisory_config_mismatch(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    source_snapshot_digest: str,
+    candidate_model_config: CandidateModelConfig | None,
+) -> bool:
+    for stage in repository.list_campaign_pipeline_stages(campaign.id):
+        if (
+            stage.stage_key != f"{_RUNTIME_STAGE_PREFIX}cross_source_llm_advisory"
+            or stage.status != "completed"
+            or not isinstance(stage.payload, dict)
+            or stage.payload.get("runtime_schema") != _RUNTIME_SCHEMA
+            or stage.payload.get("source_snapshot_digest") != source_snapshot_digest
+        ):
+            continue
+        task = (
+            repository.session.get(CampaignTaskRecord, stage.task_id)
+            if isinstance(stage.task_id, str)
+            else None
+        )
+        task_payload = task.payload if task is not None and isinstance(task.payload, dict) else {}
+        if (
+            candidate_model_config is None
+            or not _runtime_task_has_candidate_model_config(
+                task_payload,
+                candidate_model_config,
+            )
+        ):
+            return True
+    return False
 
 
 def _persist_runtime_preflight_stop(
@@ -2468,6 +2696,7 @@ def _runtime_task_payload(
     task_type: str,
     source_snapshot_digest: str,
     pipeline_run_id: str | None = None,
+    candidate_model_config: CandidateModelConfig | None = None,
 ) -> dict[str, Any]:
     payload = {
         "runtime_schema": _RUNTIME_SCHEMA,
@@ -2484,7 +2713,99 @@ def _runtime_task_payload(
     }
     if pipeline_run_id is not None:
         payload["pipeline_run_id"] = pipeline_run_id
+    if candidate_model_config is not None:
+        payload["candidate_model"] = {
+            "provider": candidate_model_config.provider.value,
+            "model": candidate_model_config.model,
+        }
+        payload["candidate_model_config_digest"] = candidate_model_config_digest(
+            candidate_model_config
+        )
     return payload
+
+
+def _candidate_refutation_advisory_artifact_refs(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    source_snapshot_digest: str,
+) -> list[str]:
+    from app.cross_source_candidate_generator import (
+        registered_local_advisory_artifact_ids,
+    )
+
+    artifact_ids = registered_local_advisory_artifact_ids(
+        artifacts=repository.list_artifacts(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+        ),
+        campaign_id=campaign.id,
+        source_snapshot_digest=source_snapshot_digest,
+    )
+    return [f"artifact:{artifact_id}" for artifact_id in artifact_ids]
+
+
+def _candidate_refutation_advisory_projection_refs(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    source_snapshot_digest: str,
+    pipeline_run_id: str,
+    candidate_model_config: CandidateModelConfig,
+) -> list[str]:
+    matching_refs: list[str] = []
+    for task in repository.list_campaign_tasks(campaign.id):
+        payload = task.payload if isinstance(task.payload, dict) else {}
+        if (
+            task.task_type != "cross_source_llm_advisory"
+            or task.status != "completed"
+            or payload.get("runtime_schema") != _RUNTIME_SCHEMA
+            or payload.get("source_snapshot_digest") != source_snapshot_digest
+            or payload.get("pipeline_run_id") != pipeline_run_id
+            or not _runtime_task_has_candidate_model_config(
+                payload,
+                candidate_model_config,
+            )
+        ):
+            continue
+        projection_ref = f"cross_source_llm_advisory_projection:{task.id}"
+        output_refs = task.output_refs if isinstance(task.output_refs, list) else []
+        if output_refs.count(projection_ref) == 1:
+            matching_refs.append(projection_ref)
+    return matching_refs if len(matching_refs) == 1 else []
+
+
+def _hypothesis_generation_learning_signal_refs(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> list[str]:
+    if not isinstance(campaign.program_id, str):
+        return []
+    signal_ids = {
+        signal.id
+        for signal in repository.list_learning_signals(campaign.program_id)
+        if isinstance(signal.id, str)
+        and _LEARNING_SIGNAL_ID_PATTERN.fullmatch(signal.id) is not None
+    }
+    return [f"learning_signal:{signal_id}" for signal_id in sorted(signal_ids)]
+
+
+def _finding_dedup_historical_report_stage_refs(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    pipeline_run_id: str,
+    source_snapshot_digest: str,
+) -> list[str]:
+    from app.worker.tasks import historical_report_stage_refs_for_dedup
+
+    return historical_report_stage_refs_for_dedup(
+        campaign=campaign,
+        repository=repository,
+        pipeline_run_id=pipeline_run_id,
+        source_snapshot_digest=source_snapshot_digest,
+    )
 
 
 def build_autonomous_research_agent_payload(

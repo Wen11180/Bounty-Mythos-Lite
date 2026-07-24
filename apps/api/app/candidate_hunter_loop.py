@@ -9,10 +9,14 @@ from typing import Any
 
 from app.codebase_map import (
     CodebaseFactCandidate,
+    INPUT_BOUND_STATIC_GAP_SINK_NAMES,
+    INPUT_REFERENCE_KIND_STRAIGHT_LINE,
     SENSITIVE_SINK_NAMES,
     SUPPORTED_CODE_SOURCE_SUFFIXES,
     has_reachable_sink_before_control,
     map_authorized_code_files,
+    safe_claim_reference,
+    safe_input_reference,
 )
 from app.falsification_engine import (
     build_falsification_card,
@@ -32,6 +36,30 @@ SAFETY_FIELDS = (
 REQUIRED_ARTIFACT_KINDS = ("scope", "policy", "code", "api", "har")
 ADVISORY_ARTIFACT_KINDS = ("sarif", "sbom")
 SUPPORTED_ARTIFACT_KINDS = (*REQUIRED_ARTIFACT_KINDS, *ADVISORY_ARTIFACT_KINDS)
+_STATIC_ADVISORY_FACT_REF_PATTERN = re.compile(
+    r"^static_advisory:(artifact_[A-Za-z0-9_-]{1,90}):(\d{1,7}):"
+    r"((?=.{1,128}$)(?!\.{1,2}(?:/|$))(?!.*(?:/)\.{1,2}(?:/|$))"
+    r"[A-Za-z0-9_.:-]+(?:/[A-Za-z0-9_.:-]+)*)$",
+    re.ASCII,
+)
+_CWE_ADVISORY_ID_PATTERN = re.compile(r"\bcwe[-_:]?(\d{1,5})\b", re.IGNORECASE)
+_CWE_ADVISORY_FAMILIES = {
+    "22": "path_traversal",
+    "23": "path_traversal",
+    "36": "path_traversal",
+    "73": "path_traversal",
+    "78": "command_injection",
+    "89": "injection",
+    "284": "authorization",
+    "362": "race_condition",
+    "367": "race_condition",
+    "502": "unsafe_deserialization",
+    "639": "authorization",
+    "862": "authorization",
+    "863": "authorization",
+    "915": "mass_assignment",
+    "918": "ssrf",
+}
 STAGE_KEYS = (
     "candidate_hunter_snapshot",
     "candidate_hunter_evidence_request",
@@ -56,6 +84,8 @@ def build_candidate_hunter_observations(
     candidates: list[dict],
     code_files: list[dict],
     supplemental_code_facts: list[CodebaseFactCandidate] | None = None,
+    static_advisory_facts: list[dict] | None = None,
+    dependency_advisory_facts: list[dict] | None = None,
     surface_facts: list[dict],
     context_facts: list[dict],
 ) -> dict[str, Any]:
@@ -92,11 +122,28 @@ def build_candidate_hunter_observations(
         if isinstance(item, dict)
         if (fact := _safe_external_fact(item)) is not None
     ]
+    safe_static_advisory_facts = [
+        fact
+        for item in static_advisory_facts or []
+        if isinstance(item, dict)
+        if (fact := _safe_static_advisory_fact(item)) is not None
+    ]
+    safe_dependency_advisory_facts = [
+        fact
+        for item in dependency_advisory_facts or []
+        if isinstance(item, dict)
+        for fact in _safe_candidate_source_facts([item])
+        if fact.get("artifact_kind") == "sbom"
+        and fact.get("fact_type") == "dependency_signal"
+        and _safe_source_name(fact.get("source_path"))
+    ]
     projected_facts = [
         *(_safe_code_fact(fact) for fact in mapped_code_facts),
         *semantic_code_facts,
         *safe_surface_facts,
         *safe_context_facts,
+        *safe_static_advisory_facts,
+        *safe_dependency_advisory_facts,
     ]
     states = []
     initial_states = []
@@ -108,26 +155,78 @@ def build_candidate_hunter_observations(
             if not candidate_id:
                 continue
             route = _candidate_route(candidate)
-            candidate_facts = _safe_candidate_source_facts(candidate.get("source_facts"))
-            hypothesis_code_fact = next(
+            candidate_facts = [
+                fact
+                for fact in _safe_candidate_source_facts(candidate.get("source_facts"))
+                if not _is_dependency_advisory_fact(fact)
+            ]
+            route_bound_code_facts = [
+                fact
+                for fact in candidate_facts
+                if fact.get("artifact_kind") == "code"
+                and _fact_matches_route(fact, route)
+            ]
+            route_bound_code_fact_identities = {
                 (
-                    fact
-                    for fact in candidate_facts
-                    if fact.get("artifact_kind") == "code"
-                    and (
-                        _fact_matches_route(fact, route)
-                        or "route" not in fact
-                    )
-                ),
-                {},
+                    _safe_source_name(fact.get("source_path")),
+                    _safe_text(fact.get("symbol_name")),
+                )
+                for fact in route_bound_code_facts
+                if _safe_source_name(fact.get("source_path"))
+                and _safe_text(fact.get("symbol_name"))
+            }
+            routeless_code_facts = [
+                fact
+                for fact in candidate_facts
+                if fact.get("artifact_kind") == "code"
+                and "route" not in fact
+                and _safe_source_name(fact.get("source_path"))
+                and _safe_text(fact.get("symbol_name"))
+            ]
+            routeless_code_fact_identities = {
+                (
+                    _safe_source_name(fact.get("source_path")),
+                    _safe_text(fact.get("symbol_name")),
+                )
+                for fact in routeless_code_facts
+            }
+            hypothesis_code_fact = {}
+            route_bound_code_fact_is_unique = (
+                len(route_bound_code_fact_identities) == 1
+                and all(
+                    _safe_source_name(fact.get("source_path"))
+                    and _safe_text(fact.get("symbol_name"))
+                    for fact in route_bound_code_facts
+                )
             )
+            ambiguous_route_bound_code_facts = (
+                bool(route_bound_code_facts) and not route_bound_code_fact_is_unique
+            )
+            routeless_code_fact_is_unique = len(routeless_code_fact_identities) == 1
+            ambiguous_routeless_code_facts = (
+                not route_bound_code_facts
+                and bool(routeless_code_facts)
+                and not routeless_code_fact_is_unique
+            )
+            if route_bound_code_fact_is_unique:
+                hypothesis_code_fact = route_bound_code_facts[0]
+            elif routeless_code_fact_is_unique:
+                hypothesis_code_fact = routeless_code_facts[0]
             hypothesis_source_path = _safe_source_name(
                 hypothesis_code_fact.get("source_path")
             )
-            matching_code_facts = _matching_code_facts(
-                mapped_code_facts,
-                route,
-                preferred_source_path=hypothesis_source_path,
+            matching_code_facts = (
+                []
+                if ambiguous_route_bound_code_facts
+                or ambiguous_routeless_code_facts
+                else _matching_code_facts(
+                    mapped_code_facts,
+                    route,
+                    preferred_source_path=hypothesis_source_path,
+                    preferred_symbol_name=_safe_text(
+                        hypothesis_code_fact.get("symbol_name")
+                    ),
+                )
             )
             handler = _route_handler(matching_code_facts, route)
             route_source_paths = {
@@ -136,23 +235,20 @@ def build_candidate_hunter_observations(
                 if fact.fact_type == "route_handler"
                 and _code_fact_matches_route(fact, route)
             }
-            # Frameworks without decorator routes (e.g. Django function views) still
-            # declare a candidate code path/symbol; use that to attach semantic guards.
+            # Frameworks without decorator routes (e.g. Django function views) use
+            # the selected candidate code path and symbol to attach semantic guards.
             if not handler:
-                for fact in candidate_facts:
-                    if fact.get("artifact_kind") != "code":
-                        continue
-                    symbol = _safe_text(fact.get("symbol_name"))
-                    if symbol:
-                        handler = symbol
-                        break
+                handler = _safe_text(hypothesis_code_fact.get("symbol_name"))
             if not route_source_paths:
-                route_source_paths = {
-                    path
-                    for fact in candidate_facts
-                    if fact.get("artifact_kind") == "code"
-                    if (path := _safe_source_name(fact.get("source_path")))
-                }
+                if source_path := _safe_source_name(
+                    hypothesis_code_fact.get("source_path")
+                ):
+                    route_source_paths = {source_path}
+            path_matching_static_advisory_facts = [
+                fact
+                for fact in safe_static_advisory_facts
+                if fact.get("source_path") in route_source_paths
+            ]
             matching_semantic_facts = [
                 fact
                 for fact in semantic_code_facts
@@ -206,12 +302,39 @@ def build_candidate_hunter_observations(
                 matching_candidate_facts,
                 [],
             )
+            gap_fact = _matching_gap_fact(
+                matching_candidate_facts,
+                matching_code_facts,
+            )
+            root_cause = (
+                _text(gap_fact.get("root_cause"))
+                if gap_fact
+                else _text(hypothesis_code_fact.get("root_cause"))
+            )
+            root_symbol = (
+                _text(gap_fact.get("symbol_name"))
+                if gap_fact
+                else _text(hypothesis_code_fact.get("symbol_name")) or handler
+            )
+            # Static findings remain advisory and need an exact vulnerability family,
+            # source file, and mapped candidate sink location before joining evidence.
+            matching_static_advisory_facts = [
+                fact
+                for fact in path_matching_static_advisory_facts
+                if _static_advisory_matches_candidate(
+                    fact,
+                    candidate=candidate,
+                    root_cause=root_cause,
+                    code_facts=matching_code_facts,
+                )
+            ]
             evidence_facts = [
                 *safe_context_facts,
                 *matching_candidate_facts,
                 *(_safe_code_fact(fact) for fact in matching_code_facts),
                 *matching_semantic_facts,
                 *matching_surface_facts,
+                *matching_static_advisory_facts,
             ]
             evidence_refs = _ordered_unique(
                 _text(fact.get("fact_ref"))
@@ -223,23 +346,9 @@ def build_candidate_hunter_observations(
                 for kind in REQUIRED_ARTIFACT_KINDS
                 if any(fact.get("artifact_kind") == kind for fact in evidence_facts)
             ]
-            gap_fact = _matching_gap_fact(
-                matching_candidate_facts,
-                matching_code_facts,
-            )
-            shared_root, shared_ref = _shared_root(
+            shared_root, shared_ref, shared_root_kind = _shared_root(
                 matching_code_facts,
                 handler,
-            )
-            root_cause = (
-                _text(gap_fact.get("root_cause"))
-                if gap_fact
-                else _text(hypothesis_code_fact.get("root_cause"))
-            )
-            root_symbol = (
-                _text(gap_fact.get("symbol_name"))
-                if gap_fact
-                else _text(hypothesis_code_fact.get("symbol_name")) or handler
             )
             root_cause_id = _normalized_root_id(root_cause, root_symbol)
             state = {
@@ -263,9 +372,34 @@ def build_candidate_hunter_observations(
                 "gap_evidence_ref": _text(gap_fact.get("fact_ref")) if gap_fact else "",
                 "shared_root": shared_root,
                 "shared_root_evidence_ref": shared_ref,
+                "shared_root_kind": shared_root_kind,
                 "refutation_questions": _refutation_questions(candidate),
                 "reanalysis_status": "completed",
             }
+            graphql_operation = next(
+                (
+                    fact
+                    for fact in matching_code_facts
+                    if fact.fact_type == "graphql_operation"
+                    and isinstance(fact.payload, dict)
+                ),
+                None,
+            )
+            if graphql_operation is not None:
+                operation_type = _safe_text(
+                    graphql_operation.payload.get("operation_type")
+                )
+                operation_name = _safe_text(
+                    graphql_operation.payload.get("operation_name")
+                )
+                if operation_type and operation_name:
+                    state.update(
+                        {
+                            "entrypoint_kind": "graphql_operation",
+                            "graphql_operation_type": operation_type,
+                            "graphql_operation_name": operation_name,
+                        }
+                    )
             if broken_invariant := _safe_text(candidate.get("broken_invariant")):
                 state["broken_invariant"] = broken_invariant
             if validation_mode := _safe_validation_mode(candidate.get("validation_mode")):
@@ -280,13 +414,17 @@ def build_candidate_hunter_observations(
                 state["hypothesis_source_path"] = hypothesis_source_path
             if hypothesis_symbol_name := _text(hypothesis_code_fact.get("symbol_name")):
                 state["hypothesis_symbol_name"] = hypothesis_symbol_name
-            control_fact = next(
-                (
-                    fact
-                    for fact in matching_semantic_facts
-                    if fact.get("fact_type") == "ownership_guard"
-                ),
-                None,
+            control_fact = (
+                next(
+                    (
+                        fact
+                        for fact in matching_semantic_facts
+                        if fact.get("fact_type") == "ownership_guard"
+                    ),
+                    None,
+                )
+                if _is_object_ownership_root_cause(root_cause)
+                else None
             )
             if control_fact is None:
                 preferred = set()
@@ -304,6 +442,8 @@ def build_candidate_hunter_observations(
                     preferred.add("server_authoritative_amount_check")
                 if "agent_tool_authorization" in root_cause:
                     preferred.add("agent_tool_authorization_check")
+                if "jwt_verification" in root_cause:
+                    preferred.add("jwt_verification_check")
                 if "command_injection" in root_cause:
                     preferred.add("command_injection_validation_check")
                 elif "injection" in root_cause:
@@ -359,6 +499,7 @@ def build_candidate_hunter_observations(
                 ),
                 "shared_root": "",
                 "shared_root_evidence_ref": "",
+                "shared_root_kind": "",
                 "reanalysis_status": "pending",
             }
             initial_state.pop("control_evidence_ref", None)
@@ -396,6 +537,7 @@ def _typescript_control_fact(
         "file_upload_validation_check",
         "server_authoritative_amount_check",
         "agent_tool_authorization_check",
+        "jwt_verification_check",
     }
     preferred_hints = preferred_hints or set()
     # Pure RBAC (role/permission) does not close object-level ownership gaps (IDOR).
@@ -413,18 +555,40 @@ def _typescript_control_fact(
             "owner_or_admin_check",
             "ownership_boundary_check",
         }
+    input_bound_sink_refs_by_handler = _input_bound_sink_refs_by_handler(
+        facts,
+        root_cause=root_l,
+    )
+    jwt_decoder_facts = [
+        fact for fact in facts if fact.fact_type == "unverified_token_decode"
+    ]
+    jwt_token_refs = {
+        token_ref
+        for fact in jwt_decoder_facts
+        if (token_ref := _code_fact_token_ref(fact)) is not None
+    }
+    jwt_token_ref = (
+        next(iter(jwt_token_refs))
+        if len(jwt_decoder_facts) == 1 and len(jwt_token_refs) == 1
+        else None
+    )
+    jwt_sink_claim_refs_by_handler = (
+        _jwt_sink_claim_refs_by_handler(facts)
+        if "jwt_verification" in root_l
+        else None
+    )
     # Earliest sensitive sink line per handler — guards at/after sink are ineffective.
-    sink_line_by_handler: dict[str, int] = {}
+    sink_position_by_handler: dict[tuple[str, str], tuple[int, int]] = {}
     for fact in facts:
         if fact.fact_type != "sensitive_sink" or not isinstance(fact.payload, dict):
             continue
-        handler = _safe_text(fact.payload.get("handler"))
-        line = fact.payload.get("line")
-        if not handler or not isinstance(line, int):
+        handler = _code_fact_handler_identity(fact)
+        position = _code_fact_position(fact)
+        if not handler or position is None:
             continue
-        prev = sink_line_by_handler.get(handler)
-        if prev is None or line < prev:
-            sink_line_by_handler[handler] = line
+        previous = sink_position_by_handler.get(handler)
+        if previous is None or position < previous:
+            sink_position_by_handler[handler] = position
 
     candidates: list[CodebaseFactCandidate] = []
     for fact in facts:
@@ -433,16 +597,45 @@ def _typescript_control_fact(
             and fact.authz_hint in decisive_hints
             and fact.source_path.lower().endswith(SUPPORTED_CODE_SOURCE_SUFFIXES)
         ):
+            if not _python_static_ownership_control_matches_sink_resource(
+                fact,
+                facts,
+            ):
+                continue
+            if input_bound_sink_refs_by_handler is not None:
+                handler_identity = _code_fact_handler_identity(fact)
+                expected_sink_refs = (
+                    input_bound_sink_refs_by_handler.get(handler_identity)
+                    if handler_identity is not None
+                    else None
+                )
+                if (
+                    not expected_sink_refs
+                    or not expected_sink_refs.issubset(
+                        _code_fact_guard_input_refs(fact)
+                    )
+                ):
+                    continue
+            if (
+                "jwt_verification" in root_l
+                and fact.authz_hint == "jwt_verification_check"
+                and not _jwt_control_matches_sink_claims(
+                    fact,
+                    token_ref=jwt_token_ref,
+                    sink_claim_refs_by_handler=jwt_sink_claim_refs_by_handler,
+                )
+            ):
+                continue
             if has_reachable_sink_before_control(facts, control=fact):
                 continue
             if isinstance(fact.payload, dict):
-                handler = _safe_text(fact.payload.get("handler"))
-                line = fact.payload.get("line")
-                sink_line = sink_line_by_handler.get(handler)
+                handler = _code_fact_handler_identity(fact)
+                position = _code_fact_position(fact)
+                sink_position = sink_position_by_handler.get(handler)
                 if (
-                    sink_line is not None
-                    and isinstance(line, int)
-                    and line >= sink_line
+                    sink_position is not None
+                    and position is not None
+                    and position >= sink_position
                 ):
                     # Guard-after-sink does not close the authorization gap.
                     continue
@@ -455,6 +648,185 @@ def _typescript_control_fact(
     if preferred_hints:
         return None
     return _safe_code_fact(candidates[0])
+
+
+def _is_object_ownership_root_cause(root_cause: str) -> bool:
+    normalized = (root_cause or "").lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "missing_object_ownership",
+            "object_ownership",
+            "ownership_check",
+            "idor",
+        )
+    )
+
+
+def _code_fact_position(
+    fact: CodebaseFactCandidate,
+) -> tuple[int, int] | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    line = fact.payload.get("line")
+    if not isinstance(line, int):
+        return None
+    column = fact.payload.get("column")
+    return line, column if isinstance(column, int) else 0
+
+
+def _code_fact_token_ref(fact: CodebaseFactCandidate) -> str | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    token_ref = fact.payload.get("token_ref")
+    return token_ref if isinstance(token_ref, str) and token_ref.startswith("token:") else None
+
+
+def _code_fact_claim_ref(fact: CodebaseFactCandidate) -> str | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    return safe_claim_reference(fact.payload.get("claims_ref"))
+
+
+def _code_fact_handler_identity(
+    fact: CodebaseFactCandidate,
+) -> tuple[str, str] | None:
+    return _code_fact_identity(fact, "handler")
+
+
+def _code_fact_service_class(fact: CodebaseFactCandidate) -> str | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    service_class = _safe_text(fact.payload.get("service_class"))
+    return (
+        service_class
+        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", service_class)
+        else None
+    )
+
+
+def _code_fact_input_ref(fact: CodebaseFactCandidate) -> str | None:
+    if not isinstance(fact.payload, dict):
+        return None
+    if fact.payload.get("input_ref_kind") != INPUT_REFERENCE_KIND_STRAIGHT_LINE:
+        return None
+    return safe_input_reference(fact.payload.get("input_ref"))
+
+
+def _code_fact_guard_input_refs(fact: CodebaseFactCandidate) -> frozenset[str]:
+    if (
+        not isinstance(fact.payload, dict)
+        or fact.payload.get("input_ref_kind") != INPUT_REFERENCE_KIND_STRAIGHT_LINE
+    ):
+        return frozenset()
+    return frozenset(
+        input_ref
+        for value in (
+            fact.payload.get("input_ref"),
+            fact.payload.get("validated_output_ref"),
+        )
+        if (input_ref := safe_input_reference(value)) is not None
+    )
+
+
+def _input_bound_sink_refs_by_handler(
+    facts: list[CodebaseFactCandidate],
+    *,
+    root_cause: str,
+) -> dict[tuple[str, str], set[str]] | None:
+    sink_names = INPUT_BOUND_STATIC_GAP_SINK_NAMES.get(
+        root_cause.partition(":")[0]
+    )
+    if sink_names is None:
+        return None
+    sink_refs_by_handler: dict[tuple[str, str], set[str]] = {}
+    for fact in facts:
+        if (
+            fact.fact_type != "sensitive_sink"
+            or _normalized_code_fact_symbol(fact.symbol_name) not in sink_names
+        ):
+            continue
+        handler_identity = _code_fact_handler_identity(fact)
+        input_ref = _code_fact_input_ref(fact)
+        if handler_identity is None or input_ref is None:
+            return {}
+        sink_refs_by_handler.setdefault(handler_identity, set()).add(input_ref)
+    return sink_refs_by_handler
+
+
+def _python_static_ownership_control_matches_sink_resource(
+    control: CodebaseFactCandidate,
+    facts: list[CodebaseFactCandidate],
+) -> bool:
+    if (
+        not control.source_path.lower().endswith(".py")
+        or control.authz_hint not in {"owner_or_admin_check", "ownership_boundary_check"}
+        or not isinstance(control.payload, dict)
+        or control.payload.get("mapping_mode") != "static_code_snippet_analysis"
+    ):
+        return True
+    handler = _code_fact_handler_identity(control)
+    if handler is None:
+        return False
+    sink_resource_names = {
+        claim_ref.partition(":")[2]
+        for fact in facts
+        if fact.fact_type == "sensitive_sink"
+        and _code_fact_handler_identity(fact) == handler
+        and (claim_ref := _code_fact_claim_ref(fact)) is not None
+    }
+    control_resources = _ownership_control_resource_terms(
+        _safe_text(control.symbol_name)
+    )
+    sink_resources = set().union(
+        *(
+            _ownership_control_resource_terms(name)
+            for name in sink_resource_names
+        )
+    )
+    return bool(control_resources & sink_resources)
+
+
+def _jwt_sink_claim_refs_by_handler(
+    facts: list[CodebaseFactCandidate],
+) -> dict[tuple[str, str], set[str]]:
+    sink_refs_by_handler: dict[tuple[str, str], set[str]] = {}
+    for fact in facts:
+        if fact.fact_type != "sensitive_sink":
+            continue
+        handler_identity = _code_fact_handler_identity(fact)
+        claim_ref = _code_fact_claim_ref(fact)
+        if handler_identity is None or claim_ref is None:
+            return {}
+        sink_refs_by_handler.setdefault(handler_identity, set()).add(claim_ref)
+    return sink_refs_by_handler
+
+
+def _jwt_control_matches_sink_claims(
+    fact: CodebaseFactCandidate,
+    *,
+    token_ref: str | None,
+    sink_claim_refs_by_handler: dict[tuple[str, str], set[str]] | None,
+) -> bool:
+    handler_identity = _code_fact_handler_identity(fact)
+    claims_ref = _code_fact_claim_ref(fact)
+    if (
+        token_ref is None
+        or _code_fact_token_ref(fact) != token_ref
+        or handler_identity is None
+        or claims_ref is None
+        or sink_claim_refs_by_handler is None
+    ):
+        return False
+    return sink_claim_refs_by_handler.get(handler_identity) == {claims_ref}
+
+
+def _normalized_code_fact_symbol(value: object) -> str:
+    return re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])",
+        "_",
+        _safe_text(value),
+    ).lower()
 
 
 def _typescript_public_filter_fact(
@@ -583,6 +955,10 @@ def _python_semantic_facts(code_files: list[dict]) -> list[dict[str, Any]]:
     positive_ownership_helpers = _transitive_helper_names(
         parsed, positive_ownership_helpers
     )
+    ownership_helper_resource_terms = _ownership_helper_parameter_terms_by_name(
+        parsed,
+        ownership_helpers,
+    )
 
     facts: list[dict[str, Any]] = []
     for source_path, functions in parsed:
@@ -593,6 +969,7 @@ def _python_semantic_facts(code_files: list[dict]) -> list[dict[str, Any]]:
                     handler,
                     function,
                     ownership_helpers,
+                    ownership_helper_resource_terms,
                     public_helpers,
                     positive_ownership_helpers,
                 )
@@ -605,6 +982,7 @@ def _handler_semantic_facts(
     handler: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     ownership_helpers: set[str],
+    ownership_helper_resource_terms: dict[str, set[frozenset[str]]],
     public_helpers: set[str],
     positive_ownership_helpers: set[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -619,9 +997,13 @@ def _handler_semantic_facts(
     if sink_index is None:
         return []
     positive_helpers = positive_ownership_helpers or set()
-    linked = _function_resource_linked_names(function)
+    sink_statement = function.body[sink_index]
+    sink_resource_names = _function_sink_resource_names(
+        function.body[: sink_index + 1],
+        sink_statement,
+    )
     facts = []
-    if _function_has_ownership_decorator(function):
+    if _function_has_ownership_decorator(function, sink_resource_names):
         facts.append(
             _semantic_code_fact(
                 source_path,
@@ -631,6 +1013,12 @@ def _handler_semantic_facts(
             )
         )
     for helper in sorted(ownership_helpers & _signature_dependency_helpers(function)):
+        if not _dependency_ownership_helper_matches_sink_resource(
+            helper,
+            sink_resource_names,
+            ownership_helper_resource_terms,
+        ):
+            continue
         facts.append(
             _semantic_code_fact(
                 source_path,
@@ -641,7 +1029,7 @@ def _handler_semantic_facts(
         )
     for index, statement in enumerate(function.body[:sink_index]):
         # Inline ownership/tenant guard in the handler before the sink.
-        if _statement_has_ownership_guard(statement, linked):
+        if _statement_has_ownership_guard(statement, sink_resource_names):
             facts.append(
                 _semantic_code_fact(
                     source_path,
@@ -650,7 +1038,11 @@ def _handler_semantic_facts(
                     handler=handler,
                 )
             )
-        positive_helper = _statement_has_positive_helper_guard(statement, positive_helpers)
+        positive_helper = _statement_has_positive_helper_guard(
+            statement,
+            positive_helpers,
+            sink_resource_names,
+        )
         if positive_helper:
             facts.append(
                 _semantic_code_fact(
@@ -660,20 +1052,12 @@ def _handler_semantic_facts(
                     handler=handler,
                 )
             )
-        called_names = _statement_called_names(statement)
-        for helper in sorted(ownership_helpers & called_names):
-            facts.append(
-                _semantic_code_fact(
-                    source_path,
-                    helper,
-                    "ownership_guard",
-                    handler=handler,
-                )
-            )
         for helper in sorted(
-            name
-            for name in called_names
-            if name not in ownership_helpers and _is_known_ownership_helper_name(name)
+            _statement_ownership_helper_calls(
+                statement,
+                ownership_helpers,
+                sink_resource_names,
+            )
         ):
             facts.append(
                 _semantic_code_fact(
@@ -704,8 +1088,7 @@ def _handler_semantic_facts(
                 )
             )
     # Ownership may gate the sink in the same statement (if eq: return send_file).
-    sink_statement = function.body[sink_index]
-    if _statement_has_ownership_guard(sink_statement, linked):
+    if _statement_has_ownership_guard(sink_statement, sink_resource_names):
         facts.append(
             _semantic_code_fact(
                 source_path,
@@ -714,7 +1097,11 @@ def _handler_semantic_facts(
                 handler=handler,
             )
         )
-    positive_helper = _statement_has_positive_helper_guard(sink_statement, positive_helpers)
+    positive_helper = _statement_has_positive_helper_guard(
+        sink_statement,
+        positive_helpers,
+        sink_resource_names,
+    )
     if positive_helper:
         facts.append(
             _semantic_code_fact(
@@ -725,20 +1112,12 @@ def _handler_semantic_facts(
             )
         )
     # Context-manager / same-statement helper calls (with ownership_context(...): sink).
-    sink_called = _statement_called_names(sink_statement)
-    for helper in sorted(ownership_helpers & sink_called):
-        facts.append(
-            _semantic_code_fact(
-                source_path,
-                helper,
-                "ownership_guard",
-                handler=handler,
-            )
-        )
     for helper in sorted(
-        name
-        for name in sink_called
-        if name not in ownership_helpers and _is_known_ownership_helper_name(name)
+        _statement_ownership_helper_calls(
+            sink_statement,
+            ownership_helpers,
+            sink_resource_names,
+        )
     ):
         facts.append(
             _semantic_code_fact(
@@ -768,8 +1147,145 @@ def _semantic_code_fact(
     }
 
 
-def _statement_called_names(statement: ast.stmt) -> set[str]:
-    """Leaf call names used by a statement (expr call or assigned call)."""
+def _statement_sensitive_sink_calls(statement: ast.stmt) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call)
+        and _ast_call_name(node).lower() in SENSITIVE_SINK_NAMES
+    ]
+
+
+_PRINCIPAL_RESOURCE_NAMES = frozenset(
+    {"context", "current_user", "g", "info", "req", "request", "user"}
+)
+
+
+def _resource_expression_names(expression: ast.AST) -> set[str]:
+    """Resource variable roots used by an expression, excluding principals."""
+    if isinstance(expression, ast.Name):
+        return (
+            set()
+            if expression.id in _PRINCIPAL_RESOURCE_NAMES
+            else {expression.id}
+        )
+    if isinstance(expression, ast.Attribute):
+        return _resource_expression_names(expression.value)
+    if isinstance(expression, ast.Call):
+        return set().union(
+            *(
+                _resource_expression_names(value)
+                for value in [
+                    *expression.args,
+                    *(keyword.value for keyword in expression.keywords),
+                ]
+            )
+        )
+    if isinstance(expression, ast.Await):
+        return _resource_expression_names(expression.value)
+    if isinstance(expression, ast.NamedExpr):
+        return _resource_expression_names(expression.value)
+    if isinstance(expression, ast.UnaryOp):
+        return _resource_expression_names(expression.operand)
+    if isinstance(expression, ast.BinOp):
+        return _resource_expression_names(expression.left) | _resource_expression_names(
+            expression.right
+        )
+    if isinstance(expression, ast.BoolOp):
+        return set().union(
+            *(_resource_expression_names(value) for value in expression.values)
+        )
+    if isinstance(expression, ast.Compare):
+        return _resource_expression_names(expression.left) | set().union(
+            *(
+                _resource_expression_names(value)
+                for value in expression.comparators
+            )
+        )
+    if isinstance(expression, ast.IfExp):
+        return (
+            _resource_expression_names(expression.test)
+            | _resource_expression_names(expression.body)
+            | _resource_expression_names(expression.orelse)
+        )
+    if isinstance(expression, ast.Subscript):
+        return _resource_expression_names(expression.value) | _resource_expression_names(
+            expression.slice
+        )
+    if isinstance(expression, ast.Starred):
+        return _resource_expression_names(expression.value)
+    if isinstance(expression, ast.List | ast.Tuple | ast.Set):
+        return set().union(
+            *(_resource_expression_names(value) for value in expression.elts)
+        )
+    if isinstance(expression, ast.Dict):
+        return set().union(
+            *(
+                _resource_expression_names(value)
+                for value in [
+                    *(key for key in expression.keys if key is not None),
+                    *expression.values,
+                ]
+            )
+        )
+    return set()
+
+
+def _call_resource_names(call: ast.Call) -> set[str]:
+    return set().union(
+        *(
+            _resource_expression_names(value)
+            for value in [*call.args, *(keyword.value for keyword in call.keywords)]
+        )
+    )
+
+
+def _function_sink_resource_names(
+    statements: list[ast.stmt],
+    sink_statement: ast.stmt,
+) -> set[str]:
+    """Connect sink values to local aliases so helper checks prove the same resource."""
+    names = set().union(
+        *(
+            _call_resource_names(call)
+            for call in _statement_sensitive_sink_calls(sink_statement)
+        )
+    )
+    if not names:
+        return set()
+    for _ in range(12):
+        grew = False
+        for statement in statements:
+            assignments = _iter_simple_assignments(statement)
+            assignments.extend(
+                (node.target.id, node.value)
+                for node in ast.walk(statement)
+                if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name)
+            )
+            for name, value in assignments:
+                value_names = _resource_expression_names(value)
+                additions = (
+                    value_names
+                    if name in names
+                    else {name}
+                    if value_names & names
+                    else set()
+                )
+                if additions - names:
+                    names.update(additions)
+                    grew = True
+        if not grew:
+            break
+    return names
+
+
+def _statement_direct_calls(statement: ast.stmt) -> list[ast.Call]:
+    if isinstance(statement, ast.Try):
+        return [
+            call
+            for nested in statement.body
+            for call in _statement_direct_calls(nested)
+        ]
     values: list[ast.AST] = []
     if isinstance(statement, ast.Expr):
         values.append(statement.value)
@@ -780,43 +1296,33 @@ def _statement_called_names(statement: ast.stmt) -> set[str]:
     elif isinstance(statement, ast.Return) and statement.value is not None:
         values.append(statement.value)
     elif isinstance(statement, (ast.With, ast.AsyncWith)):
-        for item in statement.items:
-            values.append(item.context_expr)
-    elif isinstance(statement, ast.Try):
-        for nested in statement.body:
-            values.extend(_statement_call_values(nested))
-    names: set[str] = set()
+        values.extend(item.context_expr for item in statement.items)
+    calls = []
     for value in values:
         if isinstance(value, ast.Await):
             value = value.value
         if isinstance(value, ast.Call):
-            if name := _ast_call_name(value):
-                names.add(name)
-    return names
+            calls.append(value)
+    return calls
 
 
-def _statement_call_values(statement: ast.stmt) -> list[ast.AST]:
-    """Expression nodes that may be direct calls in a statement."""
-    if isinstance(statement, ast.Expr):
-        return [statement.value]
-    if isinstance(statement, ast.Assign):
-        return [statement.value]
-    if isinstance(statement, ast.AnnAssign) and statement.value is not None:
-        return [statement.value]
-    if isinstance(statement, ast.Return) and statement.value is not None:
-        return [statement.value]
-    if isinstance(statement, (ast.With, ast.AsyncWith)):
-        return [item.context_expr for item in statement.items]
-    return []
-
-
-def _statement_sensitive_sink_calls(statement: ast.stmt) -> list[ast.Call]:
-    return [
-        node
-        for node in ast.walk(statement)
-        if isinstance(node, ast.Call)
-        and _ast_call_name(node).lower() in SENSITIVE_SINK_NAMES
-    ]
+def _statement_ownership_helper_calls(
+    statement: ast.stmt,
+    ownership_helpers: set[str],
+    sink_resource_names: set[str],
+) -> set[str]:
+    if not sink_resource_names:
+        return set()
+    helpers = set()
+    for call in _statement_direct_calls(statement):
+        helper = _ast_call_name(call)
+        if (
+            helper
+            and (helper in ownership_helpers or _is_known_ownership_helper_name(helper))
+            and _call_resource_names(call) & sink_resource_names
+        ):
+            helpers.add(helper)
+    return helpers
 
 
 def _assigned_call(statement: ast.stmt) -> tuple[str, str] | None:
@@ -1135,6 +1641,34 @@ _OWNERSHIP_HELPER_NAME_MARKERS = frozenset(
     }
 )
 
+_OWNERSHIP_CONTROL_RESOURCE_STOP_WORDS = frozenset(
+    {
+        "access",
+        "assert",
+        "authenticate",
+        "authorization",
+        "check",
+        "context",
+        "ensure",
+        "get",
+        "has",
+        "id",
+        "ids",
+        "is",
+        "object",
+        "owner",
+        "owned",
+        "ownership",
+        "permission",
+        "permissions",
+        "require",
+        "required",
+        "requires",
+        "validate",
+        "verify",
+    }
+)
+
 
 def _is_known_ownership_helper_name(name: str) -> bool:
     leaf = name.split(".")[-1].lower()
@@ -1159,16 +1693,103 @@ def _decorator_name(decorator: ast.AST) -> str:
 
 def _function_has_ownership_decorator(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
+    sink_resource_names: set[str],
 ) -> bool:
     for decorator in function.decorator_list:
         leaf = _decorator_name(decorator).split(".")[-1].lower()
         if not leaf:
             continue
-        if leaf in _OWNERSHIP_DECORATOR_MARKERS:
-            return True
-        if "ownership" in leaf or leaf.startswith("require_owner"):
+        if (
+            leaf in _OWNERSHIP_DECORATOR_MARKERS
+            or "ownership" in leaf
+            or leaf.startswith("require_owner")
+        ) and _ownership_control_matches_sink_resource(leaf, sink_resource_names):
             return True
     return False
+
+
+def _ownership_control_matches_sink_resource(
+    control_name: str,
+    sink_resource_names: set[str],
+) -> bool:
+    """Accept generic controls or resource-specific controls linked to the sink."""
+    if not sink_resource_names:
+        return False
+    control_resources = _ownership_control_resource_terms(control_name)
+    if not control_resources:
+        return True
+    sink_resources = set().union(
+        *(_ownership_control_resource_terms(name) for name in sink_resource_names)
+    )
+    return bool(control_resources & sink_resources)
+
+
+_OWNERSHIP_HELPER_PRINCIPAL_PARAMETERS = frozenset(
+    {
+        "actor",
+        "context",
+        "current_user",
+        "info",
+        "principal",
+        "req",
+        "request",
+        "user",
+    }
+)
+
+
+def _ownership_helper_parameter_terms_by_name(
+    parsed: list[tuple[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]]],
+    ownership_helpers: set[str],
+) -> dict[str, set[frozenset[str]]]:
+    terms_by_name: dict[str, set[frozenset[str]]] = {}
+    for _source_path, functions in parsed:
+        for name, function in functions.items():
+            if name not in ownership_helpers:
+                continue
+            resource_terms = set().union(
+                *(
+                    _ownership_control_resource_terms(parameter)
+                    for parameter in _function_param_names(function)
+                    if parameter.lower()
+                    not in _OWNERSHIP_HELPER_PRINCIPAL_PARAMETERS
+                )
+            )
+            if resource_terms:
+                terms_by_name.setdefault(name, set()).add(frozenset(resource_terms))
+    return terms_by_name
+
+
+def _dependency_ownership_helper_matches_sink_resource(
+    helper: str,
+    sink_resource_names: set[str],
+    helper_resource_terms: dict[str, set[frozenset[str]]],
+) -> bool:
+    if not sink_resource_names:
+        return False
+    helper_name_terms = _ownership_control_resource_terms(helper)
+    sink_terms = set().union(
+        *(_ownership_control_resource_terms(name) for name in sink_resource_names)
+    )
+    signatures = helper_resource_terms.get(helper, set())
+    if len(signatures) == 1:
+        signature_matches = next(iter(signatures)) == sink_terms
+        return signature_matches and (
+            not helper_name_terms or bool(helper_name_terms & sink_terms)
+        )
+    if signatures:
+        return False
+    return bool(helper_name_terms & sink_terms)
+
+
+def _ownership_control_resource_terms(name: str) -> set[str]:
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    terms = {
+        term.lower()
+        for term in re.split(r"[^A-Za-z0-9]+", normalized)
+        if term
+    }
+    return terms - _OWNERSHIP_CONTROL_RESOURCE_STOP_WORDS
 
 
 def _depends_helper_names(node: ast.AST | None) -> set[str]:
@@ -1332,14 +1953,14 @@ def _function_returns_ownership_predicate(
     return False
 
 
-def _negated_helper_call_name(test: ast.AST) -> str | None:
-    """Extract helper name from `if not helper(...):` style denial guards."""
+def _negated_helper_call(test: ast.AST) -> ast.Call | None:
+    """Extract the helper call from `if not helper(...):` denial guards."""
     if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
         call = test.operand
         if isinstance(call, ast.Await):
             call = call.value
         if isinstance(call, ast.Call):
-            return _ast_call_name(call) or None
+            return call
         return None
     if (
         isinstance(test, ast.Compare)
@@ -1353,22 +1974,28 @@ def _negated_helper_call_name(test: ast.AST) -> str | None:
         if isinstance(call, ast.Await):
             call = call.value
         if isinstance(call, ast.Call):
-            return _ast_call_name(call) or None
+            return call
     return None
 
 
 def _statement_has_positive_helper_guard(
     statement: ast.stmt,
     positive_helpers: set[str],
+    sink_resource_names: set[str],
 ) -> str | None:
     """Return helper name when branch denies on a positive ownership helper result."""
-    if not positive_helpers:
+    if not positive_helpers or not sink_resource_names:
         return None
     for node in ast.walk(statement):
         if not isinstance(node, ast.If) or not _denies_access_in_block(node.body):
             continue
-        helper = _negated_helper_call_name(node.test)
-        if helper and helper in positive_helpers:
+        call = _negated_helper_call(node.test)
+        helper = _ast_call_name(call) if call is not None else ""
+        if (
+            helper in positive_helpers
+            and call is not None
+            and _call_resource_names(call) & sink_resource_names
+        ):
             return helper
     return None
 
@@ -1587,6 +2214,159 @@ def _safe_external_fact(value: dict) -> dict[str, Any] | None:
     return projected
 
 
+def _safe_static_advisory_fact(value: dict) -> dict[str, Any] | None:
+    if (
+        _safe_text(value.get("fact_type")) != "static_advisory"
+        or _safe_text(value.get("artifact_kind")) != "static_advisory"
+    ):
+        return None
+    fact_ref = _safe_text(value.get("fact_ref"))
+    match = _STATIC_ADVISORY_FACT_REF_PATTERN.fullmatch(fact_ref)
+    source_path = _safe_source_name(value.get("source_path"))
+    rule_id = _safe_text(value.get("symbol_name"))
+    if (
+        match is None
+        or not source_path
+        or rule_id != match.group(3)
+        or int(match.group(2)) < 1
+    ):
+        return None
+    return {
+        "fact_ref": fact_ref,
+        "fact_type": "static_advisory",
+        "artifact_kind": "static_advisory",
+        "source_path": source_path,
+        "symbol_name": rule_id,
+        "line_number": int(match.group(2)),
+        "advisory_only": True,
+    }
+
+
+def _static_advisory_matches_candidate(
+    fact: dict[str, Any],
+    *,
+    candidate: dict[str, Any],
+    root_cause: str,
+    code_facts: list[CodebaseFactCandidate],
+) -> bool:
+    rule_family = _static_advisory_rule_family(fact.get("symbol_name"))
+    candidate_family = _candidate_advisory_family(candidate, root_cause=root_cause)
+    return bool(
+        rule_family
+        and rule_family == candidate_family
+        and _static_advisory_matches_code_location(fact, code_facts)
+    )
+
+
+def _static_advisory_matches_code_location(
+    fact: dict[str, Any],
+    code_facts: list[CodebaseFactCandidate],
+) -> bool:
+    source_path = _safe_source_name(fact.get("source_path"))
+    line_number = fact.get("line_number")
+    if not source_path or not isinstance(line_number, int):
+        return False
+    return any(
+        code_fact.fact_type in {"sensitive_sink", "unverified_token_decode"}
+        and _safe_source_name(code_fact.source_path) == source_path
+        and (position := _code_fact_position(code_fact)) is not None
+        and position[0] == line_number
+        for code_fact in code_facts
+    )
+
+
+def _static_advisory_rule_family(value: object) -> str:
+    tokens = _advisory_tokens(value)
+    if "ssrf" in tokens:
+        return "ssrf"
+    if ({"command", "injection"} <= tokens) or ({"shell", "injection"} <= tokens):
+        return "command_injection"
+    if "deserialization" in tokens or "deserialize" in tokens:
+        return "unsafe_deserialization"
+    if (
+        {"path", "traversal"} <= tokens
+        or {"path", "injection"} <= tokens
+        or {"directory", "traversal"} <= tokens
+        or {"zip", "slip"} <= tokens
+    ):
+        return "path_traversal"
+    if {"mass", "assignment"} <= tokens:
+        return "mass_assignment"
+    if ({"file", "upload"} <= tokens) or ({"unrestricted", "upload"} <= tokens):
+        return "file_upload"
+    if "jwt" in tokens:
+        return "jwt_authentication_bypass"
+    if {"agent", "tool"} <= tokens and ({"authorization", "authz"} & tokens):
+        return "agent_tool_authorization"
+    if "idor" in tokens or "bola" in tokens or {"access", "control"} <= tokens:
+        return "authorization"
+    if "toctou" in tokens or {"race", "condition"} <= tokens:
+        return "race_condition"
+    if "sql" in tokens and ("injection" in tokens or "raw" in tokens):
+        return "injection"
+    return _static_advisory_cwe_family(value)
+
+
+def _static_advisory_cwe_family(value: object) -> str:
+    families = {
+        family
+        for raw_cwe in _CWE_ADVISORY_ID_PATTERN.findall(_safe_text(value))
+        if (family := _CWE_ADVISORY_FAMILIES.get(str(int(raw_cwe)))) is not None
+    }
+    return next(iter(families)) if len(families) == 1 else ""
+
+
+def _candidate_advisory_family(candidate: dict[str, Any], *, root_cause: str) -> str:
+    root_family = _candidate_advisory_family_value(root_cause)
+    vuln_family = _candidate_advisory_family_value(candidate.get("vuln_type"))
+    if root_family and vuln_family and root_family != vuln_family:
+        return ""
+    return root_family or vuln_family
+
+
+def _candidate_advisory_family_value(value: object) -> str:
+    tokens = _advisory_tokens(value)
+    if "ssrf" in tokens:
+        return "ssrf"
+    if "jwt" in tokens:
+        return "jwt_authentication_bypass"
+    if ({"command", "injection"} <= tokens) or ({"shell", "injection"} <= tokens):
+        return "command_injection"
+    if "deserialization" in tokens or "deserialize" in tokens:
+        return "unsafe_deserialization"
+    if (
+        {"path", "traversal"} <= tokens
+        or {"path", "injection"} <= tokens
+        or {"directory", "traversal"} <= tokens
+        or {"zip", "slip"} <= tokens
+    ):
+        return "path_traversal"
+    if {"mass", "assignment"} <= tokens:
+        return "mass_assignment"
+    if ({"file", "upload"} <= tokens) or ({"unrestricted", "upload"} <= tokens):
+        return "file_upload"
+    if "toctou" in tokens or {"race", "condition"} <= tokens:
+        return "race_condition"
+    if {"agent", "tool"} <= tokens and ({"authorization", "authz"} & tokens):
+        return "agent_tool_authorization"
+    if "idor" in tokens or "bola" in tokens or "ownership" in tokens or "authorization" in tokens:
+        return "authorization"
+    if "sql" in tokens or "sqli" in tokens or "injection" in tokens:
+        return "injection"
+    return ""
+
+
+def _advisory_tokens(value: object) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", _safe_text(value).lower(), re.ASCII))
+
+
+def _is_dependency_advisory_fact(fact: dict[str, Any]) -> bool:
+    return (
+        fact.get("artifact_kind") == "sbom"
+        and fact.get("fact_type") == "dependency_signal"
+    )
+
+
 def _safe_candidate_source_facts(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -1596,6 +2376,10 @@ def _safe_candidate_source_facts(value: object) -> list[dict[str, Any]]:
             continue
         artifact_kind = _safe_text(item.get("artifact_kind"))
         fact_type = _safe_text(item.get("fact_type"))
+        if artifact_kind == "static_advisory":
+            if fact := _safe_static_advisory_fact(item):
+                facts.append(fact)
+            continue
         if artifact_kind not in SUPPORTED_ARTIFACT_KINDS or not fact_type:
             continue
         source_path = _safe_source_name(item.get("source_path"))
@@ -1686,18 +2470,27 @@ def _fact_matches_route(fact: dict, route: dict[str, str]) -> bool:
         and _route_paths_match(
             _text(fact_route.get("path")),
             _text(route.get("path")),
+            allow_observed_route_values=fact.get("artifact_kind") == "har",
         )
     )
 
 
-def _route_paths_match(left: str, right: str) -> bool:
+def _route_paths_match(
+    left: str,
+    right: str,
+    *,
+    allow_observed_route_values: bool = False,
+) -> bool:
     left_segments = [segment for segment in left.strip("/").split("/") if segment]
     right_segments = [segment for segment in right.strip("/").split("/") if segment]
     if len(left_segments) != len(right_segments):
         return False
     return all(
-        _route_segment_matches(left_segment, right_segment)
-        or _route_segment_matches(right_segment, left_segment)
+        _route_segments_match(
+            left_segment,
+            right_segment,
+            allow_observed_route_values=allow_observed_route_values,
+        )
         for left_segment, right_segment in zip(
             left_segments,
             right_segments,
@@ -1706,15 +2499,57 @@ def _route_paths_match(left: str, right: str) -> bool:
     )
 
 
-def _route_segment_matches(pattern: str, value: str) -> bool:
-    return (
-        pattern == value
-        or pattern.startswith(":")
-        or pattern.startswith("{")
-        and pattern.endswith("}")
-        or pattern.startswith("<")
-        and pattern.endswith(">")
+def _route_segments_match(
+    left: str,
+    right: str,
+    *,
+    allow_observed_route_values: bool,
+) -> bool:
+    if left == right:
+        return True
+    left_template = _route_segment_is_template(left)
+    right_template = _route_segment_is_template(right)
+    if left_template and right_template:
+        return True
+    return allow_observed_route_values and (
+        (
+            left_template
+            and _route_segment_looks_observed_dynamic(right)
+        )
+        or (
+            right_template
+            and _route_segment_looks_observed_dynamic(left)
+        )
     )
+
+
+def _route_segment_is_template(segment: str) -> bool:
+    return (
+        segment.startswith(":")
+        or segment.startswith("{")
+        and segment.endswith("}")
+        or segment.startswith("<")
+        and segment.endswith(">")
+    )
+
+
+def _route_segment_looks_observed_dynamic(segment: str) -> bool:
+    if segment.isdigit():
+        return True
+    lowered = segment.lower()
+    parts = lowered.split("-")
+    if (
+        len(parts) == 5
+        and [len(part) for part in parts] == [8, 4, 4, 4, 12]
+        and all(_is_hex(part) for part in parts)
+    ):
+        return True
+    compact = lowered.replace("-", "")
+    return len(compact) >= 16 and compact.isalnum() and not compact.isalpha()
+
+
+def _is_hex(value: str) -> bool:
+    return bool(value) and all(character in "0123456789abcdef" for character in value)
 
 
 def _matching_code_facts(
@@ -1722,6 +2557,7 @@ def _matching_code_facts(
     route: dict[str, str],
     *,
     preferred_source_path: str = "",
+    preferred_symbol_name: str = "",
 ) -> list[CodebaseFactCandidate]:
     route_facts = [
         fact
@@ -1734,6 +2570,14 @@ def _matching_code_facts(
             for fact in route_facts
             if _safe_source_name(fact.source_path) == preferred_source_path
         ]
+    if not route and preferred_source_path and preferred_symbol_name:
+        route_facts = [
+            fact
+            for fact in facts
+            if fact.fact_type == "graphql_operation"
+            and _safe_source_name(fact.source_path) == preferred_source_path
+            and _safe_text(fact.payload.get("handler")) == preferred_symbol_name
+        ]
 
     handlers = {
         identity
@@ -1742,11 +2586,24 @@ def _matching_code_facts(
     }
     calls_by_handler: dict[tuple[str, str], list[CodebaseFactCandidate]] = {}
     handlers_by_symbol: dict[str, set[tuple[str, str]]] = {}
+    service_handlers_by_method: dict[
+        tuple[str, str, str], set[tuple[str, str]]
+    ] = {}
     callers_by_symbol: dict[str, set[tuple[str, str]]] = {}
     earliest_sink_line: dict[tuple[str, str], int] = {}
     for fact in facts:
         if handler_identity := _code_fact_identity(fact, "handler"):
-            handlers_by_symbol.setdefault(handler_identity[1], set()).add(handler_identity)
+            if service_class := _code_fact_service_class(fact):
+                handler = _safe_text(fact.payload.get("handler"))
+                if handler:
+                    service_handlers_by_method.setdefault(
+                        (handler_identity[0], service_class, handler),
+                        set(),
+                    ).add(handler_identity)
+            else:
+                handlers_by_symbol.setdefault(handler_identity[1], set()).add(
+                    handler_identity
+                )
         if fact.fact_type == "sensitive_sink":
             handler_identity = _code_fact_identity(fact, "handler")
             line = fact.payload.get("line") if isinstance(fact.payload, dict) else None
@@ -1758,7 +2615,10 @@ def _matching_code_facts(
             continue
         if caller_identity := _code_fact_identity(fact, "caller"):
             calls_by_handler.setdefault(caller_identity, []).append(fact)
-            callers_by_symbol.setdefault(caller_identity[1], set()).add(caller_identity)
+            if _code_fact_service_class(fact) is None:
+                callers_by_symbol.setdefault(caller_identity[1], set()).add(
+                    caller_identity
+                )
 
     reachable = set(handlers)
     verified_access_helpers = {
@@ -1774,33 +2634,60 @@ def _matching_code_facts(
             if not _service_call_precedes_local_sink(fact, earliest_sink_line):
                 continue
             callee = _safe_text(fact.symbol_name)
-            candidates = handlers_by_symbol.get(callee, set())
-            same_source = (caller[0], callee)
-            next_handlers = (
-                {same_source}
-                if same_source in candidates
-                else candidates
-                if len(candidates) == 1
-                else set()
+            service_receiver = (
+                _safe_text(fact.payload.get("service_receiver"))
+                if isinstance(fact.payload, dict)
+                else ""
             )
-            if not next_handlers:
-                call_only_candidates = callers_by_symbol.get(callee, set())
-                call_only_same_source = (caller[0], callee)
-                call_only_handlers = (
-                    {call_only_same_source}
-                    if call_only_same_source in call_only_candidates
-                    else call_only_candidates
-                    if len(call_only_candidates) == 1
+            target_service_class = (
+                _safe_text(fact.payload.get("target_service_class"))
+                if isinstance(fact.payload, dict)
+                else ""
+            )
+            target_service_source_path = (
+                _safe_source_name(fact.payload.get("target_service_source_path"))
+                if isinstance(fact.payload, dict)
+                else ""
+            )
+            if service_receiver:
+                candidates = service_handlers_by_method.get(
+                    (
+                        target_service_source_path,
+                        target_service_class,
+                        callee,
+                    ),
+                    set(),
+                )
+                next_handlers = candidates if len(candidates) == 1 else set()
+            else:
+                candidates = handlers_by_symbol.get(callee, set())
+                same_source = (caller[0], callee)
+                next_handlers = (
+                    {same_source}
+                    if same_source in candidates
+                    else candidates
+                    if len(candidates) == 1
                     else set()
                 )
-                if (
-                    _service_call_precedes_local_sink(fact, earliest_sink_line)
-                    and (
-                        through_verified_access
-                        or bool(call_only_handlers & verified_access_helpers)
+            if not next_handlers:
+                if not service_receiver:
+                    call_only_candidates = callers_by_symbol.get(callee, set())
+                    call_only_same_source = (caller[0], callee)
+                    call_only_handlers = (
+                        {call_only_same_source}
+                        if call_only_same_source in call_only_candidates
+                        else call_only_candidates
+                        if len(call_only_candidates) == 1
+                        else set()
                     )
-                ):
-                    next_handlers = call_only_handlers
+                    if (
+                        _service_call_precedes_local_sink(fact, earliest_sink_line)
+                        and (
+                            through_verified_access
+                            or bool(call_only_handlers & verified_access_helpers)
+                        )
+                    ):
+                        next_handlers = call_only_handlers
             for next_handler in next_handlers:
                 next_through_verified_access = (
                     through_verified_access or next_handler in verified_access_helpers
@@ -1854,6 +2741,8 @@ def _code_fact_identity(
         return None
     source_path = _safe_source_name(fact.source_path)
     symbol = _safe_text(fact.payload.get(symbol_key))
+    if service_class := _code_fact_service_class(fact):
+        symbol = f"{service_class}.{symbol}"
     return (source_path, symbol) if source_path and symbol else None
 
 
@@ -1911,12 +2800,13 @@ def _reachable_code_symbols(
 def _shared_root(
     facts: list[CodebaseFactCandidate],
     handler: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     if not handler:
-        return "", ""
+        return "", "", ""
     calls: dict[str, set[str]] = {}
     sinks = set()
     sink_symbols_by_handler: dict[str, set[str]] = {}
+    sink_evidence_refs_by_handler: dict[str, str] = {}
     source_by_symbol: dict[str, str] = {}
     for fact in facts:
         if fact.fact_type == "service_call" and isinstance(fact.payload, dict):
@@ -1930,15 +2820,17 @@ def _shared_root(
             sink_symbol = _safe_text(fact.symbol_name)
             if sink_handler:
                 sinks.add(sink_handler)
-                source_by_symbol.setdefault(
-                    sink_handler,
-                    _safe_source_name(fact.source_path),
-                )
             if sink_handler and sink_symbol:
                 sink_symbols_by_handler.setdefault(sink_handler, set()).add(sink_symbol)
-                source_by_symbol.setdefault(
-                    sink_symbol,
-                    _safe_source_name(fact.source_path),
+                source_path = _safe_source_name(fact.source_path)
+                source_by_symbol.setdefault(sink_symbol, source_path)
+                sink_evidence_refs_by_handler.setdefault(
+                    sink_handler,
+                    _code_fact_ref(
+                        source_path or "code.py",
+                        sink_symbol,
+                        "sensitive_sink",
+                    ),
                 )
 
     def reaches_sink(start: str) -> bool:
@@ -1954,6 +2846,19 @@ def _shared_root(
             pending.extend(calls.get(current, set()) - seen)
         return False
 
+    def reachable_sink_evidence_ref(start: str) -> str:
+        pending = [start]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if evidence_ref := sink_evidence_refs_by_handler.get(current):
+                return evidence_ref
+            pending.extend(sorted(calls.get(current, set()) - seen, reverse=True))
+        return ""
+
     root = next(
         (
             callee
@@ -1962,15 +2867,24 @@ def _shared_root(
         ),
         "",
     )
-    if not root:
-        sink_symbols = sorted(sink_symbols_by_handler.get(handler, set()))
-        if sink_symbols:
-            root = sink_symbols[0]
-        elif handler in sinks:
-            root = handler
-    if not root:
-        return "", ""
-    return root, _code_fact_ref(source_by_symbol.get(root, "code.py"), root, "service_call")
+    if root:
+        return (
+            root,
+            reachable_sink_evidence_ref(root)
+            or _code_fact_ref(
+                source_by_symbol.get(root, "code.py"), root, "service_call"
+            ),
+            "service",
+        )
+    sink_symbols = sorted(sink_symbols_by_handler.get(handler, set()))
+    if not sink_symbols:
+        return "", "", ""
+    root = sink_symbols[0]
+    return (
+        root,
+        _code_fact_ref(source_by_symbol.get(root, "code.py"), root, "sensitive_sink"),
+        "direct_sink",
+    )
 
 
 def _normalized_root_id(root_cause: str, symbol_name: str) -> str:
@@ -3411,12 +4325,16 @@ def _snapshot_candidate(value: object) -> dict[str, Any]:
         "candidate_key",
         "vuln_type",
         "root_cause_id",
+        "entrypoint_kind",
+        "graphql_operation_type",
+        "graphql_operation_name",
         "evidence_trace_status",
         "gap_evidence_ref",
         "control_evidence_ref",
         "public_evidence_ref",
         "shared_root",
         "shared_root_evidence_ref",
+        "shared_root_kind",
         "reanalysis_status",
         "hypothesis_source_path",
         "hypothesis_symbol_name",
@@ -3494,7 +4412,7 @@ def _duplicate_targets(
     candidate_states: list[dict],
     pipeline_run_id: str,
 ) -> dict[str, tuple[str, str]]:
-    groups: dict[tuple[str, str, str, str], list[dict]] = {}
+    groups: dict[tuple[str, str, str, str, str, str], list[dict]] = {}
     for state in candidate_states:
         if not _candidate_is_complete(
             state,
@@ -3511,11 +4429,25 @@ def _duplicate_targets(
             continue
         shared_root = _text(state.get("shared_root"))
         shared_ref = _text(state.get("shared_root_evidence_ref"))
-        if shared_root and shared_ref in source_refs:
+        shared_root_kind = _text(state.get("shared_root_kind")) or "service"
+        if (
+            shared_root
+            and shared_ref in source_refs
+            and shared_root_kind in {"service", "direct_sink"}
+        ):
             root_cause_class = _text(state.get("root_cause_id")).partition(":")[0]
+            route_family = (
+                _direct_sink_route_family(state)
+                if shared_root_kind == "direct_sink"
+                else ""
+            )
+            if shared_root_kind == "direct_sink" and not route_family:
+                continue
             group_key = (
                 _text(state.get("vuln_type")).lower(),
                 root_cause_class,
+                shared_root_kind,
+                route_family,
                 shared_root,
                 shared_ref,
             )
@@ -3540,6 +4472,19 @@ def _duplicate_targets(
                 duplicate["shared_root_evidence_ref"],
             )
     return targets
+
+
+def _direct_sink_route_family(state: dict) -> str:
+    route = state.get("route")
+    if not isinstance(route, dict):
+        return ""
+    path = _text(route.get("path"))
+    static_segments = []
+    for segment in path.strip("/").split("/"):
+        if not segment or _route_segment_is_template(segment):
+            break
+        static_segments.append(segment.lower())
+    return "/".join(static_segments)
 
 
 def _priority_score(value: object) -> int:
@@ -3667,7 +4612,13 @@ def _missing_evidence(candidate: object, pipeline_run_id: str = "") -> list[str]
     if not _text(candidate.get("root_cause_id")):
         missing.append("root_cause")
     route = candidate.get("route")
-    if (
+    has_graphql_entrypoint = (
+        candidate.get("entrypoint_kind") == "graphql_operation"
+        and _text(candidate.get("graphql_operation_type"))
+        in {"query", "mutation", "subscription"}
+        and bool(_text(candidate.get("graphql_operation_name")))
+    )
+    if not has_graphql_entrypoint and (
         not isinstance(route, dict)
         or not _text(route.get("method"))
         or not _text(route.get("path")).startswith("/")

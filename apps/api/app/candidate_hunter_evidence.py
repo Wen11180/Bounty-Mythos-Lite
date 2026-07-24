@@ -582,6 +582,26 @@ def _merge_result_state(
         or update.get("reanalysis_status") != "completed"
     ):
         return None
+    snapshot_shared_root_kind_raw = snapshot.get("shared_root_kind")
+    update_shared_root_kind_raw = update.get("shared_root_kind")
+    if (
+        "shared_root_kind" in snapshot
+        and not _is_valid_shared_root_kind(snapshot_shared_root_kind_raw)
+    ) or (
+        "shared_root_kind" in update
+        and not _is_valid_shared_root_kind(update_shared_root_kind_raw)
+    ):
+        return None
+    snapshot_shared_root_kind = _safe_shared_root_kind(
+        snapshot_shared_root_kind_raw
+    )
+    update_shared_root_kind = _safe_shared_root_kind(update_shared_root_kind_raw)
+    if (
+        snapshot_shared_root_kind
+        and update_shared_root_kind
+        and snapshot_shared_root_kind != update_shared_root_kind
+    ):
+        return None
     merged = dict(snapshot)
     if not original_root_cause_id:
         if not updated_root_cause_id:
@@ -596,6 +616,13 @@ def _merge_result_state(
             if field.endswith("_ref") and updated_value not in updated_refs:
                 return None
             merged[field] = updated_value
+    if not snapshot_shared_root_kind and update_shared_root_kind:
+        if not (
+            _safe_text(merged.get("shared_root"))
+            and _safe_text(merged.get("shared_root_evidence_ref"))
+        ):
+            return None
+        merged["shared_root_kind"] = update_shared_root_kind
     merged["source_fact_refs"] = updated_refs
     merged["observed_artifact_kinds"] = updated_kinds
     merged["required_artifact_kinds"] = required_kinds
@@ -1187,6 +1214,31 @@ def _candidate_state_update(
     source_fact_refs = _ordered_unique(
         [*original_refs, *observed_refs, *evidence_fact_refs]
     )
+    original_shared_root = _safe_text(original.get("shared_root"))
+    original_shared_root_ref = _safe_text(
+        original.get("shared_root_evidence_ref")
+    )
+    observed_shared_root = _safe_text(observed.get("shared_root"))
+    observed_shared_root_ref = observed_fact_refs.get(
+        _safe_text(observed.get("shared_root_evidence_ref")),
+        _safe_text(observed.get("shared_root_evidence_ref")),
+    )
+    shared_root_kind = _safe_shared_root_kind(original.get("shared_root_kind"))
+    observed_shared_root_kind = _safe_shared_root_kind(
+        observed.get("shared_root_kind")
+    )
+    if (
+        not shared_root_kind
+        and observed_shared_root_kind
+        and (
+            not original_shared_root or original_shared_root == observed_shared_root
+        )
+        and (
+            not original_shared_root_ref
+            or original_shared_root_ref == observed_shared_root_ref
+        )
+    ):
+        shared_root_kind = observed_shared_root_kind
     update = {
         "candidate_id": _safe_text(original.get("candidate_id")),
         "candidate_key": _safe_text(original.get("candidate_key")),
@@ -1210,15 +1262,11 @@ def _candidate_state_update(
             _safe_text(observed.get("gap_evidence_ref")),
             _safe_text(observed.get("gap_evidence_ref")),
         ),
-        "shared_root": _safe_text(original.get("shared_root"))
-        or _safe_text(observed.get("shared_root")),
-        "shared_root_evidence_ref": _safe_text(
-            original.get("shared_root_evidence_ref")
-        )
-        or observed_fact_refs.get(
-            _safe_text(observed.get("shared_root_evidence_ref")),
-            _safe_text(observed.get("shared_root_evidence_ref")),
+        "shared_root": original_shared_root or observed_shared_root,
+        "shared_root_evidence_ref": (
+            original_shared_root_ref or observed_shared_root_ref
         ),
+        "shared_root_kind": shared_root_kind,
         "refutation_questions": _safe_string_list(
             original.get("refutation_questions")
         ),
@@ -1951,6 +1999,17 @@ def _safe_artifact_kinds(value: object) -> list[str]:
         return []
     return _ordered_unique(
         kind for item in value if (kind := _safe_text(item)) in allowed
+    )
+
+
+def _safe_shared_root_kind(value: object) -> str:
+    kind = value.strip() if isinstance(value, str) else ""
+    return kind if kind in {"service", "direct_sink"} else ""
+
+
+def _is_valid_shared_root_kind(value: object) -> bool:
+    return isinstance(value, str) and (
+        not value.strip() or bool(_safe_shared_root_kind(value))
     )
 
 

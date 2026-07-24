@@ -272,7 +272,7 @@ def test_campaign_workspace_snapshot_keeps_raw_inputs_out_of_persistence(tmp_pat
     snapshot = build_authorized_campaign_snapshot(workspace.path)
     inputs = load_authorized_campaign_inputs(snapshot)
 
-    assert snapshot["schema_version"] == "authorized_workspace_campaign_snapshot_v3"
+    assert snapshot["schema_version"] == "authorized_workspace_campaign_snapshot_v4"
     assert snapshot["source_snapshot_digest"].startswith("sha256:")
     assert snapshot["source_manifest"][0]["source_path"] == "routes.py"
     assert raw_marker not in json.dumps(snapshot)
@@ -371,7 +371,7 @@ def test_campaign_workspace_snapshot_binds_ready_sarif_without_persisting_its_bo
     snapshot = build_authorized_campaign_snapshot(workspace.path)
     inputs = load_authorized_campaign_inputs(snapshot)
 
-    assert snapshot["schema_version"] == "authorized_workspace_campaign_snapshot_v3"
+    assert snapshot["schema_version"] == "authorized_workspace_campaign_snapshot_v4"
     assert [item["kind"] for item in snapshot["artifact_refs"]] == [
         "scope",
         "policy",
@@ -528,6 +528,17 @@ def test_campaign_workspace_inputs_reject_content_changed_after_snapshot(tmp_pat
     code_root.mkdir()
     routes = code_root / "routes.py"
     routes.write_text("def export_file(file_id):\n    return file_id\n", encoding="utf-8")
+    package_json = code_root / "package.json"
+    package_json.write_text(
+        '{"dependencies": {"lodash": "4.17.20"}}',
+        encoding="utf-8",
+    )
+    dependency_fixture = code_root / "inputs" / "dependencies.json"
+    dependency_fixture.parent.mkdir()
+    dependency_fixture.write_text(
+        '{"components": [{"name": "lodash", "version": "4.17.20"}]}',
+        encoding="utf-8",
+    )
     scope = workspace.path / "scope" / "scope.yaml"
     scope.write_text("in_scope:\n  - api.example.com\n", encoding="utf-8")
     policy = workspace.path / "policy" / "policy.md"
@@ -548,6 +559,22 @@ def test_campaign_workspace_inputs_reject_content_changed_after_snapshot(tmp_pat
             StudioArtifactImport(kind=kind, source_path=str(path)),
         )
     snapshot = build_authorized_campaign_snapshot(workspace.path)
+    package_json.write_text(
+        '{"dependencies": {"lodash": "4.17.21"}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="workspace_snapshot_changed"):
+        load_authorized_campaign_inputs(snapshot)
+    package_json.write_text(
+        '{"dependencies": {"lodash": "4.17.20"}}',
+        encoding="utf-8",
+    )
+    dependency_fixture.write_text(
+        '{"components": [{"name": "lodash", "version": "4.17.21"}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="workspace_snapshot_changed"):
+        load_authorized_campaign_inputs(snapshot)
     routes.write_text("def export_file(file_id):\n    return 'changed'\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="workspace_snapshot_changed"):

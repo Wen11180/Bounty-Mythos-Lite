@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from app.db_models import (
     ArtifactRecord,
     AutonomousResearchWakeupStateRecord,
     CampaignBudgetRecord,
+    CampaignLocalToolExecutionSlotRecord,
     CampaignRecord,
     CampaignTaskRecord,
     CodebaseFactRecord,
@@ -89,11 +90,28 @@ _PROGRAM_RULE_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 AUTONOMOUS_RESEARCH_WAKEUP_PAGE_SIZE = 20
 AUTONOMOUS_RESEARCH_WAKEUP_LEASE_SECONDS = 120
+_LOCAL_TOOL_CALL_RESERVATION_SCHEMA = "research_director_tool_call_reservation_v1"
+_LOCAL_TOOL_CALL_RESERVATION_MARKER = "research_director_tool_call_reservation"
+_LOCAL_TOOL_CALL_RESERVATION_METADATA_KEYS = (
+    _LOCAL_TOOL_CALL_RESERVATION_MARKER,
+    "tool_call_reserved",
+    "tool_call_reservation_schema",
+    "tool_call_reservation_campaign_id",
+    "tool_call_reservation_task_id",
+    "tool_call_reservation_agent_run_id",
+    "tool_call_reservation_research_plan_id",
+    "tool_call_reservation_research_plan_digest",
+    "tool_call_reservation_source_snapshot_digest",
+    "tool_call_reservation_tool_id",
+)
 AUTONOMOUS_RESEARCH_WAKEUP_INTERVAL_SECONDS = 60
 AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS = 900
 _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA = "autonomous_research_v1"
 _CANDIDATE_HUNTER_EVIDENCE_TASK_TYPE = "candidate_hunter_evidence_inspection"
 _CANDIDATE_HUNTER_EVIDENCE_TASK_SCHEMA = "candidate_hunter_evidence_task_v1"
+_RESEARCH_DIRECTOR_LOCAL_TOOL_TASK_TYPE = "research_director_local_tool_run"
+_RESEARCH_DIRECTOR_LOCAL_TOOL_TASK_SCHEMA = "research_director_local_tool_run_v1"
+_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER = "local_tool_execution_slot_legacy"
 _AUTONOMOUS_RESEARCH_WAKEUP_STATE_ID = "autonomous_research_wakeup"
 _AUTONOMOUS_RESEARCH_WAKEUP_FINAL_STATUSES = frozenset({"completed", "failed"})
 _AUTONOMOUS_RESEARCH_WAKEUP_STOP_REASONS = frozenset(
@@ -157,7 +175,42 @@ def _campaign_task_requires_execution_lease(
         record.task_type == _CANDIDATE_HUNTER_EVIDENCE_TASK_TYPE
         and payload.get("schema_version") == _CANDIDATE_HUNTER_EVIDENCE_TASK_SCHEMA
         and payload.get("execution_lease_required") is True
+    ) or _is_research_director_local_tool_task(record, payload)
+
+
+def _is_research_director_local_tool_task(
+    record: CampaignTaskRecord,
+    payload: dict,
+) -> bool:
+    return (
+        record.task_type == _RESEARCH_DIRECTOR_LOCAL_TOOL_TASK_TYPE
+        and payload.get("schema_version") == _RESEARCH_DIRECTOR_LOCAL_TOOL_TASK_SCHEMA
+        and payload.get("execution_lease_required") is True
     )
+
+
+def _research_director_local_tool_source_snapshot_digest(
+    payload: dict,
+) -> str | None:
+    source_snapshot_digest = payload.get("source_snapshot_digest")
+    if (
+        not isinstance(source_snapshot_digest, str)
+        or len(source_snapshot_digest) != 71
+        or not source_snapshot_digest.startswith("sha256:")
+        or _SHA256_PATTERN.fullmatch(source_snapshot_digest.removeprefix("sha256:"))
+        is None
+    ):
+        return None
+    return source_snapshot_digest
+
+
+def _campaign_local_tool_execution_slot_id(
+    *,
+    campaign_id: str,
+    source_snapshot_digest: str,
+) -> str:
+    identity = f"{campaign_id}:{source_snapshot_digest}".encode("utf-8")
+    return f"local_tool_slot_{sha256(identity).hexdigest()}"
 
 
 class DatabaseRepository:
@@ -822,6 +875,7 @@ class DatabaseRepository:
         provenance: dict,
         payload_summary: dict,
         derived_facts: dict,
+        commit: bool = True,
     ) -> ArtifactRecord:
         existing_query = select(ArtifactRecord).where(
             ArtifactRecord.source_hash == source_hash
@@ -837,8 +891,11 @@ class DatabaseRepository:
                 provenance,
             )
             self.session.add(existing)
-            self.session.commit()
-            self.session.refresh(existing)
+            if commit:
+                self.session.commit()
+                self.session.refresh(existing)
+            else:
+                self.session.flush()
             return existing
 
         safety = _artifact_safety_metadata(
@@ -861,8 +918,11 @@ class DatabaseRepository:
             derived_facts=_safe_display_value(derived_facts),
         )
         self.session.add(record)
-        self.session.commit()
-        self.session.refresh(record)
+        if commit:
+            self.session.commit()
+            self.session.refresh(record)
+        else:
+            self.session.flush()
         return record
 
     def list_artifacts(
@@ -1417,7 +1477,9 @@ class DatabaseRepository:
             CampaignRecord.scope_status,
             CampaignRecord.status,
         ).where(
-            CampaignRecord.autonomy_level == "level_0_read_only",
+            CampaignRecord.autonomy_level.in_(
+                {"level_0_read_only", "level_1_local_validation"}
+            ),
             CampaignRecord.scope_status == "in_scope",
             CampaignRecord.status == "running",
         )
@@ -1788,6 +1850,186 @@ class DatabaseRepository:
         self.session.refresh(existing)
         return existing
 
+    def list_campaign_local_tool_call_reservations(
+        self,
+        campaign_id: str,
+    ) -> list[AgentRunRecord]:
+        return [
+            run
+            for run in self.list_campaign_agent_runs(campaign_id)
+            if _is_local_tool_call_reservation(run.payload)
+        ]
+
+    def campaign_local_tool_call_count(self, campaign_id: str) -> int:
+        budget = self.get_campaign_budget(campaign_id)
+        durable_count = max(
+            0,
+            int(getattr(budget, "tool_calls_reserved", 0) or 0),
+        )
+        reservation_count = len(
+            self.list_campaign_local_tool_call_reservations(campaign_id)
+        )
+        legacy_scanner_count = sum(
+            _is_legacy_local_tool_call_consumption(run.payload)
+            for run in self.list_campaign_scanner_runs(campaign_id)
+        )
+        return max(durable_count, reservation_count + legacy_scanner_count)
+
+    def campaign_task_has_local_tool_call_reservation(self, task_id: str) -> bool:
+        return any(
+            _is_local_tool_call_reservation(run.payload)
+            for run in self.session.scalars(
+                select(AgentRunRecord).where(AgentRunRecord.task_id == task_id)
+            ).all()
+        )
+
+    def local_tool_call_reservation_metadata(
+        self,
+        *,
+        task_id: str,
+        execution_claim_id: str | None,
+    ) -> dict[str, object]:
+        if not execution_claim_id:
+            return {}
+        run = self.session.get(AgentRunRecord, execution_claim_id)
+        payload = run.payload if run is not None and isinstance(run.payload, dict) else {}
+        if (
+            run is None
+            or run.task_id != task_id
+            or not _is_local_tool_call_reservation(payload)
+        ):
+            return {}
+        return {
+            key: payload[key]
+            for key in _LOCAL_TOOL_CALL_RESERVATION_METADATA_KEYS
+            if key in payload
+        }
+
+    def reserve_campaign_local_tool_call(
+        self,
+        *,
+        campaign_id: str,
+        task_id: str,
+        execution_claim_id: str | None,
+        research_plan_id: str,
+        research_plan_digest: str,
+        source_snapshot_digest: str,
+        tool_id: str,
+        now: datetime | None = None,
+    ) -> AgentRunRecord | None:
+        """Atomically reserve one local-tool call before starting the tool process."""
+        if not execution_claim_id:
+            return None
+
+        timestamp = now or datetime.now(UTC)
+        agent_run = self.session.get(AgentRunRecord, execution_claim_id)
+        if (
+            agent_run is None
+            or agent_run.campaign_id != campaign_id
+            or agent_run.task_id != task_id
+            or agent_run.status != "running"
+        ):
+            return None
+
+        existing_payload = (
+            dict(agent_run.payload) if isinstance(agent_run.payload, dict) else {}
+        )
+        if _is_local_tool_call_reservation(existing_payload):
+            if (
+                existing_payload.get("tool_call_reservation_campaign_id") != campaign_id
+                or existing_payload.get("tool_call_reservation_task_id") != task_id
+                or existing_payload.get("tool_call_reservation_agent_run_id")
+                != execution_claim_id
+            ):
+                return None
+            return agent_run
+
+        reservation_payload = {
+            **existing_payload,
+            _LOCAL_TOOL_CALL_RESERVATION_MARKER: True,
+            "tool_call_reserved": True,
+            "tool_call_reservation_schema": _LOCAL_TOOL_CALL_RESERVATION_SCHEMA,
+            "tool_call_reservation_campaign_id": campaign_id,
+            "tool_call_reservation_task_id": task_id,
+            "tool_call_reservation_agent_run_id": execution_claim_id,
+            "tool_call_reservation_research_plan_id": research_plan_id,
+            "tool_call_reservation_research_plan_digest": research_plan_digest,
+            "tool_call_reservation_source_snapshot_digest": source_snapshot_digest,
+            "tool_call_reservation_tool_id": tool_id,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+            "raw_payload_processed": False,
+        }
+        active_lease = (
+            select(CampaignTaskRecord.id)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(CampaignTaskRecord.campaign_id == campaign_id)
+            .where(CampaignTaskRecord.status == "running")
+            .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
+            .where(CampaignTaskRecord.execution_lease_expires_at > timestamp)
+            .exists()
+        )
+        accounted_call_count = len(
+            self.list_campaign_local_tool_call_reservations(campaign_id)
+        ) + sum(
+            _is_legacy_local_tool_call_consumption(run.payload)
+            for run in self.list_campaign_scanner_runs(campaign_id)
+        )
+        budget = self.get_campaign_budget(campaign_id)
+
+        try:
+            if budget is not None:
+                stored_count = func.coalesce(
+                    CampaignBudgetRecord.tool_calls_reserved,
+                    0,
+                )
+                effective_count = case(
+                    (stored_count < accounted_call_count, accounted_call_count),
+                    else_=stored_count,
+                )
+                budget_update = (
+                    update(CampaignBudgetRecord)
+                    .where(CampaignBudgetRecord.id == budget.id)
+                    .where(
+                        or_(
+                            CampaignBudgetRecord.tool_call_budget.is_(None),
+                            effective_count < CampaignBudgetRecord.tool_call_budget,
+                        )
+                    )
+                    .values(tool_calls_reserved=effective_count + 1)
+                    .execution_options(synchronize_session=False)
+                )
+                if self.session.execute(budget_update).rowcount != 1:
+                    self.session.rollback()
+                    self.session.expire_all()
+                    return None
+
+            agent_update = (
+                update(AgentRunRecord)
+                .where(AgentRunRecord.id == execution_claim_id)
+                .where(AgentRunRecord.campaign_id == campaign_id)
+                .where(AgentRunRecord.task_id == task_id)
+                .where(AgentRunRecord.status == "running")
+                .where(active_lease)
+                .values(payload=_safe_display_value(reservation_payload))
+                .execution_options(synchronize_session=False)
+            )
+            if self.session.execute(agent_update).rowcount != 1:
+                self.session.rollback()
+                self.session.expire_all()
+                return None
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            self.session.expire_all()
+            raise
+
+        self.session.expire_all()
+        return self.session.get(AgentRunRecord, execution_claim_id)
+
     def create_campaign_task(
         self,
         *,
@@ -1909,6 +2151,37 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def transition_campaign_task_status_if_currently(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        allowed_current_statuses: set[str],
+        require_unclaimed_execution: bool = False,
+    ) -> CampaignTaskRecord | None:
+        safe_status = _safe_display_value(status)
+        safe_allowed_statuses = {
+            _safe_display_value(value) for value in allowed_current_statuses
+        }
+        transition = update(CampaignTaskRecord).where(
+            CampaignTaskRecord.id == task_id,
+            CampaignTaskRecord.status.in_(safe_allowed_statuses),
+        )
+        if require_unclaimed_execution:
+            transition = transition.where(
+                CampaignTaskRecord.execution_claim_id.is_(None)
+            )
+        result = self.session.execute(
+            transition.values(status=safe_status).execution_options(
+                synchronize_session=False
+            )
+        )
+        self.session.commit()
+        self.session.expire_all()
+        if result.rowcount != 1:
+            return None
+        return self.session.get(CampaignTaskRecord, task_id)
+
     def mark_campaign_task_dispatched(
         self,
         task_id: str,
@@ -1916,6 +2189,13 @@ class DatabaseRepository:
         execution_claim_id: str,
         now: datetime | None = None,
     ) -> CampaignTaskRecord | None:
+        self.session.expire_all()
+        record = self.session.get(CampaignTaskRecord, task_id)
+        if record is None:
+            return None
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        if _is_research_director_local_tool_task(record, payload):
+            return None
         timestamp = now or datetime.now(UTC)
         result = self.session.execute(
             update(CampaignTaskRecord)
@@ -1938,6 +2218,219 @@ class DatabaseRepository:
         self.session.commit()
         self.session.expire_all()
         return self.session.get(CampaignTaskRecord, task_id)
+
+    def _ensure_campaign_local_tool_execution_slot(
+        self,
+        *,
+        campaign_id: str,
+        source_snapshot_digest: str,
+    ) -> CampaignLocalToolExecutionSlotRecord:
+        slot_id = _campaign_local_tool_execution_slot_id(
+            campaign_id=campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        existing = self.session.get(CampaignLocalToolExecutionSlotRecord, slot_id)
+        if existing is not None:
+            return existing
+        slot = CampaignLocalToolExecutionSlotRecord(
+            id=slot_id,
+            campaign_id=campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+            active_task_id=None,
+            active_execution_claim_id=None,
+            legacy_active_task_count=0,
+        )
+        self.session.add(slot)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(CampaignLocalToolExecutionSlotRecord).where(
+                    CampaignLocalToolExecutionSlotRecord.campaign_id == campaign_id,
+                    CampaignLocalToolExecutionSlotRecord.source_snapshot_digest
+                    == source_snapshot_digest,
+                )
+            )
+            if existing is not None:
+                return existing
+            raise
+        self.session.refresh(slot)
+        return slot
+
+    def _release_campaign_local_tool_execution_slot(
+        self,
+        *,
+        campaign_id: str,
+        source_snapshot_digest: str,
+        task_id: str,
+        execution_claim_id: str,
+        legacy_task: bool,
+    ) -> bool:
+        if legacy_task:
+            result = self.session.execute(
+                update(CampaignLocalToolExecutionSlotRecord)
+                .where(CampaignLocalToolExecutionSlotRecord.campaign_id == campaign_id)
+                .where(
+                    CampaignLocalToolExecutionSlotRecord.source_snapshot_digest
+                    == source_snapshot_digest
+                )
+                .where(
+                    CampaignLocalToolExecutionSlotRecord.legacy_active_task_count
+                    > 0
+                )
+                .values(
+                    legacy_active_task_count=(
+                        CampaignLocalToolExecutionSlotRecord.legacy_active_task_count
+                        - 1
+                    )
+                )
+                .execution_options(synchronize_session=False)
+            )
+        else:
+            result = self.session.execute(
+                update(CampaignLocalToolExecutionSlotRecord)
+                .where(CampaignLocalToolExecutionSlotRecord.campaign_id == campaign_id)
+                .where(
+                    CampaignLocalToolExecutionSlotRecord.source_snapshot_digest
+                    == source_snapshot_digest
+                )
+                .where(CampaignLocalToolExecutionSlotRecord.active_task_id == task_id)
+                .where(
+                    CampaignLocalToolExecutionSlotRecord.active_execution_claim_id
+                    == execution_claim_id
+                )
+                .values(
+                    active_task_id=None,
+                    active_execution_claim_id=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+        return result.rowcount == 1
+
+    def _mark_research_director_local_tool_task_dispatched(
+        self,
+        *,
+        record: CampaignTaskRecord,
+        execution_claim_id: str,
+        now: datetime | None,
+        agent_run_payload: dict | None = None,
+    ) -> CampaignTaskRecord | None:
+        timestamp = now or datetime.now(UTC)
+        safe_execution_claim_id = _safe_display_value(execution_claim_id)
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        source_snapshot_digest = _research_director_local_tool_source_snapshot_digest(
+            payload
+        )
+        if source_snapshot_digest is None:
+            return None
+        self._ensure_campaign_local_tool_execution_slot(
+            campaign_id=record.campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        task_values: dict[str, Any] = {
+            "status": "dispatched",
+            "execution_claim_id": safe_execution_claim_id,
+            "execution_heartbeat_at": timestamp,
+            "execution_lease_expires_at": (
+                timestamp + timedelta(seconds=AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS)
+            ),
+        }
+        if payload.get(_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER) is True:
+            task_payload = dict(payload)
+            task_payload.pop(_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER, None)
+            task_values["payload"] = _safe_display_value(task_payload)
+        task_result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == record.id)
+            .where(CampaignTaskRecord.campaign_id == record.campaign_id)
+            .where(
+                CampaignTaskRecord.status.in_(
+                    {"queued", "ready", "awaiting_approval"}
+                )
+            )
+            .where(CampaignTaskRecord.execution_claim_id.is_(None))
+            .values(**task_values)
+            .execution_options(synchronize_session=False)
+        )
+        if task_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+        if agent_run_payload is not None:
+            self.session.add(
+                AgentRunRecord(
+                    id=safe_execution_claim_id,
+                    campaign_id=record.campaign_id,
+                    task_id=record.id,
+                    agent_type=record.agent_type,
+                    status="dispatched",
+                    input_refs=[f"campaign_task:{record.id}"],
+                    output_refs=[],
+                    tool_calls=[],
+                    safety_gate_state="allowed",
+                    stop_reason=None,
+                    payload=_safe_display_value(agent_run_payload),
+                )
+            )
+        slot_result = self.session.execute(
+            update(CampaignLocalToolExecutionSlotRecord)
+            .where(CampaignLocalToolExecutionSlotRecord.campaign_id == record.campaign_id)
+            .where(
+                CampaignLocalToolExecutionSlotRecord.source_snapshot_digest
+                == source_snapshot_digest
+            )
+            .where(CampaignLocalToolExecutionSlotRecord.active_task_id.is_(None))
+            .where(
+                CampaignLocalToolExecutionSlotRecord.active_execution_claim_id.is_(None)
+            )
+            .where(CampaignLocalToolExecutionSlotRecord.legacy_active_task_count == 0)
+            .values(
+                active_task_id=record.id,
+                active_execution_claim_id=safe_execution_claim_id,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if slot_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, record.id)
+
+    def dispatch_research_director_local_tool_task(
+        self,
+        *,
+        task_id: str,
+        agent_payload: dict,
+        now: datetime | None = None,
+    ) -> tuple[CampaignTaskRecord, AgentRunRecord] | None:
+        self.session.expire_all()
+        record = self.session.get(CampaignTaskRecord, task_id)
+        if record is None:
+            return None
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        if (
+            not _is_research_director_local_tool_task(record, payload)
+            or record.status not in {"queued", "ready", "awaiting_approval"}
+            or record.execution_claim_id is not None
+            or self.find_active_agent_run_for_task(record.id) is not None
+        ):
+            return None
+        execution_claim_id = f"agent_run_{uuid4().hex}"
+        dispatched_task = self._mark_research_director_local_tool_task_dispatched(
+            record=record,
+            execution_claim_id=execution_claim_id,
+            now=now,
+            agent_run_payload=agent_payload,
+        )
+        if dispatched_task is None:
+            return None
+        agent_run = self.session.get(AgentRunRecord, execution_claim_id)
+        if agent_run is None:
+            return None
+        return dispatched_task, agent_run
 
     def claim_failed_campaign_task_retry(
         self,
@@ -2259,6 +2752,11 @@ class DatabaseRepository:
         if record is None:
             return None
         payload = record.payload if isinstance(record.payload, dict) else {}
+        if _is_research_director_local_tool_task(record, payload):
+            return self._claim_research_director_local_tool_task_execution(
+                record=record,
+                now=now,
+            )
         if _campaign_task_requires_execution_lease(record, payload):
             return self._claim_autonomous_research_task_execution(
                 record=record,
@@ -2304,6 +2802,170 @@ class DatabaseRepository:
         self.session.refresh(record)
         return record
 
+    def _claim_research_director_local_tool_task_execution(
+        self,
+        *,
+        record: CampaignTaskRecord,
+        now: datetime | None,
+    ) -> CampaignTaskRecord | None:
+        timestamp = now or datetime.now(UTC)
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        source_snapshot_digest = _research_director_local_tool_source_snapshot_digest(
+            payload
+        )
+        if source_snapshot_digest is None:
+            return None
+        self._ensure_campaign_local_tool_execution_slot(
+            campaign_id=record.campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        if record.status == "dispatched":
+            execution_claim_id = record.execution_claim_id
+            if not execution_claim_id:
+                return None
+            task_result = self.session.execute(
+                update(CampaignTaskRecord)
+                .where(CampaignTaskRecord.id == record.id)
+                .where(CampaignTaskRecord.status == "dispatched")
+                .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
+                .where(CampaignTaskRecord.execution_lease_expires_at > timestamp)
+                .values(
+                    status="running",
+                    execution_heartbeat_at=timestamp,
+                    execution_lease_expires_at=(
+                        timestamp
+                        + timedelta(seconds=AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS)
+                    ),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if task_result.rowcount != 1:
+                self.session.rollback()
+                self.session.expire_all()
+                return None
+            agent_result = self.session.execute(
+                update(AgentRunRecord)
+                .where(AgentRunRecord.id == execution_claim_id)
+                .where(AgentRunRecord.task_id == record.id)
+                .where(AgentRunRecord.status == "dispatched")
+                .values(status="running")
+                .execution_options(synchronize_session=False)
+            )
+            if agent_result.rowcount != 1:
+                self.session.rollback()
+                self.session.expire_all()
+                return None
+            if payload.get(_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER) is not True:
+                slot_result = self.session.execute(
+                    update(CampaignLocalToolExecutionSlotRecord)
+                    .where(
+                        CampaignLocalToolExecutionSlotRecord.campaign_id
+                        == record.campaign_id
+                    )
+                    .where(
+                        CampaignLocalToolExecutionSlotRecord.source_snapshot_digest
+                        == source_snapshot_digest
+                    )
+                    .where(
+                        CampaignLocalToolExecutionSlotRecord.active_task_id == record.id
+                    )
+                    .where(
+                        CampaignLocalToolExecutionSlotRecord.active_execution_claim_id
+                        == execution_claim_id
+                    )
+                    .values(
+                        active_task_id=record.id,
+                        active_execution_claim_id=execution_claim_id,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if slot_result.rowcount != 1:
+                    self.session.rollback()
+                    self.session.expire_all()
+                    return None
+            self.session.commit()
+            self.session.expire_all()
+            return self.session.get(CampaignTaskRecord, record.id)
+
+        if record.status not in {"queued", "ready", "awaiting_approval"}:
+            return None
+        if record.execution_claim_id is not None:
+            return None
+        if self.find_active_agent_run_for_task(record.id) is not None:
+            return None
+        execution_claim_id = f"agent_run_{uuid4().hex}"
+        task_values: dict[str, Any] = {
+            "status": "running",
+            "execution_claim_id": execution_claim_id,
+            "execution_heartbeat_at": timestamp,
+            "execution_lease_expires_at": (
+                timestamp + timedelta(seconds=AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS)
+            ),
+        }
+        if payload.get(_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER) is True:
+            task_payload = dict(payload)
+            task_payload.pop(_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER, None)
+            task_values["payload"] = _safe_display_value(task_payload)
+        task_result = self.session.execute(
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == record.id)
+            .where(CampaignTaskRecord.campaign_id == record.campaign_id)
+            .where(CampaignTaskRecord.status.in_({"queued", "ready", "awaiting_approval"}))
+            .where(CampaignTaskRecord.execution_claim_id.is_(None))
+            .values(**task_values)
+            .execution_options(synchronize_session=False)
+        )
+        if task_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+        self.session.add(
+            AgentRunRecord(
+                id=execution_claim_id,
+                campaign_id=record.campaign_id,
+                task_id=record.id,
+                agent_type=record.agent_type,
+                status="running",
+                input_refs=[f"campaign_task:{record.id}"],
+                output_refs=[],
+                tool_calls=[],
+                safety_gate_state="allowed",
+                stop_reason=None,
+                payload={
+                    "research_director_local_execution_claim": True,
+                    "raw_payload_processed": False,
+                },
+            )
+        )
+        slot_result = self.session.execute(
+            update(CampaignLocalToolExecutionSlotRecord)
+            .where(
+                CampaignLocalToolExecutionSlotRecord.campaign_id
+                == record.campaign_id
+            )
+            .where(
+                CampaignLocalToolExecutionSlotRecord.source_snapshot_digest
+                == source_snapshot_digest
+            )
+            .where(CampaignLocalToolExecutionSlotRecord.active_task_id.is_(None))
+            .where(
+                CampaignLocalToolExecutionSlotRecord.active_execution_claim_id.is_(None)
+            )
+            .where(CampaignLocalToolExecutionSlotRecord.legacy_active_task_count == 0)
+            .values(
+                active_task_id=record.id,
+                active_execution_claim_id=execution_claim_id,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if slot_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
+        self.session.commit()
+        self.session.expire_all()
+        return self.session.get(CampaignTaskRecord, record.id)
+
     def _claim_autonomous_research_task_execution(
         self,
         *,
@@ -2318,6 +2980,11 @@ class DatabaseRepository:
                 "raw_payload_processed": False,
             }
             if record.task_type == _CANDIDATE_HUNTER_EVIDENCE_TASK_TYPE
+            else {
+                "research_director_local_execution_claim": True,
+                "raw_payload_processed": False,
+            }
+            if record.task_type == _RESEARCH_DIRECTOR_LOCAL_TOOL_TASK_TYPE
             else {
                 "runtime_execution_claim": True,
                 "raw_payload_processed": False,
@@ -2438,6 +3105,12 @@ class DatabaseRepository:
         ):
             return None
         execution_claim_id = record.execution_claim_id
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        source_snapshot_digest = (
+            _research_director_local_tool_source_snapshot_digest(payload)
+            if _is_research_director_local_tool_task(record, payload)
+            else None
+        )
         output_refs = list(record.output_refs) if isinstance(record.output_refs, list) else []
         agent_run_ref = f"agent_run:{execution_claim_id}"
         if agent_run_ref not in output_refs:
@@ -2472,6 +3145,19 @@ class DatabaseRepository:
                 finished_at=timestamp,
             )
         )
+        if source_snapshot_digest is not None:
+            if not self._release_campaign_local_tool_execution_slot(
+                campaign_id=record.campaign_id,
+                source_snapshot_digest=source_snapshot_digest,
+                task_id=task_id,
+                execution_claim_id=execution_claim_id,
+                legacy_task=(
+                    payload.get(_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER) is True
+                ),
+            ):
+                self.session.rollback()
+                self.session.expire_all()
+                return None
         self.session.commit()
         self.session.expire_all()
         return self.session.get(CampaignTaskRecord, task_id)
@@ -2490,10 +3176,46 @@ class DatabaseRepository:
         payload: dict,
         expected_execution_statuses: set[str] | None = None,
         additional_records: list[object] | None = None,
+        require_active_execution_lease: bool = False,
     ) -> tuple[CampaignTaskRecord, AgentRunRecord] | None:
         if not execution_claim_id:
             return None
+        record = self.session.get(CampaignTaskRecord, task_id)
+        if record is None:
+            return None
+        payload_for_slot = record.payload if isinstance(record.payload, dict) else {}
+        source_snapshot_digest = (
+            _research_director_local_tool_source_snapshot_digest(payload_for_slot)
+            if _is_research_director_local_tool_task(record, payload_for_slot)
+            else None
+        )
         timestamp = datetime.now(UTC)
+        task_update = (
+            update(CampaignTaskRecord)
+            .where(CampaignTaskRecord.id == task_id)
+            .where(
+                CampaignTaskRecord.status.in_(
+                    expected_execution_statuses or {"running"}
+                )
+            )
+            .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
+            .values(
+                status=_safe_display_value(task_status),
+                output_refs=_safe_display_value(task_output_refs),
+                execution_claim_id=None,
+                execution_lease_expires_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if require_active_execution_lease:
+            task_update = task_update.where(
+                CampaignTaskRecord.execution_lease_expires_at > timestamp
+            )
+        task_result = self.session.execute(task_update)
+        if task_result.rowcount != 1:
+            self.session.rollback()
+            self.session.expire_all()
+            return None
         agent_result = self.session.execute(
             update(AgentRunRecord)
             .where(AgentRunRecord.id == execution_claim_id)
@@ -2512,29 +3234,28 @@ class DatabaseRepository:
             self.session.rollback()
             self.session.expire_all()
             return None
-        task_result = self.session.execute(
-            update(CampaignTaskRecord)
-            .where(CampaignTaskRecord.id == task_id)
-            .where(
-                CampaignTaskRecord.status.in_(
-                    expected_execution_statuses or {"running"}
-                )
-            )
-            .where(CampaignTaskRecord.execution_claim_id == execution_claim_id)
-            .values(
-                status=_safe_display_value(task_status),
-                output_refs=_safe_display_value(task_output_refs),
-                execution_claim_id=None,
-                execution_lease_expires_at=None,
-            )
-        )
-        if task_result.rowcount != 1:
-            self.session.rollback()
-            self.session.expire_all()
-            return None
+        if source_snapshot_digest is not None:
+            if not self._release_campaign_local_tool_execution_slot(
+                campaign_id=record.campaign_id,
+                source_snapshot_digest=source_snapshot_digest,
+                task_id=task_id,
+                execution_claim_id=execution_claim_id,
+                legacy_task=(
+                    payload_for_slot.get(_LOCAL_TOOL_EXECUTION_SLOT_LEGACY_MARKER)
+                    is True
+                ),
+            ):
+                self.session.rollback()
+                self.session.expire_all()
+                return None
         if additional_records:
             self.session.add_all(additional_records)
-        self.session.commit()
+        try:
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            self.session.expire_all()
+            raise
         self.session.expire_all()
         task = self.session.get(CampaignTaskRecord, task_id)
         agent_run = self.session.get(AgentRunRecord, execution_claim_id)
@@ -2626,6 +3347,7 @@ class DatabaseRepository:
     def create_approval_record(
         self,
         *,
+        approval_id: str | None = None,
         campaign_id: str | None = None,
         task_id: str | None = None,
         run_id: str | None = None,
@@ -2645,8 +3367,11 @@ class DatabaseRepository:
         expires_at: datetime | None = None,
         payload: dict | None = None,
     ) -> ApprovalRecord:
+        record_id = _safe_display_value(approval_id) if approval_id is not None else (
+            f"approval_{uuid4().hex}"
+        )
         record = ApprovalRecord(
-            id=f"approval_{uuid4().hex}",
+            id=record_id,
             campaign_id=campaign_id,
             task_id=task_id,
             run_id=run_id,
@@ -2666,7 +3391,16 @@ class DatabaseRepository:
             payload=_safe_display_value(payload or {}),
         )
         self.session.add(record)
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            if approval_id is None:
+                raise
+            existing = self.session.get(ApprovalRecord, record_id)
+            if existing is not None:
+                return existing
+            raise
         self.session.refresh(record)
         return record
 
@@ -2901,6 +3635,7 @@ class DatabaseRepository:
         stop_reason: str | None,
         payload: dict | None = None,
         strict_idempotency: bool = False,
+        commit: bool = True,
     ) -> PipelineStageRecord:
         safe_payload = _safe_display_value(payload or {})
         safe_stage_key = _safe_display_value(stage_key)
@@ -2961,7 +3696,10 @@ class DatabaseRepository:
         )
         self.session.add(record)
         try:
-            self.session.commit()
+            if commit:
+                self.session.commit()
+            else:
+                self.session.flush()
         except IntegrityError:
             self.session.rollback()
             existing = self.session.get(PipelineStageRecord, record_id)
@@ -2970,7 +3708,8 @@ class DatabaseRepository:
             if not _pipeline_stage_matches_save_request(existing, **match_kwargs):
                 raise ValueError("pipeline_stage_id_conflict")
             return existing
-        self.session.refresh(record)
+        if commit:
+            self.session.refresh(record)
         return record
 
     def get_pipeline_stage(self, stage_id: str) -> PipelineStageRecord | None:
@@ -3144,6 +3883,7 @@ class DatabaseRepository:
         summary: str,
         safety_gate_state: str,
         payload: dict | None = None,
+        commit: bool = True,
     ) -> ScannerRunRecord:
         record = ScannerRunRecord(
             id=f"scanner_run_{uuid4().hex}",
@@ -3159,8 +3899,11 @@ class DatabaseRepository:
             payload=_safe_display_value(payload or {}),
         )
         self.session.add(record)
-        self.session.commit()
-        self.session.refresh(record)
+        if commit:
+            self.session.commit()
+            self.session.refresh(record)
+        else:
+            self.session.flush()
         return record
 
     def list_campaign_scanner_runs(self, campaign_id: str) -> list[ScannerRunRecord]:
@@ -4145,6 +4888,25 @@ def _program_scope_rules_match(
     ]
     return actual == desired and all(
         record.approval_digest == approval_digest for record in records
+    )
+
+
+def _is_local_tool_call_reservation(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get(_LOCAL_TOOL_CALL_RESERVATION_MARKER) is True
+        and value.get("tool_call_reserved") is True
+        and value.get("tool_call_reservation_schema")
+        == _LOCAL_TOOL_CALL_RESERVATION_SCHEMA
+    )
+
+
+def _is_legacy_local_tool_call_consumption(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("research_director_tool_run") is True
+        and value.get("tool_call_consumed") is True
+        and not isinstance(value.get("tool_call_reservation_agent_run_id"), str)
     )
 
 

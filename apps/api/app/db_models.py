@@ -401,6 +401,39 @@ class CampaignRecord(Base):
     program_record: Mapped[ProgramRecord | None] = relationship()
 
 
+class CampaignLocalToolExecutionSlotRecord(Base):
+    __tablename__ = "campaign_local_tool_execution_slots"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "source_snapshot_digest",
+            name="uq_campaign_local_tool_execution_slots_campaign_snapshot",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    source_snapshot_digest: Mapped[str] = mapped_column(String(100), nullable=False)
+    active_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    active_execution_claim_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    legacy_active_task_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    campaign: Mapped[CampaignRecord] = relationship()
+
+
 class AutonomousResearchWakeupStateRecord(Base):
     __tablename__ = "autonomous_research_wakeup_states"
     __table_args__ = (
@@ -492,6 +525,12 @@ class CampaignBudgetRecord(Base):
     time_budget_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_call_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_calls_reserved: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     validation_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(

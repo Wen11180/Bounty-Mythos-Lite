@@ -9,7 +9,7 @@ import pytest
 from app.main import app
 from app.mythos_chat import run_chat
 from app.cli import main as cli_main
-from app.codebase_map import CodebaseFactCandidate
+from app.codebase_map import CodebaseFactCandidate, map_authorized_code_files
 from app.config import get_settings
 from app.db import Base
 from app.db import get_session
@@ -1063,6 +1063,20 @@ def test_run_source_audit_does_not_raise_agent_tool_authorization_hypothesis_for
             "server-side amount derivation",
             "server-side amount derivation",
             id="server-authoritative-money-flow",
+        ),
+        pytest.param(
+            "missing_jwt_verification",
+            "jwt_authentication_bypass",
+            "offline_jwt_verification_review",
+            "jwt_authentication_boundary",
+            (
+                "JWT claims must be signature-verified and validated before they "
+                "influence sensitive operations."
+            ),
+            "JWT signature verification",
+            "JWT signature verification",
+            "JWT verification",
+            id="jwt-verification",
         ),
     ],
 )
@@ -5182,3 +5196,34 @@ def test_load_scope_policy_accepts_bug_bounty_yaml_fields(tmp_path):
             ],
         },
     }
+
+
+def test_build_source_hypotheses_labels_graphql_operations_without_http_verb():
+    mapped = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    hypotheses = build_source_hypotheses(mapped.facts, [])
+
+    assert len(hypotheses) == 1
+    hypothesis = hypotheses[0]
+    assert hypothesis.location == "GraphQL query record"
+    assert hypothesis.source_facts[0]["entrypoint_kind"] == "graphql_operation"
+    assert hypothesis.source_facts[0]["graphql_operation_type"] == "query"
+    assert hypothesis.source_facts[0]["graphql_operation_name"] == "record"

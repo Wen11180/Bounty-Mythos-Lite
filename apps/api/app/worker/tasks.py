@@ -1,4 +1,5 @@
 from hashlib import sha256
+import asyncio
 import logging
 import json
 import re
@@ -9,11 +10,22 @@ from app.artifact_ingestion import extract_sbom_dependency_signals, normalize_ar
 from app.codebase_map import (
     CodebaseFactCandidate,
     CodebaseMapResult,
+    INPUT_REFERENCE_KIND_STRAIGHT_LINE,
     map_authorized_code_files,
     reachable_service_source_paths,
+    safe_claim_reference,
+    safe_input_reference,
 )
 from app.campaign_orchestrator import campaign_elapsed_minutes, campaign_token_used_from_runs
 from app.config import get_settings
+from app.cross_source_candidate_generator import (
+    CandidateModelConfig,
+    RegistryCandidateReasoner,
+    build_fact_pack,
+    candidate_model_config_digest,
+    candidate_model_config_from_value,
+    generate_cross_source_candidates,
+)
 from app.db import get_session_factory, initialize_database
 from app.db_models import (
     AgentRunRecord,
@@ -21,11 +33,13 @@ from app.db_models import (
     CampaignTaskRecord,
     CodebaseFactRecord,
     LearningSignalRecord,
+    LLMRunRecord,
     PipelineStageRecord,
 )
 from app.mythos_brain import LearningSignal, MythosLesson, build_mythos_lessons
 from app.repository import DatabaseRepository
 from app.studio_workspace import load_authorized_campaign_inputs
+from app.llm.registry import build_default_registry
 from app.worker.celery_app import celery_app
 
 
@@ -91,9 +105,40 @@ _RUNTIME_TARGET_INTAKE_SAFETY_FIELDS = (
     "report_submission_allowed",
 )
 _SECURITY_INVARIANT_PROJECTION_SCHEMA = "security_invariant_projection_v1"
+_AUTONOMOUS_CROSS_SOURCE_LLM_ADVISORY_SCHEMA = (
+    "autonomous_cross_source_llm_advisory_v1"
+)
 _SECURITY_INVARIANT_REF_PATTERN = re.compile(r"security_invariant:[0-9a-f]{64}")
 _CODEBASE_FACT_REF_PATTERN = re.compile(r"codebase_fact:[A-Za-z0-9_-]{1,100}")
+_MODEL_ADVISORY_CANDIDATE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,100}")
+_MODEL_ADVISORY_LLM_RUN_ID_PATTERN = re.compile(r"llm_run_[A-Za-z0-9_-]{1,90}")
+_MODEL_ADVISORY_TEXT_PATTERNS = (
+    re.compile(r"\bbearer\s+\S+", re.IGNORECASE),
+    re.compile(r"\b(?:api[_-]?key|password|secret|token)\s*[:=]", re.IGNORECASE),
+    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+    re.compile(r"\bconfirmed?\b", re.IGNORECASE),
+    re.compile(r"\bexploit(?:ed|able|ation)?\b", re.IGNORECASE),
+    re.compile(r"\blive\s+(?:test|validation|request)\b", re.IGNORECASE),
+    re.compile(r"\breport\s+(?:ready|submission|submitted)\b", re.IGNORECASE),
+    re.compile(r"\bsubmit(?:ted)?\b", re.IGNORECASE),
+)
+_ADVISORY_ARTIFACT_INPUT_REF_PATTERN = re.compile(
+    r"artifact:(artifact_[A-Za-z0-9_-]{1,90})",
+    re.ASCII,
+)
+_LEARNING_SIGNAL_INPUT_REF_PATTERN = re.compile(
+    r"learning_signal:(learning_signal_[A-Za-z0-9_-]{1,90})",
+    re.ASCII,
+)
+_HISTORICAL_REPORT_STAGE_INPUT_REF_PATTERN = re.compile(
+    r"historical_report_stage:(pipeline_stage_[A-Za-z0-9_-]{1,90})",
+    re.ASCII,
+)
+_TOKEN_REFERENCE_PATTERN = re.compile(
+    r"token:[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+)
 _RUNTIME_TARGET_MODEL_PROJECTION_SCHEMA = "runtime_target_model_projection_v1"
+_RUNTIME_ATTACK_SURFACE_QUEUE_SCHEMA = "runtime_attack_surface_queue_v1"
 _RUNTIME_CANDIDATE_HUNTER_PROJECTION_SCHEMA = (
     "runtime_candidate_hunter_projection_v1"
 )
@@ -143,6 +188,10 @@ _SECURITY_INVARIANT_FAMILIES = {
     "agent_tool_authorization_boundary": (
         "Agent tool dispatch must verify the current user, agent policy, and task context "
         "permit the selected tool before invocation."
+    ),
+    "jwt_authentication_boundary": (
+        "JWT claims must be signature-verified and validated before they influence "
+        "sensitive operations."
     ),
 }
 _SECURITY_INVARIANT_STATUSES = {
@@ -459,6 +508,38 @@ _STATIC_GAP_PROFILES = {
         "impact_score": 88,
         "guard_hints": ("agent_tool_authorization_check",),
     },
+    "missing_jwt_verification": {
+        "vuln_type": "jwt_authentication_bypass",
+        "security_invariant_family": "jwt_authentication_boundary",
+        "hypothesis": "Review {route_label} for JWT signature verification and claims-validation gaps.",
+        "broken_invariant": _SECURITY_INVARIANT_FAMILIES[
+            "jwt_authentication_boundary"
+        ],
+        "validation_mode": "offline_jwt_verification_review",
+        "evidence_needed": (
+            "local_jwt_verification_trace",
+            "jwt_claims_validation_policy_review",
+            "sanitized_token_shape_classification",
+        ),
+        "validation_steps": (
+            "Review the local JWT decoding, signature verification, and claims-validation call path before the mapped sensitive operation.",
+            "Confirm issuer, audience, expiry, and algorithm policy are bound to trusted local configuration.",
+            "Use only sanitized local token-shape fixtures in a human-approved review; do not access accounts or submit requests from this plan.",
+        ),
+        "refutation_questions": (
+            "Does an explicit JWT verification or validation control run before the sensitive operation?",
+            "Does the mapped verifier bind signature, issuer, audience, expiry, and algorithm checks to trusted local policy?",
+            "Can local control evidence show decoded claims do not influence the sensitive operation before any validation planning?",
+        ),
+        "impact": (
+            "Potential authentication or authorization bypass risk if unverified JWT claims influence a mapped sensitive operation."
+        ),
+        "playbook_id": "jwt_authentication_boundary",
+        "playbook_label": "JWT authentication boundary",
+        "priority_score": 78,
+        "impact_score": 88,
+        "guard_hints": ("jwt_verification_check",),
+    },
 }
 _AUTONOMOUS_EXPLOIT_CHAIN_PROJECTION_SCHEMA = "autonomous_exploit_chain_projection_v1"
 _AUTONOMOUS_VARIANT_ANALYSIS_PROJECTION_SCHEMA = (
@@ -703,10 +784,16 @@ def _run_agent_task(
         return resumed
 
     campaign = repository.get_campaign(task.campaign_id)
+    if task.task_type == "research_director_local_tool_run":
+        from app.research_director.runtime import run_campaign_local_tool_task
+
+        return run_campaign_local_tool_task(
+            task=task,
+            repository=repository,
+        )
     stop_reason = _agent_task_stop_reason(
         campaign=campaign,
         repository=repository,
-        task_id=task.id,
     )
     from app.autonomous_research_runtime import (
         autonomous_research_task_stop_reason,
@@ -802,8 +889,30 @@ def _run_agent_task(
                 stop_reason=invariant_stop_reason,
             )
 
+    if task.task_type == "cross_source_llm_advisory":
+        return _run_cross_source_llm_advisory_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+            workspace_inputs=workspace_inputs,
+        )
+
     if task.task_type == "exploit_chain_reasoning":
         return _run_exploit_chain_reasoning_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+        )
+
+    if task.task_type == "variant_analysis":
+        return _run_variant_analysis_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+        )
+
+    if task.task_type == "deep_code_reasoning":
+        return _run_deep_code_reasoning_task(
             task=task,
             campaign=campaign,
             repository=repository,
@@ -1322,17 +1431,12 @@ def _record_unexpected_worker_failure(
     }
 
 
-def _run_exploit_chain_reasoning_task(
+def _runtime_chain_specialist_inputs(
     *,
     task: CampaignTaskRecord,
     campaign: CampaignRecord,
     repository: DatabaseRepository,
-) -> dict:
-    from app.autonomous_research_runtime import record_autonomous_research_task_completion
-    from app.deep_code_reasoning import build_deep_code_reasoning_plan
-    from app.variant_analysis import build_variant_analysis_plan
-    from app.vuln_chain_builder import build_vuln_chain_builder_plan
-
+) -> tuple[Any, list, str, list[dict[str, str]]] | None:
     task_payload = task.payload if isinstance(task.payload, dict) else {}
     pipeline_run_id = task_payload.get("pipeline_run_id")
     pipeline_run = (
@@ -1341,7 +1445,14 @@ def _run_exploit_chain_reasoning_task(
         else None
     )
     pipeline_payload = pipeline_run.payload if pipeline_run is not None else {}
-    hypotheses = pipeline_payload.get("hypotheses") if isinstance(pipeline_payload, dict) else None
+    hypotheses = (
+        pipeline_payload.get("hypotheses")
+        if isinstance(pipeline_payload, dict)
+        else None
+    )
+    source_snapshot_digest = _worker_safe_string(
+        task_payload.get("source_snapshot_digest")
+    )
     if (
         pipeline_run is None
         or pipeline_run.asset != campaign.default_asset
@@ -1349,23 +1460,1037 @@ def _run_exploit_chain_reasoning_task(
         or not isinstance(pipeline_payload, dict)
         or pipeline_payload.get("campaign_id") != campaign.id
         or not isinstance(hypotheses, list)
+        or _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest) is None
+    ):
+        return None
+    return (
+        pipeline_run,
+        hypotheses,
+        source_snapshot_digest,
+        _chain_reasoning_hypothesis_seeds(hypotheses),
+    )
+
+
+def _runtime_cross_source_candidate_model_config(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+) -> tuple[CandidateModelConfig | None, str | None]:
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    if "candidate_model" not in campaign_payload:
+        return None, "candidate_model_config_missing"
+    campaign_config = candidate_model_config_from_value(
+        campaign_payload.get("candidate_model")
+    )
+    if campaign_config is None:
+        return None, "candidate_model_config_invalid"
+    task_config = candidate_model_config_from_value(task_payload.get("candidate_model"))
+    config_digest = candidate_model_config_digest(campaign_config)
+    input_refs = task.input_refs if isinstance(task.input_refs, list) else []
+    if (
+        task_config is None
+        or task_config != campaign_config
+        or task_payload.get("candidate_model_config_digest") != config_digest
+        or input_refs.count(f"candidate_model_config:{config_digest}") != 1
+    ):
+        return None, "candidate_model_config_changed"
+    return campaign_config, None
+
+
+def _runtime_cross_source_advisory_baseline_candidate(
+    hypothesis: object,
+) -> tuple[dict, list[dict]] | None:
+    if not isinstance(hypothesis, dict):
+        return None
+    candidate_id = _worker_safe_string(hypothesis.get("hypothesis_id"))
+    if _MODEL_ADVISORY_CANDIDATE_ID_PATTERN.fullmatch(candidate_id) is None:
+        return None
+    source_facts = hypothesis.get("source_facts")
+    if not isinstance(source_facts, list):
+        return None
+    safe_source_facts = [
+        item
+        for item in source_facts
+        if isinstance(item, dict)
+        and _model_advisory_text_is_safe(item.get("fact_ref"))
+    ]
+    route = next(
+        (
+            {
+                "method": _worker_safe_string(item.get("route_method")).upper(),
+                "path": _worker_safe_string(item.get("route_path")),
+            }
+            for item in safe_source_facts
+            if _worker_safe_string(item.get("route_method")).upper()
+            in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+            and _worker_safe_string(item.get("route_path")).startswith("/")
+        ),
+        None,
+    )
+    if route is None:
+        return None
+    source_fact_refs = _model_advisory_fact_refs(
+        [item.get("fact_ref") for item in safe_source_facts],
+        maximum=20,
+    )
+    if not source_fact_refs:
+        return None
+    return (
+        {
+            "hypothesis_id": candidate_id,
+            "vuln_type": _worker_safe_string(hypothesis.get("vuln_type"))
+            or "candidate",
+            "route": route,
+            "priority_score": _candidate_model_priority(
+                hypothesis.get("priority_score")
+            ),
+            "root_cause": _worker_safe_string(hypothesis.get("root_cause")),
+            "source_fact_refs": source_fact_refs,
+            "evidence_needed": _worker_safe_string_list(
+                hypothesis.get("evidence_needed")
+            ),
+            "false_positive_checks": _worker_safe_string_list(
+                hypothesis.get("refutation_questions")
+            ),
+        },
+        safe_source_facts,
+    )
+
+
+def _runtime_cross_source_fact_pack(
+    *,
+    campaign: CampaignRecord,
+    pipeline_run_id: str,
+    source_snapshot_digest: str,
+    hypotheses: list,
+    workspace_inputs: dict | None,
+) -> tuple[Any, list[dict]] | None:
+    source_files = (
+        workspace_inputs.get("code_files")
+        if isinstance(workspace_inputs, dict)
+        and isinstance(workspace_inputs.get("code_files"), list)
+        else []
+    )
+    facts: list[dict] = [
+        {
+            "fact_ref": f"scope:campaign:{campaign.id}",
+            "fact_type": "scope_context",
+            "artifact_kind": "scope",
+        },
+        {
+            "fact_ref": f"policy:campaign:{campaign.id}",
+            "fact_type": "policy_context",
+            "artifact_kind": "policy",
+        },
+    ]
+    baselines: list[dict] = []
+    for hypothesis in hypotheses:
+        baseline = _runtime_cross_source_advisory_baseline_candidate(hypothesis)
+        if baseline is None:
+            continue
+        candidate, source_facts = baseline
+        baselines.append(candidate)
+        facts.extend(source_facts)
+    try:
+        return (
+            build_fact_pack(
+                pipeline_run_id=pipeline_run_id,
+                scope_status=campaign.scope_status,
+                source_files=source_files,
+                facts=facts,
+                baseline_candidates=baselines,
+                source_snapshot_digest=source_snapshot_digest.removeprefix("sha256:"),
+            ),
+            baselines,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _runtime_cross_source_advisory_task_has_bound_inputs(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    pipeline_run_id: str,
+    source_snapshot_digest: str,
+    candidate_model_config: CandidateModelConfig,
+) -> bool:
+    input_refs = task.input_refs if isinstance(task.input_refs, list) else []
+    config_digest = candidate_model_config_digest(candidate_model_config)
+    return all(
+        input_refs.count(reference) == 1
+        for reference in (
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+            f"pipeline_run:{pipeline_run_id}",
+            f"candidate_model_config:{config_digest}",
+        )
+    )
+
+
+def _model_advisory_text_is_safe(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value.strip()) <= 500
+        and not any(pattern.search(value) for pattern in _MODEL_ADVISORY_TEXT_PATTERNS)
+    )
+
+
+def _model_advisory_texts(value: object, *, maximum: int) -> list[str] | None:
+    if not isinstance(value, list) or len(value) > maximum:
+        return None
+    texts: list[str] = []
+    for item in value:
+        if not _model_advisory_text_is_safe(item):
+            return None
+        text = item.strip()
+        if text not in texts:
+            texts.append(text)
+    return texts
+
+
+def _model_advisory_fact_refs(value: object, *, maximum: int) -> list[str] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= maximum:
+        return None
+    refs: list[str] = []
+    for item in value:
+        if not _model_advisory_text_is_safe(item):
+            return None
+        ref = item.strip()
+        if ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def _candidate_model_priority(value: object) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100
+        else 0
+    )
+
+
+def _model_advisory_difference(values: object, baseline: object) -> list[str] | None:
+    safe_values = _model_advisory_texts(values, maximum=8)
+    safe_baseline = _model_advisory_texts(baseline, maximum=8)
+    if safe_values is None or safe_baseline is None:
+        return None
+    return [value for value in safe_values if value not in safe_baseline]
+
+
+def _model_advisory_hash_or_empty(value: object) -> str | None:
+    if value == "":
+        return ""
+    if isinstance(value, str) and _SHA256_PATTERN.fullmatch(value):
+        return value
+    return None
+
+
+def _model_advisory_failure_reason(value: object) -> str | None:
+    text = _worker_safe_string(value)
+    return text if text and re.fullmatch(r"[a-z][a-z0-9_:-]{0,127}", text) else None
+
+
+def _build_cross_source_llm_advisory_projection(
+    *,
+    campaign: CampaignRecord,
+    pipeline_run_id: str,
+    source_snapshot_digest: str,
+    hypotheses: list,
+    fact_pack: Any,
+    baselines: list[dict],
+    candidate_model_config: CandidateModelConfig,
+    generation: Any,
+    llm_run: LLMRunRecord,
+) -> dict | None:
+    if (
+        not isinstance(getattr(generation, "model_status", None), str)
+        or generation.model_status not in {"completed", "needs_model_review"}
+        or llm_run.provider != candidate_model_config.provider.value
+        or llm_run.model != candidate_model_config.model
+        or llm_run.purpose != "autonomous_cross_source_advisory"
+        or llm_run.mode != "live"
+    ):
+        return None
+    baseline_by_id = {
+        item["hypothesis_id"]: item
+        for item in baselines
+        if isinstance(item.get("hypothesis_id"), str)
+    }
+    advisories: list[dict] = []
+    for candidate in getattr(generation, "working_candidates", []):
+        if not isinstance(candidate, dict) or candidate.get("origin") != "baseline+model":
+            continue
+        candidate_id = _worker_safe_string(candidate.get("candidate_id"))
+        baseline = baseline_by_id.get(candidate_id)
+        if baseline is None:
+            continue
+        source_fact_refs = _model_advisory_fact_refs(
+            candidate.get("source_fact_refs"),
+            maximum=20,
+        )
+        baseline_refs = _model_advisory_fact_refs(
+            baseline.get("source_fact_refs"),
+            maximum=20,
+        )
+        evidence_requirements = _model_advisory_difference(
+            candidate.get("evidence_requirements"),
+            baseline.get("evidence_needed"),
+        )
+        refutation_questions = _model_advisory_difference(
+            candidate.get("refutation_questions"),
+            baseline.get("false_positive_checks"),
+        )
+        model_priority_score = _candidate_model_priority(
+            candidate.get("model_priority_score")
+        )
+        if (
+            source_fact_refs is None
+            or baseline_refs is None
+            or not set(source_fact_refs).issubset(set(baseline_refs))
+            or evidence_requirements is None
+            or refutation_questions is None
+            or model_priority_score <= 0
+        ):
+            continue
+        advisories.append(
+            {
+                "candidate_id": candidate_id,
+                "source_fact_refs": source_fact_refs,
+                "evidence_requirements": evidence_requirements,
+                "refutation_questions": refutation_questions,
+                "model_priority_score": model_priority_score,
+            }
+        )
+    model_failure_reason = _model_advisory_failure_reason(
+        getattr(generation, "model_failure_reason", None)
+    )
+    if generation.model_status == "completed" and model_failure_reason is not None:
+        return None
+    if generation.model_status == "needs_model_review":
+        advisories = []
+    prompt_hash = _model_advisory_hash_or_empty(getattr(generation, "prompt_hash", ""))
+    model_request_key = _model_advisory_hash_or_empty(
+        getattr(generation, "model_request_key", "")
+    )
+    model_response_digest = _model_advisory_hash_or_empty(
+        getattr(generation, "model_response_digest", "")
+    )
+    if (
+        prompt_hash is None
+        or model_request_key is None
+        or model_response_digest is None
+        or llm_run.prompt_hash != prompt_hash
+        or llm_run.error != model_failure_reason
+    ):
+        return None
+    model_response_schema = _worker_safe_string(
+        getattr(generation, "model_response_schema", "")
+    )
+    model_reasoner = _worker_safe_string(getattr(generation, "model_reasoner", ""))
+    model_replay_binding = _worker_safe_string(
+        getattr(generation, "model_replay_binding", "")
+    )
+    if (
+        model_response_schema not in {"", "cross_source_candidate_model_v1"}
+        or model_reasoner != "registry"
+        or model_replay_binding != "not_applicable"
+        or not _MODEL_ADVISORY_LLM_RUN_ID_PATTERN.fullmatch(llm_run.id)
+    ):
+        return None
+    if generation.model_status == "completed" and (
+        not prompt_hash
+        or not model_request_key
+        or not model_response_digest
+        or model_response_schema != "cross_source_candidate_model_v1"
+    ):
+        return None
+    if generation.model_status == "needs_model_review" and (
+        model_failure_reason is None
+        or not model_request_key
+        or model_response_digest
+        or model_response_schema
+    ):
+        return None
+    source_hypothesis_refs = [item["hypothesis_id"] for item in baselines]
+    return {
+        "schema_version": _AUTONOMOUS_CROSS_SOURCE_LLM_ADVISORY_SCHEMA,
+        "artifact_kind": "cross_source_llm_advisory_projection",
+        "campaign_id": campaign.id,
+        "pipeline_run_id": pipeline_run_id,
+        "source_snapshot_digest": source_snapshot_digest,
+        "source_hypothesis_refs": source_hypothesis_refs,
+        "source_hypothesis_digest": _canonical_digest(hypotheses),
+        "fact_pack_digest": _canonical_digest(fact_pack.model_dump(mode="json")),
+        "candidate_model_config_digest": candidate_model_config_digest(
+            candidate_model_config
+        ),
+        "model_provider": candidate_model_config.provider.value,
+        "model_name": candidate_model_config.model,
+        "model_mode": "live",
+        "llm_run_id": llm_run.id,
+        "model_status": generation.model_status,
+        "model_failure_reason": model_failure_reason,
+        "prompt_hash": prompt_hash,
+        "model_latency_ms": generation.model_latency_ms,
+        "model_request_key": model_request_key,
+        "model_response_digest": model_response_digest,
+        "model_response_schema": model_response_schema,
+        "model_reasoner": model_reasoner,
+        "model_replay_binding": model_replay_binding,
+        "model_proposed_count": generation.proposed_count,
+        "model_accepted_count": len(generation.accepted_candidates),
+        "advisory_count": len(advisories),
+        "advisories": advisories,
+        "advisory_digest": _canonical_digest(advisories),
+        "human_review_required": True,
+        "candidate_creation_allowed": False,
+        "raw_payload_processed": False,
+        "execution_allowed": False,
+        "dispatch_allowed": False,
+        "validation_allowed": False,
+        "candidate_promotion_allowed": False,
+        "report_submission_allowed": False,
+    }
+
+
+def _safe_cross_source_llm_advisory_projection(
+    value: object,
+    *,
+    campaign: CampaignRecord,
+    pipeline_run_id: str,
+    source_snapshot_digest: str,
+    hypotheses: list,
+    fact_pack: Any,
+    baselines: list[dict],
+    candidate_model_config: CandidateModelConfig,
+    llm_run: LLMRunRecord,
+) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    if (
+        llm_run.provider != candidate_model_config.provider.value
+        or llm_run.model != candidate_model_config.model
+        or llm_run.purpose != "autonomous_cross_source_advisory"
+        or llm_run.mode != "live"
+        or not _MODEL_ADVISORY_LLM_RUN_ID_PATTERN.fullmatch(llm_run.id)
+    ):
+        return None
+    required_keys = {
+        "schema_version",
+        "artifact_kind",
+        "campaign_id",
+        "pipeline_run_id",
+        "source_snapshot_digest",
+        "source_hypothesis_refs",
+        "source_hypothesis_digest",
+        "fact_pack_digest",
+        "candidate_model_config_digest",
+        "model_provider",
+        "model_name",
+        "model_mode",
+        "llm_run_id",
+        "model_status",
+        "model_failure_reason",
+        "prompt_hash",
+        "model_latency_ms",
+        "model_request_key",
+        "model_response_digest",
+        "model_response_schema",
+        "model_reasoner",
+        "model_replay_binding",
+        "model_proposed_count",
+        "model_accepted_count",
+        "advisory_count",
+        "advisories",
+        "advisory_digest",
+        "human_review_required",
+        "candidate_creation_allowed",
+        "raw_payload_processed",
+        "execution_allowed",
+        "dispatch_allowed",
+        "validation_allowed",
+        "candidate_promotion_allowed",
+        "report_submission_allowed",
+    }
+    if set(value) != required_keys:
+        return None
+    source_hypothesis_refs = [item["hypothesis_id"] for item in baselines]
+    model_failure_reason = value.get("model_failure_reason")
+    if model_failure_reason is not None:
+        model_failure_reason = _model_advisory_failure_reason(model_failure_reason)
+        if model_failure_reason is None:
+            return None
+    advisories = value.get("advisories")
+    if (
+        value.get("schema_version") != _AUTONOMOUS_CROSS_SOURCE_LLM_ADVISORY_SCHEMA
+        or value.get("artifact_kind") != "cross_source_llm_advisory_projection"
+        or value.get("campaign_id") != campaign.id
+        or value.get("pipeline_run_id") != pipeline_run_id
+        or value.get("source_snapshot_digest") != source_snapshot_digest
+        or value.get("source_hypothesis_refs") != source_hypothesis_refs
+        or value.get("source_hypothesis_digest") != _canonical_digest(hypotheses)
+        or value.get("fact_pack_digest") != _canonical_digest(fact_pack.model_dump(mode="json"))
+        or value.get("candidate_model_config_digest")
+        != candidate_model_config_digest(candidate_model_config)
+        or value.get("model_provider") != candidate_model_config.provider.value
+        or value.get("model_name") != candidate_model_config.model
+        or value.get("model_mode") != "live"
+        or value.get("llm_run_id") != llm_run.id
+        or value.get("model_status") not in {"completed", "needs_model_review"}
+        or value.get("prompt_hash") != llm_run.prompt_hash
+        or value.get("model_latency_ms") != llm_run.latency_ms
+        or value.get("model_failure_reason") != llm_run.error
+        or _model_advisory_hash_or_empty(value.get("prompt_hash")) is None
+        or _model_advisory_hash_or_empty(value.get("model_request_key")) is None
+        or _model_advisory_hash_or_empty(value.get("model_response_digest")) is None
+        or value.get("model_response_schema")
+        not in {"", "cross_source_candidate_model_v1"}
+        or value.get("model_reasoner") != "registry"
+        or value.get("model_replay_binding") != "not_applicable"
+        or not isinstance(value.get("model_proposed_count"), int)
+        or isinstance(value.get("model_proposed_count"), bool)
+        or not 0 <= value.get("model_proposed_count") <= 5
+        or not isinstance(value.get("model_accepted_count"), int)
+        or isinstance(value.get("model_accepted_count"), bool)
+        or not 0 <= value.get("model_accepted_count") <= 5
+        or not isinstance(advisories, list)
+        or value.get("advisory_count") != len(advisories)
+        or len(advisories) > len(baselines)
+        or value.get("advisory_digest") != _canonical_digest(advisories)
+        or value.get("human_review_required") is not True
+        or value.get("candidate_creation_allowed") is not False
+        or value.get("raw_payload_processed") is not False
+        or any(
+            value.get(field) is not False
+            for field in (
+                "execution_allowed",
+                "dispatch_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+    ):
+        return None
+    if value["model_status"] == "completed" and model_failure_reason is not None:
+        return None
+    if value["model_status"] == "needs_model_review" and advisories:
+        return None
+    if value["model_status"] == "completed" and (
+        not value["prompt_hash"]
+        or not value["model_request_key"]
+        or not value["model_response_digest"]
+        or value["model_response_schema"] != "cross_source_candidate_model_v1"
+    ):
+        return None
+    if value["model_status"] == "needs_model_review" and (
+        model_failure_reason is None
+        or not value["model_request_key"]
+        or value["model_response_digest"]
+        or value["model_response_schema"]
+        or value["model_proposed_count"] != 0
+        or value["model_accepted_count"] != 0
+    ):
+        return None
+    baseline_by_id = {
+        item["hypothesis_id"]: item
+        for item in baselines
+        if isinstance(item.get("hypothesis_id"), str)
+    }
+    seen_candidate_ids: set[str] = set()
+    for advisory in advisories:
+        if not isinstance(advisory, dict) or set(advisory) != {
+            "candidate_id",
+            "source_fact_refs",
+            "evidence_requirements",
+            "refutation_questions",
+            "model_priority_score",
+        }:
+            return None
+        candidate_id = advisory.get("candidate_id")
+        baseline = baseline_by_id.get(candidate_id)
+        source_fact_refs = _model_advisory_fact_refs(
+            advisory.get("source_fact_refs"),
+            maximum=20,
+        )
+        baseline_refs = _model_advisory_fact_refs(
+            baseline.get("source_fact_refs") if baseline is not None else None,
+            maximum=20,
+        )
+        if (
+            not isinstance(candidate_id, str)
+            or _MODEL_ADVISORY_CANDIDATE_ID_PATTERN.fullmatch(candidate_id) is None
+            or candidate_id in seen_candidate_ids
+            or source_fact_refs is None
+            or baseline_refs is None
+            or not set(source_fact_refs).issubset(set(baseline_refs))
+            or _model_advisory_texts(
+                advisory.get("evidence_requirements"),
+                maximum=8,
+            ) is None
+            or _model_advisory_texts(
+                advisory.get("refutation_questions"),
+                maximum=8,
+            ) is None
+            or not 1 <= _candidate_model_priority(advisory.get("model_priority_score"))
+        ):
+            return None
+        seen_candidate_ids.add(candidate_id)
+    return dict(value)
+
+
+def _run_cross_source_llm_advisory_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    workspace_inputs: dict | None,
+) -> dict:
+    from app.autonomous_research_runtime import record_autonomous_research_task_completion
+
+    candidate_model_config, config_stop_reason = (
+        _runtime_cross_source_candidate_model_config(task=task, campaign=campaign)
+    )
+    if candidate_model_config is None or config_stop_reason is not None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=config_stop_reason or "candidate_model_config_missing",
+        )
+    inputs = _runtime_chain_specialist_inputs(
+        task=task,
+        campaign=campaign,
+        repository=repository,
+    )
+    if inputs is None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="candidate_model_advisory_input_missing",
+        )
+    pipeline_run, hypotheses, source_snapshot_digest, _ = inputs
+    if not _runtime_cross_source_advisory_task_has_bound_inputs(
+        task=task,
+        campaign=campaign,
+        pipeline_run_id=pipeline_run.id,
+        source_snapshot_digest=source_snapshot_digest,
+        candidate_model_config=candidate_model_config,
     ):
         return _block_agent_task(
             task=task,
             repository=repository,
-            stop_reason="exploit_chain_input_missing",
+            stop_reason="candidate_model_advisory_input_missing",
         )
+    fact_pack_inputs = _runtime_cross_source_fact_pack(
+        campaign=campaign,
+        pipeline_run_id=pipeline_run.id,
+        source_snapshot_digest=source_snapshot_digest,
+        hypotheses=hypotheses,
+        workspace_inputs=workspace_inputs,
+    )
+    if fact_pack_inputs is None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="candidate_model_advisory_input_missing",
+        )
+    fact_pack, baselines = fact_pack_inputs
+    projection_ref = f"cross_source_llm_advisory_projection:{task.id}"
+    stage_id = _runtime_specialist_projection_stage_id(
+        task_id=task.id,
+        stage_key="autonomous_cross_source_llm_advisory",
+    )
+    stage = repository.get_pipeline_stage(stage_id)
+    projection: dict | None = None
+    if stage is not None:
+        llm_run_id = (
+            stage.payload.get("llm_run_id")
+            if isinstance(stage.payload, dict)
+            else None
+        )
+        llm_run = (
+            repository.session.get(LLMRunRecord, llm_run_id)
+            if isinstance(llm_run_id, str)
+            else None
+        )
+        projection = (
+            _safe_cross_source_llm_advisory_projection(
+                stage.payload,
+                campaign=campaign,
+                pipeline_run_id=pipeline_run.id,
+                source_snapshot_digest=source_snapshot_digest,
+                hypotheses=hypotheses,
+                fact_pack=fact_pack,
+                baselines=baselines,
+                candidate_model_config=candidate_model_config,
+                llm_run=llm_run,
+            )
+            if llm_run is not None
+            else None
+        )
+        if (
+            projection is None
+            or stage.status != "completed"
+            or stage.safety_gate_state != "safe"
+            or projection_ref not in stage.output_refs
+        ):
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason="candidate_model_advisory_projection_invalid",
+            )
+    else:
+        generation = asyncio.run(
+            generate_cross_source_candidates(
+                fact_pack=fact_pack,
+                baseline_candidates=baselines,
+                model_config=candidate_model_config,
+                reasoner=RegistryCandidateReasoner(build_default_registry()),
+            )
+        )
+        audit_safety_notes = [
+            "prompt_hash_only",
+            "no_prompt_storage",
+            "provider_response_not_fact",
+            "model_proposals_unverified",
+            "existing_hypotheses_only",
+            "human_approval_still_required",
+        ]
+        if generation.model_failure_reason:
+            audit_safety_notes.append("model_failure_recorded")
+        llm_run = repository.save_llm_run(
+            provider=candidate_model_config.provider.value,
+            model=candidate_model_config.model,
+            purpose="autonomous_cross_source_advisory",
+            prompt_hash=generation.prompt_hash,
+            mode="live",
+            latency_ms=generation.model_latency_ms,
+            error=generation.model_failure_reason,
+            safety_notes=audit_safety_notes,
+        )
+        projection = _build_cross_source_llm_advisory_projection(
+            campaign=campaign,
+            pipeline_run_id=pipeline_run.id,
+            source_snapshot_digest=source_snapshot_digest,
+            hypotheses=hypotheses,
+            fact_pack=fact_pack,
+            baselines=baselines,
+            candidate_model_config=candidate_model_config,
+            generation=generation,
+            llm_run=llm_run,
+        )
+        if projection is None:
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason="candidate_model_advisory_projection_invalid",
+            )
+        try:
+            stage = repository.save_pipeline_stage(
+                pipeline_run_id=pipeline_run.id,
+                campaign_id=campaign.id,
+                task_id=task.id,
+                stage_id=stage_id,
+                stage_key="autonomous_cross_source_llm_advisory",
+                stage_order=0,
+                status="completed",
+                input_refs=task.input_refs,
+                output_refs=[f"llm_run:{llm_run.id}", projection_ref],
+                safety_gate_state="safe",
+                stop_reason=None,
+                payload=projection,
+                strict_idempotency=True,
+            )
+        except ValueError:
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason="candidate_model_advisory_projection_invalid",
+            )
+    assert stage is not None
+    llm_run_id = projection.get("llm_run_id") if isinstance(projection, dict) else None
+    if not isinstance(llm_run_id, str):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="candidate_model_advisory_projection_invalid",
+        )
+    output_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        f"pipeline_stage:{stage.id}",
+        f"llm_run:{llm_run_id}",
+        projection_ref,
+    ]
+    completed_execution = _finish_task_execution(
+        task=task,
+        repository=repository,
+        task_status="completed",
+        output_refs=output_refs,
+        agent_status="completed",
+        agent_output_refs=output_refs,
+        safety_gate_state="allowed",
+        stop_reason=None,
+        payload=projection,
+    )
+    if completed_execution is None:
+        return _execution_lease_lost_result(task=task, repository=repository)
+    completed_task, agent_run = completed_execution
+    record_autonomous_research_task_completion(
+        task=completed_task,
+        repository=repository,
+    )
+    return {
+        "status": "completed",
+        "task_id": task.id,
+        "agent_run_id": agent_run.id,
+        "stop_reason": None,
+    }
 
+
+def _runtime_cross_source_llm_advisory_projection_for_refutation(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    pipeline_run: Any,
+    hypotheses: list,
+    workspace_inputs: dict | None,
+    repository: DatabaseRepository,
+) -> tuple[dict | None, str | None]:
+    campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    if "candidate_model" not in campaign_payload:
+        return None, None
+    candidate_model_config = candidate_model_config_from_value(
+        campaign_payload.get("candidate_model")
+    )
+    if candidate_model_config is None:
+        return None, "candidate_model_config_invalid"
+    task_payload = task.payload if isinstance(task.payload, dict) else {}
     source_snapshot_digest = _worker_safe_string(
         task_payload.get("source_snapshot_digest")
     )
     if _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest) is None:
+        return None, "candidate_model_advisory_projection_missing"
+    fact_pack_inputs = _runtime_cross_source_fact_pack(
+        campaign=campaign,
+        pipeline_run_id=pipeline_run.id,
+        source_snapshot_digest=source_snapshot_digest,
+        hypotheses=hypotheses,
+        workspace_inputs=workspace_inputs,
+    )
+    if fact_pack_inputs is None:
+        return None, "candidate_model_advisory_projection_missing"
+    fact_pack, baselines = fact_pack_inputs
+    advisory_tasks = [
+        candidate
+        for candidate in repository.list_campaign_tasks(campaign.id)
+        if candidate.task_type == "cross_source_llm_advisory"
+        and candidate.status == "completed"
+        and isinstance(candidate.payload, dict)
+        and candidate.payload.get("runtime_schema")
+        == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA
+        and candidate.payload.get("source_snapshot_digest") == source_snapshot_digest
+        and candidate.payload.get("pipeline_run_id") == pipeline_run.id
+    ]
+    if len(advisory_tasks) != 1:
+        return None, "candidate_model_advisory_projection_missing"
+    advisory_task = advisory_tasks[0]
+    task_config, task_config_stop_reason = _runtime_cross_source_candidate_model_config(
+        task=advisory_task,
+        campaign=campaign,
+    )
+    if task_config is None or task_config_stop_reason is not None:
+        return None, task_config_stop_reason or "candidate_model_config_missing"
+    if not _runtime_cross_source_advisory_task_has_bound_inputs(
+        task=advisory_task,
+        campaign=campaign,
+        pipeline_run_id=pipeline_run.id,
+        source_snapshot_digest=source_snapshot_digest,
+        candidate_model_config=candidate_model_config,
+    ):
+        return None, "candidate_model_advisory_projection_missing"
+    projection_ref = f"cross_source_llm_advisory_projection:{advisory_task.id}"
+    task_input_refs = task.input_refs if isinstance(task.input_refs, list) else []
+    bound_projection_refs = [
+        reference
+        for reference in task_input_refs
+        if isinstance(reference, str)
+        and reference.startswith("cross_source_llm_advisory_projection:")
+    ]
+    if bound_projection_refs != [projection_ref]:
+        return None, "candidate_model_advisory_projection_missing"
+    if projection_ref not in advisory_task.output_refs:
+        return None, "candidate_model_advisory_projection_missing"
+    specialist_stages = [
+        stage
+        for stage in repository.list_pipeline_stages_for_run(pipeline_run.id)
+        if stage.task_id == advisory_task.id
+        and stage.stage_key == "autonomous_cross_source_llm_advisory"
+        and stage.status == "completed"
+        and stage.safety_gate_state == "safe"
+        and projection_ref in stage.output_refs
+    ]
+    if len(specialist_stages) != 1:
+        return None, "candidate_model_advisory_projection_missing"
+    specialist_stage = specialist_stages[0]
+    llm_run_id = (
+        specialist_stage.payload.get("llm_run_id")
+        if isinstance(specialist_stage.payload, dict)
+        else None
+    )
+    llm_run = (
+        repository.session.get(LLMRunRecord, llm_run_id)
+        if isinstance(llm_run_id, str)
+        else None
+    )
+    projection = (
+        _safe_cross_source_llm_advisory_projection(
+            specialist_stage.payload,
+            campaign=campaign,
+            pipeline_run_id=pipeline_run.id,
+            source_snapshot_digest=source_snapshot_digest,
+            hypotheses=hypotheses,
+            fact_pack=fact_pack,
+            baselines=baselines,
+            candidate_model_config=candidate_model_config,
+            llm_run=llm_run,
+        )
+        if llm_run is not None
+        else None
+    )
+    if projection is None:
+        return None, "candidate_model_advisory_projection_invalid"
+    agent_runs = [
+        run
+        for run in repository.list_campaign_agent_runs(campaign.id)
+        if run.task_id == advisory_task.id
+        and run.status == "completed"
+        and run.safety_gate_state == "allowed"
+        and projection_ref in run.output_refs
+        and run.payload == projection
+    ]
+    runtime_stages = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.task_id == advisory_task.id
+        and stage.stage_key == "autonomous_research:cross_source_llm_advisory"
+        and stage.status == "completed"
+        and stage.safety_gate_state == "allowed"
+        and projection_ref in stage.output_refs
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("runtime_schema")
+        == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA
+        and stage.payload.get("source_snapshot_digest") == source_snapshot_digest
+    ]
+    if len(agent_runs) != 1 or len(runtime_stages) != 1:
+        return None, "candidate_model_advisory_projection_missing"
+    return projection, None
+
+
+def _merge_cross_source_llm_advisory_strings(
+    current: object,
+    additions: object,
+) -> list[str]:
+    values = _worker_safe_string_list(current)
+    for item in (additions if isinstance(additions, list) else []):
+        if not _model_advisory_text_is_safe(item):
+            continue
+        text = item.strip()
+        if text not in values:
+            values.append(text)
+        if len(values) >= 8:
+            break
+    return values[:8]
+
+
+def _apply_cross_source_llm_advisory(
+    *,
+    hypotheses: list,
+    projection: dict | None,
+) -> list[dict]:
+    if projection is None:
+        return [item for item in hypotheses if isinstance(item, dict)]
+    advisories = projection.get("advisories")
+    if not isinstance(advisories, list):
+        return [item for item in hypotheses if isinstance(item, dict)]
+    advisory_by_candidate = {
+        item.get("candidate_id"): item
+        for item in advisories
+        if isinstance(item, dict) and isinstance(item.get("candidate_id"), str)
+    }
+    enriched: list[dict] = []
+    for hypothesis in hypotheses:
+        if not isinstance(hypothesis, dict):
+            continue
+        candidate = dict(hypothesis)
+        advisory = advisory_by_candidate.get(candidate.get("hypothesis_id"))
+        if advisory is None:
+            enriched.append(candidate)
+            continue
+        baseline = _runtime_cross_source_advisory_baseline_candidate(candidate)
+        baseline_candidate = baseline[0] if baseline is not None else None
+        advisory_refs = _model_advisory_fact_refs(
+            advisory.get("source_fact_refs"),
+            maximum=20,
+        )
+        baseline_refs = _model_advisory_fact_refs(
+            baseline_candidate.get("source_fact_refs")
+            if isinstance(baseline_candidate, dict)
+            else None,
+            maximum=20,
+        )
+        priority = _candidate_model_priority(advisory.get("model_priority_score"))
+        if (
+            advisory_refs is None
+            or baseline_refs is None
+            or not set(advisory_refs).issubset(set(baseline_refs))
+            or priority <= 0
+        ):
+            enriched.append(candidate)
+            continue
+        candidate["evidence_needed"] = _merge_cross_source_llm_advisory_strings(
+            candidate.get("evidence_needed"),
+            advisory.get("evidence_requirements"),
+        )
+        candidate["refutation_questions"] = _merge_cross_source_llm_advisory_strings(
+            candidate.get("refutation_questions"),
+            advisory.get("refutation_questions"),
+        )
+        candidate["model_priority_score"] = max(
+            _candidate_model_priority(candidate.get("model_priority_score")),
+            priority,
+        )
+        enriched.append(candidate)
+    return enriched
+
+
+def _runtime_specialist_projection_stage_id(*, task_id: str, stage_key: str) -> str:
+    identity = f"{task_id}:{stage_key}"
+    return "pipeline_stage_specialist_" + sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _run_exploit_chain_reasoning_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> dict:
+    from app.autonomous_research_runtime import record_autonomous_research_task_completion
+    from app.vuln_chain_builder import build_vuln_chain_builder_plan
+
+    inputs = _runtime_chain_specialist_inputs(
+        task=task,
+        campaign=campaign,
+        repository=repository,
+    )
+    if inputs is None:
         return _block_agent_task(
             task=task,
             repository=repository,
             stop_reason="exploit_chain_input_missing",
         )
-    source_hypotheses = _chain_reasoning_hypothesis_seeds(hypotheses)
+    pipeline_run, _, source_snapshot_digest, source_hypotheses = inputs
     try:
         plan_payload = build_vuln_chain_builder_plan(
             package_id=f"pipeline_run:{pipeline_run.id}",
@@ -1390,8 +2515,103 @@ def _run_exploit_chain_reasoning_task(
             repository=repository,
             stop_reason="exploit_chain_projection_invalid",
         )
+    projection_ref = f"exploit_chain_projection:{task.id}"
+    chain_stage = repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run.id,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_id=_runtime_specialist_projection_stage_id(
+            task_id=task.id,
+            stage_key="autonomous_exploit_chain_reasoning",
+        ),
+        stage_key="autonomous_exploit_chain_reasoning",
+        stage_order=0,
+        status="completed",
+        input_refs=[
+            f"pipeline_run:{pipeline_run.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+        ],
+        output_refs=[projection_ref],
+        safety_gate_state="safe",
+        stop_reason=None,
+        payload=projection,
+    )
+    output_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        f"pipeline_stage:{chain_stage.id}",
+        projection_ref,
+    ]
+    completed_execution = _finish_task_execution(
+        task=task,
+        repository=repository,
+        task_status="completed",
+        output_refs=output_refs,
+        agent_status="completed",
+        agent_output_refs=output_refs,
+        safety_gate_state="allowed",
+        stop_reason=None,
+        payload=projection,
+    )
+    if completed_execution is None:
+        return _execution_lease_lost_result(task=task, repository=repository)
+    completed_task, agent_run = completed_execution
+    record_autonomous_research_task_completion(
+        task=completed_task,
+        repository=repository,
+    )
+    return {
+        "status": "completed",
+        "task_id": task.id,
+        "agent_run_id": agent_run.id,
+        "stop_reason": None,
+    }
+
+
+def _run_variant_analysis_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> dict:
+    from app.autonomous_research_runtime import record_autonomous_research_task_completion
+    from app.variant_analysis import build_variant_analysis_plan
+
+    inputs = _runtime_chain_specialist_inputs(
+        task=task,
+        campaign=campaign,
+        repository=repository,
+    )
+    if inputs is None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="exploit_chain_projection_missing",
+        )
+    pipeline_run, hypotheses, source_snapshot_digest, source_hypotheses = inputs
+    (
+        exploit_chain_projection,
+        chain_task,
+        _,
+        chain_stop_reason,
+    ) = _runtime_exploit_chain_projection_with_provenance(
+        task=task,
+        campaign=campaign,
+        pipeline_run=pipeline_run,
+        hypotheses=hypotheses,
+        repository=repository,
+    )
+    if (
+        chain_stop_reason is not None
+        or exploit_chain_projection is None
+        or chain_task is None
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=chain_stop_reason or "exploit_chain_projection_missing",
+        )
     try:
-        variant_analysis_plan = build_variant_analysis_plan(
+        plan_payload = build_variant_analysis_plan(
             package_id=f"pipeline_run:{pipeline_run.id}",
             source_hypotheses=source_hypotheses,
             human_allow_export_write=False,
@@ -1402,24 +2622,164 @@ def _run_exploit_chain_reasoning_task(
             repository=repository,
             stop_reason="variant_analysis_projection_invalid",
         )
-    variant_analysis_projection = _build_variant_analysis_projection(
-        plan_payload=variant_analysis_plan,
+    projection = _build_variant_analysis_projection(
+        plan_payload=plan_payload,
         pipeline_run_id=pipeline_run.id,
         source_snapshot_digest=source_snapshot_digest,
         source_hypotheses=source_hypotheses,
-        exploit_chain_projection=projection,
+        exploit_chain_projection=exploit_chain_projection,
     )
-    if variant_analysis_projection is None:
+    if projection is None:
         return _block_agent_task(
             task=task,
             repository=repository,
             stop_reason="variant_analysis_projection_invalid",
         )
+
+    projection_ref = f"variant_analysis_projection:{task.id}"
+    stage = repository.save_pipeline_stage(
+        pipeline_run_id=pipeline_run.id,
+        campaign_id=campaign.id,
+        task_id=task.id,
+        stage_id=_runtime_specialist_projection_stage_id(
+            task_id=task.id,
+            stage_key="autonomous_variant_analysis",
+        ),
+        stage_key="autonomous_variant_analysis",
+        stage_order=1,
+        status="completed",
+        input_refs=[
+            f"pipeline_run:{pipeline_run.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+            f"exploit_chain_projection:{chain_task.id}",
+        ],
+        output_refs=[projection_ref],
+        safety_gate_state="safe",
+        stop_reason=None,
+        payload=projection,
+    )
+    output_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        f"pipeline_stage:{stage.id}",
+        projection_ref,
+    ]
+    completed_execution = _finish_task_execution(
+        task=task,
+        repository=repository,
+        task_status="completed",
+        output_refs=output_refs,
+        agent_status="completed",
+        agent_output_refs=output_refs,
+        safety_gate_state="allowed",
+        stop_reason=None,
+        payload=projection,
+    )
+    if completed_execution is None:
+        return _execution_lease_lost_result(task=task, repository=repository)
+    completed_task, agent_run = completed_execution
+    record_autonomous_research_task_completion(
+        task=completed_task,
+        repository=repository,
+    )
+    return {
+        "status": "completed",
+        "task_id": task.id,
+        "agent_run_id": agent_run.id,
+        "stop_reason": None,
+    }
+
+
+def _deep_code_reasoning_chain_input(exploit_chain_projection: dict) -> dict:
+    chains = exploit_chain_projection.get("chains")
+    if not isinstance(chains, list):
+        return {"chains": []}
+    return {
+        "chains": [
+            {
+                "chain_id": _worker_safe_string(chain.get("chain_ref")).removeprefix(
+                    "exploit_chain:"
+                ),
+                "source_hypothesis_id": _worker_safe_string(
+                    chain.get("source_hypothesis_ref")
+                ),
+                "family": _worker_safe_string(chain.get("family")),
+                "vuln_type": _worker_safe_string(chain.get("vuln_type")),
+            }
+            for chain in chains
+            if isinstance(chain, dict)
+        ]
+    }
+
+
+def _run_deep_code_reasoning_task(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> dict:
+    from app.autonomous_research_runtime import record_autonomous_research_task_completion
+    from app.deep_code_reasoning import build_deep_code_reasoning_plan
+
+    inputs = _runtime_chain_specialist_inputs(
+        task=task,
+        campaign=campaign,
+        repository=repository,
+    )
+    if inputs is None:
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason="variant_analysis_projection_missing",
+        )
+    pipeline_run, hypotheses, source_snapshot_digest, source_hypotheses = inputs
+    (
+        exploit_chain_projection,
+        chain_task,
+        _,
+        chain_stop_reason,
+    ) = _runtime_exploit_chain_projection_with_provenance(
+        task=task,
+        campaign=campaign,
+        pipeline_run=pipeline_run,
+        hypotheses=hypotheses,
+        repository=repository,
+    )
+    if (
+        chain_stop_reason is not None
+        or exploit_chain_projection is None
+        or chain_task is None
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=chain_stop_reason or "exploit_chain_projection_missing",
+        )
+    variant_analysis_projection, variant_stage, variant_stop_reason = (
+        _runtime_variant_analysis_projection_for_report(
+            task=task,
+            campaign=campaign,
+            pipeline_run=pipeline_run,
+            repository=repository,
+        )
+    )
+    if (
+        variant_stop_reason is not None
+        or variant_analysis_projection is None
+        or variant_stage is None
+    ):
+        return _block_agent_task(
+            task=task,
+            repository=repository,
+            stop_reason=variant_stop_reason or "variant_analysis_projection_missing",
+        )
     try:
-        deep_code_reasoning_plan = build_deep_code_reasoning_plan(
+        plan_payload = build_deep_code_reasoning_plan(
             package_id=f"pipeline_run:{pipeline_run.id}",
             source_hypotheses=source_hypotheses,
-            vuln_chain_builder=plan_payload,
+            vuln_chain_builder=_deep_code_reasoning_chain_input(
+                exploit_chain_projection
+            ),
+            variant_analysis=variant_analysis_projection.get("variant_analysis"),
             human_allow_export_write=False,
         ).to_dict()
     except (TypeError, ValueError):
@@ -1428,76 +2788,48 @@ def _run_exploit_chain_reasoning_task(
             repository=repository,
             stop_reason="deep_code_reasoning_projection_invalid",
         )
-    deep_code_reasoning_projection = _build_deep_code_reasoning_projection(
-        plan_payload=deep_code_reasoning_plan,
+    projection = _build_deep_code_reasoning_projection(
+        plan_payload=plan_payload,
         pipeline_run_id=pipeline_run.id,
         source_snapshot_digest=source_snapshot_digest,
         source_hypotheses=source_hypotheses,
-        exploit_chain_projection=projection,
+        exploit_chain_projection=exploit_chain_projection,
+        variant_analysis_projection=variant_analysis_projection,
     )
-    if deep_code_reasoning_projection is None:
+    if projection is None:
         return _block_agent_task(
             task=task,
             repository=repository,
             stop_reason="deep_code_reasoning_projection_invalid",
         )
 
-    projection_ref = f"exploit_chain_projection:{task.id}"
-    variant_analysis_ref = f"variant_analysis_projection:{task.id}"
-    deep_code_reasoning_ref = f"deep_code_reasoning_projection:{task.id}"
-    chain_stage = repository.save_pipeline_stage(
+    projection_ref = f"deep_code_reasoning_projection:{task.id}"
+    stage = repository.save_pipeline_stage(
         pipeline_run_id=pipeline_run.id,
         campaign_id=campaign.id,
         task_id=task.id,
-        stage_key="autonomous_exploit_chain_reasoning",
-        stage_order=0,
-        status="completed",
-        input_refs=[f"pipeline_run:{pipeline_run.id}"],
-        output_refs=[projection_ref],
-        safety_gate_state="safe",
-        stop_reason=None,
-        payload=projection,
-    )
-    variant_analysis_stage = repository.save_pipeline_stage(
-        pipeline_run_id=pipeline_run.id,
-        campaign_id=campaign.id,
-        task_id=task.id,
-        stage_key="autonomous_variant_analysis",
-        stage_order=1,
-        status="completed",
-        input_refs=[
-            f"pipeline_run:{pipeline_run.id}",
-            f"pipeline_stage:{chain_stage.id}",
-        ],
-        output_refs=[variant_analysis_ref],
-        safety_gate_state="safe",
-        stop_reason=None,
-        payload=variant_analysis_projection,
-    )
-    deep_code_reasoning_stage = repository.save_pipeline_stage(
-        pipeline_run_id=pipeline_run.id,
-        campaign_id=campaign.id,
-        task_id=task.id,
+        stage_id=_runtime_specialist_projection_stage_id(
+            task_id=task.id,
+            stage_key="autonomous_deep_code_reasoning",
+        ),
         stage_key="autonomous_deep_code_reasoning",
         stage_order=2,
         status="completed",
         input_refs=[
             f"pipeline_run:{pipeline_run.id}",
-            f"pipeline_stage:{chain_stage.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+            f"exploit_chain_projection:{chain_task.id}",
+            f"variant_analysis_projection:{variant_stage.task_id}",
         ],
-        output_refs=[deep_code_reasoning_ref],
+        output_refs=[projection_ref],
         safety_gate_state="safe",
         stop_reason=None,
-        payload=deep_code_reasoning_projection,
+        payload=projection,
     )
     output_refs = [
         f"pipeline_run:{pipeline_run.id}",
-        f"pipeline_stage:{chain_stage.id}",
-        f"pipeline_stage:{variant_analysis_stage.id}",
-        f"pipeline_stage:{deep_code_reasoning_stage.id}",
+        f"pipeline_stage:{stage.id}",
         projection_ref,
-        variant_analysis_ref,
-        deep_code_reasoning_ref,
     ]
     completed_execution = _finish_task_execution(
         task=task,
@@ -1535,6 +2867,10 @@ def _run_candidate_refutation_task(
     from app.candidate_hunter_loop import (
         build_candidate_hunter_observations,
         run_candidate_hunter_loop,
+    )
+    from app.cross_source_candidate_generator import (
+        registered_local_advisory_fact_references,
+        registered_local_dependency_advisory_facts,
     )
     from app.autonomous_research_runtime import (
         record_autonomous_research_task_awaiting_evidence,
@@ -1578,14 +2914,107 @@ def _run_candidate_refutation_task(
             stop_reason=chain_stop_reason,
         )
 
-    candidates = [candidate for candidate in hypotheses if isinstance(candidate, dict)]
+    if task_payload.get("runtime_schema") == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA:
+        variant_projection, _, variant_stop_reason = (
+            _runtime_variant_analysis_projection_for_report(
+                task=task,
+                campaign=campaign,
+                pipeline_run=pipeline_run,
+                repository=repository,
+            )
+        )
+        deep_projection, _, deep_stop_reason = (
+            _runtime_deep_code_reasoning_projection_for_report(
+                task=task,
+                campaign=campaign,
+                pipeline_run=pipeline_run,
+                repository=repository,
+            )
+        )
+        if variant_stop_reason is not None or variant_projection is None:
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason=variant_stop_reason or "variant_analysis_projection_missing",
+            )
+        if deep_stop_reason is not None or deep_projection is None:
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason=deep_stop_reason or "deep_code_reasoning_projection_missing",
+            )
+    model_advisory_projection: dict | None = None
+    if task_payload.get("runtime_schema") == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA:
+        model_advisory_projection, model_advisory_stop_reason = (
+            _runtime_cross_source_llm_advisory_projection_for_refutation(
+                task=task,
+                campaign=campaign,
+                pipeline_run=pipeline_run,
+                hypotheses=hypotheses,
+                workspace_inputs=workspace_inputs,
+                repository=repository,
+            )
+        )
+        if model_advisory_stop_reason is not None:
+            return _block_agent_task(
+                task=task,
+                repository=repository,
+                stop_reason=model_advisory_stop_reason,
+            )
+    candidates = _apply_cross_source_llm_advisory(
+        hypotheses=hypotheses,
+        projection=model_advisory_projection,
+    )
+    source_snapshot_digest = _worker_safe_string(
+        task_payload.get("source_snapshot_digest")
+    )
+    codebase_facts = repository.list_campaign_codebase_facts(campaign.id)
+    if task_payload.get("runtime_schema") == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA:
+        target_model_projection, target_model_stop_reason = (
+            _runtime_target_model_projection(
+                task=task,
+                campaign=campaign,
+                repository=repository,
+            )
+        )
+        codebase_facts = (
+            _target_model_projected_codebase_facts(
+                projection=target_model_projection,
+                codebase_facts=codebase_facts,
+            )
+            if target_model_stop_reason is None and target_model_projection is not None
+            else []
+        )
+    static_advisory_facts = [
+        fact.model_dump(mode="json")
+        for fact in registered_local_advisory_fact_references(
+            artifacts=repository.list_artifacts(
+                program_id=campaign.program_id,
+                asset=campaign.default_asset,
+            ),
+            campaign_id=campaign.id,
+            source_snapshot_digest=source_snapshot_digest,
+            artifact_ids=_candidate_refutation_advisory_artifact_ids(task),
+        )
+    ]
+    dependency_advisory_facts = registered_local_dependency_advisory_facts(
+        artifacts=repository.list_artifacts(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+        ),
+        campaign_id=campaign.id,
+        source_snapshot_digest=source_snapshot_digest,
+        artifact_ids=_candidate_refutation_advisory_artifact_ids(task),
+    )
     observations = build_candidate_hunter_observations(
         pipeline_run_id=pipeline_run.id,
         candidates=candidates,
         code_files=[],
         supplemental_code_facts=_candidate_hunter_persisted_code_facts(
-            repository.list_campaign_codebase_facts(campaign.id)
+            codebase_facts
         ),
+        static_advisory_facts=static_advisory_facts,
+        dependency_advisory_facts=dependency_advisory_facts,
         surface_facts=[],
         context_facts=[
             {"artifact_kind": "scope", "fact_type": "scope_context"},
@@ -1715,6 +3144,47 @@ def _run_candidate_refutation_task(
         "agent_run_id": agent_run.id,
         "stop_reason": "awaiting_evidence",
     }
+
+
+def _candidate_refutation_advisory_artifact_ids(
+    task: CampaignTaskRecord,
+) -> list[str] | None:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    if payload.get("runtime_schema") != _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA:
+        return None
+    input_refs = task.input_refs if isinstance(task.input_refs, list) else []
+    return sorted(
+        {
+            match.group(1)
+            for input_ref in input_refs
+            if isinstance(input_ref, str)
+            if (match := _ADVISORY_ARTIFACT_INPUT_REF_PATTERN.fullmatch(input_ref))
+            is not None
+        }
+    )
+
+
+def _hypothesis_generation_learning_signals(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> list[LearningSignalRecord]:
+    if not isinstance(campaign.program_id, str):
+        return []
+    signals = repository.list_learning_signals(campaign.program_id)
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    if payload.get("runtime_schema") != _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA:
+        return signals
+    input_refs = task.input_refs if isinstance(task.input_refs, list) else []
+    bound_ids = {
+        match.group(1)
+        for input_ref in input_refs
+        if isinstance(input_ref, str)
+        if (match := _LEARNING_SIGNAL_INPUT_REF_PATTERN.fullmatch(input_ref))
+        is not None
+    }
+    return [signal for signal in signals if signal.id in bound_ids]
 
 
 def _load_runtime_candidate_hunter_output_projection(
@@ -2585,20 +4055,25 @@ def _safe_chain_tokens(value: object, *, maximum: int) -> list[str] | None:
     return tokens
 
 
-def _runtime_exploit_chain_projection(
+def _runtime_exploit_chain_projection_with_provenance(
     *,
     task: CampaignTaskRecord,
     campaign: CampaignRecord,
     pipeline_run: Any,
     hypotheses: list,
     repository: DatabaseRepository,
-) -> tuple[dict | None, str | None]:
+) -> tuple[
+    dict | None,
+    CampaignTaskRecord | None,
+    PipelineStageRecord | None,
+    str | None,
+]:
     task_payload = task.payload if isinstance(task.payload, dict) else {}
     source_snapshot_digest = _worker_safe_string(
         task_payload.get("source_snapshot_digest")
     )
     if _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest) is None:
-        return None, "exploit_chain_projection_missing"
+        return None, None, None, "exploit_chain_projection_missing"
     source_hypotheses = _chain_reasoning_hypothesis_seeds(hypotheses)
     chain_tasks = [
         candidate
@@ -2607,9 +4082,9 @@ def _runtime_exploit_chain_projection(
         and candidate.status == "completed"
     ]
     if not chain_tasks:
-        return None, "exploit_chain_projection_missing"
+        return None, None, None, "exploit_chain_projection_missing"
     if len(chain_tasks) != 1:
-        return None, "exploit_chain_projection_invalid"
+        return None, None, None, "exploit_chain_projection_invalid"
     chain_task = chain_tasks[0]
     chain_task_payload = (
         chain_task.payload if isinstance(chain_task.payload, dict) else {}
@@ -2623,7 +4098,7 @@ def _runtime_exploit_chain_projection(
         or projection_ref not in chain_task.output_refs
         or f"pipeline_run:{pipeline_run.id}" not in chain_task.input_refs
     ):
-        return None, "exploit_chain_projection_invalid"
+        return None, None, None, "exploit_chain_projection_invalid"
     runtime_stages = [
         stage
         for stage in repository.list_campaign_pipeline_stages(campaign.id)
@@ -2645,6 +4120,11 @@ def _runtime_exploit_chain_projection(
         and stage.stage_key == "autonomous_exploit_chain_reasoning"
         and stage.status == "completed"
         and stage.safety_gate_state == "safe"
+        and stage.input_refs
+        == [
+            f"pipeline_run:{pipeline_run.id}",
+            f"source_snapshot:{source_snapshot_digest}",
+        ]
         and stage.output_refs == [projection_ref]
     ]
     agent_runs = [
@@ -2656,9 +4136,9 @@ def _runtime_exploit_chain_projection(
         and projection_ref in run.output_refs
     ]
     if not runtime_stages or not plan_stages or not agent_runs:
-        return None, "exploit_chain_projection_missing"
+        return None, None, None, "exploit_chain_projection_missing"
     if len(runtime_stages) != 1 or len(plan_stages) != 1 or len(agent_runs) != 1:
-        return None, "exploit_chain_projection_invalid"
+        return None, None, None, "exploit_chain_projection_invalid"
     projection = _safe_exploit_chain_projection(
         agent_runs[0].payload,
         pipeline_run_id=pipeline_run.id,
@@ -2666,8 +4146,26 @@ def _runtime_exploit_chain_projection(
         source_hypotheses=source_hypotheses,
     )
     if projection is None or plan_stages[0].payload != projection:
-        return None, "exploit_chain_projection_invalid"
-    return projection, None
+        return None, None, None, "exploit_chain_projection_invalid"
+    return projection, chain_task, plan_stages[0], None
+
+
+def _runtime_exploit_chain_projection(
+    *,
+    task: CampaignTaskRecord,
+    campaign: CampaignRecord,
+    pipeline_run: Any,
+    hypotheses: list,
+    repository: DatabaseRepository,
+) -> tuple[dict | None, str | None]:
+    projection, _, _, stop_reason = _runtime_exploit_chain_projection_with_provenance(
+        task=task,
+        campaign=campaign,
+        pipeline_run=pipeline_run,
+        hypotheses=hypotheses,
+        repository=repository,
+    )
+    return projection, stop_reason
 
 
 def _safe_exploit_chain_projection(
@@ -3080,6 +4578,7 @@ def _build_deep_code_reasoning_projection(
     source_snapshot_digest: str,
     source_hypotheses: list[dict[str, str]],
     exploit_chain_projection: dict,
+    variant_analysis_projection: dict,
 ) -> dict | None:
     full_plan = _safe_deep_code_reasoning_plan(
         plan_payload,
@@ -3099,6 +4598,9 @@ def _build_deep_code_reasoning_projection(
         "source_hypothesis_digest": _canonical_digest(source_hypotheses),
         "exploit_chain_projection_digest": _canonical_digest(
             exploit_chain_projection
+        ),
+        "variant_analysis_projection_digest": _canonical_digest(
+            variant_analysis_projection
         ),
         "deep_code_reasoning": deep_code_reasoning,
         "deep_code_reasoning_digest": _canonical_digest(deep_code_reasoning),
@@ -3314,6 +4816,7 @@ def _safe_deep_code_reasoning_projection(
     source_snapshot_digest: str,
     source_hypotheses: list[dict[str, str]],
     exploit_chain_projection: dict,
+    variant_analysis_projection: dict,
 ) -> dict | None:
     if not isinstance(value, dict):
         return None
@@ -3325,6 +4828,7 @@ def _safe_deep_code_reasoning_projection(
         "source_hypothesis_refs",
         "source_hypothesis_digest",
         "exploit_chain_projection_digest",
+        "variant_analysis_projection_digest",
         "deep_code_reasoning",
         "deep_code_reasoning_digest",
         "human_review_required",
@@ -3352,6 +4856,8 @@ def _safe_deep_code_reasoning_projection(
         != _canonical_digest(source_hypotheses)
         or value.get("exploit_chain_projection_digest")
         != _canonical_digest(exploit_chain_projection)
+        or value.get("variant_analysis_projection_digest")
+        != _canonical_digest(variant_analysis_projection)
         or deep_code_reasoning is None
         or value.get("deep_code_reasoning_digest")
         != _canonical_digest(deep_code_reasoning)
@@ -3389,10 +4895,10 @@ def _runtime_variant_analysis_projection_for_report(
     hypotheses = pipeline_payload.get("hypotheses")
     if _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest) is None:
         return None, None, "variant_analysis_projection_invalid"
-    chain_tasks = [
+    specialist_tasks = [
         candidate
         for candidate in repository.list_campaign_tasks(campaign.id)
-        if candidate.task_type == "exploit_chain_reasoning"
+        if candidate.task_type == "variant_analysis"
         and candidate.status == "completed"
         and isinstance(candidate.payload, dict)
         and candidate.payload.get("runtime_schema")
@@ -3400,49 +4906,85 @@ def _runtime_variant_analysis_projection_for_report(
         and candidate.payload.get("pipeline_run_id") == pipeline_run.id
         and candidate.payload.get("source_snapshot_digest") == source_snapshot_digest
     ]
-    if not chain_tasks:
+    if not specialist_tasks:
         return None, None, None
-    if len(chain_tasks) != 1:
+    if len(specialist_tasks) != 1:
         return None, None, "variant_analysis_projection_invalid"
     if not isinstance(hypotheses, list):
         return None, None, "variant_analysis_projection_invalid"
     source_hypotheses = _chain_reasoning_hypothesis_seeds(hypotheses)
-    chain_task = chain_tasks[0]
-    projection_ref = f"variant_analysis_projection:{chain_task.id}"
-    if projection_ref not in chain_task.output_refs:
-        return None, None, None
-
-    exploit_chain_projection, exploit_chain_stop_reason = (
-        _runtime_exploit_chain_projection(
-            task=task,
-            campaign=campaign,
-            pipeline_run=pipeline_run,
-            hypotheses=hypotheses,
-            repository=repository,
-        )
-    )
-    if exploit_chain_stop_reason is not None or exploit_chain_projection is None:
+    specialist_task = specialist_tasks[0]
+    projection_ref = f"variant_analysis_projection:{specialist_task.id}"
+    if projection_ref not in specialist_task.output_refs:
         return None, None, "variant_analysis_projection_invalid"
+
+    (
+        exploit_chain_projection,
+        chain_task,
+        _,
+        exploit_chain_stop_reason,
+    ) = _runtime_exploit_chain_projection_with_provenance(
+        task=task,
+        campaign=campaign,
+        pipeline_run=pipeline_run,
+        hypotheses=hypotheses,
+        repository=repository,
+    )
+    if (
+        exploit_chain_stop_reason is not None
+        or exploit_chain_projection is None
+        or chain_task is None
+    ):
+        return None, None, "variant_analysis_projection_invalid"
+    expected_input_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        f"source_snapshot:{source_snapshot_digest}",
+        f"exploit_chain_projection:{chain_task.id}",
+    ]
+    runtime_stages = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.task_id == specialist_task.id
+        and stage.stage_key == "autonomous_research:variant_analysis"
+        and stage.status == "completed"
+        and stage.safety_gate_state == "allowed"
+        and stage.input_refs == specialist_task.input_refs
+        and stage.output_refs == specialist_task.output_refs
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("runtime_schema")
+        == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA
+        and stage.payload.get("source_snapshot_digest") == source_snapshot_digest
+        and projection_ref in stage.output_refs
+    ]
     stages = [
         stage
         for stage in repository.list_pipeline_stages_for_run(pipeline_run.id)
-        if stage.task_id == chain_task.id
+        if stage.task_id == specialist_task.id
         and stage.campaign_id == campaign.id
         and stage.stage_key == "autonomous_variant_analysis"
         and stage.status == "completed"
         and stage.safety_gate_state == "safe"
+        and stage.input_refs == expected_input_refs
         and stage.output_refs == [projection_ref]
     ]
-    if len(stages) != 1:
+    agent_runs = [
+        run
+        for run in repository.list_campaign_agent_runs(campaign.id)
+        if run.task_id == specialist_task.id
+        and run.status == "completed"
+        and run.safety_gate_state == "allowed"
+        and projection_ref in run.output_refs
+    ]
+    if len(runtime_stages) != 1 or len(stages) != 1 or len(agent_runs) != 1:
         return None, None, "variant_analysis_projection_invalid"
     projection = _safe_variant_analysis_projection(
-        stages[0].payload,
+        agent_runs[0].payload,
         pipeline_run_id=pipeline_run.id,
         source_snapshot_digest=source_snapshot_digest,
         source_hypotheses=source_hypotheses,
         exploit_chain_projection=exploit_chain_projection,
     )
-    if projection is None:
+    if projection is None or stages[0].payload != projection:
         return None, None, "variant_analysis_projection_invalid"
     return projection, stages[0], None
 
@@ -3464,10 +5006,10 @@ def _runtime_deep_code_reasoning_projection_for_report(
     hypotheses = pipeline_payload.get("hypotheses")
     if _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest) is None:
         return None, None, "deep_code_reasoning_projection_invalid"
-    chain_tasks = [
+    specialist_tasks = [
         candidate
         for candidate in repository.list_campaign_tasks(campaign.id)
-        if candidate.task_type == "exploit_chain_reasoning"
+        if candidate.task_type == "deep_code_reasoning"
         and candidate.status == "completed"
         and isinstance(candidate.payload, dict)
         and candidate.payload.get("runtime_schema")
@@ -3475,49 +5017,101 @@ def _runtime_deep_code_reasoning_projection_for_report(
         and candidate.payload.get("pipeline_run_id") == pipeline_run.id
         and candidate.payload.get("source_snapshot_digest") == source_snapshot_digest
     ]
-    if not chain_tasks:
+    if not specialist_tasks:
         return None, None, None
-    if len(chain_tasks) != 1:
+    if len(specialist_tasks) != 1:
         return None, None, "deep_code_reasoning_projection_invalid"
     if not isinstance(hypotheses, list):
         return None, None, "deep_code_reasoning_projection_invalid"
     source_hypotheses = _chain_reasoning_hypothesis_seeds(hypotheses)
-    chain_task = chain_tasks[0]
-    projection_ref = f"deep_code_reasoning_projection:{chain_task.id}"
-    if projection_ref not in chain_task.output_refs:
-        return None, None, None
+    specialist_task = specialist_tasks[0]
+    projection_ref = f"deep_code_reasoning_projection:{specialist_task.id}"
+    if projection_ref not in specialist_task.output_refs:
+        return None, None, "deep_code_reasoning_projection_invalid"
 
-    exploit_chain_projection, exploit_chain_stop_reason = (
-        _runtime_exploit_chain_projection(
+    (
+        exploit_chain_projection,
+        chain_task,
+        _,
+        exploit_chain_stop_reason,
+    ) = _runtime_exploit_chain_projection_with_provenance(
+        task=task,
+        campaign=campaign,
+        pipeline_run=pipeline_run,
+        hypotheses=hypotheses,
+        repository=repository,
+    )
+    if (
+        exploit_chain_stop_reason is not None
+        or exploit_chain_projection is None
+        or chain_task is None
+    ):
+        return None, None, "deep_code_reasoning_projection_invalid"
+    variant_analysis_projection, variant_stage, variant_stop_reason = (
+        _runtime_variant_analysis_projection_for_report(
             task=task,
             campaign=campaign,
             pipeline_run=pipeline_run,
-            hypotheses=hypotheses,
             repository=repository,
         )
     )
-    if exploit_chain_stop_reason is not None or exploit_chain_projection is None:
+    if (
+        variant_stop_reason is not None
+        or variant_analysis_projection is None
+        or variant_stage is None
+    ):
         return None, None, "deep_code_reasoning_projection_invalid"
+    expected_input_refs = [
+        f"pipeline_run:{pipeline_run.id}",
+        f"source_snapshot:{source_snapshot_digest}",
+        f"exploit_chain_projection:{chain_task.id}",
+        f"variant_analysis_projection:{variant_stage.task_id}",
+    ]
+    runtime_stages = [
+        stage
+        for stage in repository.list_campaign_pipeline_stages(campaign.id)
+        if stage.task_id == specialist_task.id
+        and stage.stage_key == "autonomous_research:deep_code_reasoning"
+        and stage.status == "completed"
+        and stage.safety_gate_state == "allowed"
+        and stage.input_refs == specialist_task.input_refs
+        and stage.output_refs == specialist_task.output_refs
+        and isinstance(stage.payload, dict)
+        and stage.payload.get("runtime_schema")
+        == _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA
+        and stage.payload.get("source_snapshot_digest") == source_snapshot_digest
+        and projection_ref in stage.output_refs
+    ]
     stages = [
         stage
         for stage in repository.list_pipeline_stages_for_run(pipeline_run.id)
-        if stage.task_id == chain_task.id
+        if stage.task_id == specialist_task.id
         and stage.campaign_id == campaign.id
         and stage.stage_key == "autonomous_deep_code_reasoning"
         and stage.status == "completed"
         and stage.safety_gate_state == "safe"
+        and stage.input_refs == expected_input_refs
         and stage.output_refs == [projection_ref]
     ]
-    if len(stages) != 1:
+    agent_runs = [
+        run
+        for run in repository.list_campaign_agent_runs(campaign.id)
+        if run.task_id == specialist_task.id
+        and run.status == "completed"
+        and run.safety_gate_state == "allowed"
+        and projection_ref in run.output_refs
+    ]
+    if len(runtime_stages) != 1 or len(stages) != 1 or len(agent_runs) != 1:
         return None, None, "deep_code_reasoning_projection_invalid"
     projection = _safe_deep_code_reasoning_projection(
-        stages[0].payload,
+        agent_runs[0].payload,
         pipeline_run_id=pipeline_run.id,
         source_snapshot_digest=source_snapshot_digest,
         source_hypotheses=source_hypotheses,
         exploit_chain_projection=exploit_chain_projection,
+        variant_analysis_projection=variant_analysis_projection,
     )
-    if projection is None:
+    if projection is None or stages[0].payload != projection:
         return None, None, "deep_code_reasoning_projection_invalid"
     return projection, stages[0], None
 
@@ -3628,6 +5222,7 @@ def _run_finding_dedup_and_rank_task(
         source_snapshot_digest=_worker_safe_string(
             task_payload.get("source_snapshot_digest")
         ),
+        historical_report_stage_ids=_finding_dedup_historical_report_stage_ids(task),
     )
     cross_run_duplicates = []
     rankable_candidates = []
@@ -3890,6 +5485,7 @@ def _historical_report_candidates(
     campaign: CampaignRecord,
     pipeline_run: Any,
     source_snapshot_digest: str,
+    historical_report_stage_ids: set[str] | None = None,
 ) -> dict[str, dict[str, str]]:
     history: list[tuple[tuple[str, str, str, str], str, dict[str, str]]] = []
     for prior_run in repository.list_pipeline_runs():
@@ -3900,6 +5496,11 @@ def _historical_report_candidates(
         ):
             continue
         for stage in repository.list_pipeline_stages_for_run(prior_run.id):
+            if (
+                historical_report_stage_ids is not None
+                and stage.id not in historical_report_stage_ids
+            ):
+                continue
             for provenance in _trusted_report_stage_provenance(
                 stage=stage,
                 pipeline_run=prior_run,
@@ -3930,6 +5531,64 @@ def _historical_report_candidates(
     for _sort_key, fingerprint, candidate in sorted(history):
         canonical.setdefault(fingerprint, candidate)
     return canonical
+
+
+def historical_report_stage_refs_for_dedup(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    pipeline_run_id: str,
+    source_snapshot_digest: str,
+) -> list[str]:
+    if _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest) is None:
+        return []
+    pipeline_run = repository.get_pipeline_run(pipeline_run_id)
+    if pipeline_run is None:
+        return []
+    stage_ids: set[str] = set()
+    for prior_run in repository.list_pipeline_runs():
+        if not _same_report_dedup_boundary(
+            prior_run=prior_run,
+            campaign=campaign,
+            pipeline_run=pipeline_run,
+        ):
+            continue
+        for stage in repository.list_pipeline_stages_for_run(prior_run.id):
+            if (
+                _HISTORICAL_REPORT_STAGE_INPUT_REF_PATTERN.fullmatch(
+                    f"historical_report_stage:{stage.id}"
+                )
+                is None
+            ):
+                continue
+            if any(
+                provenance["source_snapshot_digest"] == source_snapshot_digest
+                for provenance in _trusted_report_stage_provenance(
+                    stage=stage,
+                    pipeline_run=prior_run,
+                    repository=repository,
+                )
+            ):
+                stage_ids.add(stage.id)
+    return [f"historical_report_stage:{stage_id}" for stage_id in sorted(stage_ids)]
+
+
+def _finding_dedup_historical_report_stage_ids(
+    task: CampaignTaskRecord,
+) -> set[str] | None:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    if payload.get("runtime_schema") != _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA:
+        return None
+    input_refs = task.input_refs if isinstance(task.input_refs, list) else []
+    return {
+        match.group(1)
+        for input_ref in input_refs
+        if isinstance(input_ref, str)
+        if (
+            match := _HISTORICAL_REPORT_STAGE_INPUT_REF_PATTERN.fullmatch(input_ref)
+        )
+        is not None
+    }
 
 
 def _same_report_dedup_boundary(
@@ -5729,7 +7388,6 @@ def _agent_task_stop_reason(
     *,
     campaign: CampaignRecord | None,
     repository: DatabaseRepository,
-    task_id: str,
 ) -> str | None:
     if campaign is None:
         return "scope_not_in_scope"
@@ -5750,7 +7408,6 @@ def _agent_task_stop_reason(
     budgets = [
         budget.time_budget_minutes,
         budget.token_budget,
-        budget.tool_call_budget,
     ]
     if any(value is not None and value <= 0 for value in budgets):
         return "budget_exhausted"
@@ -5765,27 +7422,7 @@ def _agent_task_stop_reason(
         >= budget.token_budget
     ):
         return "budget_exhausted"
-    if _tool_call_budget_exhausted_for_task(campaign, repository, task_id=task_id):
-        return "budget_exhausted"
     return None
-
-
-def _tool_call_budget_exhausted_for_task(
-    campaign: CampaignRecord,
-    repository: DatabaseRepository,
-    *,
-    task_id: str,
-) -> bool:
-    budget = repository.get_campaign_budget(campaign.id)
-    if budget is None or budget.tool_call_budget is None:
-        return False
-    reserved_or_used = sum(
-        1
-        for run in repository.list_campaign_agent_runs(campaign.id)
-        if run.safety_gate_state == "allowed"
-        and run.task_id != task_id
-    )
-    return reserved_or_used >= budget.tool_call_budget
 
 
 def _materialize_read_only_artifacts(
@@ -5960,7 +7597,14 @@ def _materialize_read_only_artifacts(
             projection=target_model_projection,
             codebase_facts=repository.list_campaign_codebase_facts(campaign.id),
         )
-        invariants = _build_security_invariant_projection(codebase_facts)
+        invariants = _build_security_invariant_projection(
+            codebase_facts,
+            attack_surface_queue=(
+                target_model_projection.get("attack_surface_queue")
+                if isinstance(target_model_projection, dict)
+                else None
+            ),
+        )
         task_payload = task.payload if isinstance(task.payload, dict) else {}
         source_snapshot_digest = task_payload.get("source_snapshot_digest")
         artifact_payload = {
@@ -5991,7 +7635,11 @@ def _materialize_read_only_artifacts(
                     campaign=campaign,
                     task=task,
                     codebase_facts=codebase_facts,
-                    learning_signals=repository.list_learning_signals(campaign.program_id),
+                    learning_signals=_hypothesis_generation_learning_signals(
+                        task=task,
+                        campaign=campaign,
+                        repository=repository,
+                    ),
                     security_invariants=security_invariants,
                     target_model_projection=target_model_projection,
                 )
@@ -6446,9 +8094,14 @@ def _runtime_security_invariant_projection(
 
 def _build_security_invariant_projection(
     codebase_facts: list[CodebaseFactRecord],
+    *,
+    attack_surface_queue: list[dict] | None = None,
 ) -> list[dict]:
     invariants: list[dict] = []
-    for route in _worker_candidate_routes(codebase_facts):
+    for route in _worker_prioritized_routes(
+        codebase_facts,
+        attack_surface_queue=attack_surface_queue,
+    ):
         route_fact_ref = _codebase_fact_ref(route)
         if not route_fact_ref:
             continue
@@ -6731,10 +8384,11 @@ def _candidate_hunter_persisted_code_facts(
         "authz_check",
         "sensitive_sink",
         "service_call",
+        "unverified_token_decode",
         "authorization_gap_candidate",
     }
     projected: list[CodebaseFactCandidate] = []
-    seen: set[tuple[str, str, str, str, str, str, str, int]] = set()
+    seen: set[tuple[object, ...]] = set()
     for fact in codebase_facts:
         if fact.fact_type not in allowed_fact_types:
             continue
@@ -6752,6 +8406,43 @@ def _candidate_hunter_persisted_code_facts(
         caller = _worker_safe_string(payload.get("caller"))
         line = payload.get("line")
         safe_line = line if isinstance(line, int) and 0 < line <= 1_000_000 else 0
+        column = payload.get("column")
+        safe_column = (
+            column if isinstance(column, int) and 0 <= column <= 1_000_000 else 0
+        )
+        token_ref = _worker_safe_string(payload.get("token_ref"))
+        safe_token_ref = (
+            token_ref if _TOKEN_REFERENCE_PATTERN.fullmatch(token_ref) else ""
+        )
+        safe_claim_ref = safe_claim_reference(payload.get("claims_ref")) or ""
+        safe_input_ref = safe_input_reference(payload.get("input_ref")) or ""
+        safe_validated_output_ref = (
+            safe_input_reference(payload.get("validated_output_ref")) or ""
+        )
+        safe_input_ref_kind = (
+            INPUT_REFERENCE_KIND_STRAIGHT_LINE
+            if (
+                (safe_input_ref or safe_validated_output_ref)
+                and payload.get("input_ref_kind")
+                == INPUT_REFERENCE_KIND_STRAIGHT_LINE
+            )
+            else ""
+        )
+        if not safe_input_ref_kind:
+            safe_input_ref = ""
+            safe_validated_output_ref = ""
+        safe_service_class = _worker_safe_typescript_identifier(
+            payload.get("service_class")
+        )
+        safe_service_receiver = _worker_safe_typescript_identifier(
+            payload.get("service_receiver")
+        )
+        safe_target_service_class = _worker_safe_typescript_identifier(
+            payload.get("target_service_class")
+        )
+        safe_target_service_source_path = _worker_safe_typescript_source_path(
+            payload.get("target_service_source_path")
+        )
         key = (
             _worker_safe_string(fact.fact_type),
             source_path,
@@ -6761,6 +8452,15 @@ def _candidate_hunter_persisted_code_facts(
             _worker_safe_string(fact.authz_hint),
             handler,
             safe_line,
+            safe_column,
+            safe_token_ref,
+            safe_claim_ref,
+            safe_input_ref,
+            safe_validated_output_ref,
+            safe_service_class,
+            safe_service_receiver,
+            safe_target_service_class,
+            safe_target_service_source_path,
         )
         if key in seen:
             continue
@@ -6774,11 +8474,34 @@ def _candidate_hunter_persisted_code_facts(
             safe_payload["caller"] = caller
         if safe_line:
             safe_payload["line"] = safe_line
+        if safe_column:
+            safe_payload["column"] = safe_column
+        if safe_token_ref:
+            safe_payload["token_ref"] = safe_token_ref
+        if safe_claim_ref:
+            safe_payload["claims_ref"] = safe_claim_ref
+        if safe_input_ref:
+            safe_payload["input_ref"] = safe_input_ref
+            safe_payload["input_ref_kind"] = safe_input_ref_kind
+        if safe_validated_output_ref:
+            safe_payload["validated_output_ref"] = safe_validated_output_ref
+        if safe_service_class:
+            safe_payload["service_class"] = safe_service_class
+        if safe_service_receiver:
+            safe_payload["service_receiver"] = safe_service_receiver
+        if safe_target_service_class:
+            safe_payload["target_service_class"] = safe_target_service_class
+        if safe_target_service_source_path:
+            safe_payload["target_service_source_path"] = (
+                safe_target_service_source_path
+            )
         for name in ("root_cause", "root_symbol"):
             if value := _worker_safe_string(payload.get(name)):
                 safe_payload[name] = value
         if sink_symbols := _worker_safe_string_list(payload.get("sink_symbols")):
             safe_payload["sink_symbols"] = sink_symbols
+        if decoder_symbols := _worker_safe_string_list(payload.get("decoder_symbols")):
+            safe_payload["decoder_symbols"] = decoder_symbols
         projected.append(
             CodebaseFactCandidate(
                 fact_type=_worker_safe_string(fact.fact_type),
@@ -6804,7 +8527,14 @@ def _codebase_fact_hypothesis_payload(
     security_invariants: list[dict] | None = None,
     target_model_projection: dict | None = None,
 ) -> dict:
-    routes = _worker_candidate_routes(codebase_facts)
+    routes = _worker_prioritized_routes(
+        codebase_facts,
+        attack_surface_queue=(
+            target_model_projection.get("attack_surface_queue")
+            if isinstance(target_model_projection, dict)
+            else None
+        ),
+    )
     if not routes:
         return _fallback_hypothesis_payload(campaign=campaign, task=task)
 
@@ -6850,6 +8580,9 @@ def _codebase_fact_hypothesis_payload(
         target_model["security_invariant_refs"] = security_invariant_refs
     target_model.update(
         _runtime_target_intake_context_for_hypothesis(target_model_projection)
+    )
+    target_model.update(
+        _runtime_attack_surface_context_for_hypothesis(target_model_projection)
     )
 
     return {
@@ -6904,6 +8637,39 @@ def _runtime_target_intake_context_for_hypothesis(
             "entrypoint_count": target_intake["entrypoint_count"],
             "auth_component_count": target_intake["auth_component_count"],
         },
+    }
+
+
+def _runtime_attack_surface_context_for_hypothesis(
+    target_model_projection: dict | None,
+) -> dict:
+    if not isinstance(target_model_projection, dict):
+        return {}
+    queue = target_model_projection.get("attack_surface_queue")
+    schema = target_model_projection.get("attack_surface_queue_schema")
+    digest = target_model_projection.get("attack_surface_queue_digest")
+    if (
+        schema != _RUNTIME_ATTACK_SURFACE_QUEUE_SCHEMA
+        or not isinstance(queue, list)
+        or digest != _canonical_digest(queue)
+    ):
+        return {}
+    selected_count = target_model_projection.get("attack_surface_selected_count")
+    route_count = target_model_projection.get("attack_surface_route_count")
+    if (
+        not isinstance(selected_count, int)
+        or isinstance(selected_count, bool)
+        or not isinstance(route_count, int)
+        or isinstance(route_count, bool)
+        or selected_count != len(queue)
+        or selected_count > route_count
+    ):
+        return {}
+    return {
+        "attack_surface_queue_schema": schema,
+        "attack_surface_queue_digest": digest,
+        "attack_surface_route_count": route_count,
+        "attack_surface_selected_count": selected_count,
     }
 
 
@@ -7160,6 +8926,25 @@ def _worker_safe_string(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()[:500]
+
+
+def _worker_safe_typescript_identifier(value: object) -> str:
+    text = _worker_safe_string(value)
+    return text if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", text) else ""
+
+
+def _worker_safe_typescript_source_path(value: object) -> str:
+    text = _worker_safe_string(value).replace("\\", "/")
+    if (
+        not text
+        or len(text) > 200
+        or text.startswith("/")
+        or ":" in text
+        or any(segment in {"", ".", ".."} for segment in text.split("/"))
+        or not text.lower().endswith((".ts", ".tsx", ".mts", ".cts"))
+    ):
+        return ""
+    return text
 
 
 def _worker_candidate_quality_gate(assessment: dict) -> dict:
@@ -7928,19 +9713,6 @@ def _apply_cross_artifact_route_evidence(
             "evidence_satisfied:independent_static_signal",
         )
         _append_unique(hunter_assessment["evidence_focus"], "sarif_route_signal_review")
-    if any(
-        isinstance(fact, dict)
-        and fact.get("artifact_kind") == "sbom"
-        and fact.get("fact_type") == "dependency_signal"
-        for fact in source_facts
-    ):
-        _append_unique(
-            hunter_assessment["reasons"],
-            "evidence_satisfied:reachable_dependency_advisory",
-        )
-        _append_unique(hunter_assessment["evidence_focus"], "sbom_reachability_review")
-
-
 def _apply_api_shape_signals(
     hunter_assessment: dict,
     source_facts: list[dict],
@@ -8193,8 +9965,6 @@ def _hypothesis_source_facts(
     facts = [_route_source_fact(route)]
     for related_route in _related_route_artifact_facts(codebase_facts, route):
         facts.append(_route_source_fact(related_route))
-    for dependency in _related_dependency_advisory_facts(codebase_facts, route):
-        facts.append(_dependency_source_fact(dependency, route=route))
     if authz is not None:
         facts.append(_authz_source_fact(authz))
     if authz_gap is not None:
@@ -8220,32 +9990,6 @@ def _related_route_artifact_facts(
     return sorted(related, key=lambda fact: (_route_artifact_kind(fact), fact.source_path))
 
 
-def _related_dependency_advisory_facts(
-    facts: list[CodebaseFactRecord],
-    route: CodebaseFactRecord,
-) -> list[CodebaseFactRecord]:
-    related = []
-    for fact in facts:
-        payload = fact.payload if isinstance(fact.payload, dict) else {}
-        reachable_route_sources = payload.get("reachable_route_sources")
-        reachable_from_route = (
-            isinstance(reachable_route_sources, list)
-            and len(reachable_route_sources) <= 50
-            and route.source_path in reachable_route_sources
-            and payload.get("route_reachability") == "unique_static_call_path"
-        )
-        if (
-            fact.fact_type != "dependency_signal"
-            or (fact.source_path != route.source_path and not reachable_from_route)
-            or payload.get("mapping_mode") != "authorized_advisory_artifact"
-            or payload.get("artifact_kind") != "sbom"
-            or payload.get("reachability") != "direct_local_import"
-        ):
-            continue
-        related.append(fact)
-    return sorted(related, key=lambda fact: (fact.symbol_name, fact.source_path))
-
-
 def _route_source_fact(fact: CodebaseFactRecord) -> dict:
     artifact_kind = _route_artifact_kind(fact)
     payload = fact.payload if isinstance(fact.payload, dict) else {}
@@ -8261,49 +10005,6 @@ def _route_source_fact(fact: CodebaseFactRecord) -> dict:
     api_shape = payload.get("api_shape")
     if isinstance(api_shape, dict) and api_shape:
         source_fact["api_shape"] = api_shape
-    return source_fact
-
-
-def _dependency_source_fact(
-    fact: CodebaseFactRecord,
-    *,
-    route: CodebaseFactRecord,
-) -> dict:
-    payload = fact.payload if isinstance(fact.payload, dict) else {}
-    metadata = {
-        field: _safe_advisory_value(payload.get(field))
-        for field in (
-            "source_name",
-            "package_name",
-            "package_version",
-            "ecosystem",
-            "vulnerability_id",
-            "severity",
-        )
-    }
-    if not metadata["package_name"] or not metadata["vulnerability_id"]:
-        return {
-            "fact_ref": _codebase_fact_ref(fact),
-            "artifact_kind": "sbom",
-            "fact_type": "dependency_signal",
-        }
-    source_fact = {
-        "fact_ref": _codebase_fact_ref(fact),
-        "artifact_kind": "sbom",
-        "fact_type": "dependency_signal",
-        "source_path": fact.source_path,
-        "symbol_name": fact.symbol_name,
-        "package_name": metadata["package_name"],
-        "package_version": metadata["package_version"],
-        "ecosystem": metadata["ecosystem"],
-        "vulnerability_id": metadata["vulnerability_id"],
-        "severity": metadata["severity"] or "unknown",
-    }
-    source_fact["route_reachability"] = (
-        "direct_route_import"
-        if fact.source_path == route.source_path
-        else "unique_static_call_path"
-    )
     return source_fact
 
 
@@ -8364,6 +10065,7 @@ def _authz_gap_source_fact(fact: CodebaseFactRecord) -> dict:
         ),
         "sink_count": payload.get("sink_count", 0),
         "sink_symbols": payload.get("sink_symbols", []),
+        "decoder_symbols": payload.get("decoder_symbols", []),
         "review_state": payload.get("review_state", "needs_human_review"),
         "execution_allowed": False,
         "validation_allowed": False,
@@ -8837,23 +10539,6 @@ def _safe_advisory_source_name(value: object, index: int, *, kind: str = "sarif"
     return source_name
 
 
-def _safe_advisory_value(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = value.strip()
-    if (
-        not text
-        or len(text) > 200
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+/@:-]*", text)
-        or any(
-            marker in text.lower()
-            for marker in ("authorization", "cookie", "token", "secret", "password")
-        )
-    ):
-        return ""
-    return text
-
-
 def _api_operation_id(
     *,
     kind: str,
@@ -9033,6 +10718,7 @@ def _build_runtime_target_model_projection(
         return None
     if len(fact_refs) != len(set(fact_refs)):
         return None
+    attack_surface_queue = _build_runtime_attack_surface_queue(codebase_facts)
     route_fact_refs = sorted(
         f"codebase_fact:{fact.id}"
         for fact in codebase_facts
@@ -9049,6 +10735,11 @@ def _build_runtime_target_model_projection(
         "fact_refs": fact_refs,
         "route_fact_refs": route_fact_refs,
         "fact_digest": _canonical_digest(fact_refs),
+        "attack_surface_queue_schema": _RUNTIME_ATTACK_SURFACE_QUEUE_SCHEMA,
+        "attack_surface_queue": attack_surface_queue,
+        "attack_surface_queue_digest": _canonical_digest(attack_surface_queue),
+        "attack_surface_route_count": len(_worker_candidate_routes(codebase_facts)),
+        "attack_surface_selected_count": len(attack_surface_queue),
         "artifact_counts": dict(sorted(artifact_counts.items())),
         "target_intake_ref": target_intake_ref,
         "target_intake": target_intake,
@@ -9060,6 +10751,123 @@ def _build_runtime_target_model_projection(
         "candidate_promotion_allowed": False,
         "report_submission_allowed": False,
     }
+
+
+def _build_runtime_attack_surface_queue(
+    codebase_facts: list[CodebaseFactRecord],
+) -> list[dict]:
+    """Rank traceable routes so later research stages focus on high-value surfaces."""
+    entries: list[dict] = []
+    for route in _worker_candidate_routes(codebase_facts):
+        route_ref = _codebase_fact_ref(route)
+        method = _worker_safe_string(route.route_method).upper() or "ANY"
+        path = _worker_safe_string(route.route_path)
+        if (
+            not route_ref
+            or not path.startswith("/")
+            or not re.fullmatch(r"[A-Z]+", method)
+        ):
+            continue
+        authz = _related_fact(codebase_facts, route, "authz_check")
+        authz_gap = _related_fact(codebase_facts, route, "authorization_gap_candidate")
+        sink = _related_fact(codebase_facts, route, "sensitive_sink")
+        family = _security_invariant_family(
+            route=route,
+            sink=sink,
+            authz_gap=authz_gap,
+        )
+        source_fact_refs = [route_ref]
+        reason_codes: list[str] = []
+        priority_score = 20
+        if sink is not None:
+            priority_score += 30
+            _append_unique(reason_codes, "sensitive_sink")
+            if sink_ref := _codebase_fact_ref(sink):
+                _append_unique(source_fact_refs, sink_ref)
+        if authz_gap is not None:
+            priority_score += 35
+            _append_unique(reason_codes, "authorization_gap")
+            if gap_ref := _codebase_fact_ref(authz_gap):
+                _append_unique(source_fact_refs, gap_ref)
+        elif authz is not None:
+            priority_score += 5
+            _append_unique(reason_codes, "authorization_control_observed")
+            if authz_ref := _codebase_fact_ref(authz):
+                _append_unique(source_fact_refs, authz_ref)
+        if _route_path_has_template_placeholder(path):
+            priority_score += 15
+            _append_unique(reason_codes, "object_identifier_route")
+        if method in {"POST", "PUT", "PATCH", "DELETE"}:
+            priority_score += 10
+            _append_unique(reason_codes, "state_changing_method")
+        artifact_kind = _route_artifact_kind(route)
+        if artifact_kind in {"api", "har"}:
+            priority_score += 5
+            _append_unique(reason_codes, f"{artifact_kind}_correlation")
+        if artifact_kind == "code":
+            priority_score += 5
+            _append_unique(reason_codes, "local_code_trace")
+        identity = "\x1f".join([route_ref, family, *source_fact_refs])
+        entries.append(
+            {
+                "surface_ref": "attack_surface:" + sha256(
+                    identity.encode("utf-8")
+                ).hexdigest(),
+                "route_fact_ref": route_ref,
+                "route_method": method,
+                "route_path": path,
+                "focus_family": family,
+                "priority_score": min(100, priority_score),
+                "reason_codes": reason_codes[:8],
+                "source_fact_refs": source_fact_refs[:6],
+            }
+        )
+    entries.sort(
+        key=lambda item: (
+            -item["priority_score"],
+            item["route_method"],
+            item["route_path"],
+            item["route_fact_ref"],
+        )
+    )
+    selected = entries[:20]
+    for rank, item in enumerate(selected, start=1):
+        item["selection_rank"] = rank
+        item["selection_status"] = "selected"
+    return selected
+
+
+def _worker_prioritized_routes(
+    codebase_facts: list[CodebaseFactRecord],
+    *,
+    attack_surface_queue: list[dict] | None = None,
+) -> list[CodebaseFactRecord]:
+    routes = _worker_candidate_routes(codebase_facts)
+    if not isinstance(attack_surface_queue, list) or not attack_surface_queue:
+        return routes
+    routes_by_ref = {
+        fact_ref: route
+        for route in routes
+        if (fact_ref := _codebase_fact_ref(route))
+    }
+    ordered: list[CodebaseFactRecord] = []
+    seen: set[str] = set()
+    for item in attack_surface_queue:
+        if not isinstance(item, dict):
+            continue
+        route_ref = item.get("route_fact_ref")
+        if (
+            not isinstance(route_ref, str)
+            or _CODEBASE_FACT_REF_PATTERN.fullmatch(route_ref) is None
+            or route_ref in seen
+        ):
+            continue
+        route = routes_by_ref.get(route_ref)
+        if route is None:
+            continue
+        seen.add(route_ref)
+        ordered.append(route)
+    return ordered or routes
 
 
 def _target_model_fact_artifact_kind(fact: CodebaseFactRecord) -> str:

@@ -3030,6 +3030,10 @@ def test_workspace_runtime_dispatches_queued_local_evidence_on_the_next_tick(
         assert fourth_advance["status"] == "dispatched", json.dumps(fourth_advance)
         fifth_advance = advance()
         assert fifth_advance["status"] == "dispatched", json.dumps(fifth_advance)
+        sixth_advance = advance()
+        assert sixth_advance["status"] == "dispatched", json.dumps(sixth_advance)
+        seventh_advance = advance()
+        assert seventh_advance["status"] == "dispatched", json.dumps(seventh_advance)
         with testing_session() as session:
             repository = DatabaseRepository(session)
             evidence_task = next(
@@ -3095,11 +3099,13 @@ def test_workspace_runtime_dispatches_queued_local_evidence_on_the_next_tick(
                 "security_invariant_generation",
                 "hypothesis_generation",
                 "exploit_chain_reasoning",
+                "variant_analysis",
+                "deep_code_reasoning",
                 "candidate_refutation",
                 "finding_dedup_and_rank",
                 "report_review",
             }
-            assert len(runtime_tasks) == 8
+            assert len(runtime_tasks) == 10
             assert all(task.status == "completed" for task in runtime_tasks)
             assert len(
                 [
@@ -3270,6 +3276,8 @@ def test_studio_campaign_snapshot_refresh_starts_a_new_audited_runtime_cycle(
 
         for _ in range(5):
             assert advance()["status"] == "dispatched"
+        assert advance()["status"] == "dispatched"
+        assert advance()["status"] == "dispatched"
         assert advance()["status"] == "dispatched"
         assert advance()["status"] == "dispatched"
         assert advance()["status"] == "dispatched"
@@ -3547,7 +3555,7 @@ def test_workspace_runtime_blocks_local_evidence_when_snapshot_changes(
                     now=datetime.now(UTC) + timedelta(seconds=61),
                 )
 
-        for _ in range(5):
+        for _ in range(7):
             assert advance()["status"] == "dispatched"
         with testing_session() as session:
             repository = DatabaseRepository(session)

@@ -6,7 +6,7 @@ layer, middleware, before_action) and retain invalid role/status/guard-after-sin
 patterns outside Python and TypeScript.
 
 Scope remains falsify-first leadership across common server languages
-(ownership + high-signal gap families: SSRF / path / injection / mass-assign /
+(ownership + high-signal gap families: SSRF / path / injection / mass-assign / command execution /
 explicit transactional state transitions),
 not a full multi-language SAST engine. Breadth expands language×pattern coverage
 for held-outs and production-shaped probes.
@@ -69,7 +69,8 @@ _JAVA_NON_TRANSACTIONAL_PROPAGATION = re.compile(
 )
 _JAVA_DECLARATIVE_AUTHZ_ANNOTATION = re.compile(
     r"@(?:[A-Za-z_][A-Za-z0-9_]*\.)*"
-    r"(?P<name>PreAuthorize|Secured|RolesAllowed)\b(?:\s*\([^)]*\))?",
+    r"(?P<name>PreAuthorize|Secured|RolesAllowed|PermitAll|DenyAll)\b"
+    r"(?:\s*\([^)]*\))?",
     re.IGNORECASE,
 )
 _JAVA_CLASS_ANNOTATION_TAIL = re.compile(
@@ -122,6 +123,41 @@ _EQUALS_CALL = re.compile(
 )
 _CALL = re.compile(
     r"\b(?P<callee>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*\("
+)
+_TOKEN_ALIAS_ASSIGNMENT = re.compile(
+    r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?<![=!<>])=(?!=)\s*"
+    r"(?P<expression>[^;]+)"
+)
+_TOKEN_REFERENCE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
+_INPUT_REASSIGNMENT = re.compile(
+    r"(?<![.$])(?:(?P<declaration>\b(?:const|let|val|var|[A-Za-z_]"
+    r"[A-Za-z0-9_]*(?:<[^>\n]+>)?)\s+))?"
+    r"(?P<path>[A-Za-z_$][A-Za-z0-9_$]*"
+    r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*"
+    r"(?:=(?!=|>)|[+*/%\-]=|&&=|\|\|=|\?\?=)"
+)
+_INPUT_TUPLE_REASSIGNMENT = re.compile(
+    r"(?<![.$])(?:\(\s*)?"
+    r"(?P<paths>[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?"
+    r"(?:\s*,\s*(?:[A-Za-z_$][A-Za-z0-9_$]*"
+    r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?|_))+)"
+    r"\s*\)?\s*(?P<operator>:=|=(?!=|>)|[+*/%\-]=|&&=|\|\|=|\?\?=)"
+)
+_INPUT_REFERENCE = _TOKEN_REFERENCE
+_INPUT_FLOW_UNSAFE_MARKER = "__input_flow_unsafe__"
+_INPUT_ATTRIBUTE_MUTATION_MARKER = "__attribute_mutation__"
+_SENSITIVE_INPUT_REFERENCE_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "header",
+    "password",
+    "secret",
+    "token",
 )
 
 _BOUNDARY_FIELDS = {
@@ -182,6 +218,22 @@ _ROLE_LINE = re.compile(
     re.IGNORECASE,
 )
 
+_COMMAND_EXECUTION_SINKS = {"exec", "system"}
+_UNSAFE_DESERIALIZATION_SINKS = {
+    "pickle_load",
+    "pickle_loads",
+    "dill_load",
+    "dill_loads",
+    "yaml_load",
+    "unsafe_deserialize",
+    "deserialize_untrusted",
+}
+_FILE_UPLOAD_SINKS = {
+    "save_upload",
+    "save_uploaded_file",
+    "store_upload",
+    "store_uploaded_file",
+}
 _SENSITIVE_SINKS = {
     "send_file",
     "sendfile",
@@ -213,6 +265,49 @@ _SENSITIVE_SINKS = {
     "physicalfile",
     "download",  # Laravel response download helper leaf
 }
+_SENSITIVE_SINKS.update(_COMMAND_EXECUTION_SINKS)
+_SENSITIVE_SINKS.update(_UNSAFE_DESERIALIZATION_SINKS)
+_SENSITIVE_SINKS.update(_FILE_UPLOAD_SINKS)
+_OUTBOUND_HTTP_SINKS = {
+    "fetch",
+    "send_payload",
+    "_send_payload",
+    "http_get",
+    "http_post",
+    "http_post_form",
+    "rest_template_get_for_object",
+    "rest_template_get_for_entity",
+    "rest_template_post_for_object",
+    "rest_template_post_for_entity",
+    "rest_template_exchange",
+    "rest_template_execute",
+    "http_client_get_async",
+    "http_client_get_string_async",
+    "http_client_get_stream_async",
+    "http_client_post_async",
+    "http_client_put_async",
+    "http_client_patch_async",
+    "http_client_delete_async",
+}
+_QUALIFIED_OUTBOUND_HTTP_SINKS = {
+    "http.get": "http_get",
+    "http.post": "http_post",
+    "http.post_form": "http_post_form",
+    "rest_template.get_for_object": "rest_template_get_for_object",
+    "rest_template.get_for_entity": "rest_template_get_for_entity",
+    "rest_template.post_for_object": "rest_template_post_for_object",
+    "rest_template.post_for_entity": "rest_template_post_for_entity",
+    "rest_template.exchange": "rest_template_exchange",
+    "rest_template.execute": "rest_template_execute",
+    "http_client.get_async": "http_client_get_async",
+    "http_client.get_string_async": "http_client_get_string_async",
+    "http_client.get_stream_async": "http_client_get_stream_async",
+    "http_client.post_async": "http_client_post_async",
+    "http_client.put_async": "http_client_put_async",
+    "http_client.patch_async": "http_client_patch_async",
+    "http_client.delete_async": "http_client_delete_async",
+}
+_SENSITIVE_SINKS.update(_OUTBOUND_HTTP_SINKS)
 _STATE_TRANSITION_SINKS = {
     "advance_one_time_state",
     "claim_limited_resource",
@@ -230,6 +325,7 @@ _SSRF_GUARD_MARKERS = (
     "private_ip",
     "blocked_hostname",
     "validate_url",
+    "validate_outbound_url",
     "is_private_ip",
     "is_blocked_hostname",
 )
@@ -262,6 +358,56 @@ _INJECTION_GUARD_MARKERS = (
     "full_text_query",
     "regex_full_text",
 )
+_COMMAND_EXECUTION_GUARD_MARKERS = (
+    "command_allowlist",
+    "command_whitelist",
+    "allowed_command",
+    "validate_command",
+    "command_validation",
+    "safe_command",
+)
+_DESERIALIZATION_GUARD_MARKERS = (
+    "validate_serialized",
+    "validate_deserialization",
+    "deserialization_allowlist",
+    "safe_deserialize",
+    "safe_loader",
+)
+_FILE_UPLOAD_GUARD_MARKERS = (
+    "validate_upload",
+    "validate_uploaded_file",
+    "upload_allowlist",
+    "upload_type_allowlist",
+    "upload_security_check",
+)
+_INPUT_BOUND_GUARD_HINTS = {
+    "ssrf_validation_check",
+    "path_validation_check",
+    "mass_assignment_check",
+    "injection_validation_check",
+    "command_injection_validation_check",
+    "deserialization_validation_check",
+    "file_upload_validation_check",
+}
+_INPUT_BOUND_SINKS = {
+    *_OUTBOUND_HTTP_SINKS,
+    "get_blob",
+    "read_file",
+    "apply_user_update",
+    "persist_user",
+    "update_user",
+    "db_select",
+    "execute_query",
+    "run_sql",
+    *_COMMAND_EXECUTION_SINKS,
+    *_UNSAFE_DESERIALIZATION_SINKS,
+    *_FILE_UPLOAD_SINKS,
+}
+_INPUT_BOUND_SINK_ARGUMENT_INDEXES = {
+    "apply_user_update": 1,
+    "persist_user": 1,
+    "update_user": 1,
+}
 _STATE_TRANSITION_GUARD_MARKERS = (
     "transactional_guard",
     "transactional_state",
@@ -353,6 +499,7 @@ def _map_java_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
     method_names = {name for name, _, _, _ in methods}
     route_handlers: set[str] = set()
     class_transactional_ranges = _java_transactional_class_ranges(content)
+    class_declarative_authz_ranges = _java_declarative_authz_class_ranges(content)
     class_route_prefixes = _java_class_route_prefixes(content)
 
     for method_name, declaration_start, _, _ in methods:
@@ -388,8 +535,13 @@ def _map_java_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
             declaration_start=declaration_start,
             class_body_start=direct_class_body_start,
         )
+        if declarative_authz is None:
+            declarative_authz = _java_class_declarative_authz_annotation_for_method(
+                declaration_start,
+                class_declarative_authz_ranges,
+            )
         if declarative_authz is not None:
-            annotation_name, annotation_line = declarative_authz
+            annotation_name, annotation_line, authz_hint = declarative_authz
             facts.append(
                 _fact(
                     fact_type="authz_check",
@@ -399,7 +551,7 @@ def _map_java_file(*, source_path: str, content: str) -> list["CodebaseFactCandi
                     route_path=None,
                     handler=method_name,
                     line_number=annotation_line,
-                    authz_hint="role_check",
+                    authz_hint=authz_hint,
                 )
             )
 
@@ -535,13 +687,14 @@ def _java_request_mapping_is_class_annotation(
 
 def _java_methods(content: str) -> list[tuple[str, int, int, str]]:
     methods: list[tuple[str, int, int, str]] = []
-    for match in _JAVA_METHOD.finditer(content):
+    masked_content = _mask_multilang_non_code(content)
+    for match in _JAVA_METHOD.finditer(masked_content):
         name = match.group("name")
         if name in {"if", "for", "while", "switch", "catch", "class", "new"}:
             continue
         brace_at = match.end() - 1
-        if brace_at < 0 or content[brace_at] != "{":
-            brace_at = content.find("{", match.start())
+        if brace_at < 0 or masked_content[brace_at] != "{":
+            brace_at = masked_content.find("{", match.start())
         if brace_at < 0:
             continue
         body = _extract_brace_body(content, brace_at)
@@ -552,9 +705,9 @@ def _java_methods(content: str) -> list[tuple[str, int, int, str]]:
     return methods
 
 
-def _java_class_route_prefixes(content: str) -> list[tuple[int, int, str]]:
+def _java_class_route_prefixes(content: str) -> list[tuple[int, int, str | None]]:
     masked_content = _mask_multilang_non_code(content)
-    ranges: list[tuple[int, int, str]] = []
+    ranges: list[tuple[int, int, str | None]] = []
     for match in _JAVA_CLASS.finditer(masked_content):
         brace_index = masked_content.rfind("{", match.start(), match.end())
         if brace_index < 0:
@@ -568,8 +721,7 @@ def _java_class_route_prefixes(content: str) -> list[tuple[int, int, str]]:
             masked_content=masked_content,
             class_start=match.start(),
         )
-        if prefix is not None:
-            ranges.append((brace_index, body_end, prefix))
+        ranges.append((brace_index, body_end, prefix))
     return ranges
 
 
@@ -584,7 +736,7 @@ def _java_class_route_prefix(
         for match in _JAVA_REQUEST_MAPPING.finditer(source, 0, class_start)
         if _JAVA_REQUEST_MAPPING_MARKER.match(masked_content, match.start())
         and _JAVA_CLASS_ANNOTATION_TAIL.fullmatch(
-            source[match.end() : class_start]
+            masked_content[match.end() : class_start]
         )
     ]
     return candidates[-1].group("path") if candidates else None
@@ -592,7 +744,7 @@ def _java_class_route_prefix(
 
 def _java_class_route_prefix_for_method(
     declaration_start: int,
-    prefixes: list[tuple[int, int, str]],
+    prefixes: list[tuple[int, int, str | None]],
 ) -> str | None:
     matching = [
         (body_start, prefix)
@@ -652,7 +804,7 @@ def _java_method_declarative_authz_annotation(
     *,
     declaration_start: int,
     class_body_start: int | None,
-) -> tuple[str, int] | None:
+) -> tuple[str, int, str] | None:
     masked_prefix = _mask_multilang_non_code(content[:declaration_start])
     if class_body_start is None:
         annotation_start = masked_prefix.rfind("}") + 1
@@ -672,10 +824,186 @@ def _java_method_declarative_authz_annotation(
     if not candidates:
         return None
     annotation = candidates[-1]
+    absolute_annotation_start = annotation_start + annotation.start()
     return (
         annotation.group("name"),
-        content.count("\n", 0, annotation_start + annotation.start()) + 1,
+        content.count("\n", 0, absolute_annotation_start) + 1,
+        _java_declarative_authz_hint(
+            annotation.group("name"),
+            content[
+                absolute_annotation_start : absolute_annotation_start
+                + len(annotation.group(0))
+            ],
+        ),
     )
+
+
+def _java_declarative_authz_hint(annotation_name: str, annotation: str) -> str:
+    normalized_name = annotation_name.lower()
+    if normalized_name == "permitall":
+        return "public_access"
+    if normalized_name == "denyall":
+        return "access_denied_check"
+    if normalized_name != "preauthorize":
+        return "role_check"
+    expression = _java_annotation_string_argument(annotation)
+    if expression is None:
+        return "role_check"
+    if _java_pre_authorize_allows_public_access(expression):
+        return "public_access"
+    normalized = re.sub(r"\s+", "", expression).lower()
+    if normalized in {
+        "isauthenticated()",
+        "isfullyauthenticated()",
+        "isrememberme()",
+        "isanonymous()",
+    }:
+        return "authentication_check"
+    if normalized in {"denyall()", "false", "(false)"}:
+        return "access_denied_check"
+    if "haspermission(" in normalized:
+        return "permission_check"
+    return "role_check"
+
+
+def _java_pre_authorize_allows_public_access(expression: str) -> bool:
+    expression = _java_strip_outer_spel_parentheses(expression.strip())
+    disjunctions = _java_split_top_level_spel_expression(
+        expression,
+        symbol="||",
+        word="or",
+    )
+    if len(disjunctions) > 1:
+        return any(
+            _java_pre_authorize_allows_public_access(branch)
+            for branch in disjunctions
+        )
+    conjunctions = _java_split_top_level_spel_expression(
+        expression,
+        symbol="&&",
+        word="and",
+    )
+    if len(conjunctions) > 1:
+        return all(
+            _java_pre_authorize_allows_public_access(branch)
+            for branch in conjunctions
+        )
+    normalized = re.sub(r"\s+", "", expression).lower().strip("()")
+    return normalized in {"permitall", "true"}
+
+
+def _java_strip_outer_spel_parentheses(expression: str) -> str:
+    while expression.startswith("(") and expression.endswith(")"):
+        closing_index = _java_spel_matching_parenthesis(expression)
+        if closing_index != len(expression) - 1:
+            break
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _java_spel_matching_parenthesis(expression: str) -> int | None:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(expression):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+            if depth < 0:
+                return None
+    return None
+
+
+def _java_split_top_level_spel_expression(
+    expression: str,
+    *,
+    symbol: str,
+    word: str,
+) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif depth == 0 and expression.startswith(symbol, index):
+            parts.append(expression[start:index])
+            index += len(symbol)
+            start = index
+            continue
+        elif (
+            depth == 0
+            and expression[index : index + len(word)].lower() == word
+            and _java_spel_word_boundary(expression, index - 1)
+            and _java_spel_word_boundary(expression, index + len(word))
+        ):
+            parts.append(expression[start:index])
+            index += len(word)
+            start = index
+            continue
+        index += 1
+    parts.append(expression[start:])
+    return parts
+
+
+def _java_spel_word_boundary(expression: str, index: int) -> bool:
+    return (
+        index < 0
+        or index >= len(expression)
+        or not (expression[index].isalnum() or expression[index] in {"_", "$", "#"})
+    )
+
+
+def _java_annotation_string_argument(annotation: str) -> str | None:
+    arguments_start = annotation.find("(")
+    if arguments_start < 0:
+        return None
+    quote: str | None = None
+    escaped = False
+    start = 0
+    for index, char in enumerate(annotation[arguments_start + 1 :], arguments_start + 1):
+        if quote is None:
+            if char in {"'", '"'}:
+                quote = char
+                start = index + 1
+            continue
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == quote:
+            return annotation[start:index]
+    return None
 
 
 def _java_class_transactional_annotation(
@@ -698,6 +1026,61 @@ def _java_class_transactional_annotation(
         )
     ]
     return candidates[-1] if candidates else None
+
+
+def _java_declarative_authz_class_ranges(
+    content: str,
+) -> list[tuple[int, int, tuple[str, int, str] | None]]:
+    masked_content = _mask_multilang_non_code(content)
+    ranges: list[tuple[int, int, tuple[str, int, str] | None]] = []
+    for class_match in _JAVA_CLASS.finditer(masked_content):
+        brace_index = masked_content.rfind(
+            "{", class_match.start(), class_match.end()
+        )
+        if brace_index < 0:
+            continue
+        body = _extract_brace_body(masked_content, brace_index)
+        if body is None:
+            continue
+        _, body_end = body
+        annotations = [
+            match
+            for match in _JAVA_DECLARATIVE_AUTHZ_ANNOTATION.finditer(
+                masked_content,
+                0,
+                class_match.start(),
+            )
+            if _JAVA_CLASS_ANNOTATION_TAIL.fullmatch(
+                masked_content[match.end() : class_match.start()]
+            )
+        ]
+        annotation = annotations[-1] if annotations else None
+        authz = (
+            (
+                annotation.group("name"),
+                content.count("\n", 0, annotation.start()) + 1,
+                _java_declarative_authz_hint(
+                    annotation.group("name"),
+                    content[annotation.start() : annotation.end()],
+                ),
+            )
+            if annotation is not None
+            else None
+        )
+        ranges.append((brace_index, body_end, authz))
+    return ranges
+
+
+def _java_class_declarative_authz_annotation_for_method(
+    declaration_start: int,
+    ranges: list[tuple[int, int, tuple[str, int, str] | None]],
+) -> tuple[str, int, str] | None:
+    matching = [
+        (body_start, authz)
+        for body_start, body_end, authz in ranges
+        if body_start < declaration_start < body_end
+    ]
+    return max(matching)[1] if matching else None
 
 
 def _java_transactional_class_ranges(
@@ -1110,6 +1493,9 @@ def _scan_handler_body(
     local_methods = local_methods or set()
     code_body = _mask_multilang_non_code(body_text)
     scoped_transaction_controls = _scoped_transactional_state_controls(code_body)
+    ambiguous_input_references = _ambiguous_input_references(code_body)
+    conditional_line_offsets = _conditional_line_offsets(code_body)
+    token_aliases: dict[str, str] = {}
     for line_offset, line in enumerate(code_body.splitlines()):
         line_number = full_source.count("\n", 0, body_start_offset) + line_offset + 1
         boundary = _boundary_field_from_line(line)
@@ -1143,8 +1529,15 @@ def _scan_handler_body(
             continue
 
         sink_columns: dict[str, int] = {}
+        sink_claim_refs: dict[tuple[str, int], str] = {}
+        input_bound_sink_calls: dict[tuple[str, int], str | None] = {}
+        jwt_decode_calls: list[tuple[str, int, str | None, str | None]] = []
+        jwt_guard_calls: list[tuple[str, int, str | None, str | None]] = []
         service_names: set[str] = set()
         gap_guard_names: dict[str, tuple[str, int]] = {}
+        input_bound_guard_calls: dict[
+            tuple[str, int, str], tuple[str | None, str | None]
+        ] = {}
         for callee, column in scoped_transaction_controls.get(line_offset, []):
             _record_gap_guard(
                 gap_guard_names,
@@ -1155,21 +1548,94 @@ def _scan_handler_body(
         for call in _CALL.finditer(line):
             callee = call.group("callee")
             leaf = callee.rsplit(".", 1)[-1]
-            gap_hint = _gap_guard_hint(callee)
-            if gap_hint is not None:
-                _record_gap_guard(
-                    gap_guard_names,
-                    name=leaf,
-                    authz_hint=gap_hint,
-                    column=call.start("callee"),
+            call_arguments = _call_arguments(line, call.end() - 1)
+            input_ref = _input_reference(
+                _input_bound_call_argument(leaf, call_arguments),
+                ambiguous_references=ambiguous_input_references,
+            ) if line_offset not in conditional_line_offsets else None
+            validated_output_ref = (
+                _validated_output_reference(
+                    line,
+                    call_start=call.start("callee"),
+                    ambiguous_references=ambiguous_input_references,
+                )
+                if line_offset not in conditional_line_offsets
+                else None
+            )
+            call_claim_ref = _jwt_claim_reference(
+                _call_first_argument(line, call.end() - 1),
+                ambiguous_references=ambiguous_input_references,
+            )
+            output_claim_ref = _jwt_claim_reference_from_input_ref(
+                validated_output_ref
+            )
+            aliases_before_call = _token_aliases_before(
+                line,
+                token_aliases,
+                before=call.start("callee"),
+            )
+            if _is_unverified_jwt_decode(callee):
+                jwt_decode_calls.append(
+                    (
+                        callee,
+                        call.start("callee"),
+                        _token_reference(
+                            _call_first_argument(line, call.end() - 1),
+                            aliases_before_call,
+                        ),
+                        output_claim_ref,
+                    )
                 )
                 continue
-            if _is_sensitive_sink(leaf):
-                _record_sink_column(
-                    sink_columns,
-                    name=leaf,
-                    column=call.start("callee"),
-                )
+            gap_hint = _gap_guard_hint(callee)
+            if gap_hint is not None:
+                if gap_hint == "jwt_verification_check":
+                    jwt_guard_calls.append(
+                        (
+                            leaf,
+                            call.start("callee"),
+                            _token_reference(
+                                _call_first_argument(line, call.end() - 1),
+                                aliases_before_call,
+                            ),
+                            output_claim_ref,
+                        )
+                    )
+                    continue
+                if gap_hint in _INPUT_BOUND_GUARD_HINTS:
+                    _record_input_bound_guard_call(
+                        input_bound_guard_calls,
+                        name=leaf,
+                        authz_hint=gap_hint,
+                        column=call.start("callee"),
+                        input_ref=input_ref,
+                        validated_output_ref=validated_output_ref,
+                    )
+                else:
+                    _record_gap_guard(
+                        gap_guard_names,
+                        name=leaf,
+                        authz_hint=gap_hint,
+                        column=call.start("callee"),
+                    )
+                continue
+            sink_name = _qualified_outbound_http_sink_name(callee) or leaf
+            if _is_sensitive_sink(sink_name):
+                if call_claim_ref is not None:
+                    sink_claim_refs[(sink_name, call.start("callee"))] = call_claim_ref
+                if _to_snake(sink_name) in _INPUT_BOUND_SINKS:
+                    _record_input_bound_sink_call(
+                        input_bound_sink_calls,
+                        name=sink_name,
+                        column=call.start("callee"),
+                        input_ref=input_ref,
+                    )
+                else:
+                    _record_sink_column(
+                        sink_columns,
+                        name=sink_name,
+                        column=call.start("callee"),
+                    )
                 continue
             # Local / service helper calls (ownership helpers, service methods).
             if leaf in local_methods and leaf != handler:
@@ -1177,22 +1643,47 @@ def _scan_handler_body(
                 continue
             if _looks_like_service_or_authz_call(leaf, callee):
                 service_names.add(leaf)
+        _update_token_aliases(line, token_aliases)
         for token_match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", line):
             token = token_match.group(1)
+            token_snake = _to_snake(token)
+            if (
+                token_snake in _COMMAND_EXECUTION_SINKS
+                or _is_command_execution_guard_name(token_snake)
+            ):
+                continue
             gap_hint = _gap_guard_hint(token)
             if gap_hint is not None:
-                _record_gap_guard(
-                    gap_guard_names,
-                    name=token,
-                    authz_hint=gap_hint,
-                    column=token_match.start(1),
-                )
+                if gap_hint in _INPUT_BOUND_GUARD_HINTS:
+                    _record_input_bound_guard_call(
+                        input_bound_guard_calls,
+                        name=token,
+                        authz_hint=gap_hint,
+                        column=token_match.start(1),
+                        input_ref=None,
+                        validated_output_ref=None,
+                    )
+                else:
+                    _record_gap_guard(
+                        gap_guard_names,
+                        name=token,
+                        authz_hint=gap_hint,
+                        column=token_match.start(1),
+                    )
             elif _is_sensitive_sink(token):
-                _record_sink_column(
-                    sink_columns,
-                    name=token,
-                    column=token_match.start(1),
-                )
+                if _to_snake(token) in _INPUT_BOUND_SINKS:
+                    _record_input_bound_sink_call(
+                        input_bound_sink_calls,
+                        name=token,
+                        column=token_match.start(1),
+                        input_ref=None,
+                    )
+                else:
+                    _record_sink_column(
+                        sink_columns,
+                        name=token,
+                        column=token_match.start(1),
+                    )
             elif token in local_methods and token != handler:
                 service_names.add(token)
 
@@ -1210,6 +1701,41 @@ def _scan_handler_body(
                     column_number=column,
                 )
             )
+        for (leaf, column, authz_hint), (
+            input_ref,
+            validated_output_ref,
+        ) in sorted(input_bound_guard_calls.items()):
+            facts.append(
+                _fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=leaf,
+                    route_method=None,
+                    route_path=None,
+                    handler=handler,
+                    line_number=line_number,
+                    authz_hint=authz_hint,
+                    column_number=column,
+                    input_ref=input_ref,
+                    validated_output_ref=validated_output_ref,
+                )
+            )
+        for leaf, column, token_ref, claims_ref in jwt_guard_calls:
+            facts.append(
+                _fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=leaf,
+                    route_method=None,
+                    route_path=None,
+                    handler=handler,
+                    line_number=line_number,
+                    authz_hint="jwt_verification_check",
+                    column_number=column,
+                    token_ref=token_ref,
+                    claims_ref=claims_ref,
+                )
+            )
         for leaf, column in sorted(sink_columns.items()):
             facts.append(
                 _fact(
@@ -1221,6 +1747,37 @@ def _scan_handler_body(
                     handler=handler,
                     line_number=line_number,
                     column_number=column,
+                    claims_ref=sink_claim_refs.get((leaf, column)),
+                )
+            )
+        for (leaf, column), input_ref in sorted(input_bound_sink_calls.items()):
+            facts.append(
+                _fact(
+                    fact_type="sensitive_sink",
+                    source_path=source_path,
+                    symbol_name=leaf,
+                    route_method=None,
+                    route_path=None,
+                    handler=handler,
+                    line_number=line_number,
+                    column_number=column,
+                    input_ref=input_ref,
+                    claims_ref=sink_claim_refs.get((leaf, column)),
+                )
+            )
+        for decoder, column, token_ref, claims_ref in jwt_decode_calls:
+            facts.append(
+                _fact(
+                    fact_type="unverified_token_decode",
+                    source_path=source_path,
+                    symbol_name=decoder,
+                    route_method=None,
+                    route_path=None,
+                    handler=handler,
+                    line_number=line_number,
+                    column_number=column,
+                    token_ref=token_ref,
+                    claims_ref=claims_ref,
                 )
             )
         for leaf in sorted(service_names):
@@ -1314,6 +1871,8 @@ def _gap_guard_hint(name: str) -> str | None:
     snake = _to_snake(name)
     if not snake:
         return None
+    if _is_jwt_verification_control(name):
+        return "jwt_verification_check"
     if any(marker in snake for marker in _SSRF_GUARD_MARKERS):
         return "ssrf_validation_check"
     if any(marker in snake for marker in _PATH_GUARD_MARKERS):
@@ -1322,15 +1881,52 @@ def _gap_guard_hint(name: str) -> str | None:
         return "mass_assignment_check"
     if any(marker in snake for marker in _INJECTION_GUARD_MARKERS):
         return "injection_validation_check"
+    if _is_command_execution_guard_name(snake):
+        return "command_injection_validation_check"
+    if _is_deserialization_guard_name(snake):
+        return "deserialization_validation_check"
+    if _is_file_upload_guard_name(snake):
+        return "file_upload_validation_check"
     if _is_state_transition_guard_name(snake):
         return "transactional_state_guard"
     return None
+
+
+def _is_command_execution_guard_name(snake: str) -> bool:
+    return any(marker in snake for marker in _COMMAND_EXECUTION_GUARD_MARKERS)
+
+
+def _is_deserialization_guard_name(snake: str) -> bool:
+    return snake not in _UNSAFE_DESERIALIZATION_SINKS and any(
+        marker in snake for marker in _DESERIALIZATION_GUARD_MARKERS
+    )
+
+
+def _is_file_upload_guard_name(snake: str) -> bool:
+    return any(marker in snake for marker in _FILE_UPLOAD_GUARD_MARKERS)
 
 
 def _is_state_transition_guard_name(snake: str) -> bool:
     return snake == "transactional" or any(
         marker in snake for marker in _STATE_TRANSITION_GUARD_MARKERS
     )
+
+
+def _is_unverified_jwt_decode(callee: str) -> bool:
+    normalized = re.sub(r"\s+", "", callee).lower()
+    return normalized in {"jwt.decode", "jsonwebtoken.decode"}
+
+
+def _is_jwt_verification_control(callee: str) -> bool:
+    normalized = re.sub(r"\s+", "", callee).lower()
+    if normalized in {
+        "jwt.verify",
+        "jwt.validate",
+        "jsonwebtoken.verify",
+        "jsonwebtoken.validate",
+    }:
+        return True
+    return False
 
 
 def _scoped_transactional_state_controls(
@@ -1472,6 +2068,306 @@ def _record_sink_column(
         sink_columns[name] = column
 
 
+def _record_input_bound_sink_call(
+    calls: dict[tuple[str, int], str | None],
+    *,
+    name: str,
+    column: int,
+    input_ref: str | None,
+) -> None:
+    key = (name, column)
+    if key not in calls or (calls[key] is None and input_ref is not None):
+        calls[key] = input_ref
+
+
+def _record_input_bound_guard_call(
+    calls: dict[tuple[str, int, str], tuple[str | None, str | None]],
+    *,
+    name: str,
+    authz_hint: str,
+    column: int,
+    input_ref: str | None,
+    validated_output_ref: str | None,
+) -> None:
+    key = (name, column, authz_hint)
+    existing = calls.get(key)
+    if existing is None or (
+        (existing[0] is None and input_ref is not None)
+        or (existing[1] is None and validated_output_ref is not None)
+    ):
+        calls[key] = (input_ref, validated_output_ref)
+
+
+def _token_aliases_before(
+    line: str,
+    token_aliases: dict[str, str],
+    *,
+    before: int,
+) -> dict[str, str]:
+    aliases = dict(token_aliases)
+    for match in _TOKEN_ALIAS_ASSIGNMENT.finditer(line):
+        if match.start() >= before:
+            break
+        token_ref = _token_reference(match.group("expression"), aliases)
+        if token_ref is None:
+            aliases.pop(match.group("name"), None)
+        else:
+            aliases[match.group("name")] = token_ref
+    return aliases
+
+
+def _update_token_aliases(line: str, token_aliases: dict[str, str]) -> None:
+    for match in _TOKEN_ALIAS_ASSIGNMENT.finditer(line):
+        token_ref = _token_reference(match.group("expression"), token_aliases)
+        if token_ref is None:
+            token_aliases.pop(match.group("name"), None)
+        else:
+            token_aliases[match.group("name")] = token_ref
+
+
+def _token_reference(value: str | None, token_aliases: dict[str, str]) -> str | None:
+    if value is None:
+        return None
+    expression = value.strip()
+    logical_parts = re.split(r"\s*(?:\|\||\?\?)\s*", expression)
+    if len(logical_parts) > 1:
+        token_refs = [
+            _token_reference(part, token_aliases)
+            for part in logical_parts
+            if not _token_fallback_literal(part)
+        ]
+        return token_refs[0] if len(token_refs) == 1 and token_refs[0] else None
+    expression = logical_parts[0]
+    expression = expression.strip().rstrip("!")
+    while expression.startswith("(") and expression.endswith(")"):
+        expression = expression[1:-1].strip()
+    if _TOKEN_REFERENCE.fullmatch(expression) is None:
+        return None
+    return token_aliases.get(expression, f"token:{expression}")
+
+
+def _jwt_claim_reference(
+    value: str | None,
+    *,
+    ambiguous_references: set[str] | None = None,
+) -> str | None:
+    if value is None:
+        return None
+    expression = value.strip().lstrip("$").lstrip("(")
+    match = re.match(r"(?P<root>[A-Za-z_][A-Za-z0-9_]*)", expression)
+    if match is None:
+        return None
+    root = match.group("root")
+    if root in (ambiguous_references or set()):
+        return None
+    return f"claims:{root}"
+
+
+def _jwt_claim_reference_from_input_ref(value: str | None) -> str | None:
+    if value is None or not value.startswith("input:"):
+        return None
+    return _jwt_claim_reference(value.removeprefix("input:"))
+
+
+def _ambiguous_input_references(code_body: str) -> set[str]:
+    counts: dict[str, int] = {}
+    for match in _INPUT_REASSIGNMENT.finditer(code_body):
+        path = match.group("path")
+        counts[path] = counts.get(path, 0) + 1
+    tuple_reassignments: set[str] = set()
+    for match in _INPUT_TUPLE_REASSIGNMENT.finditer(code_body):
+        paths = set(
+            re.findall(
+                r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?",
+                match.group("paths"),
+            )
+        )
+        if _tuple_assignment_is_declaration(code_body, match.start()) or (
+            match.group("operator") == ":="
+            and not any(
+                _tuple_path_precedes_assignment(code_body, path, match.start())
+                for path in paths
+            )
+        ):
+            continue
+        tuple_reassignments.update(paths)
+    attribute_writes = any("." in path for path in counts) or re.search(
+        r"\[[^\]\n]+\]\s*(?:=(?!=|>)|[+*/%\-]=|&&=|\|\|=|\?\?=)",
+        code_body,
+    ) is not None
+    unsafe_control_flow = re.search(
+        r"\b(?:if|for|foreach|while|switch|case|try|catch)\b",
+        code_body,
+    ) is not None
+    return {
+        *(path for path, count in counts.items() if count > 1),
+        *tuple_reassignments,
+        *(
+            {_INPUT_ATTRIBUTE_MUTATION_MARKER}
+            if attribute_writes
+            else set()
+        ),
+        *({_INPUT_FLOW_UNSAFE_MARKER} if unsafe_control_flow else set()),
+    }
+
+
+def _tuple_assignment_is_declaration(code_body: str, start: int) -> bool:
+    statement_start = max(
+        code_body.rfind("\n", 0, start),
+        code_body.rfind(";", 0, start),
+    ) + 1
+    prefix = code_body[statement_start:start].rstrip()
+    return re.search(r"\b(?:const|let|val|var|final)\s*\(?\s*$", prefix) is not None
+
+
+def _tuple_path_precedes_assignment(code_body: str, path: str, start: int) -> bool:
+    return re.search(
+        rf"(?<![A-Za-z0-9_$]){re.escape(path)}(?![A-Za-z0-9_$])",
+        code_body[:start],
+    ) is not None
+
+
+def _conditional_line_offsets(code_body: str) -> set[int]:
+    if re.search(r"(?m)^\s*(?:if|unless|until)\s+(?!\()", code_body):
+        return set(range(code_body.count("\n") + 1))
+
+    line_offsets: set[int] = set()
+    for control in re.finditer(
+        r"\b(?:if|else|for|foreach|while|switch|try|catch)\b",
+        code_body,
+    ):
+        start_line = code_body.count("\n", 0, control.start())
+        line_offsets.add(start_line)
+        next_semicolon = code_body.find(";", control.end())
+        brace = code_body.find("{", control.end())
+        if brace < 0 or (next_semicolon >= 0 and next_semicolon < brace):
+            continue
+        body = _extract_brace_body(code_body, brace)
+        if body is None:
+            continue
+        _, body_end = body
+        end_line = code_body.count("\n", 0, body_end)
+        line_offsets.update(range(start_line, end_line + 1))
+    return line_offsets
+
+
+def _input_reference(
+    value: str | None,
+    *,
+    ambiguous_references: set[str] | None = None,
+) -> str | None:
+    if value is None:
+        return None
+    expression = value.strip().lstrip("$").rstrip("!").replace("?.", ".")
+    while expression.startswith("(") and expression.endswith(")"):
+        expression = expression[1:-1].strip()
+    if _INPUT_REFERENCE.fullmatch(expression) is None:
+        return None
+    references = ambiguous_references or set()
+    if _INPUT_FLOW_UNSAFE_MARKER in references:
+        return None
+    if _INPUT_ATTRIBUTE_MUTATION_MARKER in references and "." in expression:
+        return None
+    if any(
+        expression == reference or expression.startswith(reference + ".")
+        for reference in references
+    ):
+        return None
+    if any(
+        marker in segment.lower()
+        for segment in expression.split(".")
+        for marker in _SENSITIVE_INPUT_REFERENCE_MARKERS
+    ):
+        return None
+    return f"input:{expression}"
+
+
+def _token_fallback_literal(value: str) -> bool:
+    return not value.strip() or value.strip() in {"''", '\"\"', "null", "undefined"}
+
+
+def _call_first_argument(line: str, open_parenthesis: int) -> str | None:
+    arguments = _call_arguments(line, open_parenthesis)
+    return arguments[0] if arguments else None
+
+
+def _call_arguments(line: str, open_parenthesis: int) -> list[str]:
+    if open_parenthesis >= len(line) or line[open_parenthesis] != "(":
+        return []
+    values: list[str] = []
+    start = open_parenthesis + 1
+    stack: list[str] = []
+    closing_delimiters = {"(": ")", "[": "]", "{": "}"}
+    quote: str | None = None
+    escaped = False
+    for index in range(start, len(line)):
+        character = line[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            continue
+        if character in closing_delimiters:
+            stack.append(closing_delimiters[character])
+            continue
+        if stack and character == stack[-1]:
+            stack.pop()
+            continue
+        if character == ")" and not stack:
+            value = line[start:index].strip()
+            if value:
+                values.append(value)
+            return values
+        if character == "," and not stack:
+            values.append(line[start:index].strip())
+            start = index + 1
+    return []
+
+
+def _input_bound_call_argument(
+    leaf: str,
+    arguments: list[str],
+) -> str | None:
+    input_index = _INPUT_BOUND_SINK_ARGUMENT_INDEXES.get(_to_snake(leaf))
+    if input_index is not None and input_index < len(arguments):
+        return arguments[input_index]
+    return arguments[0] if arguments else None
+
+
+def _validated_output_reference(
+    line: str,
+    *,
+    call_start: int,
+    ambiguous_references: set[str] | None = None,
+) -> str | None:
+    prefix = line[:call_start]
+    binding = re.search(
+        r"\b(?:const|let|val|var|final|[A-Za-z_][A-Za-z0-9_]*"
+        r"(?:<[^>\n]+>)?)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)"
+        r"\s*(?::[^=;\n]+)?\s*=\s*(?:await\s+)?$",
+        prefix,
+    ) or re.search(
+        r"\b(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:=\s*(?:await\s+)?$",
+        prefix,
+    ) or re.search(
+        r"(?<![A-Za-z0-9_$])\$?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+        r"\s*=\s*(?:await\s+)?$",
+        prefix,
+    )
+    if binding is None:
+        return None
+    return _input_reference(
+        binding.group("name"),
+        ambiguous_references=ambiguous_references,
+    )
+
+
 def _mask_multilang_non_code(source: str) -> str:
     masked: list[str] = []
     quote: str | None = None
@@ -1610,6 +2506,22 @@ def _is_sensitive_sink(call_name: str) -> bool:
     return snake in _SENSITIVE_SINKS or call_name.lower() in _SENSITIVE_SINKS
 
 
+def _qualified_outbound_http_sink_name(callee: str) -> str | None:
+    """Recognize explicit server-side HTTP SDK calls without generic get/post guesses."""
+    normalized = ".".join(
+        _call_component_to_snake(component)
+        for component in callee.split(".")
+        if component
+    )
+    return _QUALIFIED_OUTBOUND_HTTP_SINKS.get(normalized)
+
+
+def _call_component_to_snake(value: str) -> str:
+    stepped = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    stepped = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", stepped)
+    return re.sub(r"[^A-Za-z0-9]+", "_", stepped).strip("_").lower()
+
+
 def _boundary_hint(field_name: str) -> str:
     if field_name == "owner_id":
         return "owner_or_admin_check"
@@ -1671,14 +2583,39 @@ def _extract_ruby_method_body(source: str, start: int) -> tuple[str, int] | None
 
 
 
-# C# ASP.NET: [HttpGet("/path")] public IActionResult Name(...)
+# C# ASP.NET: [HttpGet("/path")] or [HttpGet(Name = "operation")] public IActionResult Name(...)
 _CSHARP_HTTP = re.compile(
-    r"\[Http(?P<method>Get|Post|Put|Patch|Delete)\s*(?:\(\s*[\"'](?P<path>[^\"']+)[\"']\s*\))?\]",
-    re.IGNORECASE,
+    r"\[Http(?P<method>Get|Post|Put|Patch|Delete)\s*"
+    r"(?:\((?P<arguments>[^)]*)\))?\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_CSHARP_HTTP_TEMPLATE_ARGUMENT = re.compile(
+    r"\s*(?:template\s*(?::|=)\s*)?[\"'](?P<path>[^\"']+)[\"']",
+    re.IGNORECASE | re.DOTALL,
+)
+_CSHARP_ROUTE_ATTRIBUTE = re.compile(
+    r"\[\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*\.)*)?Route(?:Attribute)?\s*\(\s*"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*(?::|=)\s*)?[\"'](?P<path>[^\"']+)[\"']\s*\)\s*\]",
+    re.IGNORECASE | re.DOTALL,
 )
 _CSHARP_METHOD = re.compile(
     r"(?:public|protected|private|internal|static|\s)+\S+\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*?\)\s*\{",
     re.MULTILINE,
+)
+_CSHARP_DECLARATIVE_AUTHZ_ATTRIBUTE = re.compile(
+    r"\[\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*\.)*)?"
+    r"(?P<name>Authorize|AllowAnonymous)(?:Attribute)?\b"
+    r"(?:\s*\([^)]*\))?\s*\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_CSHARP_DECLARATION_ATTRIBUTE_TAIL = re.compile(
+    r"\s*(?:\[[^\]]*\]\s*)*"
+    r"(?:(?:public|protected|private|internal|abstract|sealed|static|partial|"
+    r"readonly|unsafe|new)\s*)*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_CSHARP_CLASS = re.compile(
+    r"\b(?:class|interface|record)\s+[A-Za-z_][A-Za-z0-9_]*[^\{]*\{"
 )
 
 # PHP Laravel-style: Route::get('/path', ...)
@@ -1928,20 +2865,84 @@ def _map_kotlin_file(*, source_path: str, content: str) -> list["CodebaseFactCan
     methods = _kotlin_methods(content)
     method_names = {name for name, _, _, _ in methods}
     route_handlers: set[str] = set()
+    class_transactional_ranges = _java_transactional_class_ranges(content)
+    class_declarative_authz_ranges = _java_declarative_authz_class_ranges(content)
+    class_route_prefixes = _java_class_route_prefixes(content)
 
-    for mapping in _KOTLIN_MAPPING.finditer(content):
+    for method_name, declaration_start, _, _ in methods:
+        direct_class_body_start = _java_direct_class_body_start(
+            declaration_start,
+            class_transactional_ranges,
+        )
+        annotation_line = _java_transactional_annotation_line(
+            content,
+            declaration_start=declaration_start,
+            class_body_start=direct_class_body_start,
+        )
+        if annotation_line is None:
+            annotation_line = _java_class_transactional_annotation_line(
+                declaration_start,
+                class_transactional_ranges,
+            )
+        if annotation_line is not None:
+            facts.append(
+                _fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name="Transactional",
+                    route_method=None,
+                    route_path=None,
+                    handler=method_name,
+                    line_number=annotation_line,
+                    authz_hint="transactional_state_guard",
+                )
+            )
+        declarative_authz = _java_method_declarative_authz_annotation(
+            content,
+            declaration_start=declaration_start,
+            class_body_start=direct_class_body_start,
+        )
+        if declarative_authz is None:
+            declarative_authz = _java_class_declarative_authz_annotation_for_method(
+                declaration_start,
+                class_declarative_authz_ranges,
+            )
+        if declarative_authz is not None:
+            annotation_name, annotation_line, authz_hint = declarative_authz
+            facts.append(
+                _fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=annotation_name,
+                    route_method=None,
+                    route_path=None,
+                    handler=method_name,
+                    line_number=annotation_line,
+                    authz_hint=authz_hint,
+                )
+            )
+
+    scanned_route_handlers: set[str] = set()
+    for mapping_start, mapping_end, route_method, mapping_path in _java_route_mappings(
+        content
+    ):
         method_meta = None
         for meta in methods:
             name, decl_start, brace_at, body_text = meta
-            if decl_start >= mapping.end():
+            if decl_start >= mapping_end:
                 method_meta = meta
                 break
         if method_meta is None:
             continue
-        method_name, _, brace_at, body_text = method_meta
-        route_method = mapping.group("method").upper()
-        route_path = mapping.group("path")
-        route_line = content.count("\n", 0, mapping.start()) + 1
+        method_name, declaration_start, brace_at, body_text = method_meta
+        route_path = _join_static_route_path(
+            _java_class_route_prefix_for_method(
+                declaration_start,
+                class_route_prefixes,
+            ),
+            mapping_path,
+        )
+        route_line = content.count("\n", 0, mapping_start) + 1
         route_handlers.add(method_name)
         facts.append(
             _fact(
@@ -1954,6 +2955,9 @@ def _map_kotlin_file(*, source_path: str, content: str) -> list["CodebaseFactCan
                 line_number=route_line,
             )
         )
+        if method_name in scanned_route_handlers:
+            continue
+        scanned_route_handlers.add(method_name)
         facts.extend(
             _scan_handler_body(
                 source_path=source_path,
@@ -2003,10 +3007,48 @@ def _kotlin_methods(content: str) -> list[tuple[str, int, int, str]]:
 def _map_csharp_file(*, source_path: str, content: str) -> list["CodebaseFactCandidate"]:
     facts: list[CodebaseFactCandidate] = []
     methods = _csharp_methods(content)
+    masked_content = _mask_multilang_non_code(content)
     method_names = {name for name, _, _, _ in methods}
     route_handlers: set[str] = set()
+    class_declarative_authz_ranges = _csharp_declarative_authz_class_ranges(content)
+    class_route_prefixes = _csharp_class_route_prefixes(content)
+
+    for method_name, declaration_start, _, _ in methods:
+        direct_class_body_start = _csharp_direct_class_body_start(
+            declaration_start,
+            class_declarative_authz_ranges,
+        )
+        method_declarative_authz = _csharp_method_declarative_authz_attribute(
+            content,
+            declaration_start=declaration_start,
+            class_body_start=direct_class_body_start,
+        )
+        class_declarative_authz = _csharp_class_declarative_authz_attribute_for_method(
+            declaration_start,
+            class_declarative_authz_ranges,
+        )
+        declarative_authz = _csharp_effective_declarative_authz_attribute(
+            method_declarative_authz,
+            class_declarative_authz,
+        )
+        if declarative_authz is not None:
+            attribute_name, attribute_line, authz_hint = declarative_authz
+            facts.append(
+                _fact(
+                    fact_type="authz_check",
+                    source_path=source_path,
+                    symbol_name=attribute_name,
+                    route_method=None,
+                    route_path=None,
+                    handler=method_name,
+                    line_number=attribute_line,
+                    authz_hint=authz_hint,
+                )
+            )
 
     for mapping in _CSHARP_HTTP.finditer(content):
+        if masked_content[mapping.start() : mapping.start() + 1] != "[":
+            continue
         method_meta = None
         for meta in methods:
             name, decl_start, brace_at, body_text = meta
@@ -2016,9 +3058,24 @@ def _map_csharp_file(*, source_path: str, content: str) -> list["CodebaseFactCan
                 break
         if method_meta is None:
             continue
-        method_name, _, brace_at, body_text = method_meta
+        method_name, declaration_start, brace_at, body_text = method_meta
         route_method = mapping.group("method").upper()
-        route_path = mapping.group("path") or f"/{method_name}"
+        method_route_template = _csharp_method_route_template(
+            content,
+            declaration_start=declaration_start,
+            class_body_start=_csharp_direct_class_body_start(
+                declaration_start,
+                class_route_prefixes,
+            ),
+        )
+        route_path = _csharp_route_path(
+            _csharp_class_route_prefix_for_method(
+                declaration_start,
+                class_route_prefixes,
+            ),
+            _csharp_http_route_template(mapping) or method_route_template,
+            method_name,
+        )
         route_line = content.count("\n", 0, mapping.start()) + 1
         route_handlers.add(method_name)
         facts.append(
@@ -2076,6 +3133,255 @@ def _csharp_methods(content: str) -> list[tuple[str, int, int, str]]:
         body_text, _ = body
         methods.append((name, match.start(), brace_at, body_text))
     return methods
+
+
+def _csharp_class_route_prefixes(content: str) -> list[tuple[int, int, str | None]]:
+    masked_content = _mask_multilang_non_code(content)
+    ranges: list[tuple[int, int, str | None]] = []
+    for class_match in _CSHARP_CLASS.finditer(masked_content):
+        brace_index = masked_content.rfind("{", class_match.start(), class_match.end())
+        if brace_index < 0:
+            continue
+        body = _extract_brace_body(masked_content, brace_index)
+        if body is None:
+            continue
+        _, body_end = body
+        ranges.append(
+            (
+                brace_index,
+                body_end,
+                _csharp_class_route_prefix(
+                    source=content,
+                    masked_content=masked_content,
+                    class_start=class_match.start(),
+                ),
+            )
+        )
+    return ranges
+
+
+def _csharp_class_route_prefix(
+    *,
+    source: str,
+    masked_content: str,
+    class_start: int,
+) -> str | None:
+    candidates = _csharp_route_attributes(
+        source[:class_start],
+        masked_content[:class_start],
+    )
+    return candidates[-1].group("path") if candidates else None
+
+
+def _csharp_class_route_prefix_for_method(
+    declaration_start: int,
+    prefixes: list[tuple[int, int, str | None]],
+) -> str | None:
+    matching = [
+        (body_start, prefix)
+        for body_start, body_end, prefix in prefixes
+        if body_start < declaration_start < body_end
+    ]
+    return max(matching)[1] if matching else None
+
+
+def _csharp_route_path(prefix: str | None, path: str | None, handler: str) -> str:
+    if path is None:
+        return _join_static_route_path(prefix, "") if prefix else f"/{handler}"
+    normalized_path = path.strip()
+    if normalized_path.startswith("~/"):
+        normalized_path = normalized_path[1:]
+    if normalized_path.startswith("/"):
+        return normalized_path
+    return _join_static_route_path(prefix, normalized_path)
+
+
+def _csharp_http_route_template(mapping: re.Match[str]) -> str | None:
+    arguments = mapping.group("arguments") or ""
+    template = _CSHARP_HTTP_TEMPLATE_ARGUMENT.match(arguments)
+    return template.group("path") if template is not None else None
+
+
+def _csharp_method_route_template(
+    content: str,
+    *,
+    declaration_start: int,
+    class_body_start: int | None,
+) -> str | None:
+    masked_prefix = _mask_multilang_non_code(content[:declaration_start])
+    if class_body_start is None:
+        attribute_start = masked_prefix.rfind("}") + 1
+    else:
+        attribute_start = max(
+            class_body_start + 1,
+            masked_prefix.rfind("}", class_body_start, declaration_start) + 1,
+        )
+    candidates = _csharp_route_attributes(
+        content[attribute_start:declaration_start],
+        masked_prefix[attribute_start:],
+    )
+    return candidates[-1].group("path") if candidates else None
+
+
+def _csharp_route_attributes(
+    source: str,
+    masked_source: str,
+) -> list[re.Match[str]]:
+    return [
+        match
+        for match in _CSHARP_ROUTE_ATTRIBUTE.finditer(source)
+        if masked_source[match.start() : match.start() + 1] == "["
+        and _CSHARP_DECLARATION_ATTRIBUTE_TAIL.fullmatch(
+            masked_source[match.end() :]
+        )
+    ]
+
+
+def _csharp_method_declarative_authz_attribute(
+    content: str,
+    *,
+    declaration_start: int,
+    class_body_start: int | None,
+) -> tuple[str, int, str] | None:
+    masked_prefix = _mask_multilang_non_code(content[:declaration_start])
+    if class_body_start is None:
+        attribute_start = masked_prefix.rfind("}") + 1
+    else:
+        attribute_start = max(
+            class_body_start + 1,
+            masked_prefix.rfind("}", class_body_start, declaration_start) + 1,
+        )
+    candidates = _csharp_declarative_authz_attributes(
+        masked_prefix[attribute_start:]
+    )
+    if not candidates:
+        return None
+    attribute = _csharp_preferred_declarative_authz_attribute(candidates)
+    absolute_attribute_start = attribute_start + attribute.start()
+    return (
+        attribute.group("name"),
+        content.count("\n", 0, absolute_attribute_start) + 1,
+        _csharp_declarative_authz_hint(
+            attribute.group("name"),
+            attribute.group(0),
+        ),
+    )
+
+
+def _csharp_declarative_authz_attributes(source: str) -> list[re.Match[str]]:
+    return [
+        match
+        for match in _CSHARP_DECLARATIVE_AUTHZ_ATTRIBUTE.finditer(source)
+        if _CSHARP_DECLARATION_ATTRIBUTE_TAIL.fullmatch(source[match.end() :])
+    ]
+
+
+def _csharp_preferred_declarative_authz_attribute(
+    candidates: list[re.Match[str]],
+) -> re.Match[str]:
+    allow_anonymous = next(
+        (
+            candidate
+            for candidate in reversed(candidates)
+            if candidate.group("name").lower() == "allowanonymous"
+        ),
+        None,
+    )
+    if allow_anonymous is not None:
+        return allow_anonymous
+    return next(
+        (
+            candidate
+            for candidate in reversed(candidates)
+            if _csharp_declarative_authz_hint(
+                candidate.group("name"), candidate.group(0)
+            )
+            == "role_check"
+        ),
+        candidates[-1],
+    )
+
+
+def _csharp_declarative_authz_hint(attribute_name: str, attribute: str) -> str:
+    if attribute_name.lower() == "allowanonymous":
+        return "public_access"
+    if re.search(r"\broles\s*=", attribute, re.IGNORECASE):
+        return "role_check"
+    return "authentication_check"
+
+
+def _csharp_declarative_authz_class_ranges(
+    content: str,
+) -> list[tuple[int, int, tuple[str, int, str] | None]]:
+    masked_content = _mask_multilang_non_code(content)
+    ranges: list[tuple[int, int, tuple[str, int, str] | None]] = []
+    for class_match in _CSHARP_CLASS.finditer(masked_content):
+        brace_index = masked_content.rfind("{", class_match.start(), class_match.end())
+        if brace_index < 0:
+            continue
+        body = _extract_brace_body(masked_content, brace_index)
+        if body is None:
+            continue
+        _, body_end = body
+        candidates = _csharp_declarative_authz_attributes(
+            masked_content[: class_match.start()]
+        )
+        attribute = (
+            _csharp_preferred_declarative_authz_attribute(candidates)
+            if candidates
+            else None
+        )
+        authz = (
+            (
+                attribute.group("name"),
+                content.count("\n", 0, attribute.start()) + 1,
+                _csharp_declarative_authz_hint(
+                    attribute.group("name"),
+                    attribute.group(0),
+                ),
+            )
+            if attribute is not None
+            else None
+        )
+        ranges.append((brace_index, body_end, authz))
+    return ranges
+
+
+def _csharp_class_declarative_authz_attribute_for_method(
+    declaration_start: int,
+    ranges: list[tuple[int, int, tuple[str, int, str] | None]],
+) -> tuple[str, int, str] | None:
+    matching = [
+        (body_start, authz)
+        for body_start, body_end, authz in ranges
+        if body_start < declaration_start < body_end
+    ]
+    return max(matching)[1] if matching else None
+
+
+def _csharp_effective_declarative_authz_attribute(
+    method_authz: tuple[str, int, str] | None,
+    class_authz: tuple[str, int, str] | None,
+) -> tuple[str, int, str] | None:
+    for authz in (method_authz, class_authz):
+        if authz is not None and authz[2] == "public_access":
+            return authz
+    for authz in (method_authz, class_authz):
+        if authz is not None and authz[2] == "role_check":
+            return authz
+    return method_authz or class_authz
+
+
+def _csharp_direct_class_body_start(
+    declaration_start: int,
+    ranges: list[tuple[int, int, object]],
+) -> int | None:
+    containing_classes = [
+        body_start
+        for body_start, body_end, _ in ranges
+        if body_start < declaration_start < body_end
+    ]
+    return max(containing_classes) if containing_classes else None
 
 
 
@@ -2214,6 +3520,10 @@ def _fact(
     authz_hint: str | None = None,
     caller: str | None = None,
     column_number: int | None = None,
+    token_ref: str | None = None,
+    claims_ref: str | None = None,
+    input_ref: str | None = None,
+    validated_output_ref: str | None = None,
 ) -> "CodebaseFactCandidate":
     from app.codebase_map import CodebaseFactCandidate
 
@@ -2223,6 +3533,16 @@ def _fact(
     }
     if column_number is not None:
         payload["column"] = column_number
+    if token_ref is not None:
+        payload["token_ref"] = token_ref
+    if claims_ref is not None:
+        payload["claims_ref"] = claims_ref
+    if input_ref is not None or validated_output_ref is not None:
+        payload["input_ref_kind"] = "straight_line"
+    if input_ref is not None:
+        payload["input_ref"] = input_ref
+    if validated_output_ref is not None:
+        payload["validated_output_ref"] = validated_output_ref
     if fact_type == "service_call":
         payload["caller"] = caller or handler
         # Also set handler for reachability helpers that only look at handler.

@@ -991,6 +991,9 @@ def _source_fact_from_codebase_candidate(fact: CodebaseFactCandidate) -> dict:
                 "authz_hint": safe_display_text(fact.authz_hint or ""),
                 "root_cause": root_cause,
                 "security_invariant": security_invariant,
+                "decoder_symbols": _safe_semantic_symbol_list(
+                    payload.get("decoder_symbols")
+                ),
                 "sink_count": _safe_int(payload.get("sink_count")),
                 "sink_symbols": _safe_semantic_symbol_list(payload.get("sink_symbols")),
                 "review_state": safe_display_text(
@@ -1001,6 +1004,18 @@ def _source_fact_from_codebase_candidate(fact: CodebaseFactCandidate) -> dict:
                 "report_submission_allowed": False,
             }
         )
+        if payload.get("entrypoint_kind") == "graphql_operation":
+            source_fact.update(
+                {
+                    "entrypoint_kind": "graphql_operation",
+                    "graphql_operation_type": safe_display_text(
+                        str(payload.get("graphql_operation_type") or "")
+                    ),
+                    "graphql_operation_name": safe_display_text(
+                        str(payload.get("graphql_operation_name") or "")
+                    ),
+                }
+            )
     return source_fact
 
 
@@ -1225,6 +1240,8 @@ def _is_sensitive_data_sink(sink_symbol: str) -> bool:
 def _gap_vuln_type(fact: CodebaseFactCandidate) -> str:
     payload = fact.payload if isinstance(fact.payload, dict) else {}
     root_cause = str(payload.get("root_cause") or "")
+    if root_cause == "missing_jwt_verification":
+        return "jwt_authentication_bypass"
     if root_cause == "missing_command_injection_validation":
         return "command_injection"
     if root_cause == "missing_unsafe_deserialization_guard":
@@ -1247,6 +1264,11 @@ def _gap_vuln_type(fact: CodebaseFactCandidate) -> str:
 
 
 def _gap_reason(fact: CodebaseFactCandidate, vuln_type: str) -> str:
+    if vuln_type == "jwt_authentication_bypass":
+        return (
+            "Mapped route decodes JWT claims without JWT signature verification before "
+            "a sensitive operation, and no explicit token verification was observed first."
+        )
     if vuln_type == "command_injection":
         return (
             "Mapped route reaches a command execution sink without an obvious "
@@ -1299,6 +1321,12 @@ def _gap_reason(fact: CodebaseFactCandidate, vuln_type: str) -> str:
 
 
 def _gap_evidence_needed(vuln_type: str) -> list[str]:
+    if vuln_type == "jwt_authentication_bypass":
+        return [
+            "review local JWT signature verification and claims validation before the sensitive operation",
+            "confirm token issuer, audience, expiry, and algorithm controls are bound to trusted local policy",
+            "sanitized local token-shape fixtures only; do not access accounts or submit requests from this review",
+        ]
     if vuln_type == "command_injection":
         return [
             "review local command allowlist and argument validation before execution",
@@ -1361,6 +1389,12 @@ def _gap_evidence_needed(vuln_type: str) -> list[str]:
 
 
 def _gap_false_positive_checks(vuln_type: str) -> list[str]:
+    if vuln_type == "jwt_authentication_bypass":
+        return [
+            "an explicit JWT verification or validation control may run before the sensitive operation",
+            "the decoded claims may be discarded and never influence the sensitive operation",
+            "a framework authentication boundary may verify the same token before this local handler runs",
+        ]
     if vuln_type == "command_injection":
         return [
             "a same-handler command allowlist or argument validation may run before execution",
@@ -1797,6 +1831,11 @@ def _source_audit_target_model(result: SourceAuditResult) -> dict:
 def _broken_invariant_for_hypothesis(hypothesis: VulnerabilityHypothesis) -> str:
     if hypothesis.vuln_type == "authorization":
         return "Sensitive object access must be constrained by authentication, role, and ownership checks."
+    if hypothesis.vuln_type == "jwt_authentication_bypass":
+        return (
+            "JWT claims must be signature-verified and validated before they influence "
+            "sensitive operations."
+        )
     if hypothesis.vuln_type == "command_injection":
         return (
             "Command selection and arguments must be constrained by an explicit local allowlist "
@@ -1836,6 +1875,8 @@ def _broken_invariant_for_hypothesis(hypothesis: VulnerabilityHypothesis) -> str
 def _validation_mode_for_hypothesis(hypothesis: VulnerabilityHypothesis) -> str:
     if hypothesis.vuln_type == "authorization":
         return "two_account_authorization_check"
+    if hypothesis.vuln_type == "jwt_authentication_bypass":
+        return "offline_jwt_verification_review"
     if hypothesis.vuln_type == "command_injection":
         return "offline_command_execution_boundary_review"
     if hypothesis.vuln_type == "unsafe_deserialization":
@@ -1854,6 +1895,9 @@ def _source_audit_hunter_assessment(hypothesis: dict, severity: str) -> dict:
     if vuln_type == "authorization":
         playbook_id = "bola_idor"
         playbook_label = "BOLA / IDOR object boundary"
+    elif vuln_type == "jwt_authentication_bypass":
+        playbook_id = "jwt_authentication_boundary"
+        playbook_label = "JWT authentication boundary"
     elif vuln_type == "command_injection":
         playbook_id = "command_execution_boundary"
         playbook_label = "Command execution boundary"
@@ -2381,6 +2425,15 @@ def _read_text_if_exists(path: Path) -> str:
 
 
 def _route_location(fact: CodebaseFactCandidate) -> str:
+    payload = fact.payload if isinstance(fact.payload, dict) else {}
+    if payload.get("entrypoint_kind") == "graphql_operation":
+        operation_type = safe_display_text(
+            str(payload.get("graphql_operation_type") or "operation")
+        )
+        operation_name = safe_display_text(
+            str(payload.get("graphql_operation_name") or fact.symbol_name or "unknown")
+        )
+        return f"GraphQL {operation_type} {operation_name}"
     method = fact.route_method or "GET"
     path = fact.route_path or fact.source_path
     return f"{method} {path}"

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.codebase_map import CodebaseFactCandidate
+from app.codebase_map import CodebaseFactCandidate, map_authorized_code_files
 from app.candidate_hunter_loop import (
     SAFE_VALIDATION_STEP,
     _safe_prior_candidate_projection,
@@ -222,7 +222,7 @@ def test_observations_preserve_sarif_route_support_without_making_it_required():
     assert "sarif" not in state["observed_artifact_kinds"]
 
 
-def test_observations_preserve_reachable_sbom_support_without_making_it_required():
+def test_observations_keep_sbom_support_out_of_candidate_evidence():
     route = "/records/{record_id}"
     observations = build_candidate_hunter_observations(
         pipeline_run_id="run-001",
@@ -283,7 +283,7 @@ def test_observations_preserve_reachable_sbom_support_without_making_it_required
 
     state = observations["candidate_states"][0]
 
-    assert "sbom_artifact:dependency:" + "a" * 64 in state["source_fact_refs"]
+    assert "sbom_artifact:dependency:" + "a" * 64 not in state["source_fact_refs"]
     assert state["required_artifact_kinds"] == REQUIRED_ARTIFACT_KINDS
     assert "sbom" not in state["observed_artifact_kinds"]
     assert "sbom-body-marker" not in json.dumps(observations)
@@ -578,6 +578,217 @@ def test_candidates_sharing_observed_service_root_are_deduplicated():
     assert decisions["H-002"]["falsification_card"]["decision"]["duplicate_of"] == (
         "missing_object_ownership_check:read_record"
     )
+
+
+def test_direct_sinks_in_distinct_resource_families_are_not_deduplicated():
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-read",
+                "vuln_type": "authorization",
+                "location": "GET /records/{record_id}",
+                "priority_score": 80,
+            },
+            {
+                "hypothesis_id": "H-download",
+                "vuln_type": "authorization",
+                "location": "GET /exports/{export_id}",
+                "priority_score": 70,
+            },
+        ],
+        code_files=[
+            {
+                "path": "RecordsController.cs",
+                "content": """
+using Microsoft.AspNetCore.Mvc;
+
+[Route("/records")]
+public class RecordsController : ControllerBase {
+  [HttpGet("{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+
+  [HttpGet("/exports/{exportId}")]
+  public IActionResult DownloadRecord(string exportId) {
+    return File(loadRecord(exportId).Path);
+  }
+}
+""",
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": "/records/{record_id}",
+            },
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": "/exports/{export_id}",
+            },
+            {
+                "fact_type": "har_surface",
+                "artifact_kind": "har",
+                "route_method": "GET",
+                "route_path": "/records/123",
+            },
+            {
+                "fact_type": "har_surface",
+                "artifact_kind": "har",
+                "route_method": "GET",
+                "route_path": "/exports/123",
+            },
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    assert {
+        (state["shared_root"], state["shared_root_kind"])
+        for state in observations["candidate_states"]
+    } == {("File", "direct_sink")}
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=observations["candidate_states"],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert {
+        decision["candidate_id"]: decision["disposition"]
+        for decision in result["candidate_decisions"]
+    } == {"H-read": "retained", "H-download": "retained"}
+    assert {candidate["candidate_id"] for candidate in result["final_candidates"]} == {
+        "H-read",
+        "H-download",
+    }
+
+
+def test_cross_controller_service_calls_share_sink_provenance_for_deduplication():
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-read",
+                "vuln_type": "authorization",
+                "location": "GET /records/{record_id}",
+                "priority_score": 80,
+            },
+            {
+                "hypothesis_id": "H-export",
+                "vuln_type": "authorization",
+                "location": "GET /exports/{export_id}",
+                "priority_score": 70,
+            },
+        ],
+        code_files=[
+            {
+                "path": "RecordsController.cs",
+                "content": """
+using Microsoft.AspNetCore.Mvc;
+
+[Route("/records")]
+public class RecordsController : ControllerBase {
+  [HttpGet("{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return recordService.ExportRecord(recordId);
+  }
+}
+""",
+            },
+            {
+                "path": "ExportsController.cs",
+                "content": """
+using Microsoft.AspNetCore.Mvc;
+
+[Route("/exports")]
+public class ExportsController : ControllerBase {
+  [HttpGet("{exportId}")]
+  public IActionResult ExportRecordFile(string exportId) {
+    return recordService.ExportRecord(exportId);
+  }
+}
+""",
+            },
+            {
+                "path": "RecordService.cs",
+                "content": """
+using Microsoft.AspNetCore.Mvc;
+
+public class RecordService : ControllerBase {
+  public IActionResult ExportRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+}
+""",
+            },
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": "/records/{record_id}",
+            },
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": "/exports/{export_id}",
+            },
+            {
+                "fact_type": "har_surface",
+                "artifact_kind": "har",
+                "route_method": "GET",
+                "route_path": "/records/123",
+            },
+            {
+                "fact_type": "har_surface",
+                "artifact_kind": "har",
+                "route_method": "GET",
+                "route_path": "/exports/123",
+            },
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    assert {
+        (state["shared_root"], state["shared_root_evidence_ref"])
+        for state in observations["candidate_states"]
+    } == {("ExportRecord", "code:RecordService.cs:File")}
+    assert {state["shared_root_kind"] for state in observations["candidate_states"]} == {
+        "service"
+    }
+    assert all(
+        "code:RecordService.cs:File" in state["source_fact_refs"]
+        for state in observations["candidate_states"]
+    )
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=observations["candidate_states"],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert [candidate["candidate_id"] for candidate in result["final_candidates"]] == [
+        "H-read"
+    ]
+    assert {
+        decision["candidate_id"]: decision["disposition"]
+        for decision in result["candidate_decisions"]
+    } == {"H-read": "retained", "H-export": "deduplicated"}
 
 
 def test_equal_priority_duplicates_use_model_priority_as_advisory_tiebreak():
@@ -979,6 +1190,73 @@ def test_observations_match_template_candidate_route_to_concrete_har_route():
     assert state["reanalysis_status"] == "completed"
 
 
+def test_observations_link_csharp_controller_template_to_api_and_har_routes():
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": "GET /api/v1/records/{record_id}",
+                "priority_score": 80,
+            }
+        ],
+        code_files=[
+            {
+                "path": "RecordsController.cs",
+                "content": """
+using Microsoft.AspNetCore.Mvc;
+
+[Route("/api/v1/records")]
+public class RecordsController : ControllerBase {
+  [HttpGet("{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+}
+""",
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": "/api/v1/records/{record_id}",
+            },
+            {
+                "fact_type": "har_surface",
+                "artifact_kind": "har",
+                "route_method": "GET",
+                "route_path": "/api/v1/records/123",
+            },
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    csharp_route = next(
+        fact
+        for fact in observations["facts"]
+        if fact["fact_type"] == "route_handler"
+        and fact["source_path"] == "RecordsController.cs"
+    )
+
+    assert csharp_route["route"] == {
+        "method": "GET",
+        "path": "/api/v1/records/{recordId}",
+    }
+    assert state["root_cause_id"] == "missing_object_ownership_check:readrecord"
+    assert state["gap_evidence_ref"] == "code:RecordsController.cs:ReadRecord"
+    assert "api:GET:/api/v1/records/{record_id}" in state["source_fact_refs"]
+    assert "har:GET:/api/v1/records/123" in state["source_fact_refs"]
+    assert state["observed_artifact_kinds"] == REQUIRED_ARTIFACT_KINDS
+    assert state["evidence_trace_status"] == "traceable"
+
+
 def test_reachable_ownership_guard_is_decisive_refutation_evidence():
     observations = _build_single_candidate_observations(
         '''
@@ -1010,6 +1288,539 @@ def verify_record_access(record_id: str, current_user):
         observations=observations,
         prior_decisions=[],
     )
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_unrelated_ownership_helper_does_not_refute_sensitive_sink():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str, profile_id: str, current_user):
+    verify_profile_access(profile_id, current_user)
+    record = load_record(record_id)
+    return send_file(record.path)
+
+def verify_profile_access(profile_id: str, current_user):
+    profile = load_profile(profile_id)
+    if profile.owner_id != current_user.id:
+        raise PermissionError()
+    return profile
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+@pytest.mark.parametrize(
+    "source_order",
+    [("foreign.py", "target.py"), ("target.py", "foreign.py")],
+)
+def test_ambiguous_route_bound_code_facts_do_not_attach_foreign_control(
+    source_order,
+):
+    route = "/records/{record_id}"
+    code_by_path = {
+        "foreign.py": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str, current_user):
+    verify_record_access(record_id, current_user)
+    return send_file(record_id)
+
+def verify_record_access(record_id: str, current_user):
+    record = load_record(record_id)
+    if record.owner_id != current_user.id:
+        raise PermissionError()
+    return record
+''',
+        "target.py": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str):
+    return send_file(record_id)
+''',
+    }
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": source_path,
+                        "symbol_name": "read_record",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                    for source_path in source_order
+                ],
+            }
+        ],
+        code_files=[
+            {"path": source_path, "content": code_by_path[source_path]}
+            for source_path in source_order
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+    state = observations["candidate_states"][0]
+
+    assert "hypothesis_source_path" not in state
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+@pytest.mark.parametrize(
+    "source_order",
+    [("foreign.py", "target.py"), ("target.py", "foreign.py")],
+)
+def test_ambiguous_routeless_code_facts_do_not_attach_foreign_control(
+    source_order,
+):
+    route = "/records/{record_id}"
+    code_by_path = {
+        "foreign.py": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str, current_user):
+    verify_record_access(record_id, current_user)
+    return send_file(record_id)
+
+def verify_record_access(record_id: str, current_user):
+    record = load_record(record_id)
+    if record.owner_id != current_user.id:
+        raise PermissionError()
+    return record
+''',
+        "target.py": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str):
+    return send_file(record_id)
+''',
+    }
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": source_path,
+                        "symbol_name": "read_record",
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                    for source_path in source_order
+                ],
+            }
+        ],
+        code_files=[
+            {"path": source_path, "content": code_by_path[source_path]}
+            for source_path in source_order
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+    state = observations["candidate_states"][0]
+
+    assert "hypothesis_source_path" not in state
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_depends_ownership_helper_must_match_sink_resource():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(
+    record_id: str,
+    profile=Depends(verify_profile_access),
+):
+    return send_file(record_id)
+
+def verify_profile_access(profile_id: str, current_user):
+    profile = load_profile(profile_id)
+    if profile.owner_id != current_user.id:
+        raise PermissionError()
+    return profile
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+@pytest.mark.parametrize("helper_name", ["get_owned", "verify_access"])
+def test_generic_depends_helper_must_prove_sink_resource(helper_name):
+    observations = _build_single_candidate_observations(
+        f'''
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+@router.get("/records/{{record_id}}")
+def read_record(
+    record_id: str,
+    profile=Depends({helper_name}),
+):
+    return send_file(record_id)
+
+def {helper_name}(profile_id: str, current_user):
+    profile = load_profile(profile_id)
+    if profile.owner_id != current_user.id:
+        raise PermissionError()
+    return profile
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_depends_helper_name_must_agree_with_its_resource_parameter():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(
+    record_id: str,
+    profile=Depends(get_owned_record),
+):
+    return send_file(record_id)
+
+def get_owned_record(profile_id: str, current_user):
+    profile = load_profile(profile_id)
+    if profile.owner_id != current_user.id:
+        raise PermissionError()
+    return profile
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_depends_helper_must_not_borrow_an_unchecked_resource_parameter():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(
+    record_id: str,
+    profile=Depends(get_owned_record),
+):
+    return send_file(record_id)
+
+def get_owned_record(record_id: str, profile_id: str, current_user):
+    profile = load_profile(profile_id)
+    if profile.owner_id != current_user.id:
+        raise PermissionError()
+    return profile
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_resource_specific_ownership_decorator_must_match_sink_resource():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+@require_profile_ownership
+def read_record(record_id: str):
+    return send_file(record_id)
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_generic_ownership_decorator_refutes_candidate():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+@require_ownership
+def read_record(record_id: str):
+    return send_file(record_id)
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert state["control_evidence_ref"] == "code:code.py:read_record:ownership_guard"
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_depends_ownership_helper_for_sink_resource_refutes_candidate():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(
+    record_id: str,
+    record=Depends(get_owned_record),
+):
+    return send_file(record_id)
+
+def get_owned_record(record_id: str, current_user):
+    record = load_record(record_id)
+    if record.owner_id != current_user.id:
+        raise PermissionError()
+    return record
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert state["control_evidence_ref"] == (
+        "code:code.py:get_owned_record:ownership_guard"
+    )
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_sink_after_alias_does_not_link_unrelated_ownership_helper():
+    observations = _build_single_candidate_observations(
+        '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/records/{record_id}")
+def read_record(record_id: str, profile_id: str, current_user):
+    verify_profile_access(profile_id, current_user)
+    record = load_record(record_id)
+    response = send_file(record.path)
+    profile_id = record_id
+    return response
+
+def verify_profile_access(profile_id: str, current_user):
+    profile = load_profile(profile_id)
+    if profile.owner_id != current_user.id:
+        raise PermissionError()
+    return profile
+'''
+    )
+    state = observations["candidate_states"][0]
+
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+@pytest.mark.parametrize(
+    ("source_path", "symbol_name", "code"),
+    [
+        (
+            "views.py",
+            "read_record",
+            """
+def read_record(request, record_id):
+    record = Record.objects.get(pk=record_id)
+    if record.owner_id != request.user.id:
+        raise PermissionDenied()
+    return send_file(record.path)
+""",
+        ),
+        (
+            "routes.py",
+            "resolve_record",
+            """
+def resolve_record(root, info, record_id):
+    record = load_record(record_id)
+    if record.owner_id != info.context.user.id:
+        raise PermissionError("forbidden")
+    return send_file(record.path)
+""",
+        ),
+    ],
+)
+def test_candidate_route_fallback_links_python_semantic_ownership_guard(
+    source_path,
+    symbol_name,
+    code,
+):
+    observations = _build_single_candidate_observations(
+        code,
+        source_path=source_path,
+        symbol_name=symbol_name,
+    )
+    state = observations["candidate_states"][0]
+
+    assert state["control_evidence_ref"] == (
+        f"code:{source_path}:{symbol_name}:ownership_guard"
+    )
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
     assert result["candidate_decisions"][0]["disposition"] == "refuted"
 
 
@@ -1247,6 +2058,88 @@ def read_record(record_id: str):
         observations=observations,
         prior_decisions=[],
     )
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_route_bound_code_fact_takes_precedence_over_routeless_fact():
+    route = "/records/{record_id}"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "code_symbol",
+                        "artifact_kind": "code",
+                        "source_path": "foreign.py",
+                        "symbol_name": "read_foreign",
+                    },
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "target.py",
+                        "symbol_name": "read_record",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    },
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "foreign.py",
+                "content": '''
+def read_foreign(foreign_id: str, current_user):
+    foreign = load_record(foreign_id)
+    if foreign.owner_id != current_user.id:
+        raise PermissionError()
+    return send_file(foreign.path)
+''',
+            },
+            {
+                "path": "target.py",
+                "content": f'''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("{route}")
+def read_record(record_id: str):
+    return send_file(record_id)
+''',
+            },
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+    state = observations["candidate_states"][0]
+
+    assert state["hypothesis_source_path"] == "target.py"
+    assert "control_evidence_ref" not in state
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
     assert result["candidate_decisions"][0]["disposition"] == "retained"
 
 
@@ -2470,6 +3363,446 @@ async function verifyRecordAccess(recordId: string, user: User) {
     assert result["candidate_decisions"][0]["disposition"] == "refuted"
 
 
+def test_typescript_nestjs_class_guard_does_not_refute_an_adjacent_controller():
+    route = "/public-records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "records.controller.ts",
+                        "symbol_name": "readPublicRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "records.controller.ts",
+                "content": '''
+import { Controller, Get, UseGuards } from "@nestjs/common";
+
+@UseGuards(OwnerGuard)
+@Controller("admin-records")
+export class AdminRecordsController {
+  @Get(":recordId")
+  async readAdminRecord(recordId: string) {
+    return sendFile(recordId);
+  }
+}
+
+@Controller("public-records")
+export class PublicRecordsController {
+  @Get(":recordId")
+  async readPublicRecord(recordId: string) {
+    return sendFile(recordId);
+  }
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_nestjs_injectable_ownership_guard_refutes_candidate():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "records.controller.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "records.controller.ts",
+                "content": '''
+import { Controller, Get } from "@nestjs/common";
+import { RecordsService } from "./records.service";
+
+@Controller("records")
+export class RecordsController {
+  constructor(private readonly recordsService: RecordsService) {}
+
+  @Get(":recordId")
+  async readRecord(recordId: string, user: User) {
+    const record = await this.recordsService.getForUser(recordId, user);
+    return sendFile(record.path);
+  }
+}
+''',
+            },
+            {
+                "path": "records.service.ts",
+                "content": '''
+import { Injectable } from "@nestjs/common";
+
+@Injectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:records.service.ts:owner_id_filter"
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_nestjs_imported_service_does_not_link_same_named_service_from_another_module():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "records.controller.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "records.controller.ts",
+                "content": '''
+import { Controller, Get } from "@nestjs/common";
+import { RecordsService } from "./audit/records.service";
+
+@Controller("records")
+export class RecordsController {
+  constructor(private readonly recordsService: RecordsService) {}
+
+  @Get(":recordId")
+  async readRecord(recordId: string, user: User) {
+    const record = await this.recordsService.getForUser(recordId, user);
+    return sendFile(record.path);
+  }
+}
+''',
+            },
+            {
+                "path": "audit/records.service.ts",
+                "content": '''
+import { Injectable } from "@nestjs/common";
+
+@Injectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    return recordId;
+  }
+}
+''',
+            },
+            {
+                "path": "records.service.ts",
+                "content": '''
+import { Injectable } from "@nestjs/common";
+
+@Injectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+            },
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_nestjs_service_receiver_does_not_link_unrelated_service_method():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "records.controller.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "records.controller.ts",
+                "content": '''
+import { Controller, Get } from "@nestjs/common";
+
+@Controller("records")
+export class RecordsController {
+  constructor(private readonly auditService: AuditService) {}
+
+  @Get(":recordId")
+  async readRecord(recordId: string, user: User) {
+    const record = await this.auditService.getForUser(recordId, user);
+    return sendFile(record.path);
+  }
+}
+''',
+            },
+            {
+                "path": "records.service.ts",
+                "content": '''
+import { Injectable } from "@nestjs/common";
+
+@Injectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+            },
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_nestjs_same_file_service_methods_do_not_share_authz_facts():
+    route = "/records/:recordId"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "records.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "records.ts",
+                "content": '''
+import { Controller, Get, Injectable } from "@nestjs/common";
+
+@Controller("records")
+export class RecordsController {
+  constructor(private readonly recordsService: RecordsService) {}
+
+  @Get(":recordId")
+  async readRecord(recordId: string, user: User) {
+    const record = await this.recordsService.getForUser(recordId, user);
+    return sendFile(record.path);
+  }
+}
+
+@Injectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    return loadRecord(recordId);
+  }
+}
+
+@Injectable()
+export class AuditService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
 def test_typescript_express_two_hop_verified_access_guard_refutes_candidate():
     route = "/records/:recordId"
     observations = build_candidate_hunter_observations(
@@ -2631,6 +3964,292 @@ async function verifyRecordAccess(recordId: string, user: User) {
     assert result["candidate_decisions"][0]["disposition"] == "retained"
 
 
+def test_typescript_jwt_verification_control_refutes_jwt_candidate():
+    route = "/reports/:reportId/export"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-jwt-001",
+                "vuln_type": "jwt_authentication_bypass",
+                "location": f"GET {route}",
+                "priority_score": 85,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "exportReport",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_jwt_verification",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || "");
+  const verifiedClaims = jwt.verify(req.headers.authorization || "", verificationKey);
+  return sendFile(verifiedClaims.path);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert state["control_evidence_ref"] == "code:routes.ts:verify"
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_jwt_verification_does_not_refute_unverified_claims_sink():
+    observations = _build_single_candidate_observations(
+        '''
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const unsafeClaims = jwt.decode(req.headers.authorization || "");
+  const verifiedClaims = jwt.verify(req.headers.authorization || "", verificationKey);
+  return sendFile(unsafeClaims?.path);
+}
+''',
+        route_path="/reports/:reportId/export",
+        symbol_name="exportReport",
+        source_path="routes.ts",
+        vuln_type="jwt_authentication_bypass",
+        root_cause="missing_jwt_verification",
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_jwt_verification_of_other_token_does_not_refute_jwt_candidate():
+    route = "/reports/:reportId/export"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-jwt-002",
+                "vuln_type": "jwt_authentication_bypass",
+                "location": f"GET {route}",
+                "priority_score": 85,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "exportReport",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_jwt_verification",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.attackerToken || "");
+  const verifiedClaims = jwt.verify(req.headers.serviceToken || "", verificationKey);
+  return sendFile(claims?.path);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_jwt_verification_does_not_refute_unresolved_token_decode():
+    route = "/reports/:reportId/export"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-jwt-003",
+                "vuln_type": "jwt_authentication_bypass",
+                "location": f"GET {route}",
+                "priority_score": 85,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "exportReport",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_jwt_verification",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const serviceClaims = jwt.decode(req.headers.authorization || "");
+  const verifiedClaims = jwt.verify(req.headers.authorization || "", verificationKey);
+  const attackerClaims = jwt.decode(req.headers.attackerToken || req.query.fallbackToken);
+  return sendFile(attackerClaims?.path);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "GET",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_jwt_candidate_ignores_unrelated_ownership_control():
+    observations = _build_single_candidate_observations(
+        '''
+from flask import Blueprint
+import jwt
+
+bp = Blueprint("reports", __name__)
+
+@bp.get("/reports/<report_id>/export")
+def export_report(report_id, token):
+    verify_record_access(report_id, current_user)
+    claims = jwt.decode(token, options={"verify_signature": False})
+    return send_file(claims["path"])
+
+def verify_record_access(record_id, user):
+    record = load_record(record_id)
+    if record.owner_id != user.id:
+        return deny()
+    return record
+''',
+        route_path="/reports/{report_id}/export",
+        symbol_name="export_report",
+        vuln_type="jwt_authentication_bypass",
+        root_cause="missing_jwt_verification",
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
 def test_typescript_command_validation_control_refutes_command_execution_candidate():
     route = "/maintenance/run"
     observations = build_candidate_hunter_observations(
@@ -2701,6 +4320,78 @@ function commandAllowlist(command: string) {
 
     assert state["control_evidence_ref"] == "code:routes.ts:commandAllowlist"
     assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_typescript_command_validation_of_different_input_does_not_refute_candidate():
+    observations = _build_single_candidate_observations(
+        '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/maintenance/run", runMaintenance);
+
+async function runMaintenance(req: Request, res: Response) {
+  const safeCommand = req.query.safeCommand;
+  const attackerCommand = req.query.command;
+  validateCommand(safeCommand);
+  return exec(attackerCommand);
+}
+''',
+        route_path="/maintenance/run",
+        symbol_name="runMaintenance",
+        source_path="routes.ts",
+        vuln_type="command_injection",
+        root_cause="missing_command_injection_validation",
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_query_validation_of_different_input_does_not_refute_candidate():
+    observations = _build_single_candidate_observations(
+        '''
+import { Router } from "express";
+
+const router = Router();
+
+router.get("/maintenance/run", runSearch);
+
+async function runSearch(req: Request, res: Response) {
+  const safeQuery = req.query.safeQuery;
+  const attackerQuery = req.query.query;
+  parameterize(safeQuery);
+  return runSql(attackerQuery);
+}
+''',
+        route_path="/maintenance/run",
+        symbol_name="runSearch",
+        source_path="routes.ts",
+        vuln_type="injection",
+        root_cause="missing_injection_validation",
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
 
 
 def test_typescript_query_validation_does_not_refute_command_execution_candidate():
@@ -2812,6 +4503,220 @@ async function testWebhook(req: Request, res: Response) {
 
 async function fetchRemote(url: string) {
   return fetch(url);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_validation_of_different_input_does_not_refute_ssrf_candidate():
+    route = "/webhooks/test"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-ssrf-different-input-001",
+                "vuln_type": "ssrf",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "testWebhook",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_ssrf_validation",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/test", testWebhook);
+
+async function testWebhook(req: Request, res: Response) {
+  const serviceTarget = req.body.serviceUrl;
+  const attackerTarget = req.body.callbackUrl;
+  validateUrlForSSRF(serviceTarget);
+  await fetch(serviceTarget);
+  return fetch(attackerTarget);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_validation_does_not_cross_service_call_for_ssrf_candidate():
+    route = "/webhooks/test"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-ssrf-service-call-input-001",
+                "vuln_type": "ssrf",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "testWebhook",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_ssrf_validation",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/test", testWebhook);
+
+async function testWebhook(req: Request, res: Response) {
+  const url = req.body.serviceUrl;
+  validateUrlForSSRF(url);
+  return fetchRemote(req.body.callbackUrl);
+}
+
+async function fetchRemote(url: string) {
+  return fetch(url);
+}
+''',
+            }
+        ],
+        surface_facts=[
+            {
+                "fact_type": "api_surface",
+                "artifact_kind": "api",
+                "route_method": "POST",
+                "route_path": route,
+            },
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+def test_typescript_reassigned_input_does_not_refute_ssrf_candidate():
+    route = "/webhooks/test"
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-ssrf-reassigned-input-001",
+                "vuln_type": "ssrf",
+                "location": f"POST {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "testWebhook",
+                        "route_method": "POST",
+                        "route_path": route,
+                        "root_cause": "missing_ssrf_validation",
+                    }
+                ],
+            }
+        ],
+        code_files=[
+            {
+                "path": "routes.ts",
+                "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/test", testWebhook);
+
+async function testWebhook(req: Request, res: Response) {
+  const target: { serviceUrl: string; callbackUrl: string } = req.body;
+  validateUrlForSSRF(target.serviceUrl);
+  target.serviceUrl = target.callbackUrl;
+  return fetch(target.serviceUrl);
 }
 ''',
             }
@@ -3445,4 +5350,72 @@ def read_record(record_id):
         observations=observations,
         prior_decisions=[],
     )
+    assert result["candidate_decisions"][0]["disposition"] == "refuted"
+
+
+def test_graphql_resolver_candidate_refutes_context_ownership_control():
+    source_path = "gql/records.py"
+    content = """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(self, info, record_id: str):
+        record = load_record(record_id)
+        if record.owner_id != info.context.user.id:
+            raise PermissionError("forbidden")
+        return send_file(record_id)
+"""
+    mapped = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": content}]}
+    )
+    gap = next(
+        fact
+        for fact in mapped.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": "GraphQL query record",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": gap.fact_type,
+                        "artifact_kind": "code",
+                        "source_path": gap.source_path,
+                        "symbol_name": gap.symbol_name,
+                        "root_cause": gap.payload["root_cause"],
+                    }
+                ],
+            }
+        ],
+        code_files=[{"path": source_path, "content": content}],
+        surface_facts=[
+            {"fact_type": "api_surface", "artifact_kind": "api"},
+            {"fact_type": "har_context", "artifact_kind": "har"},
+        ],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert any(fact.fact_type == "graphql_operation" for fact in mapped.facts)
+    assert state["route"] == {}
+    assert state["control_evidence_ref"] == "code:gql/records.py:record:ownership_guard"
     assert result["candidate_decisions"][0]["disposition"] == "refuted"

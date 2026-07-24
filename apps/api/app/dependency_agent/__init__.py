@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,7 @@ _MAX_FILES = 400
 _MAX_FILE_BYTES = 256_000
 _MAX_CONTENT_SNIFF = 48_000
 _MAX_COMPONENTS = 200
+_MAX_DEPENDENCY_INPUT_FILES = 1_200
 
 _SKIP_DIR_NAMES = {
     ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
@@ -73,6 +76,11 @@ _MANIFEST_NAMES = {
     "go.mod", "go.sum", "cargo.toml", "cargo.lock", "composer.json",
     "composer.lock", "gemfile", "gemfile.lock", "pom.xml",
     "build.gradle", "build.gradle.kts",
+}
+
+_DEPENDENCY_SOURCE_SUFFIXES = {
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go",
+    ".rb", ".php", ".rs", ".java", ".kt",
 }
 
 _IMPORT_JS = re.compile(
@@ -139,6 +147,51 @@ class DependencyProfile(BaseModel):
     next_allowed_action: str = (
         "Review local SBOM / reachability heuristically; no live CVE lookup or auto-submit."
     )
+
+
+def build_dependency_input_manifest(
+    package_root: str | Path,
+) -> list[dict[str, str]]:
+    """Hash every local file the dependency profile may read for a snapshot."""
+    try:
+        root = Path(package_root).resolve(strict=True)
+    except OSError as exc:
+        raise DependencyAgentError("dependency_input_root_missing") from exc
+    if not root.is_dir():
+        raise DependencyAgentError("dependency_input_root_missing")
+
+    entries: list[dict[str, str]] = []
+    for path in _dependency_input_paths(root):
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise DependencyAgentError("dependency_input_unreadable") from exc
+        if len(raw) > _MAX_FILE_BYTES:
+            continue
+        relative_path = _rel_posix(root, path)
+        if not _safe_dependency_input_relative_path(relative_path):
+            continue
+        entries.append(
+            {
+                "source_path": relative_path,
+                "content_digest": "sha256:" + sha256(raw).hexdigest(),
+            }
+        )
+    return sorted(entries, key=lambda item: item["source_path"])
+
+
+def dependency_input_manifest_matches(
+    package_root: str | Path,
+    manifest: object,
+) -> bool:
+    """Check an untrusted manifest against the files the profile would inspect."""
+    normalized = _normalized_dependency_input_manifest(manifest)
+    if normalized is None:
+        return False
+    try:
+        return build_dependency_input_manifest(package_root) == normalized
+    except DependencyAgentError:
+        return False
 def build_dependency_profile(
     *,
     package_root: str | Path | None = None,
@@ -164,7 +217,7 @@ def build_dependency_profile(
 
     resolved_package_id = package_id
     if not resolved_package_id and root is not None:
-        resolved_package_id = _read_package_id(root) or root.name
+        resolved_package_id = root.name
 
     components: dict[str, DependencyComponent] = {}
     manifests: list[str] = []
@@ -175,9 +228,34 @@ def build_dependency_profile(
     import_refs = 0
     scanned = 0
     advisory_map = _index_offline_advisories(offline_advisories)
+    input_paths: list[Path] = []
 
     if root is not None:
-        offline_components, offline_manifests, offline_notes = _load_offline_dependency_fixtures(root)
+        try:
+            input_paths = _dependency_input_paths(root)
+        except DependencyAgentError as exc:
+            return _force_safety(
+                DependencyProfile(
+                    status=STATUS_SKIPPED,
+                    package_id=resolved_package_id,
+                    package_root=str(root),
+                    notes=[str(exc)],
+                )
+            )
+        if len(input_paths) > max_files:
+            return _force_safety(
+                DependencyProfile(
+                    status=STATUS_SKIPPED,
+                    package_id=resolved_package_id,
+                    package_root=str(root),
+                    notes=["dependency_profile_file_limit_exceeded"],
+                )
+            )
+        if not package_id:
+            resolved_package_id = _read_package_id(root, input_paths) or root.name
+        offline_components, offline_manifests, offline_notes = (
+            _load_offline_dependency_fixtures(root, input_paths)
+        )
         notes.extend(offline_notes)
         for rel in offline_manifests:
             if rel not in manifests:
@@ -231,56 +309,55 @@ def build_dependency_profile(
             signals.append("authorized_code_files")
 
     if root is not None:
-        for scan_root, _label in _package_scan_roots(root):
-            for path in _iter_files(scan_root, package_root=root, max_files=max_files):
-                try:
-                    path.resolve().relative_to(root)
-                except Exception:
-                    notes.append(f"outside_package:{path.name}")
+        for path in input_paths:
+            try:
+                path.resolve().relative_to(root)
+            except Exception:
+                notes.append(f"outside_package:{path.name}")
+                continue
+            if _name_blocked(path.name):
+                notes.append(f"skipped_blocked_name:{path.name}")
+                continue
+            rel = _rel_posix(root, path)
+            scanned += 1
+            name = path.name.lower()
+            if name in _MANIFEST_NAMES or name.endswith(".csproj"):
+                text = _safe_read_text(path)
+                if text is None:
                     continue
-                if _name_blocked(path.name):
-                    notes.append(f"skipped_blocked_name:{path.name}")
+                parsed = _parse_manifest(rel, text)
+                for comp in parsed:
+                    _merge_component(components, comp)
+                    ecosystems.add(comp.ecosystem)
+                if parsed and rel not in manifests:
+                    manifests.append(rel)
+            elif name in {"dependencies.json", "sbom.json", "dependency.json"}:
+                if rel not in manifests:
+                    manifests.append(rel)
+            elif path.suffix.lower() in {
+                ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go",
+                ".rb", ".php", ".rs", ".java", ".kt",
+            }:
+                text = _safe_read_text(path)
+                if text is None:
                     continue
-                rel = _rel_posix(root, path)
-                scanned += 1
-                name = path.name.lower()
-                if name in _MANIFEST_NAMES or name.endswith(".csproj"):
-                    text = _safe_read_text(path)
-                    if text is None:
-                        continue
-                    parsed = _parse_manifest(rel, text)
-                    for comp in parsed:
-                        _merge_component(components, comp)
-                        ecosystems.add(comp.ecosystem)
-                    if parsed and rel not in manifests:
-                        manifests.append(rel)
-                elif name in {"dependencies.json", "sbom.json", "dependency.json"}:
-                    if rel not in manifests:
-                        manifests.append(rel)
-                elif path.suffix.lower() in {
-                    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go",
-                    ".rb", ".php", ".rs", ".java", ".kt",
-                }:
-                    text = _safe_read_text(path)
-                    if text is None:
-                        continue
-                    refs = _extract_imports(rel, text)
-                    import_refs += len(refs)
-                    for pkg, eco in refs:
-                        import_index.setdefault(pkg, [])
-                        if rel not in import_index[pkg]:
-                            import_index[pkg].append(rel)
-                        key = _component_key(pkg, eco)
-                        if key not in components:
-                            components[key] = DependencyComponent(
-                                package=pkg,
-                                version="unknown",
-                                ecosystem=eco,
-                                source_manifest="import_usage",
-                                direct=True,
-                                notes=["observed_from_import_only"],
-                            )
-                            ecosystems.add(eco)
+                refs = _extract_imports(rel, text)
+                import_refs += len(refs)
+                for pkg, eco in refs:
+                    import_index.setdefault(pkg, [])
+                    if rel not in import_index[pkg]:
+                        import_index[pkg].append(rel)
+                    key = _component_key(pkg, eco)
+                    if key not in components:
+                        components[key] = DependencyComponent(
+                            package=pkg,
+                            version="unknown",
+                            ecosystem=eco,
+                            source_manifest="import_usage",
+                            direct=True,
+                            notes=["observed_from_import_only"],
+                        )
+                        ecosystems.add(eco)
         signals.append("package_filesystem")
 
     # lower-key index for case-insensitive match (e.g. PyYAML vs pyyaml import alias)
@@ -416,24 +493,13 @@ def attach_dependency_profile_to_bridge_result(
     return out
 def _load_offline_dependency_fixtures(
     root: Path,
+    input_paths: list[Path],
 ) -> tuple[list[DependencyComponent], list[str], list[str]]:
     components: list[DependencyComponent] = []
     manifests: list[str] = []
     notes: list[str] = []
-    candidates = [
-        root / "inputs" / "dependencies.json",
-        root / "inputs" / "dependency.json",
-        root / "inputs" / "sbom.json",
-        root / "inputs" / "advisory" / "dependencies.json",
-        root / "_extract" / "SBOM.json",
-        root / "_extract" / "DEPENDENCIES.json",
-    ]
-    dep_dir = root / "inputs" / "dependencies"
-    if dep_dir.is_dir():
-        candidates.extend(sorted(p for p in dep_dir.rglob("*.json") if p.is_file()))
-
-    for path in candidates:
-        if not path.is_file():
+    for path in input_paths:
+        if not _is_offline_dependency_fixture_path(root, path):
             continue
         if _name_blocked(path.name):
             notes.append(f"skipped_blocked_name:{path.name}")
@@ -1000,6 +1066,180 @@ def _normalize_ecosystem(value: str) -> str:
     return aliases.get(v, v or "unknown")
 
 
+def _dependency_input_paths(root: Path) -> list[Path]:
+    paths: dict[str, Path] = {}
+    for path in _offline_dependency_fixture_paths(root):
+        _add_dependency_input_path(paths, root=root, path=path)
+    for scan_root, _label in _package_scan_roots(root):
+        for path in _iter_files(
+            scan_root,
+            package_root=root,
+            max_files=_MAX_DEPENDENCY_INPUT_FILES,
+            include=lambda candidate: _is_dependency_profile_input(
+                candidate,
+                root=root,
+            ),
+            fail_on_limit=True,
+        ):
+            if _is_dependency_profile_input(path, root=root):
+                _add_dependency_input_path(paths, root=root, path=path)
+    if len(paths) > _MAX_DEPENDENCY_INPUT_FILES:
+        raise DependencyAgentError("dependency_input_limit_exceeded")
+    return [paths[key] for key in sorted(paths)]
+
+
+def _offline_dependency_fixture_paths(root: Path) -> list[Path]:
+    candidates = [
+        root / "inputs" / "dependencies.json",
+        root / "inputs" / "dependency.json",
+        root / "inputs" / "sbom.json",
+        root / "inputs" / "advisory" / "dependencies.json",
+        root / "_extract" / "SBOM.json",
+        root / "_extract" / "DEPENDENCIES.json",
+    ]
+    dependency_directory = root / "inputs" / "dependencies"
+    if dependency_directory.is_symlink():
+        _resolve_dependency_input_path(dependency_directory, package_root=root)
+    if dependency_directory.is_dir():
+        candidates.extend(
+            _iter_files(
+                dependency_directory,
+                package_root=root,
+                max_files=_MAX_DEPENDENCY_INPUT_FILES,
+                include=lambda path: path.suffix.lower() == ".json",
+                fail_on_limit=True,
+            )
+        )
+    return candidates
+
+
+def _is_offline_dependency_fixture_path(root: Path, path: Path) -> bool:
+    relative_path = _rel_posix(root, path)
+    if relative_path.lower() in {
+        "inputs/dependencies.json",
+        "inputs/dependency.json",
+        "inputs/sbom.json",
+        "inputs/advisory/dependencies.json",
+        "_extract/sbom.json",
+        "_extract/dependencies.json",
+    }:
+        return True
+    return (
+        relative_path.startswith("inputs/dependencies/")
+        and path.suffix.lower() == ".json"
+    )
+
+
+def _add_dependency_input_path(
+    paths: dict[str, Path],
+    *,
+    root: Path,
+    path: Path,
+) -> None:
+    if not path.exists():
+        if path.is_symlink():
+            _resolve_dependency_input_path(path, package_root=root)
+        return
+    try:
+        resolved = _resolve_dependency_input_path(path, package_root=root)
+        relative_path = resolved.relative_to(root.resolve(strict=True)).as_posix()
+    except DependencyAgentError:
+        raise
+    if (
+        not resolved.is_file()
+        or not _safe_dependency_input_relative_path(relative_path)
+    ):
+        return
+    try:
+        if resolved.stat().st_size > _MAX_FILE_BYTES:
+            return
+    except OSError:
+        return
+    paths[relative_path] = resolved
+
+
+def _is_dependency_profile_input(path: Path, *, root: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    if not resolved.is_file() or _name_blocked(resolved.name):
+        return False
+    try:
+        if resolved.stat().st_size > _MAX_FILE_BYTES:
+            return False
+    except OSError:
+        return False
+    name = resolved.name.lower()
+    return (
+        name in _MANIFEST_NAMES
+        or name == "case.json"
+        or name.endswith(".csproj")
+        or resolved.suffix.lower() in _DEPENDENCY_SOURCE_SUFFIXES
+    )
+
+
+def _normalized_dependency_input_manifest(
+    manifest: object,
+) -> list[dict[str, str]] | None:
+    if not isinstance(manifest, list) or len(manifest) > _MAX_DEPENDENCY_INPUT_FILES:
+        return None
+    entries: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for item in manifest:
+        if not isinstance(item, dict):
+            return None
+        source_path = _safe_dependency_input_relative_path(item.get("source_path"))
+        content_digest = item.get("content_digest")
+        if (
+            not source_path
+            or source_path in seen_paths
+            or not isinstance(content_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", content_digest.lower())
+        ):
+            return None
+        seen_paths.add(source_path)
+        entries.append(
+            {
+                "source_path": source_path,
+                "content_digest": content_digest.lower(),
+            }
+        )
+    return sorted(entries, key=lambda item: item["source_path"])
+
+
+def _safe_dependency_input_relative_path(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    path = value.replace("\\", "/").strip()
+    parts = [part for part in path.split("/") if part]
+    if (
+        not parts
+        or path.startswith("/")
+        or ":" in path
+        or ".." in parts
+        or any(_name_blocked(part) for part in parts)
+    ):
+        return ""
+    return "/".join(parts)
+
+
+def _resolve_dependency_input_path(path: Path, *, package_root: Path) -> Path:
+    try:
+        resolved_root = package_root.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+    except RuntimeError as exc:
+        raise DependencyAgentError("dependency_input_path_cycle") from exc
+    except OSError as exc:
+        raise DependencyAgentError("dependency_input_path_unavailable") from exc
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise DependencyAgentError("dependency_input_path_escape") from exc
+    return resolved_path
+
+
 def _package_scan_roots(root: Path) -> list[tuple[Path, str]]:
     roots: list[tuple[Path, str]] = []
     for name, label in (
@@ -1008,7 +1248,12 @@ def _package_scan_roots(root: Path) -> list[tuple[Path, str]]:
         ("_extract", "_extract"),
     ):
         path = root / name
+        if path.is_symlink():
+            resolved_path = _resolve_dependency_input_path(path, package_root=root)
+            if resolved_path == root.resolve(strict=True):
+                raise DependencyAgentError("dependency_input_path_cycle")
         if path.is_dir():
+            _resolve_dependency_input_path(path, package_root=root)
             roots.append((path, label))
     roots.append((root, "package_root_manifests"))
     return roots
@@ -1019,41 +1264,113 @@ def _iter_files(
     *,
     package_root: Path,
     max_files: int,
+    include: Callable[[Path], bool] | None = None,
+    fail_on_limit: bool = False,
 ) -> list[Path]:
+    resolved_package_root = _resolve_dependency_input_path(
+        package_root,
+        package_root=package_root,
+    )
+    resolved_scan_root = _resolve_dependency_input_path(
+        scan_root,
+        package_root=resolved_package_root,
+    )
     files: list[Path] = []
-    if scan_root.is_file():
-        return [scan_root]
-    if scan_root.resolve() == package_root.resolve():
+    traversed_entries = 0
+    traversal_limit_reached = False
+
+    def bounded_sorted_entries(directory: Path) -> list[Path]:
+        nonlocal traversed_entries, traversal_limit_reached
+        entries: list[Path] = []
         try:
-            for child in sorted(scan_root.iterdir(), key=lambda p: p.name.lower()):
-                if child.is_file():
-                    files.append(child)
-                if len(files) >= max_files:
+            for entry in directory.iterdir():
+                traversed_entries += 1
+                if traversed_entries > max_files:
+                    if fail_on_limit:
+                        raise DependencyAgentError("dependency_input_limit_exceeded")
+                    traversal_limit_reached = True
                     break
-        except OSError:
-            return []
+                entries.append(entry)
+        except OSError as exc:
+            raise DependencyAgentError("dependency_input_path_unavailable") from exc
+        return sorted(entries, key=lambda path: path.name.lower())
+
+    def append_file(path: Path) -> None:
+        if include is not None and not include(path):
+            return
+        if len(files) >= max_files:
+            if fail_on_limit:
+                raise DependencyAgentError("dependency_input_limit_exceeded")
+            return
+        files.append(path)
+
+    if resolved_scan_root.is_file():
+        append_file(resolved_scan_root)
         return files
-    stack = [scan_root]
-    while stack and len(files) < max_files:
-        current = stack.pop()
-        try:
-            entries = sorted(current.iterdir(), key=lambda p: p.name.lower())
-        except OSError:
-            continue
-        for entry in entries:
-            if len(files) >= max_files:
+    if resolved_scan_root == resolved_package_root:
+        for child in bounded_sorted_entries(resolved_scan_root):
+            if child.is_symlink():
+                resolved_child = _resolve_dependency_input_path(
+                    child,
+                    package_root=resolved_package_root,
+                )
+                if resolved_child.is_file():
+                    append_file(resolved_child)
+                continue
+            if child.is_file():
+                append_file(child)
+            if not fail_on_limit and len(files) >= max_files:
                 break
+        return files
+    stack = [resolved_scan_root]
+    visited: set[Path] = set()
+    while (
+        stack
+        and not traversal_limit_reached
+        and (fail_on_limit or len(files) < max_files)
+    ):
+        current = _resolve_dependency_input_path(
+            stack.pop(),
+            package_root=resolved_package_root,
+        )
+        if current in visited:
+            raise DependencyAgentError("dependency_input_path_cycle")
+        if not current.is_dir():
+            raise DependencyAgentError("dependency_input_path_unavailable")
+        visited.add(current)
+        for entry in bounded_sorted_entries(current):
+            if entry.is_symlink():
+                resolved_entry = _resolve_dependency_input_path(
+                    entry,
+                    package_root=resolved_package_root,
+                )
+                if resolved_entry.is_dir():
+                    if entry.name in _SKIP_DIR_NAMES or entry.name.startswith("."):
+                        continue
+                    stack.append(resolved_entry)
+                elif resolved_entry.is_file():
+                    append_file(resolved_entry)
+                else:
+                    raise DependencyAgentError("dependency_input_path_unavailable")
+                continue
             if entry.is_dir():
                 if entry.name in _SKIP_DIR_NAMES or entry.name.startswith("."):
                     continue
-                stack.append(entry)
+                stack.append(
+                    _resolve_dependency_input_path(
+                        entry,
+                        package_root=resolved_package_root,
+                    )
+                )
             elif entry.is_file():
                 try:
                     if entry.stat().st_size > _MAX_FILE_BYTES:
                         continue
                 except OSError:
                     continue
-                files.append(entry)
+                append_file(entry)
+                if not fail_on_limit and len(files) >= max_files:
+                    break
     return files
 
 
@@ -1075,12 +1392,17 @@ def _safe_read_text(path: Path) -> str | None:
             return None
 
 
-def _read_package_id(root: Path) -> str:
+def _read_package_id(root: Path, input_paths: list[Path]) -> str:
+    bound_paths = set(input_paths)
     for name in ("package.json", "case.json"):
         path = root / name
-        if not path.is_file():
+        try:
+            resolved_path = path.resolve(strict=True)
+        except (OSError, RuntimeError):
             continue
-        text = _safe_read_text(path)
+        if resolved_path not in bound_paths:
+            continue
+        text = _safe_read_text(resolved_path)
         if not text:
             continue
         try:
@@ -1163,7 +1485,9 @@ __all__ = [
     "DependencyAgentError",
     "DependencyComponent",
     "DependencyProfile",
+    "build_dependency_input_manifest",
     "build_dependency_profile",
+    "dependency_input_manifest_matches",
     "load_package_dependency_profile",
     "attach_dependency_profile_to_bridge_result",
 ]

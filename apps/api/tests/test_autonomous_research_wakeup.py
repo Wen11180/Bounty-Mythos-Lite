@@ -115,6 +115,294 @@ def create_runtime_running_campaign(repository, *, name):
     return campaign
 
 
+def test_runtime_candidate_refutation_binds_registered_advisories_at_creation(
+    monkeypatch,
+):
+    repository, session = build_repository()
+    try:
+        campaign = create_runtime_running_campaign(
+            repository,
+            name="Frozen advisory input campaign",
+        )
+        pipeline_run = repository.save_pipeline_run(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"campaign_id": campaign.id, "hypotheses": []},
+        )
+        advisory = repository.save_artifact(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            kind="static_advisory",
+            source_type="registered_local_tool",
+            source_hash=f"sha256:{'d' * 64}",
+            ingestion_status="advisory_only",
+            provenance={
+                "campaign_id": campaign.id,
+                "source_snapshot_digest": SOURCE_SNAPSHOT_DIGEST,
+                "tool_id": "semgrep_local",
+                "raw_payload_processed": False,
+            },
+            payload_summary={"raw_payload_processed": False},
+            derived_facts={
+                "advisory_findings": [
+                    {
+                        "rule_id": "mythos.local.ssrf-fetch",
+                        "path": "routes.py",
+                        "line": 7,
+                    }
+                ],
+                "execution_allowed": False,
+                "validation_allowed": False,
+                "candidate_promotion_allowed": False,
+                "report_submission_allowed": False,
+            },
+        )
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_reconcile_missing_runtime_failure_stage",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_recover_runtime_task_if_needed",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_dispatch_queued_local_evidence_task_if_needed",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "select_autonomous_research_work",
+            lambda **_kwargs: {
+                "status": "ready",
+                "task_type": "candidate_refutation",
+                "agent_type": "candidate_hunter_agent",
+                "title": "Refute candidate hypotheses from persisted evidence",
+                "source_snapshot_digest": SOURCE_SNAPSHOT_DIGEST,
+            },
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_pipeline_run_id_from_completed_runtime_stage",
+            lambda **_kwargs: pipeline_run.id,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_runtime_tick_stop_reason",
+            lambda **_kwargs: None,
+        )
+
+        def capture_dispatch(**kwargs):
+            captured["task"] = kwargs["task"]
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_dispatch_runtime_task",
+            capture_dispatch,
+        )
+
+        result = autonomous_research_runtime.tick_autonomous_research_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **_kwargs: None,
+        )
+        task = captured["task"]
+
+        assert result == {"status": "dispatched"}
+        assert task.input_refs == [
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{SOURCE_SNAPSHOT_DIGEST}",
+            f"pipeline_run:{pipeline_run.id}",
+            f"artifact:{advisory.id}",
+        ]
+        assert task.payload["candidate_promotion_allowed"] is False
+        assert task.payload["report_submission_allowed"] is False
+    finally:
+        session.close()
+
+
+def test_runtime_hypothesis_generation_binds_learning_signals_at_creation(
+    monkeypatch,
+):
+    repository, session = build_repository()
+    try:
+        campaign = create_runtime_running_campaign(
+            repository,
+            name="Frozen learning signal input campaign",
+        )
+        signal = repository.save_learning_signal(
+            program_id=campaign.program_id,
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="record_id:export",
+            notes="Operator-reviewed outcome.",
+            evidence_quality="strong",
+        )
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_reconcile_missing_runtime_failure_stage",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_recover_runtime_task_if_needed",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_dispatch_queued_local_evidence_task_if_needed",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "select_autonomous_research_work",
+            lambda **_kwargs: {
+                "status": "ready",
+                "task_type": "hypothesis_generation",
+                "agent_type": "hypothesis_agent",
+                "title": "Generate candidate hypotheses from safe facts",
+                "source_snapshot_digest": SOURCE_SNAPSHOT_DIGEST,
+            },
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_runtime_tick_stop_reason",
+            lambda **_kwargs: None,
+        )
+
+        def capture_dispatch(**kwargs):
+            captured["task"] = kwargs["task"]
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_dispatch_runtime_task",
+            capture_dispatch,
+        )
+
+        result = autonomous_research_runtime.tick_autonomous_research_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **_kwargs: None,
+        )
+        task = captured["task"]
+
+        assert result == {"status": "dispatched"}
+        assert task.input_refs == [
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{SOURCE_SNAPSHOT_DIGEST}",
+            f"learning_signal:{signal.id}",
+        ]
+        assert task.payload["candidate_promotion_allowed"] is False
+        assert task.payload["report_submission_allowed"] is False
+    finally:
+        session.close()
+
+
+def test_runtime_finding_dedup_binds_historical_report_stages_at_creation(
+    monkeypatch,
+):
+    repository, session = build_repository()
+    try:
+        campaign = create_runtime_running_campaign(
+            repository,
+            name="Frozen historical report input campaign",
+        )
+        pipeline_run = repository.save_pipeline_run(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"campaign_id": campaign.id, "hypotheses": []},
+        )
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_reconcile_missing_runtime_failure_stage",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_recover_runtime_task_if_needed",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_dispatch_queued_local_evidence_task_if_needed",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "select_autonomous_research_work",
+            lambda **_kwargs: {
+                "status": "ready",
+                "task_type": "finding_dedup_and_rank",
+                "agent_type": "triage_agent",
+                "title": "Deduplicate and rank retained candidates",
+                "source_snapshot_digest": SOURCE_SNAPSHOT_DIGEST,
+            },
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_pipeline_run_id_from_completed_runtime_stage",
+            lambda **_kwargs: pipeline_run.id,
+        )
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_runtime_tick_stop_reason",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "historical_report_stage_refs_for_dedup",
+            lambda **_kwargs: ["historical_report_stage:pipeline_stage_prior"],
+        )
+
+        def capture_dispatch(**kwargs):
+            captured["task"] = kwargs["task"]
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr(
+            autonomous_research_runtime,
+            "_dispatch_runtime_task",
+            capture_dispatch,
+        )
+
+        result = autonomous_research_runtime.tick_autonomous_research_campaign(
+            campaign.id,
+            repository=repository,
+            dispatcher=lambda **_kwargs: None,
+        )
+        task = captured["task"]
+
+        assert result == {"status": "dispatched"}
+        assert task.input_refs == [
+            f"campaign:{campaign.id}",
+            f"source_snapshot:{SOURCE_SNAPSHOT_DIGEST}",
+            f"pipeline_run:{pipeline_run.id}",
+            "historical_report_stage:pipeline_stage_prior",
+        ]
+        assert task.payload["candidate_promotion_allowed"] is False
+        assert task.payload["report_submission_allowed"] is False
+    finally:
+        session.close()
+
+
 def create_dispatched_runtime_task(repository, *, campaign, now):
     task = repository.create_campaign_task(
         campaign_id=campaign.id,
@@ -2689,7 +2977,13 @@ def test_runtime_resumes_authorized_workspace_to_candidate_specific_handoff(
             )
             assert task is not None
             assert task.task_type == task_type
-            assert task.status == "completed"
+            assert task.status == "completed", (
+                f"{task_type}:{result['stop_reason']}:"
+                + ",".join(
+                    f"{item.task_type}={item.status}"
+                    for item in repository.list_campaign_tasks(campaign_id)
+                )
+            )
 
         # Reopen the persistence boundary before consuming the saved pipeline run.
         session.close()
@@ -2698,6 +2992,8 @@ def test_runtime_resumes_authorized_workspace_to_candidate_specific_handoff(
 
         expected_after_restart = [
             "exploit_chain_reasoning",
+            "variant_analysis",
+            "deep_code_reasoning",
             "candidate_refutation",
             "finding_dedup_and_rank",
             "report_review",
@@ -2736,13 +3032,19 @@ def test_runtime_resumes_authorized_workspace_to_candidate_specific_handoff(
             )
             assert task is not None
             assert task.task_type == task_type
-            assert task.status == "completed"
+            assert task.status == "completed", (
+                f"{task_type}:{result['stop_reason']}:"
+                + ",".join(
+                    f"{item.task_type}={item.status}"
+                    for item in repository.list_campaign_tasks(campaign_id)
+                )
+            )
 
         waiting = autonomous_research_runtime.tick_autonomous_research_campaign(
             campaign_id,
             repository=repository,
             dispatcher=dispatch_inline,
-            now=tick_time + timedelta(seconds=61 * 8),
+            now=tick_time + timedelta(seconds=61 * 10),
         )
         runtime_tasks = [
             task
@@ -2764,10 +3066,25 @@ def test_runtime_resumes_authorized_workspace_to_candidate_specific_handoff(
         candidate_refutation_task = next(
             task for task in runtime_tasks if task.task_type == "candidate_refutation"
         )
+        exploit_chain_task = next(
+            task for task in runtime_tasks if task.task_type == "exploit_chain_reasoning"
+        )
+        variant_analysis_task = next(
+            task for task in runtime_tasks if task.task_type == "variant_analysis"
+        )
+        deep_code_reasoning_task = next(
+            task for task in runtime_tasks if task.task_type == "deep_code_reasoning"
+        )
         candidate_refutation_run = next(
             run
             for run in repository.list_campaign_agent_runs(campaign_id)
             if run.task_id == candidate_refutation_task.id
+        )
+        variant_analysis_ref = (
+            f"variant_analysis_projection:{variant_analysis_task.id}"
+        )
+        deep_code_reasoning_ref = (
+            f"deep_code_reasoning_projection:{deep_code_reasoning_task.id}"
         )
         candidate_hunter_projection_ref = (
             f"candidate_hunter_projection:{candidate_refutation_task.id}"
@@ -2798,6 +3115,10 @@ def test_runtime_resumes_authorized_workspace_to_candidate_specific_handoff(
             for task_type in [*expected_before_restart, *expected_after_restart]
         ]
         assert all(stage.safety_gate_state == "allowed" for stage in completed_stages)
+        assert variant_analysis_ref in variant_analysis_task.output_refs
+        assert deep_code_reasoning_ref in deep_code_reasoning_task.output_refs
+        assert variant_analysis_ref not in exploit_chain_task.output_refs
+        assert deep_code_reasoning_ref not in exploit_chain_task.output_refs
         assert candidate_hunter_projection_ref in candidate_refutation_task.output_refs
         assert candidate_hunter_projection_ref in candidate_refutation_run.output_refs
         candidate_hunter_projection = candidate_refutation_run.payload[

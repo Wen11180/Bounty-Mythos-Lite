@@ -7,6 +7,8 @@ from app.cross_source_candidate_generator import (
     CandidateModelResult,
     RegistryCandidateReasoner,
     ReplayCandidateReasoner,
+    RouteReference,
+    _routes_match,
     build_candidate_fixture_replay_envelope,
     build_candidate_replay_envelope,
     build_fact_pack,
@@ -113,6 +115,109 @@ def _response(*proposals):
         "schema_version": "cross_source_candidate_model_v1",
         "proposals": list(proposals),
     }
+
+
+def test_route_matching_accepts_framework_templates_and_observed_paths_bidirectionally():
+    openapi_route = RouteReference(method="GET", path="/exports/{file_id}")
+    django_route = RouteReference(method="GET", path="/exports/<uuid:file_id>/")
+    flask_route = RouteReference(method="GET", path="/exports/<file_id>/")
+    observed_route = RouteReference(method="GET", path="/exports/123")
+
+    for template_route in (django_route, flask_route):
+        assert _routes_match(openapi_route, template_route)
+        assert _routes_match(template_route, openapi_route)
+        assert not _routes_match(template_route, observed_route)
+        assert not _routes_match(observed_route, template_route)
+        assert _routes_match(
+            template_route,
+            observed_route,
+            allow_observed_route_values=True,
+        )
+        assert _routes_match(
+            observed_route,
+            template_route,
+            allow_observed_route_values=True,
+        )
+
+
+def test_model_proposal_rejects_template_over_static_cited_route_segment():
+    fact_pack = _fact_pack()
+    proposal = _proposal(
+        affected_endpoint={
+            "method": "GET",
+            "path": "/files/{file_id}/{anything}",
+        }
+    )
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=fact_pack,
+            baseline_candidates=[],
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(
+                _response(proposal),
+                allow_legacy_unbound=True,
+            ),
+        )
+    )
+
+    assert result.accepted_candidates == []
+    assert result.rejection_reason_counts == {"route_not_cited": 1}
+
+
+def test_model_proposal_can_bind_template_to_dynamic_har_observation():
+    fact_pack = build_fact_pack(
+        pipeline_run_id="run-har-route",
+        scope_status="in_scope",
+        source_files=[{"path": "apps/api/routes/files.ts", "content": "synthetic"}],
+        facts=[
+            {
+                "fact_ref": "scope:scope_context",
+                "fact_type": "scope_context",
+                "artifact_kind": "scope",
+            },
+            {
+                "fact_ref": "policy:policy_context",
+                "fact_type": "policy_context",
+                "artifact_kind": "policy",
+            },
+            {
+                "fact_ref": "code:files.ts:exportFile:route_handler",
+                "fact_type": "route_handler",
+                "artifact_kind": "code",
+                "source_path": "apps/api/routes/files.ts",
+                "symbol_name": "exportFile",
+            },
+            {
+                "fact_ref": "har:GET:/files/123/export",
+                "fact_type": "har_surface",
+                "artifact_kind": "har",
+                "route": {"method": "GET", "path": "/files/123/export"},
+            },
+        ],
+        baseline_candidates=[],
+    )
+    proposal = _proposal(
+        cited_fact_refs=[
+            "code:files.ts:exportFile:route_handler",
+            "har:GET:/files/123/export",
+        ]
+    )
+
+    result = asyncio.run(
+        generate_cross_source_candidates(
+            fact_pack=fact_pack,
+            baseline_candidates=[],
+            model_config=_model_config(),
+            reasoner=ReplayCandidateReasoner(
+                _response(proposal),
+                allow_legacy_unbound=True,
+            ),
+        )
+    )
+
+    assert result.rejection_reason_counts == {}
+    assert len(result.accepted_candidates) == 1
 
 
 def test_fact_pack_excludes_raw_content_and_sensitive_fields():

@@ -1,4 +1,5 @@
 from hashlib import sha256
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -8,6 +9,10 @@ from threading import Event, Thread
 import pytest
 
 import app.autonomous_research_runtime as autonomous_research_runtime
+from app.candidate_hunter_loop import (
+    advance_candidate_hunter_round,
+    build_candidate_hunter_observations,
+)
 from app.db import Base
 from app.repository import DatabaseRepository, seed_sample_data
 from app.worker import tasks as worker_tasks
@@ -49,6 +54,36 @@ def _persisted_codebase_fact_ref(
 
 def test_ping_task_returns_pong():
     assert ping.run() == "pong"
+
+
+def test_read_only_agent_task_is_not_blocked_by_exhausted_tool_budget():
+    repository, session = build_repository()
+    try:
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Read-only budget campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Authorized local review only.",
+            default_asset="local.example",
+            created_by="operator",
+        )
+        campaign = repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        repository.upsert_campaign_budget(
+            campaign_id=campaign.id,
+            time_budget_minutes=30,
+            token_budget=1000,
+            tool_call_budget=0,
+            validation_budget=0,
+        )
+
+        assert worker_tasks._agent_task_stop_reason(
+            campaign=campaign,
+            repository=repository,
+        ) is None
+    finally:
+        session.close()
 
 
 def test_candidate_fingerprint_ignores_persisted_fact_ids_but_keeps_stable_evidence():
@@ -104,6 +139,322 @@ def test_candidate_fingerprint_ignores_persisted_fact_ids_but_keeps_stable_evide
     assert base_fingerprint == remapped_fingerprint
     assert different_path_fingerprint != base_fingerprint
     assert opaque_first_fingerprint != opaque_second_fingerprint
+
+
+def test_candidate_hunter_persisted_code_facts_preserve_only_safe_input_refs():
+    projected = worker_tasks._candidate_hunter_persisted_code_facts(
+        [
+            SimpleNamespace(
+                fact_type="authz_check",
+                source_path="routes.py",
+                symbol_name="validate_outbound_url",
+                route_method=None,
+                route_path=None,
+                authz_hint="ssrf_validation_check",
+                sensitivity_label="low",
+                payload={
+                    "handler": "deliver_webhook",
+                    "line": 3,
+                    "claims_ref": "claims:verified_claims",
+                    "input_ref": "input:service_url",
+                    "validated_output_ref": "input:safe_url",
+                    "input_ref_kind": "straight_line",
+                },
+            ),
+            SimpleNamespace(
+                fact_type="sensitive_sink",
+                source_path="routes.py",
+                symbol_name="fetch",
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "handler": "deliver_webhook",
+                    "line": 4,
+                    "claims_ref": "claims:<unsafe>",
+                    "input_ref": "input:req.headers.authorization",
+                },
+            ),
+        ]
+    )
+
+    assert projected[0].payload["input_ref"] == "input:service_url"
+    assert projected[0].payload["validated_output_ref"] == "input:safe_url"
+    assert projected[0].payload["input_ref_kind"] == "straight_line"
+    assert projected[0].payload["claims_ref"] == "claims:verified_claims"
+    assert "input_ref" not in projected[1].payload
+    assert "claims_ref" not in projected[1].payload
+
+
+def test_candidate_hunter_persisted_code_facts_preserve_nest_service_bindings():
+    projected = worker_tasks._candidate_hunter_persisted_code_facts(
+        [
+            SimpleNamespace(
+                fact_type="service_call",
+                source_path="records.controller.ts",
+                symbol_name="getForUser",
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "caller": "readRecord",
+                    "line": 8,
+                    "service_receiver": "recordsService",
+                    "target_service_class": "RecordsService",
+                    "target_service_source_path": "records.service.ts",
+                },
+            ),
+            SimpleNamespace(
+                fact_type="authz_check",
+                source_path="records.service.ts",
+                symbol_name="owner_id_filter",
+                route_method=None,
+                route_path=None,
+                authz_hint="owner_or_admin_check",
+                sensitivity_label="low",
+                payload={
+                    "handler": "getForUser",
+                    "line": 9,
+                    "service_class": "RecordsService",
+                },
+            ),
+        ]
+    )
+
+    assert projected[0].payload["service_receiver"] == "recordsService"
+    assert projected[0].payload["target_service_class"] == "RecordsService"
+    assert projected[0].payload["target_service_source_path"] == "records.service.ts"
+    assert projected[1].payload["service_class"] == "RecordsService"
+
+
+def test_persisted_nest_service_binding_does_not_link_unrelated_control():
+    route = "/records/:recordId"
+    projected = worker_tasks._candidate_hunter_persisted_code_facts(
+        [
+            SimpleNamespace(
+                fact_type="route_handler",
+                source_path="records.controller.ts",
+                symbol_name="readRecord",
+                route_method="GET",
+                route_path=route,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={"handler": "readRecord", "line": 5},
+            ),
+            SimpleNamespace(
+                fact_type="service_call",
+                source_path="records.controller.ts",
+                symbol_name="getForUser",
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "caller": "readRecord",
+                    "line": 8,
+                    "service_receiver": "auditService",
+                    "target_service_class": "AuditService",
+                },
+            ),
+            SimpleNamespace(
+                fact_type="authz_check",
+                source_path="records.service.ts",
+                symbol_name="owner_id_filter",
+                route_method=None,
+                route_path=None,
+                authz_hint="owner_or_admin_check",
+                sensitivity_label="low",
+                payload={
+                    "handler": "getForUser",
+                    "line": 9,
+                    "service_class": "RecordsService",
+                },
+            ),
+            SimpleNamespace(
+                fact_type="sensitive_sink",
+                source_path="records.controller.ts",
+                symbol_name="sendFile",
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={"handler": "readRecord", "line": 10},
+            ),
+        ]
+    )
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-001",
+                "vuln_type": "authorization",
+                "location": f"GET {route}",
+                "priority_score": 80,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "records.controller.ts",
+                        "symbol_name": "readRecord",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_object_ownership_check",
+                    },
+                    {
+                        "fact_type": "api_surface",
+                        "artifact_kind": "api",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {"fact_type": "har_context", "artifact_kind": "har"},
+                ],
+            }
+        ],
+        code_files=[],
+        supplemental_code_facts=projected,
+        surface_facts=[],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert "control_evidence_ref" not in state
+    assert result["candidate_decisions"][0]["disposition"] == "retained"
+
+
+@pytest.mark.parametrize(
+    ("sink_claim_ref", "expected_disposition"),
+    (
+        ("claims:verifiedClaims", "refuted"),
+        ("claims:unsafeClaims", "retained"),
+    ),
+)
+def test_persisted_jwt_claim_refs_only_refute_verified_claims_sink(
+    sink_claim_ref,
+    expected_disposition,
+):
+    route = "/reports/:reportId/export"
+    projected = worker_tasks._candidate_hunter_persisted_code_facts(
+        [
+            SimpleNamespace(
+                fact_type="route_handler",
+                source_path="routes.ts",
+                symbol_name="exportReport",
+                route_method="GET",
+                route_path=route,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={"handler": "exportReport", "line": 5},
+            ),
+            SimpleNamespace(
+                fact_type="unverified_token_decode",
+                source_path="routes.ts",
+                symbol_name="jwt.decode",
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="high",
+                payload={
+                    "handler": "exportReport",
+                    "line": 6,
+                    "token_ref": "token:req.headers.authorization",
+                    "claims_ref": "claims:unsafeClaims",
+                },
+            ),
+            SimpleNamespace(
+                fact_type="authz_check",
+                source_path="routes.ts",
+                symbol_name="verify",
+                route_method=None,
+                route_path=None,
+                authz_hint="jwt_verification_check",
+                sensitivity_label="low",
+                payload={
+                    "handler": "exportReport",
+                    "line": 7,
+                    "token_ref": "token:req.headers.authorization",
+                    "claims_ref": sink_claim_ref,
+                },
+            ),
+            SimpleNamespace(
+                fact_type="sensitive_sink",
+                source_path="routes.ts",
+                symbol_name="sendFile",
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "handler": "exportReport",
+                    "line": 8,
+                    "claims_ref": "claims:verifiedClaims",
+                },
+            ),
+        ]
+    )
+    observations = build_candidate_hunter_observations(
+        pipeline_run_id="run-001",
+        candidates=[
+            {
+                "hypothesis_id": "H-jwt-001",
+                "vuln_type": "jwt_authentication_bypass",
+                "location": f"GET {route}",
+                "priority_score": 85,
+                "source_facts": [
+                    {
+                        "fact_type": "authorization_gap_candidate",
+                        "artifact_kind": "code",
+                        "source_path": "routes.ts",
+                        "symbol_name": "exportReport",
+                        "route_method": "GET",
+                        "route_path": route,
+                        "root_cause": "missing_jwt_verification",
+                    },
+                    {
+                        "fact_type": "api_surface",
+                        "artifact_kind": "api",
+                        "route_method": "GET",
+                        "route_path": route,
+                    },
+                    {"fact_type": "har_context", "artifact_kind": "har"},
+                ],
+            }
+        ],
+        code_files=[],
+        supplemental_code_facts=projected,
+        surface_facts=[],
+        context_facts=[
+            {"fact_type": "scope_context", "artifact_kind": "scope"},
+            {"fact_type": "policy_context", "artifact_kind": "policy"},
+        ],
+    )
+
+    state = observations["candidate_states"][0]
+    result = advance_candidate_hunter_round(
+        pipeline_run_id="run-001",
+        round_number=1,
+        candidate_states=[state],
+        observations=observations,
+        prior_decisions=[],
+    )
+
+    assert result["candidate_decisions"][0]["disposition"] == expected_disposition
+    if expected_disposition == "refuted":
+        assert state["control_evidence_ref"] == "code:routes.ts:verify"
+    else:
+        assert "control_evidence_ref" not in state
 
 
 def test_finding_dedup_ranking_uses_persisted_candidate_scores_with_legacy_fallback(
@@ -220,6 +571,181 @@ def test_finding_dedup_ranking_uses_persisted_candidate_scores_with_legacy_fallb
             90,
             20,
         ]
+    finally:
+        session.close()
+
+
+def test_runtime_finding_dedup_uses_only_its_bound_historical_report_stages(
+    monkeypatch,
+):
+    repository, session = build_repository()
+    try:
+        source_snapshot_digest = "sha256:" + "f" * 64
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Frozen historical report dedup campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Authorized local review only.",
+            default_asset="api.example.com",
+            created_by="operator",
+        )
+        campaign = repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        prior_run = repository.save_pipeline_run(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"campaign_id": campaign.id},
+        )
+        pipeline_run = repository.save_pipeline_run(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"campaign_id": campaign.id},
+        )
+        bound_stage = repository.save_pipeline_stage(
+            pipeline_run_id=prior_run.id,
+            campaign_id=campaign.id,
+            task_id="prior-report-task",
+            stage_key="autonomous_report_review",
+            stage_order=40,
+            status="completed",
+            input_refs=[],
+            output_refs=[],
+            safety_gate_state="awaiting_review",
+            stop_reason="human_review_required",
+            payload={},
+        )
+        candidate = {
+            "candidate_id": "H-current",
+            "vuln_type": "authorization",
+            "root_cause_id": "missing_object_ownership_check:current",
+            "route": {"method": "GET", "path": "/records/current"},
+            "affected_code_path": "code:routes.py:current",
+            "source_fact_refs": [
+                "scope:scope_context",
+                "policy:policy_context",
+                "code:routes.py:current",
+                "api:GET:/records/current",
+                "har:har_context",
+            ],
+            "survived_kill_score": 4,
+            "evidence_completeness_score": 4,
+            "priority_score": 40,
+            "execution_allowed": False,
+            "dispatch_allowed": False,
+            "validation_allowed": False,
+            "candidate_promotion_allowed": False,
+            "report_submission_allowed": False,
+        }
+        candidate_fingerprint = worker_tasks._candidate_fingerprint(candidate)
+        assert candidate_fingerprint is not None
+
+        def trusted_provenance(*, stage, **_kwargs):
+            fingerprint = (
+                "not-the-current-candidate"
+                if stage.id == bound_stage.id
+                else candidate_fingerprint
+            )
+            return [
+                {
+                    "candidate_id": "H-prior",
+                    "candidate_fingerprint": fingerprint,
+                    "source_snapshot_digest": source_snapshot_digest,
+                }
+            ]
+
+        monkeypatch.setattr(
+            worker_tasks,
+            "_trusted_report_stage_provenance",
+            trusted_provenance,
+        )
+        bound_refs = worker_tasks.historical_report_stage_refs_for_dedup(
+            campaign=campaign,
+            repository=repository,
+            pipeline_run_id=pipeline_run.id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        assert bound_refs == [f"historical_report_stage:{bound_stage.id}"]
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="finding_dedup_and_rank",
+            agent_type="triage_agent",
+            title="Deduplicate frozen historical reports",
+            input_refs=[
+                f"pipeline_run:{pipeline_run.id}",
+                *bound_refs,
+            ],
+            payload=autonomous_research_runtime._runtime_task_payload(
+                campaign_id=campaign.id,
+                task_type="finding_dedup_and_rank",
+                source_snapshot_digest=source_snapshot_digest,
+                pipeline_run_id=pipeline_run.id,
+            ),
+        )
+        later_stage = repository.save_pipeline_stage(
+            pipeline_run_id=prior_run.id,
+            campaign_id=campaign.id,
+            task_id="later-report-task",
+            stage_key="autonomous_report_review",
+            stage_order=40,
+            status="completed",
+            input_refs=[],
+            output_refs=[],
+            safety_gate_state="awaiting_review",
+            stop_reason="human_review_required",
+            payload={},
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_candidate_hunter_projection_for_downstream",
+            lambda **_kwargs: (None, None),
+        )
+        monkeypatch.setattr(
+            "app.candidate_hunter_loop.load_candidate_hunter_projection",
+            lambda **_kwargs: {
+                "status": "ready",
+                "final_candidates": [candidate],
+                "candidate_decisions": [
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "disposition": "retained",
+                        "survived_kill_score": 4,
+                        "evidence_completeness_score": 4,
+                        "priority_score": 40,
+                    }
+                ],
+            },
+        )
+
+        result = worker_tasks._run_finding_dedup_and_rank_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+        )
+
+        assert result["status"] == "completed", result
+        ranking_stage = next(
+            stage
+            for stage in repository.list_pipeline_stages_for_run(pipeline_run.id)
+            if stage.stage_key == "autonomous_finding_dedup_and_rank"
+        )
+        assert [item["candidate_id"] for item in ranking_stage.payload["top_candidates"]] == [
+            "H-current"
+        ]
+        assert ranking_stage.payload["cross_run_duplicates"] == []
+        assert later_stage.id not in str(ranking_stage.payload)
     finally:
         session.close()
 
@@ -2063,6 +2589,392 @@ def test_runtime_evidence_resume_attaches_candidate_hunter_projection(monkeypatc
         session.close()
 
 
+def test_candidate_refutation_uses_only_target_model_projection_facts(monkeypatch):
+    repository, session = build_repository()
+    try:
+        source_snapshot_digest = "sha256:" + "c" * 64
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Snapshot-bound candidate refutation campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Authorized local review only.",
+            default_asset="authorized/service",
+            created_by="operator",
+        )
+        campaign = repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        stale_map = repository.save_codebase_map(
+            campaign_id=campaign.id,
+            source_ref="stale-snapshot",
+            repository=campaign.default_asset,
+            commit_ref=None,
+            status="mapped",
+            route_count=0,
+            handler_count=0,
+            model_count=0,
+            authz_check_count=1,
+            sensitive_sink_count=0,
+            provenance_refs=[],
+            safety_gate_state="allowed",
+        )
+        stale_guard = repository.save_codebase_fact(
+            codebase_map_id=stale_map.id,
+            campaign_id=campaign.id,
+            fact_type="authz_check",
+            source_path="routes/reports.py",
+            symbol_name="jwt.verify",
+            authz_hint="jwt_verification_check",
+            sensitivity_label="low",
+            payload={
+                "handler": "export_report",
+                "line": 4,
+                "token_ref": "token:stale_token",
+            },
+        )
+        current_map = repository.save_codebase_map(
+            campaign_id=campaign.id,
+            source_ref="current-snapshot",
+            repository=campaign.default_asset,
+            commit_ref=None,
+            status="mapped",
+            route_count=0,
+            handler_count=0,
+            model_count=0,
+            authz_check_count=0,
+            sensitive_sink_count=0,
+            provenance_refs=[],
+            safety_gate_state="allowed",
+        )
+        current_decode = repository.save_codebase_fact(
+            codebase_map_id=current_map.id,
+            campaign_id=campaign.id,
+            fact_type="unverified_token_decode",
+            source_path="routes/reports.py",
+            symbol_name="jwt.decode",
+            sensitivity_label="high",
+            payload={
+                "handler": "export_report",
+                "line": 3,
+                "token_ref": "token:current_token",
+            },
+        )
+        pipeline_run = repository.save_pipeline_run(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"campaign_id": campaign.id, "hypotheses": []},
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="candidate_refutation",
+            agent_type="candidate_hunter_agent",
+            title="Refute current snapshot candidates",
+            input_refs=[f"pipeline_run:{pipeline_run.id}"],
+            payload=autonomous_research_runtime._runtime_task_payload(
+                campaign_id=campaign.id,
+                task_type="candidate_refutation",
+                source_snapshot_digest=source_snapshot_digest,
+                pipeline_run_id=pipeline_run.id,
+            ),
+        )
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_exploit_chain_projection",
+            lambda **_kwargs: (None, None),
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_target_model_projection",
+            lambda **_kwargs: (
+                {"fact_refs": [f"codebase_fact:{current_decode.id}"]},
+                None,
+            ),
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_variant_analysis_projection_for_report",
+            lambda **_kwargs: ({}, None, None),
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_deep_code_reasoning_projection_for_report",
+            lambda **_kwargs: ({}, None, None),
+        )
+
+        def capture_observations(**kwargs):
+            captured["supplemental_code_facts"] = kwargs["supplemental_code_facts"]
+            return {}
+
+        monkeypatch.setattr(
+            "app.candidate_hunter_loop.build_candidate_hunter_observations",
+            capture_observations,
+        )
+        monkeypatch.setattr(
+            "app.candidate_hunter_loop.run_candidate_hunter_loop",
+            lambda **_kwargs: {"status": "blocked", "stop_reason": "test_blocked"},
+        )
+
+        result = worker_tasks._run_candidate_refutation_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+            workspace_inputs=None,
+        )
+
+        projected_facts = captured["supplemental_code_facts"]
+        assert result["status"] == "blocked"
+        assert [fact.symbol_name for fact in projected_facts] == ["jwt.decode"]
+        assert all(fact.symbol_name != stale_guard.symbol_name for fact in projected_facts)
+    finally:
+        session.close()
+
+
+def test_candidate_refutation_uses_only_its_bound_static_advisory_artifacts(
+    monkeypatch,
+):
+    repository, session = build_repository()
+    try:
+        source_snapshot_digest = "sha256:" + "d" * 64
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Frozen advisory candidate refutation campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Authorized local review only.",
+            default_asset="authorized/service",
+            created_by="operator",
+        )
+        campaign = repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        pipeline_run = repository.save_pipeline_run(
+            program_id=campaign.program_id,
+            asset=campaign.default_asset,
+            policy_text=campaign.policy_text_hash,
+            policy_text_is_hash=True,
+            scope_status="in_scope",
+            hypothesis_count=1,
+            blocked_count=0,
+            report_title=None,
+            payload={"campaign_id": campaign.id, "hypotheses": []},
+        )
+
+        def save_advisory(*, source_hash: str, rule_id: str):
+            return repository.save_artifact(
+                program_id=campaign.program_id,
+                asset=campaign.default_asset,
+                kind="static_advisory",
+                source_type="registered_local_tool",
+                source_hash=source_hash,
+                ingestion_status="advisory_only",
+                provenance={
+                    "campaign_id": campaign.id,
+                    "source_snapshot_digest": source_snapshot_digest,
+                    "tool_id": "semgrep_local",
+                    "raw_payload_processed": False,
+                },
+                payload_summary={"raw_payload_processed": False},
+                derived_facts={
+                    "advisory_findings": [
+                        {"rule_id": rule_id, "path": "routes.py", "line": 7}
+                    ],
+                    "execution_allowed": False,
+                    "validation_allowed": False,
+                    "candidate_promotion_allowed": False,
+                    "report_submission_allowed": False,
+                },
+            )
+
+        bound = save_advisory(
+            source_hash=f"sha256:{'1' * 64}",
+            rule_id="mythos.local.ssrf-fetch",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="candidate_refutation",
+            agent_type="candidate_hunter_agent",
+            title="Refute current snapshot candidates",
+            input_refs=[
+                f"pipeline_run:{pipeline_run.id}",
+                f"artifact:{bound.id}",
+            ],
+            payload=autonomous_research_runtime._runtime_task_payload(
+                campaign_id=campaign.id,
+                task_type="candidate_refutation",
+                source_snapshot_digest=source_snapshot_digest,
+                pipeline_run_id=pipeline_run.id,
+            ),
+        )
+        later = save_advisory(
+            source_hash=f"sha256:{'2' * 64}",
+            rule_id="mythos.local.path-traversal",
+        )
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_exploit_chain_projection",
+            lambda **_kwargs: (None, None),
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_target_model_projection",
+            lambda **_kwargs: ({"fact_refs": []}, None),
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_variant_analysis_projection_for_report",
+            lambda **_kwargs: ({}, None, None),
+        )
+        monkeypatch.setattr(
+            worker_tasks,
+            "_runtime_deep_code_reasoning_projection_for_report",
+            lambda **_kwargs: ({}, None, None),
+        )
+
+        def capture_observations(**kwargs):
+            captured["static_advisory_facts"] = kwargs["static_advisory_facts"]
+            return {}
+
+        monkeypatch.setattr(
+            "app.candidate_hunter_loop.build_candidate_hunter_observations",
+            capture_observations,
+        )
+        monkeypatch.setattr(
+            "app.candidate_hunter_loop.run_candidate_hunter_loop",
+            lambda **_kwargs: {"status": "blocked", "stop_reason": "test_blocked"},
+        )
+
+        result = worker_tasks._run_candidate_refutation_task(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+            workspace_inputs=None,
+        )
+
+        assert result["status"] == "blocked"
+        facts = captured["static_advisory_facts"]
+        assert [fact["fact_ref"] for fact in facts] == [
+            f"static_advisory:{bound.id}:7:mythos.local.ssrf-fetch"
+        ]
+        assert all(fact["artifact_kind"] == "static_advisory" for fact in facts)
+        assert later.id not in str(facts)
+    finally:
+        session.close()
+
+
+def test_runtime_hypothesis_generation_uses_only_its_bound_learning_signals(
+    monkeypatch,
+):
+    repository, session = build_repository()
+    try:
+        source_snapshot_digest = "sha256:" + "e" * 64
+        campaign = repository.create_campaign(
+            program_id="program_example",
+            name="Frozen learning signal hypothesis campaign",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="Authorized local review only.",
+            default_asset="authorized/service",
+            created_by="operator",
+        )
+        campaign = repository.update_campaign_status(campaign.id, "running")
+        assert campaign is not None
+        codebase_map = repository.save_codebase_map(
+            campaign_id=campaign.id,
+            source_ref="frozen-learning-signal-map",
+            repository=campaign.default_asset,
+            commit_ref=None,
+            status="mapped",
+            route_count=1,
+            handler_count=1,
+            model_count=0,
+            authz_check_count=0,
+            sensitive_sink_count=0,
+            provenance_refs=[],
+            safety_gate_state="allowed",
+        )
+        route = repository.save_codebase_fact(
+            codebase_map_id=codebase_map.id,
+            campaign_id=campaign.id,
+            fact_type="route_handler",
+            source_path="routes.py",
+            symbol_name="export_record",
+            route_method="GET",
+            route_path="/records/{record_id}/export",
+            sensitivity_label="low",
+            provenance_refs=[],
+            payload={"handler": "export_record"},
+        )
+        bound = repository.save_learning_signal(
+            program_id=campaign.program_id,
+            playbook_id="bola_idor",
+            outcome="accepted",
+            surface_key="record_id:export",
+            notes="Bound operator-reviewed outcome.",
+            evidence_quality="strong",
+        )
+        task = repository.create_campaign_task(
+            campaign_id=campaign.id,
+            task_type="hypothesis_generation",
+            agent_type="hypothesis_agent",
+            title="Generate frozen-learning hypotheses",
+            input_refs=[
+                f"campaign:{campaign.id}",
+                f"source_snapshot:{source_snapshot_digest}",
+                f"learning_signal:{bound.id}",
+            ],
+            payload=autonomous_research_runtime._runtime_task_payload(
+                campaign_id=campaign.id,
+                task_type="hypothesis_generation",
+                source_snapshot_digest=source_snapshot_digest,
+            ),
+        )
+        later = repository.save_learning_signal(
+            program_id=campaign.program_id,
+            playbook_id="bola_idor",
+            outcome="informative",
+            surface_key="record_id:export",
+            notes="Created after task binding.",
+            evidence_quality="weak",
+        )
+        captured: dict[str, object] = {}
+
+        def capture_hypothesis_payload(**kwargs):
+            captured["learning_signal_ids"] = [
+                signal.id for signal in kwargs["learning_signals"]
+            ]
+            return worker_tasks._fallback_hypothesis_payload(
+                campaign=kwargs["campaign"],
+                task=kwargs["task"],
+            )
+
+        monkeypatch.setattr(
+            worker_tasks,
+            "_codebase_fact_hypothesis_payload",
+            capture_hypothesis_payload,
+        )
+
+        worker_tasks._materialize_read_only_artifacts(
+            task=task,
+            campaign=campaign,
+            repository=repository,
+            workspace_inputs=None,
+            security_invariants=[],
+            target_model_projection={"fact_refs": [f"codebase_fact:{route.id}"]},
+        )
+
+        assert captured["learning_signal_ids"] == [bound.id]
+        assert later.id not in captured["learning_signal_ids"]
+    finally:
+        session.close()
+
+
 def test_run_agent_task_maps_authorized_api_and_har_artifacts_into_route_facts():
     repository, session = build_repository()
     try:
@@ -2402,6 +3314,22 @@ async function run_maintenance(req: Request, res: Response) {
             "command_execution_boundary",
         ),
         (
+            "MaintenanceController.java",
+            """
+@RestController
+public class MaintenanceController {
+  @PostMapping("/maintenance/run")
+  public Object runMaintenance(String command) {
+    return Runtime.getRuntime().exec(command);
+  }
+}
+""",
+            "command_injection",
+            "offline_command_execution_boundary_review",
+            "local_command_validation_trace",
+            "command_execution_boundary",
+        ),
+        (
             "apps/api/routes/imports.py",
             """
 import pickle
@@ -2500,6 +3428,24 @@ def run_agent_tool(agent_id: str, tool_name: str):
             "offline_agent_tool_policy_review",
             "local_agent_tool_policy_trace",
             "agent_tool_authorization_boundary",
+        ),
+        (
+            "apps/api/routes/reports.py",
+            """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, encoded_claims: str):
+    claims = jwt.decode(encoded_claims, options={"verify_signature": False})
+    return send_file(claims["path"])
+""",
+            "jwt_authentication_bypass",
+            "offline_jwt_verification_review",
+            "local_jwt_verification_trace",
+            "jwt_authentication_boundary",
         ),
     ),
 )
@@ -5237,7 +6183,7 @@ def test_run_agent_task_blocks_recorded_token_budget_without_materializing_artif
         session.close()
 
 
-def test_run_agent_task_blocks_consumed_tool_call_budget_without_materializing_artifacts():
+def test_run_agent_task_keeps_read_only_work_sanitized_after_tool_budget_is_consumed():
     repository, session = build_repository()
     try:
         campaign = repository.create_campaign(
@@ -5287,16 +6233,18 @@ def test_run_agent_task_blocks_consumed_tool_call_budget_without_materializing_a
 
         updated_tasks = repository.list_campaign_tasks(campaign.id)
         agent_runs = repository.list_campaign_agent_runs(campaign.id)
-        blocked_run = next(run for run in agent_runs if run.task_id == second_task.id)
-        assert result["status"] == "blocked"
-        assert result["stop_reason"] == "budget_exhausted"
+        completed_run = next(run for run in agent_runs if run.task_id == second_task.id)
+        codebase_maps = repository.list_campaign_codebase_maps(campaign.id)
+        assert result["status"] == "completed"
+        assert result["stop_reason"] is None
         assert len(agent_runs) == 2
-        assert blocked_run.status == "blocked"
-        assert blocked_run.safety_gate_state == "blocked"
-        assert blocked_run.stop_reason == "budget_exhausted"
-        assert next(task for task in updated_tasks if task.id == second_task.id).status == "blocked"
-        assert repository.list_campaign_codebase_maps(campaign.id) == []
-        assert "session=secret" not in str(blocked_run.payload)
+        assert completed_run.status == "completed"
+        assert completed_run.safety_gate_state == "allowed"
+        assert completed_run.stop_reason is None
+        assert next(task for task in updated_tasks if task.id == second_task.id).status == "completed"
+        assert len(codebase_maps) == 1
+        assert "session=secret" not in str(completed_run.payload)
+        assert "session=secret" not in str([record.payload for record in codebase_maps])
     finally:
         session.close()
 

@@ -183,7 +183,33 @@ def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
                     elif "next_due_at" not in wakeup_columns:
                         revision = "0016_autonomous_research_wakeup_cycle_summary"
                     else:
-                        revision = "0017_autonomous_research_wakeup_cadence"
+                        budget_columns = {
+                            column["name"]
+                            for column in inspector.get_columns("campaign_budgets")
+                        }
+                        slot_tables = set(inspector.get_table_names())
+                        slot_columns = (
+                            {
+                                column["name"]
+                                for column in inspector.get_columns(
+                                    "campaign_local_tool_execution_slots"
+                                )
+                            }
+                            if "campaign_local_tool_execution_slots" in slot_tables
+                            else set()
+                        )
+                        if {
+                            "campaign_id",
+                            "source_snapshot_digest",
+                            "active_task_id",
+                            "active_execution_claim_id",
+                            "legacy_active_task_count",
+                        }.issubset(slot_columns):
+                            revision = "0019_campaign_local_tool_execution_slot"
+                        elif "tool_calls_reserved" in budget_columns:
+                            revision = "0018_campaign_tool_call_reservations"
+                        else:
+                            revision = "0017_autonomous_research_wakeup_cadence"
                 else:
                     revision = "0014_autonomous_research_wakeup"
             else:

@@ -1,6 +1,486 @@
+import ast
+
 import pytest
 
-from app.codebase_map import map_authorized_code_files
+from app.codebase_map import (
+    _django_drf_class_body_outer_rebindings,
+    _django_drf_method_depends_on_action,
+    map_authorized_code_files,
+)
+
+
+def test_map_authorized_code_files_scopes_nestjs_class_guards_to_their_controller():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "records.controller.ts",
+                    "content": '''
+import { Controller, Get, UseGuards } from "@nestjs/common";
+
+@UseGuards(OwnerGuard)
+@Controller("admin-records")
+export class AdminRecordsController {
+  @Get(":recordId")
+  async readAdminRecord(recordId: string) {
+    return sendFile(recordId);
+  }
+}
+
+@Controller("public-records")
+export class PublicRecordsController {
+  @Get(":recordId")
+  async readPublicRecord(recordId: string) {
+    return sendFile(recordId);
+  }
+}
+''',
+                }
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    guards_by_handler = {
+        fact.payload["handler"]: fact.symbol_name
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+    }
+    sink_handlers = {
+        fact.payload["handler"]
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink"
+    }
+    gap_handlers = {
+        fact.symbol_name
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    }
+
+    assert routes == {
+        ("readAdminRecord", "GET", "/admin-records/:recordId"),
+        ("readPublicRecord", "GET", "/public-records/:recordId"),
+    }
+    assert guards_by_handler == {"readAdminRecord": "OwnerGuard"}
+    assert sink_handlers == {"readAdminRecord", "readPublicRecord"}
+    assert gap_handlers == {"readPublicRecord"}
+
+
+def test_map_authorized_code_files_maps_nestjs_injectable_ownership_checks():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "records.controller.ts",
+                    "content": '''
+import { Controller, Get, Injectable } from "@nestjs/common";
+
+@Injectable()
+@Controller("records")
+export class RecordsController {
+  @Get(":recordId")
+  async readRecord(recordId: string, user: User) {
+    const record = await this.recordsService.getForUser(recordId, user);
+    return sendFile(record.path);
+  }
+}
+
+@Injectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "service_call"
+        and fact.symbol_name == "getForUser"
+        and fact.payload.get("caller") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == "owner_id_filter"
+        and fact.authz_hint == "owner_or_admin_check"
+        and fact.payload.get("handler") == "getForUser"
+        for fact in result.facts
+    )
+    assert len(
+        [
+            fact
+            for fact in result.facts
+            if (
+                fact.fact_type == "sensitive_sink"
+                and fact.payload.get("handler") == "readRecord"
+            )
+        ]
+    ) == 1
+
+
+def test_map_authorized_code_files_ignores_injectable_marker_in_decorator_string():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "documentation.ts",
+                    "content": '''
+@Tag("@Injectable")
+export class DocumentationService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.payload.get("handler") == "getForUser" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_ignores_non_nestjs_injectable_service():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "documentation.ts",
+                    "content": '''
+import { Injectable } from "@angular/core";
+
+@Injectable()
+export class DocumentationService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.payload.get("handler") == "getForUser" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_nestjs_injectable_import_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "records.service.ts",
+                    "content": '''
+import { Injectable as NestInjectable } from "@nestjs/common";
+
+@NestInjectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    const record = await loadRecord(recordId);
+    if (record.ownerId !== user.id) {
+      return deny();
+    }
+    return record;
+  }
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "owner_or_admin_check"
+        and fact.payload.get("handler") == "getForUser"
+        and fact.payload.get("service_class") == "RecordsService"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("import_suffix", "source_suffix"),
+    ((".js", ".ts"), (".mjs", ".mts"), (".cjs", ".cts")),
+)
+def test_map_authorized_code_files_resolves_nestjs_service_import_source(
+    import_suffix: str,
+    source_suffix: str,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "records.controller.ts",
+                    "content": '''
+import { Controller, Get } from "@nestjs/common";
+import { RecordsService as ProjectRecordsService } from "./services/records.service.js";
+
+@Controller("records")
+export class RecordsController {
+  constructor(private readonly recordsService: ProjectRecordsService) {}
+
+  @Get(":recordId")
+  async readRecord(recordId: string, user: User) {
+    return this.recordsService.getForUser(recordId, user);
+  }
+}
+'''.replace(
+                        "./services/records.service.js",
+                        f"./services/records.service{import_suffix}",
+                    ),
+                },
+                {
+                    "path": f"services/records.service{source_suffix}",
+                    "content": '''
+import { Injectable } from "@nestjs/common";
+
+@Injectable()
+export class RecordsService {
+  async getForUser(recordId: string, user: User) {
+    return recordId;
+  }
+}
+''',
+                },
+            ]
+        }
+    )
+
+    service_call = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "service_call"
+        and fact.source_path == "records.controller.ts"
+        and fact.symbol_name == "getForUser"
+    )
+
+    assert service_call.payload["target_service_class"] == "RecordsService"
+    assert (
+        service_call.payload["target_service_source_path"]
+        == f"services/records.service{source_suffix}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "expects_external_rebinding"),
+    (
+        (
+            """
+class Configure:
+    for item in values:
+        import rest_framework as rf
+        if stop:
+            break
+        rf = local_holder
+    else:
+        rf = local_holder
+    rf.viewsets.ModelViewSet = build_non_drf_base()
+""",
+            True,
+        ),
+        (
+            """
+class Configure:
+    try:
+        rest_framework = local_holder
+        raise RuntimeError()
+    except RuntimeError:
+        rest_framework.viewsets.ModelViewSet = build_non_drf_base()
+""",
+            False,
+        ),
+        (
+            """
+class Configure:
+    for item in items:
+        break
+        rest_framework.viewsets.ModelViewSet = build_non_drf_base()
+""",
+            False,
+        ),
+        (
+            """
+class Configure:
+    for item in items:
+        continue
+        rest_framework.viewsets.ModelViewSet = build_non_drf_base()
+""",
+            False,
+        ),
+        (
+            """
+class Configure:
+    try:
+        always_raises()
+        rest_framework = local_holder
+    except RuntimeError:
+        rest_framework.viewsets.ModelViewSet = build_non_drf_base()
+""",
+            True,
+        ),
+        (
+            """
+class Configure:
+    try:
+        raise RuntimeError()
+        rest_framework = local_holder
+    except RuntimeError:
+        rest_framework.viewsets.ModelViewSet = build_non_drf_base()
+""",
+            True,
+        ),
+        (
+            """
+class Configure:
+    try:
+        raise RuntimeError()
+    except RuntimeError as rest_framework:
+        rest_framework.viewsets.ModelViewSet = build_non_drf_base()
+""",
+            False,
+        ),
+    ),
+)
+def test_django_drf_class_body_rebindings_follow_break_and_except_states(
+    content,
+    expects_external_rebinding,
+):
+    statement = ast.parse(content).body[0]
+    assert isinstance(statement, ast.ClassDef)
+
+    rebindings = _django_drf_class_body_outer_rebindings(statement)
+
+    assert rebindings is not None
+    assert (
+        ("rest_framework", "viewsets", "ModelViewSet")
+        in rebindings.attribute_paths
+    ) is expects_external_rebinding
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    (
+        (
+            """
+def get_queryset(self):
+    queryset = File.objects.filter(owner_id=current_user.id)
+    if self.action == "destroy":
+        queryset = File.objects.all()
+        queryset = File.objects.filter(owner_id=current_user.id)
+    return queryset
+""",
+            False,
+        ),
+        (
+            """
+def get_queryset(self):
+    queryset = File.objects.filter(owner_id=current_user.id)
+    for item in items:
+        break
+        queryset = self.action
+    return queryset
+""",
+            False,
+        ),
+        (
+            """
+def get_queryset(self):
+    queryset = File.objects.filter(owner_id=current_user.id)
+    for item in items:
+        continue
+        queryset = self.action
+    return queryset
+""",
+            False,
+        ),
+        (
+            """
+def get_queryset(self):
+    self.queryset = File.objects.filter(owner_id=current_user.id)
+    if self.action == "destroy":
+        self.queryset = File.objects.all()
+        self.queryset = File.objects.filter(owner_id=current_user.id)
+    return self.queryset
+""",
+            False,
+        ),
+        (
+            """
+def get_queryset(self):
+    queryset = File.objects.filter(owner_id=current_user.id)
+    if self.action == "destroy":
+        queryset = File.objects.filter(owner_id=current_user.id)
+        queryset = File.objects.all()
+    return queryset
+""",
+            True,
+        ),
+        (
+            """
+def get_queryset(self):
+    try:
+        queryset = self.action
+        raise RuntimeError()
+    except RuntimeError:
+        return queryset
+""",
+            True,
+        ),
+        (
+            """
+def get_queryset(self):
+    try:
+        queryset = self.action
+        raise RuntimeError()
+    except RuntimeError:
+        pass
+    finally:
+        queryset = File.objects.filter(owner_id=current_user.id)
+    return queryset
+""",
+            False,
+        ),
+        (
+            """
+def get_queryset(self):
+    match feature:
+        case _:
+            queryset = File.objects.filter(owner_id=current_user.id)
+    return queryset
+""",
+            False,
+        ),
+    ),
+)
+def test_django_drf_action_dependency_follows_branch_exit_values(content, expected):
+    member = ast.parse(content).body[0]
+    assert isinstance(member, ast.FunctionDef)
+
+    assert _django_drf_method_depends_on_action(member) is expected
 
 
 def test_map_authorized_code_files_marks_sensitive_route_without_authz_as_gap_candidate():
@@ -676,6 +1156,3460 @@ def export_file(file_id: str):
     )
 
 
+@pytest.mark.parametrize("router_type", ("DefaultRouter", "SimpleRouter"))
+def test_map_authorized_code_files_maps_static_drf_router_crud_actions(router_type):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": f"""
+from django.urls import include, path
+from rest_framework.routers import {router_type}
+from .views import ProjectViewSet
+
+router = {router_type}()
+router.register("projects", ProjectViewSet, basename="project")
+urlpatterns = [
+    path("api/", include(router.urls)),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class ProjectViewSet(ViewSet):
+    def list(self, request):
+        return []
+
+    def create(self, request):
+        return None
+
+    def retrieve(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+
+    def update(self, request, pk):
+        return None
+
+    def partial_update(self, request, pk):
+        return None
+
+    def destroy(self, request, pk):
+        return None
+""",
+                },
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    sink = next(fact for fact in result.facts if fact.fact_type == "sensitive_sink")
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert routes == {
+        ("ProjectViewSet.list", "GET", "/api/projects/"),
+        ("ProjectViewSet.create", "POST", "/api/projects/"),
+        ("ProjectViewSet.retrieve", "GET", "/api/projects/{pk}/"),
+        ("ProjectViewSet.update", "PUT", "/api/projects/{pk}/"),
+        ("ProjectViewSet.partial_update", "PATCH", "/api/projects/{pk}/"),
+        ("ProjectViewSet.destroy", "DELETE", "/api/projects/{pk}/"),
+    }
+    assert sink.payload["handler"] == "ProjectViewSet.retrieve"
+    assert (gap.symbol_name, gap.route_method, gap.route_path) == (
+        "ProjectViewSet.retrieve",
+        "GET",
+        "/api/projects/{pk}/",
+    )
+
+
+def test_map_authorized_code_files_maps_model_viewset_destroy_hook_to_delete_route():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    sink = next(fact for fact in result.facts if fact.fact_type == "sensitive_sink")
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "FileViewSet.destroy",
+        "DELETE",
+        "/api/files/{pk}/",
+    )
+    assert sink.payload["handler"] == "FileViewSet.perform_destroy"
+    assert (gap.symbol_name, gap.route_method, gap.route_path) == (
+        "FileViewSet.destroy",
+        "DELETE",
+        "/api/files/{pk}/",
+    )
+
+
+def test_map_authorized_code_files_uses_model_viewset_queryset_guard_before_destroy_hook():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def get_queryset(self):
+        return File.objects.filter(owner_id=current_user.id)
+
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    calls = [fact for fact in result.facts if fact.fact_type == "service_call"]
+
+    assert routes == {
+        ("FileViewSet.list", "GET", "/api/files/"),
+        ("FileViewSet.retrieve", "GET", "/api/files/{pk}/"),
+        ("FileViewSet.update", "PUT", "/api/files/{pk}/"),
+        ("FileViewSet.partial_update", "PATCH", "/api/files/{pk}/"),
+        ("FileViewSet.destroy", "DELETE", "/api/files/{pk}/"),
+    }
+    assert any(
+        fact.symbol_name == "FileViewSet.get_queryset"
+        and fact.payload.get("caller") == "FileViewSet.destroy"
+        for fact in calls
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_read_only_model_viewset_queryset_hook_from_module_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework import viewsets
+
+class FileViewSet(viewsets.ReadOnlyModelViewSet):
+    def get_queryset(self):
+        return get_blob(current_user.id)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+
+    assert routes == {
+        ("FileViewSet.list", "GET", "/api/files/"),
+        ("FileViewSet.retrieve", "GET", "/api/files/{pk}/"),
+    }
+    assert {
+        (fact.symbol_name, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    } == {
+        ("FileViewSet.list", "/api/files/"),
+        ("FileViewSet.retrieve", "/api/files/{pk}/"),
+    }
+
+
+def test_map_authorized_code_files_requires_drf_import_for_inherited_viewset_hooks():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+class ModelViewSet:
+    pass
+
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "view_content",
+    (
+        """
+from rest_framework.viewsets import ModelViewSet
+
+ModelViewSet = build_non_drf_base()
+
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+        """
+from rest_framework import viewsets
+
+viewsets = build_non_drf_module()
+
+class FileViewSet(viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+    ),
+)
+def test_map_authorized_code_files_ignores_rebound_drf_viewset_aliases(view_content):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {"path": "project/views.py", "content": view_content},
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "view_content",
+    (
+        """
+from rest_framework.viewsets import ModelViewSet
+
+ModelViewSet: object
+
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+        """
+from rest_framework import viewsets
+
+viewsets: object
+
+class FileViewSet(viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+    ),
+)
+def test_map_authorized_code_files_keeps_drf_viewset_aliases_after_bare_annotations(
+    view_content,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {"path": "project/views.py", "content": view_content},
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    (
+        """
+for ModelViewSet in (build_non_drf_base(),):
+    pass
+""",
+        """
+with build_non_drf_context() as ModelViewSet:
+    pass
+""",
+        """
+if (ModelViewSet := build_non_drf_base()):
+    pass
+""",
+        """
+def marker(value=(ModelViewSet := build_non_drf_base())):
+    pass
+""",
+    ),
+)
+def test_map_authorized_code_files_ignores_drf_aliases_rebound_by_top_level_statements(
+    rebinding,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+from rest_framework.viewsets import ModelViewSet
+{rebinding}
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "view_content",
+    (
+        """
+from rest_framework.viewsets import ModelViewSet
+
+sentinel = (ModelViewSet := build_non_drf_base())
+
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+        """
+from rest_framework import viewsets
+
+sentinel = (viewsets := build_non_drf_module())
+
+class FileViewSet(viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+    ),
+)
+def test_map_authorized_code_files_ignores_drf_aliases_rebound_in_assignment_values(
+    view_content,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {"path": "project/views.py", "content": view_content},
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_viewset_declared_before_drf_alias_rebinding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import EarlierViewSet, LaterViewSet
+
+router = DefaultRouter()
+router.register("earlier", EarlierViewSet, basename="earlier")
+router.register("later", LaterViewSet, basename="later")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ModelViewSet
+
+class EarlierViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+
+ModelViewSet = build_non_drf_base()
+
+class LaterViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    } == {("EarlierViewSet.destroy", "DELETE", "/api/earlier/{pk}/")}
+
+
+@pytest.mark.parametrize(
+    "action_lookup",
+    (
+        "self.action",
+        'getattr(self, "action", None)',
+    ),
+)
+def test_map_authorized_code_files_keeps_destroy_candidate_for_action_dependent_queryset(
+    action_lookup,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def get_queryset(self):
+        action = {action_lookup}
+        if action == "list":
+            return File.objects.filter(owner_id=current_user.id)
+        return File.objects.all()
+
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+    assert any(
+        fact.fact_type == "service_call"
+        and fact.symbol_name == "FileViewSet.get_queryset"
+        and fact.payload.get("caller") == "FileViewSet.destroy"
+        and fact.payload.get("lifecycle_action_dependent") is True
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_unconditional_queryset_guard_with_non_control_action_reads():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def get_queryset(self):
+        def action_name():
+            return self.action
+
+        if self.action:
+            audit_log("action")
+        audit_log(getattr(self, "action", None))
+        return File.objects.filter(owner_id=current_user.id)
+
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "service_call"
+        and fact.symbol_name == "FileViewSet.get_queryset"
+        and fact.payload.get("caller") == "FileViewSet.destroy"
+        and fact.payload.get("lifecycle_action_dependent") is not True
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_queryset_guard_after_action_alias_rebinding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def get_queryset(self):
+        action = self.action
+        action = "list"
+        if action == "list":
+            return File.objects.filter(owner_id=current_user.id)
+        return File.objects.filter(owner_id=current_user.id)
+
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "service_call"
+        and fact.symbol_name == "FileViewSet.get_queryset"
+        and fact.payload.get("caller") == "FileViewSet.destroy"
+        and fact.payload.get("lifecycle_action_dependent") is not True
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_destroy_candidate_for_augmented_action_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def get_queryset(self):
+        action = self.action
+        action += "-scoped"
+        if action == "list-scoped":
+            return File.objects.filter(owner_id=current_user.id)
+        return File.objects.all()
+
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+    assert any(
+        fact.fact_type == "service_call"
+        and fact.symbol_name == "FileViewSet.get_queryset"
+        and fact.payload.get("caller") == "FileViewSet.destroy"
+        and fact.payload.get("lifecycle_action_dependent") is True
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("assignment_target", "return_value"),
+    (
+        ("queryset", "queryset"),
+        ("self.queryset", "self.queryset"),
+        (
+            "self.queryset",
+            'getattr(self, "queryset", File.objects.none())',
+        ),
+    ),
+)
+def test_map_authorized_code_files_keeps_destroy_candidate_for_action_controlled_queryset_assignment(
+    assignment_target,
+    return_value,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def get_queryset(self):
+        {assignment_target} = File.objects.filter(owner_id=current_user.id)
+        if self.action == "destroy":
+            {assignment_target} = File.objects.all()
+        return {return_value}
+
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+    assert any(
+        fact.fact_type == "service_call"
+        and fact.symbol_name == "FileViewSet.get_queryset"
+        and fact.payload.get("caller") == "FileViewSet.destroy"
+        and fact.payload.get("lifecycle_action_dependent") is True
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_destroy_candidate_for_action_value_in_feature_branch():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ModelViewSet
+
+class FileViewSet(ModelViewSet):
+    def get_queryset(self):
+        if feature_enabled:
+            queryset = (
+                File.objects.all()
+                if self.action == "destroy"
+                else File.objects.filter(owner_id=current_user.id)
+            )
+        else:
+            queryset = File.objects.filter(owner_id=current_user.id)
+        return queryset
+
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+    assert any(
+        fact.fact_type == "service_call"
+        and fact.symbol_name == "FileViewSet.get_queryset"
+        and fact.payload.get("caller") == "FileViewSet.destroy"
+        and fact.payload.get("lifecycle_action_dependent") is True
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_unaliased_drf_viewsets_module_import():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+import rest_framework.viewsets
+
+class FileViewSet(rest_framework.viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+
+
+@pytest.mark.parametrize(
+    "following_import",
+    (
+        "import rest_framework",
+        "import rest_framework.authentication",
+    ),
+)
+def test_map_authorized_code_files_keeps_unaliased_drf_viewsets_after_compatible_import(
+    following_import,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+import rest_framework.viewsets
+{following_import}
+
+class FileViewSet(rest_framework.viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+
+
+def test_map_authorized_code_files_ignores_viewsets_module_alias_overwritten_by_parent_import():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework import viewsets as rest_framework
+import rest_framework.authentication
+
+class FileViewSet(rest_framework.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    (
+        "rest_framework.viewsets = build_non_drf_module()",
+        "rest_framework.viewsets.ModelViewSet = build_non_drf_base()",
+        """
+if feature_enabled:
+    rest_framework.viewsets = build_non_drf_module()
+""",
+    ),
+)
+def test_map_authorized_code_files_ignores_unaliased_drf_viewsets_after_attribute_rebinding(
+    rebinding,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+import rest_framework.viewsets
+
+{rebinding}
+
+class FileViewSet(rest_framework.viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "view_content",
+    (
+        """
+from rest_framework.viewsets import ModelViewSet
+
+ModelViewSet.serializer_class = FileSerializer
+
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+        """
+import rest_framework.viewsets
+
+rest_framework.settings.DEFAULT_RENDERER_CLASSES = []
+
+class FileViewSet(rest_framework.viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+    ),
+)
+def test_map_authorized_code_files_keeps_drf_viewset_aliases_after_unrelated_attribute_writes(
+    view_content,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {"path": "project/views.py", "content": view_content},
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+
+
+def test_map_authorized_code_files_maps_static_drf_router_custom_actions():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.decorators import action as api_action
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    @api_action(detail=True, methods=("post",), url_path="regenerate-export")
+    def regenerate_export(self, request, pk):
+        return send_file(pk)
+
+    @api_action(detail=False)
+    def health_check(self, request):
+        return []
+""",
+                },
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert routes == {
+        (
+            "FileViewSet.regenerate_export",
+            "POST",
+            "/api/files/{pk}/regenerate-export/",
+        ),
+        ("FileViewSet.health_check", "GET", "/api/files/health-check/"),
+    }
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink"
+        and fact.payload.get("handler") == "FileViewSet.regenerate_export"
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "FileViewSet.regenerate_export"
+    )
+
+    assert sink.payload["handler"] == "FileViewSet.regenerate_export"
+    assert (gap.route_method, gap.route_path) == (
+        "POST",
+        "/api/files/{pk}/regenerate-export/",
+    )
+
+
+@pytest.mark.parametrize(
+    "view_content",
+    (
+        """
+from rest_framework.decorators import action
+from rest_framework.viewsets import ViewSet
+
+action = local_decorator
+
+class FileViewSet(ViewSet):
+    @action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+        """
+from rest_framework import decorators
+from rest_framework.viewsets import ViewSet
+
+decorators = local_decorator_module()
+
+class FileViewSet(ViewSet):
+    @decorators.action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+        """
+import rest_framework.decorators
+from rest_framework.viewsets import ViewSet
+
+rest_framework.decorators.action = local_decorator
+
+class FileViewSet(ViewSet):
+    @rest_framework.decorators.action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+    ),
+)
+def test_map_authorized_code_files_ignores_rebound_drf_action_aliases(view_content):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {"path": "project/views.py", "content": view_content},
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_ignores_decorator_module_alias_overwritten_by_parent_import():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework import decorators as rest_framework
+from rest_framework.viewsets import ViewSet
+import rest_framework.authentication
+
+class FileViewSet(ViewSet):
+    @rest_framework.action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_requires_drf_viewset_base_for_custom_actions():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.decorators import action
+
+class FileViewSet:
+    @action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_ignores_class_local_drf_action_rebinding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.decorators import action
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    action = local_decorator
+
+    @action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_applies_method_decorator_rebindings_in_order():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.decorators import action
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    @decorate(action := local_decorator)
+    @action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "view_content",
+    (
+        """
+from rest_framework.viewsets import ModelViewSet
+
+@decorate(ModelViewSet := build_non_drf_base())
+class FileViewSet(ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+        """
+from rest_framework.decorators import action
+from rest_framework.viewsets import ViewSet
+
+@decorate(action := local_decorator)
+class FileViewSet(ViewSet):
+    @action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+    ),
+)
+def test_map_authorized_code_files_applies_class_header_rebindings_before_mapping(
+    view_content,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {"path": "project/views.py", "content": view_content},
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    (
+        "rest_framework.viewsets = build_non_drf_module()",
+        "rest_framework.viewsets.ModelViewSet = build_non_drf_base()",
+        "import rest_framework\n    rest_framework.viewsets.ModelViewSet = build_non_drf_base()",
+        "from rest_framework import viewsets\n    viewsets.ModelViewSet = build_non_drf_base()",
+        "if feature_enabled:\n        import rest_framework as api\n    else:\n        api = local_holder\n    api.viewsets.ModelViewSet = build_non_drf_base()",
+    ),
+)
+def test_map_authorized_code_files_applies_class_body_viewset_attribute_rebindings(
+    configuration,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+import rest_framework.viewsets
+
+class Configure:
+    {configuration}
+
+class FileViewSet(rest_framework.viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    (
+        "rest_framework.decorators.action = local_decorator",
+        "from rest_framework import decorators\n    decorators.action = local_decorator",
+    ),
+)
+def test_map_authorized_code_files_applies_class_body_action_attribute_rebinding(
+    configuration,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+import rest_framework.decorators
+from rest_framework.viewsets import ViewSet
+
+class Configure:
+    {configuration}
+
+class FileViewSet(ViewSet):
+    @rest_framework.decorators.action(detail=True, methods=["post"])
+    def export(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    (
+        "rest_framework = local_holder\n    rest_framework.viewsets = build_non_drf_module()",
+        "for feature in features:\n        import rest_framework as api\n    else:\n        api = local_holder\n    api.viewsets.ModelViewSet = build_non_drf_base()",
+    ),
+)
+def test_map_authorized_code_files_keeps_outer_viewset_alias_after_class_local_shadowing(
+    configuration,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+import rest_framework.viewsets
+
+class Configure:
+    {configuration}
+
+class FileViewSet(rest_framework.viewsets.ModelViewSet):
+    def perform_destroy(self, instance):
+        return delete_file(instance.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    } == {("FileViewSet.destroy", "DELETE", "/api/files/{pk}/")}
+
+
+def test_map_authorized_code_files_keeps_dynamic_drf_router_custom_action_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.decorators import action
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    @action(detail=True, methods=["post"], url_path=build_action_path())
+    def regenerate_export(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_unaliased_drf_action_module_and_standard_methods():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+import rest_framework.decorators
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    @rest_framework.decorators.action(
+        detail=True,
+        methods=["head", "options", "trace"],
+    )
+    def metadata(self, request, pk):
+        return []
+""",
+                },
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert routes == {
+        ("FileViewSet.metadata", "HEAD", "/api/files/{pk}/metadata/"),
+        ("FileViewSet.metadata", "OPTIONS", "/api/files/{pk}/metadata/"),
+        ("FileViewSet.metadata", "TRACE", "/api/files/{pk}/metadata/"),
+    }
+
+
+def test_map_authorized_code_files_maps_direct_static_drf_router_urls():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import ProjectViewSet
+
+router = DefaultRouter()
+router.register("projects", ProjectViewSet, basename="project")
+urlpatterns = router.urls
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class ProjectViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    sink = next(fact for fact in result.facts if fact.fact_type == "sensitive_sink")
+
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "ProjectViewSet.list",
+        "GET",
+        "/projects/",
+    )
+    assert sink.payload["handler"] == "ProjectViewSet.list"
+
+
+def test_map_authorized_code_files_maps_static_drf_router_lookup_field():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import ProjectViewSet
+
+router = DefaultRouter()
+router.register("projects", ProjectViewSet, basename="project")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class ProjectViewSet(ViewSet):
+    lookup_field = "slug"
+
+    def retrieve(self, request, slug):
+        project = Project.objects.get(slug=slug)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "ProjectViewSet.retrieve",
+        "GET",
+        "/api/projects/{slug}/",
+    )
+
+
+def test_map_authorized_code_files_keeps_dynamic_drf_lookup_detail_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import ProjectViewSet
+
+router = DefaultRouter()
+router.register("projects", ProjectViewSet, basename="project")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class ProjectViewSet(ViewSet):
+    lookup_field = build_lookup_field()
+
+    def list(self, request):
+        return []
+
+    def retrieve(self, request, value):
+        return send_file(value)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert routes == {("ProjectViewSet.list", "GET", "/api/projects/")}
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_dynamic_drf_router_registration_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import ProjectViewSet
+
+router = DefaultRouter()
+router.register(load_prefix(), ProjectViewSet, basename="project")
+urlpatterns = [
+    path("api/", include(router.urls)),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class ProjectViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_custom_drf_router_trailing_slash_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import ProjectViewSet
+
+router = DefaultRouter()
+router.trailing_slash = ""
+router.register("projects", ProjectViewSet, basename="project")
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class ProjectViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_imported_static_drf_router_instance():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": """
+from django.urls import include, path
+from .router import router as api_router
+
+urlpatterns = [path("", include(api_router.urls))]
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def retrieve(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "FileViewSet.retrieve",
+        "GET",
+        "/api/files/{pk}/",
+    )
+    assert gap.symbol_name == "FileViewSet.retrieve"
+
+
+def test_map_authorized_code_files_maps_drf_router_through_imported_module_attribute():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from . import router
+
+urlpatterns = [path("api/", include(router.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def retrieve(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "FileViewSet.retrieve",
+        "GET",
+        "/api/files/{pk}/",
+    )
+    assert gap.symbol_name == "FileViewSet.retrieve"
+
+
+def test_map_authorized_code_files_keeps_shadowed_drf_router_module_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from . import router
+
+router = build_router()
+urlpatterns = [path("api/", include(router.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def retrieve(self, request, pk):
+        return send_file(pk)
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_handlers"),
+    (
+        ("router.router = build_router()", set()),
+        ('router.router.trailing_slash = ""', set()),
+        (
+            'router.router.register("exports", ExportViewSet, basename="export")',
+            {
+                ("FileViewSet.list", "GET", "/api/files/"),
+                ("ExportViewSet.list", "GET", "/api/exports/"),
+            },
+        ),
+    ),
+)
+def test_map_authorized_code_files_tracks_drf_router_module_attribute_lifecycle(
+    mutation,
+    expected_handlers,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": f"""
+from django.urls import include, path
+from . import router
+from .views import ExportViewSet
+
+{mutation}
+urlpatterns = [path("api/", include(router.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+
+class ExportViewSet(ViewSet):
+    def list(self, request):
+        return send_file("export")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == expected_handlers
+
+
+@pytest.mark.parametrize(
+    ("replacement_import", "expected_handlers"),
+    (
+        ("from . import second as router", set()),
+        ("import project.second as router", set()),
+        (
+            "import project.first as router",
+            {("FileViewSet.list", "GET", "/api/files/")},
+        ),
+    ),
+)
+def test_map_authorized_code_files_clears_rebound_drf_router_module_state(
+    replacement_import,
+    expected_handlers,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": f"""
+from django.urls import include, path
+from . import first as router
+{replacement_import}
+
+urlpatterns = [path("api/", include(router.router.urls))]
+""",
+                },
+                {
+                    "path": "project/first.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {"path": "project/second.py", "content": "router = build_router()\n"},
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == expected_handlers
+    if not expected_handlers:
+        assert not any(
+            fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+        )
+
+
+def test_map_authorized_code_files_invalidates_shared_drf_router_module_aliases():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from . import router as primary
+from . import router as mirror
+
+primary.router = build_router()
+urlpatterns = [path("api/", include(mirror.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_tracks_static_drf_router_module_rebuild_across_aliases():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from . import router as primary
+from . import router as mirror
+from .views import ExportViewSet
+
+primary.router = DefaultRouter()
+mirror.router.register("exports", ExportViewSet, basename="export")
+urlpatterns = [path("api/", include(primary.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+
+class ExportViewSet(ViewSet):
+    def list(self, request):
+        return send_file("export")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == {("ExportViewSet.list", "GET", "/api/exports/")}
+
+
+def test_map_authorized_code_files_reimports_static_drf_router_module_after_rebuild():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from . import router as primary
+
+primary.router = DefaultRouter()
+from . import router as mirror
+
+urlpatterns = [path("api/", include(mirror.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_direct_drf_router_reference_after_module_rebuild():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from . import router as primary
+from .router import router as direct_router
+
+primary.router = DefaultRouter()
+urlpatterns = [path("api/", include(direct_router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "FileViewSet.list",
+        "GET",
+        "/api/files/",
+    )
+
+
+def test_map_authorized_code_files_reloads_static_drf_router_module_in_child_urlconf():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from . import router
+
+router.router = DefaultRouter()
+urlpatterns = [path("api/", include("project.child_urls"))]
+""",
+                },
+                {
+                    "path": "project/child_urls.py",
+                    "content": """
+from django.urls import include, path
+from . import router
+
+urlpatterns = [path("", include(router.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_invalidates_drf_router_module_across_urlconfs():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from . import router
+
+router.router = build_router()
+urlpatterns = [path("api/", include("project.child_urls"))]
+""",
+                },
+                {
+                    "path": "project/child_urls.py",
+                    "content": """
+from django.urls import include, path
+from . import router
+
+urlpatterns = [path("", include(router.router.urls))]
+""",
+                },
+                {
+                    "path": "project/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_invalidates_nested_drf_router_module_aliases():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from . import outer as primary
+from . import outer as mirror
+
+primary.inner = build_router_module()
+urlpatterns = [path("api/", include(mirror.inner.router.urls))]
+""",
+                },
+                {
+                    "path": "project/outer.py",
+                    "content": "from . import inner\n",
+                },
+                {
+                    "path": "project/inner.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_nested_drf_router_rebuild_conservative():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from . import outer as primary
+from . import inner as mirror
+
+primary.inner.router = DefaultRouter()
+urlpatterns = [path("api/", include(mirror.router.urls))]
+""",
+                },
+                {
+                    "path": "project/outer.py",
+                    "content": "from . import inner\n",
+                },
+                {
+                    "path": "project/inner.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_nested_drf_router_rebuild_conservative_in_child_urlconf():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from . import outer as primary
+
+primary.inner.router = DefaultRouter()
+urlpatterns = [path("api/", include("project.child_urls"))]
+""",
+                },
+                {
+                    "path": "project/child_urls.py",
+                    "content": """
+from django.urls import include, path
+from .inner import router
+
+urlpatterns = [path("", include(router.urls))]
+""",
+                },
+                {
+                    "path": "project/outer.py",
+                    "content": "from . import inner\n",
+                },
+                {
+                    "path": "project/inner.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_handlers"),
+    (
+        ("api_router = build_router()", set()),
+        ("api_router.trailing_slash = \"\"", set()),
+        (
+            'api_router.register("exports", ExportViewSet, basename="export")',
+            {
+                ("FileViewSet.list", "GET", "/api/files/"),
+                ("ExportViewSet.list", "GET", "/api/exports/"),
+            },
+        ),
+    ),
+)
+def test_map_authorized_code_files_tracks_imported_drf_router_alias_lifecycle(
+    mutation,
+    expected_handlers,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": f"""
+from django.urls import include, path
+from .router import router as api_router
+from .views import ExportViewSet
+
+{mutation}
+urlpatterns = [path("", include(api_router.urls))]
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+
+class ExportViewSet(ViewSet):
+    def list(self, request):
+        return send_file("export")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == expected_handlers
+
+
+@pytest.mark.parametrize(
+    ("router_module", "expected_handlers"),
+    (
+        (
+            """
+from .base import router
+""",
+            {("BaseViewSet.list", "GET", "/api/base/")},
+        ),
+        (
+            """
+from .base import router
+from .views import ExportViewSet
+
+router.register("exports", ExportViewSet, basename="export")
+""",
+            {
+                ("BaseViewSet.list", "GET", "/api/base/"),
+                ("ExportViewSet.list", "GET", "/api/exports/"),
+            },
+        ),
+    ),
+)
+def test_map_authorized_code_files_maps_reexported_drf_router_instance(
+    router_module,
+    expected_handlers,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": """
+from django.urls import include, path
+from .router import router
+
+urlpatterns = [path("", include(router.urls))]
+""",
+                },
+                {"path": "api/router.py", "content": router_module},
+                {
+                    "path": "api/base.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import BaseViewSet
+
+router = DefaultRouter()
+router.register("base", BaseViewSet, basename="base")
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class BaseViewSet(ViewSet):
+    def list(self, request):
+        return send_file("base")
+
+class ExportViewSet(ViewSet):
+    def list(self, request):
+        return send_file("export")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == expected_handlers
+
+
+def test_map_authorized_code_files_keeps_cyclic_drf_router_reexports_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": """
+from django.urls import include, path
+from .router import router
+
+urlpatterns = [path("", include(router.urls))]
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": "from .base import router\n",
+                },
+                {
+                    "path": "api/base.py",
+                    "content": "from .router import router\n",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_handlers"),
+    (
+        (
+            'primary_router.register("exports", ExportViewSet, basename="export")',
+            {
+                ("BaseViewSet.list", "GET", "/api/mirror/base/"),
+                ("ExportViewSet.list", "GET", "/api/mirror/exports/"),
+            },
+        ),
+        ('primary_router.trailing_slash = ""', set()),
+    ),
+)
+def test_map_authorized_code_files_shares_imported_drf_router_alias_state(
+    mutation,
+    expected_handlers,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": f"""
+from django.urls import include, path
+from .base import router as primary_router
+from .base import router as mirror_router
+from .views import ExportViewSet
+
+{mutation}
+urlpatterns = [path("mirror/", include(mirror_router.urls))]
+""",
+                },
+                {
+                    "path": "api/base.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import BaseViewSet
+
+router = DefaultRouter()
+router.register("base", BaseViewSet, basename="base")
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class BaseViewSet(ViewSet):
+    def list(self, request):
+        return send_file("base")
+
+class ExportViewSet(ViewSet):
+    def list(self, request):
+        return send_file("export")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == expected_handlers
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        'router.register("phantom", PhantomViewSet, basename="phantom")',
+        'router.trailing_slash = ""',
+    ),
+)
+def test_map_authorized_code_files_ignores_unreachable_drf_router_mutation(mutation):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": """
+from django.urls import include, path
+from .router import router
+
+urlpatterns = [path("", include(router.urls))]
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import BaseViewSet
+
+router = DefaultRouter()
+router.register("base", BaseViewSet, basename="base")
+""",
+                },
+                {
+                    "path": "api/unused.py",
+                    "content": f"""
+from .router import router
+from .views import PhantomViewSet
+
+{mutation}
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class BaseViewSet(ViewSet):
+    def list(self, request):
+        return send_file("base")
+
+class PhantomViewSet(ViewSet):
+    def list(self, request):
+        return send_file("phantom")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == {("BaseViewSet.list", "GET", "/api/base/")}
+
+
+@pytest.mark.parametrize(
+    "root_urlconf",
+    (
+        """
+urlpatterns = [path("stale/", include("api.unused_urls"))]
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+        """
+def build_unused_patterns():
+    return [path("stale/", include("api.unused_urls"))]
+
+urlpatterns = [path("api/", include("api.urls"))]
+""",
+    ),
+)
+def test_map_authorized_code_files_ignores_inactive_drf_router_include(
+    root_urlconf,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": f"""
+from django.urls import include, path
+
+{root_urlconf}
+""",
+                },
+                {
+                    "path": "api/urls.py",
+                    "content": """
+from django.urls import include, path
+from .router import router
+
+urlpatterns = [path("", include(router.urls))]
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import BaseViewSet
+
+router = DefaultRouter()
+router.register("base", BaseViewSet, basename="base")
+""",
+                },
+                {
+                    "path": "api/unused_urls.py",
+                    "content": """
+from .router import router
+from .views import PhantomViewSet
+
+router.register("phantom", PhantomViewSet, basename="phantom")
+urlpatterns = []
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class BaseViewSet(ViewSet):
+    def list(self, request):
+        return send_file("base")
+
+class PhantomViewSet(ViewSet):
+    def list(self, request):
+        return send_file("phantom")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == {("BaseViewSet.list", "GET", "/api/base/")}
+
+
+def test_map_authorized_code_files_snapshots_drf_router_urls_before_later_include_mutation():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+
+urlpatterns = [
+    path("a/", include("api.a_urls")),
+    path("b/", include("api.b_urls")),
+]
+""",
+                },
+                {
+                    "path": "api/a_urls.py",
+                    "content": """
+from django.urls import include, path
+from .router import router
+
+urlpatterns = [path("", include(router.urls))]
+""",
+                },
+                {
+                    "path": "api/b_urls.py",
+                    "content": """
+from .router import router
+from .views import PhantomViewSet
+
+router.register("phantom", PhantomViewSet, basename="phantom")
+urlpatterns = []
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import BaseViewSet
+
+router = DefaultRouter()
+router.register("base", BaseViewSet, basename="base")
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class BaseViewSet(ViewSet):
+    def list(self, request):
+        return send_file("base")
+
+class PhantomViewSet(ViewSet):
+    def list(self, request):
+        return send_file("phantom")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == {("BaseViewSet.list", "GET", "/a/base/")}
+
+
+def test_map_authorized_code_files_does_not_load_shadowed_drf_router_submodule():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from api import router
+
+urlpatterns = [path("api/", include(router.urls))]
+""",
+                },
+                {
+                    "path": "api/__init__.py",
+                    "content": "from .base import router\n",
+                },
+                {
+                    "path": "api/base.py",
+                    "content": """
+from rest_framework.routers import DefaultRouter
+from .views import BaseViewSet
+
+router = DefaultRouter()
+router.register("base", BaseViewSet, basename="base")
+""",
+                },
+                {
+                    "path": "api/router.py",
+                    "content": """
+from .base import router
+from .views import PhantomViewSet
+
+router.register("phantom", PhantomViewSet, basename="phantom")
+""",
+                },
+                {
+                    "path": "api/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class BaseViewSet(ViewSet):
+    def list(self, request):
+        return send_file("base")
+
+class PhantomViewSet(ViewSet):
+    def list(self, request):
+        return send_file("phantom")
+""",
+                },
+            ]
+        }
+    )
+
+    handlers = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    assert handlers == {("BaseViewSet.list", "GET", "/api/base/")}
+
+
+def test_map_authorized_code_files_maps_namespaced_static_drf_router_include():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+from .views import FileViewSet
+
+router = DefaultRouter()
+router.register("files", FileViewSet, basename="file")
+urlpatterns = [
+    path("api/", include((router.urls, "api"), namespace="api")),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "FileViewSet.list",
+        "GET",
+        "/api/files/",
+    )
+
+
 def test_map_authorized_code_files_does_not_assume_django_urlconf_root():
     result = map_authorized_code_files(
         {
@@ -739,6 +4673,634 @@ def export_file(file_id: str):
     assert not any(
         fact.fact_type == "authorization_gap_candidate" for fact in result.facts
     )
+
+
+def test_map_authorized_code_files_maps_django_api_view_to_its_method_identity():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import ProjectDownload
+
+urlpatterns = [
+    path("projects/<int:pk>/download/", ProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.views import APIView
+
+class ProjectDownload(APIView):
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    sink = next(fact for fact in result.facts if fact.fact_type == "sensitive_sink")
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "ProjectDownload.get",
+        "GET",
+        "/projects/<int:pk>/download/",
+    )
+    assert route.payload["handler"] == "ProjectDownload.get"
+    assert sink.payload["handler"] == "ProjectDownload.get"
+    assert gap.symbol_name == "ProjectDownload.get"
+
+
+def test_map_authorized_code_files_keeps_django_class_view_methods_isolated():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path("projects/<int:pk>/download/", views.PublicProjectDownload.as_view()),
+    path("my-projects/<int:pk>/download/", views.OwnedProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.views import APIView
+
+class PublicProjectDownload(APIView):
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+
+class OwnedProjectDownload(APIView):
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk, owner_id=request.user.id)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    routes = {
+        (fact.symbol_name, fact.route_method, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    sink_handlers = {
+        fact.payload["handler"]
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink"
+    }
+    gap_handlers = {
+        fact.symbol_name
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    }
+
+    assert routes == {
+        (
+            "PublicProjectDownload.get",
+            "GET",
+            "/projects/<int:pk>/download/",
+        ),
+        (
+            "OwnedProjectDownload.get",
+            "GET",
+            "/my-projects/<int:pk>/download/",
+        ),
+    }
+    assert sink_handlers == {
+        "PublicProjectDownload.get",
+        "OwnedProjectDownload.get",
+    }
+    assert gap_handlers == {"PublicProjectDownload.get"}
+
+
+def test_map_authorized_code_files_keeps_django_class_view_decorator_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import OwnedProjectDownload
+
+urlpatterns = [
+    path("my-projects/<int:pk>/download/", OwnedProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.views import APIView
+
+class OwnedProjectDownload(APIView):
+    @require_owner
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "ownership_boundary_check"
+        and fact.payload["handler"] == "OwnedProjectDownload.get"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_django_dispatch_decorator_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import OwnedProjectDownload
+
+urlpatterns = [
+    path("my-projects/<int:pk>/download/", OwnedProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from django.utils.decorators import method_decorator
+from rest_framework.views import APIView
+
+@method_decorator(require_owner, name="dispatch")
+class OwnedProjectDownload(APIView):
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "ownership_boundary_check"
+        and fact.payload["handler"] == "OwnedProjectDownload.get"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_multiline_django_dispatch_decorator_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import OwnedProjectDownload
+
+urlpatterns = [
+    path("my-projects/<int:pk>/download/", OwnedProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from django.utils.decorators import method_decorator
+from rest_framework.views import APIView
+
+@method_decorator(
+    [require_owner],
+    name="dispatch",
+)
+class OwnedProjectDownload(APIView):
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "ownership_boundary_check"
+        and fact.payload["handler"] == "OwnedProjectDownload.get"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_aliased_django_method_decorator_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import FileViewSet
+
+urlpatterns = [
+    path("files/", FileViewSet.as_view({"get": "list"})),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from django.utils.decorators import method_decorator as decorate
+from rest_framework.viewsets import ViewSet
+
+@decorate(
+    [require_owner],
+    name="dispatch",
+)
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "ownership_boundary_check"
+        and fact.payload["handler"] == "FileViewSet.list"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_keyword_django_method_decorator_authz():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import FileViewSet
+
+urlpatterns = [
+    path("files/", FileViewSet.as_view({"get": "list"})),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from django.utils.decorators import method_decorator as decorate
+from rest_framework.viewsets import ViewSet
+
+@decorate(
+    decorator=(require_owner,),
+    name="dispatch",
+)
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "ownership_boundary_check"
+        and fact.payload["handler"] == "FileViewSet.list"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_positional_django_method_decorator_name():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import OwnedProjectDownload
+
+urlpatterns = [
+    path("my-projects/<int:pk>/download/", OwnedProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from django.utils.decorators import method_decorator
+from rest_framework.views import APIView
+
+@method_decorator(require_owner, "dispatch")
+class OwnedProjectDownload(APIView):
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+
+    def post(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert {
+        fact.payload["handler"]
+        for fact in result.facts
+        if (
+            fact.fact_type == "authz_check"
+            and fact.authz_hint == "ownership_boundary_check"
+        )
+    } == {"OwnedProjectDownload.get", "OwnedProjectDownload.post"}
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "wrapped_decorator",
+    ("require_owner", "[require_owner]", "(require_owner,)"),
+)
+def test_map_authorized_code_files_keeps_django_method_decorator_authz(
+    wrapped_decorator,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import OwnedProjectDownload
+
+urlpatterns = [
+    path("my-projects/<int:pk>/download/", OwnedProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": f"""
+from django.utils.decorators import method_decorator
+from rest_framework.views import APIView
+
+class OwnedProjectDownload(APIView):
+    @method_decorator({wrapped_decorator})
+    def get(self, request, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "ownership_boundary_check"
+        and fact.payload["handler"] == "OwnedProjectDownload.get"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_drf_viewset_action_map():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import FileViewSet
+
+urlpatterns = [
+    path("files/", FileViewSet.as_view({"get": "list"})),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    route = next(fact for fact in result.facts if fact.fact_type == "route_handler")
+    sink = next(fact for fact in result.facts if fact.fact_type == "sensitive_sink")
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert (route.symbol_name, route.route_method, route.route_path) == (
+        "FileViewSet.list",
+        "GET",
+        "/files/",
+    )
+    assert sink.payload["handler"] == "FileViewSet.list"
+    assert gap.symbol_name == "FileViewSet.list"
+
+
+def test_map_authorized_code_files_keeps_dynamic_drf_viewset_actions_unresolved():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from .views import FileViewSet
+
+actions = build_actions()
+urlpatterns = [
+    path("files/", FileViewSet.as_view(actions)),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.viewsets import ViewSet
+
+class FileViewSet(ViewSet):
+    def list(self, request):
+        return send_file("manifest")
+""",
+                },
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "route_handler" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_django_class_view_helpers_isolated():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "project/settings.py",
+                    "content": 'ROOT_URLCONF = "project.urls"',
+                },
+                {
+                    "path": "project/urls.py",
+                    "content": """
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path("projects/<int:pk>/download/", views.PublicProjectDownload.as_view()),
+    path("my-projects/<int:pk>/download/", views.OwnedProjectDownload.as_view()),
+]
+""",
+                },
+                {
+                    "path": "project/views.py",
+                    "content": """
+from rest_framework.views import APIView
+
+class PublicProjectDownload(APIView):
+    def get(self, request, pk):
+        return self._export(pk)
+
+    def _export(self, pk):
+        project = Project.objects.get(pk=pk)
+        return send_file(project.path)
+
+class OwnedProjectDownload(APIView):
+    def get(self, request, pk):
+        return self._export(pk)
+
+    def _export(self, pk):
+        project = Project.objects.get(pk=pk, owner_id=request.user.id)
+        return send_file(project.path)
+""",
+                },
+            ]
+        }
+    )
+
+    service_calls = {
+        (fact.payload["caller"], fact.symbol_name)
+        for fact in result.facts
+        if fact.fact_type == "service_call" and fact.symbol_name.endswith("._export")
+    }
+    gap_handlers = {
+        fact.symbol_name
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    }
+
+    assert service_calls == {
+        ("PublicProjectDownload.get", "PublicProjectDownload._export"),
+        ("OwnedProjectDownload.get", "OwnedProjectDownload._export"),
+    }
+    assert gap_handlers == {"PublicProjectDownload.get"}
 
 
 def test_map_authorized_code_files_preserves_shared_service_edges_for_each_route():
@@ -4969,6 +9531,814 @@ def export_file(file_id: str):
 
 
 
+@pytest.mark.parametrize(
+    ("source_path", "content", "handler", "decoder", "sink_symbol"),
+    [
+        pytest.param(
+            "apps/api/routes/reports.py",
+            """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    claims = jwt.decode(token, options={"verify_signature": False})
+    return send_file(claims["path"])
+""",
+            "export_report",
+            "jwt.decode",
+            "send_file",
+            id="python-explicit-signature-disabled",
+        ),
+        pytest.param(
+            "apps/api/routes/reports.ts",
+            """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || "");
+  return sendFile(claims?.path);
+}
+""",
+            "exportReport",
+            "jwt.decode",
+            "sendFile",
+            id="typescript-jsonwebtoken-decode",
+        ),
+        pytest.param(
+            "ReportsController.java",
+            """
+@RestController
+public class ReportsController {
+  @GetMapping("/reports/{reportId}/export")
+  public Object exportReport(String token) {
+    DecodedJWT claims = JWT.decode(token);
+    return sendFile(claims.getClaim("path").asString());
+  }
+}
+""",
+            "exportReport",
+            "JWT.decode",
+            "sendFile",
+            id="java-jwt-decode",
+        ),
+    ],
+)
+def test_map_authorized_code_files_marks_unverified_jwt_decode_before_sensitive_sink_as_gap(
+    source_path,
+    content,
+    handler,
+    decoder,
+    sink_symbol,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": content}]}
+    )
+
+    decoder_fact = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "unverified_token_decode"
+    )
+    gaps = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    ]
+
+    assert decoder_fact.symbol_name == decoder
+    assert decoder_fact.payload["handler"] == handler
+    assert len(gaps) == 1
+    assert gaps[0].symbol_name == handler
+    assert gaps[0].authz_hint == "missing_handler_jwt_verification_check"
+    assert gaps[0].payload["root_cause"] == "missing_jwt_verification"
+    assert gaps[0].payload["decoder_symbols"] == [decoder]
+    assert gaps[0].payload["sink_symbols"] == [sink_symbol]
+    assert gaps[0].payload["review_state"] == "needs_human_review"
+
+
+def test_map_authorized_code_files_refutes_jwt_gap_for_prior_explicit_verification():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    claims = jwt.decode(token, options={"verify_signature": False})
+    verified_claims = jwt.verify(token, verification_key)
+    return send_file(verified_claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "jwt_verification_check"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "content"),
+    (
+        (
+            "apps/api/routes/reports.py",
+            """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    unsafe_claims = jwt.decode(token, options={"verify_signature": False})
+    verified_claims = jwt.verify(token, verification_key)
+    return send_file(unsafe_claims["path"])
+""",
+        ),
+        (
+            "apps/api/routes/reports.ts",
+            """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const unsafeClaims = jwt.decode(req.headers.authorization || "");
+  const verifiedClaims = jwt.verify(req.headers.authorization || "", verificationKey);
+  return sendFile(unsafeClaims?.path);
+}
+""",
+        ),
+        (
+            "ReportsController.java",
+            """
+@RestController
+public class ReportsController {
+  @GetMapping("/reports/{reportId}/export")
+  public Object exportReport(String token) {
+    DecodedJWT unsafeClaims = JWT.decode(token);
+    DecodedJWT verifiedClaims = JWT.verify(token, verificationKey);
+    return sendFile(unsafeClaims.getClaim("path").asString());
+  }
+}
+""",
+        ),
+    ),
+)
+def test_map_authorized_code_files_keeps_jwt_gap_when_sink_uses_unverified_claims(
+    source_path,
+    content,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "content"),
+    (
+        (
+            "apps/api/routes/reports.py",
+            """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(
+    report_id: str,
+    attacker_token: str,
+    service_token: str,
+    use_service_token: bool,
+):
+    selected_token = attacker_token
+    if use_service_token:
+        selected_token = service_token
+    claims = jwt.decode(selected_token, options={"verify_signature": False})
+    verified_claims = jwt.verify(service_token, verification_key)
+    return send_file(claims["path"])
+""",
+        ),
+        (
+            "ReportsController.java",
+            """
+@RestController
+public class ReportsController {
+  @GetMapping("/reports/{reportId}/export")
+  public Object exportReport(
+      String attackerToken,
+      String serviceToken,
+      boolean useServiceToken) {
+    String selectedToken = attackerToken;
+    if (useServiceToken) {
+      selectedToken = serviceToken;
+    }
+    DecodedJWT claims = JWT.decode(selectedToken);
+    DecodedJWT verifiedClaims = JWT.verify(serviceToken, verificationKey);
+    return sendFile(claims.getClaim("path").asString());
+  }
+}
+""",
+        ),
+    ),
+)
+def test_map_authorized_code_files_keeps_jwt_gap_for_conditional_token_rebinding(
+    source_path,
+    content,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_jwt_gap_when_verification_follows_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    claims = jwt.decode(token, options={"verify_signature": False})
+    exported = send_file(claims["path"])
+    jwt.verify(token, verification_key)
+    return exported
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_verified_python_jwt_decode_as_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    claims = jwt.decode(token, verification_key, algorithms=["HS256"])
+    return send_file(claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "unverified_token_decode" for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_ignores_jwt_decode_text_in_python_strings():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str):
+    review_note = 'jwt.decode(value, options={"verify_signature": False})'
+    return send_file(report_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "unverified_token_decode" for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_jwt_gap_when_verification_uses_other_token():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, attacker_token: str, service_token: str):
+    claims = jwt.decode(attacker_token, options={"verify_signature": False})
+    verified_claims = jwt.verify(service_token, verification_key)
+    return send_file(claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_jwt_gap_for_different_request_headers():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter, Request
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, request: Request):
+    claims = jwt.decode(request.headers["Authorization"], options={"verify_signature": False})
+    verified_claims = jwt.verify(request.headers["X-Service-Token"], verification_key)
+    return send_file(claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_jwt_gap_for_conditional_typescript_token():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.ts",
+                    "content": """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || req.query.fallbackToken);
+  const verifiedClaims = jwt.verify(req.headers.authorization, verificationKey);
+  return sendFile(claims?.path);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_preserves_distinct_jwt_token_facts_per_handler():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.ts",
+                    "content": """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const serviceClaims = jwt.decode(req.headers.serviceToken || "");
+  const verifiedClaims = jwt.verify(req.headers.serviceToken || "", verificationKey);
+  const attackerClaims = jwt.decode(req.headers.attackerToken || "");
+  return sendFile(attackerClaims?.path);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    decoder_facts = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "unverified_token_decode"
+    ]
+
+    assert {fact.payload["token_ref"] for fact in decoder_facts} == {
+        "token:req.headers.serviceToken",
+        "token:req.headers.attackerToken",
+    }
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_preserves_multiple_python_jwt_calls_on_one_line():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, service_token: str, attacker_token: str):
+    service_claims = jwt.decode(service_token, options={"verify_signature": False}); attacker_claims = jwt.decode(attacker_token, options={"verify_signature": False}); verified_claims = jwt.verify(service_token, verification_key); return send_file(attacker_claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    decoder_facts = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "unverified_token_decode"
+    ]
+
+    assert {fact.payload["token_ref"] for fact in decoder_facts} == {
+        "token:service_token",
+        "token:attacker_token",
+    }
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_multilang_jwt_gap_for_conditional_token():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "ReportsController.cs",
+                    "content": """
+public class ReportsController {
+  [HttpGet("/reports/{reportId}/export")]
+  public IActionResult ExportReport(string attackerToken, string serviceToken) {
+    var claims = JWT.decode(attackerToken ?? serviceToken);
+    var verifiedClaims = JWT.verify(attackerToken, verificationKey);
+    return File(claims.Path);
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_jwt_gap_after_later_multilang_token_alias_reassignment():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "ReportsController.java",
+                    "content": """
+@RestController
+public class ReportsController {
+  @GetMapping("/reports/{reportId}/export")
+  public Object exportReport(String attackerToken, String serviceToken) {
+    String selectedToken = attackerToken; DecodedJWT claims = JWT.decode(selectedToken); selectedToken = serviceToken; DecodedJWT verifiedClaims = JWT.verify(selectedToken, verificationKey); return sendFile(claims.getClaim("path").asString());
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_generic_verify_token_as_jwt_validation():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.ts",
+                    "content": """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+function verifyToken(token: string): boolean {
+  return token.length > 3;
+}
+
+function verifyJwt(token: string): boolean {
+  return token.length > 3;
+}
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || "");
+  verifyToken(req.headers.authorization || "");
+  verifyJwt(req.headers.authorization || "");
+  return sendFile(claims?.path);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_matches_jwt_token_aliases_before_refuting_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    raw_token = token
+    claims = jwt.decode(raw_token, options={"verify_signature": False})
+    verified_claims = jwt.verify(token, verification_key)
+    return send_file(verified_claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_follows_jwt_decode_to_reachable_local_helper_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    claims = jwt.decode(token, options={"verify_signature": False})
+    return export_claim_path(claims)
+
+def export_claim_path(claims: dict):
+    return send_file(claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+    )
+
+    assert gap.symbol_name == "export_report"
+    assert gap.payload["decoder_symbols"] == ["jwt.decode"]
+    assert gap.payload["sink_symbols"] == ["send_file"]
+
+
+def test_map_authorized_code_files_uses_python_column_order_for_jwt_and_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    claims = jwt.decode(token, options={"verify_signature": False}); return send_file(claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_uses_python_column_order_for_jwt_verification():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.py",
+                    "content": """
+from fastapi import APIRouter
+import jwt
+
+router = APIRouter()
+
+@router.get("/reports/{report_id}/export")
+def export_report(report_id: str, token: str):
+    claims = jwt.decode(token, options={"verify_signature": False})
+    verified_claims = jwt.verify(token, verification_key); return send_file(verified_claims["path"])
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_uses_typescript_column_order_for_jwt_and_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.ts",
+                    "content": """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || ""); return sendFile(claims?.path);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_uses_typescript_column_order_for_jwt_verification():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/reports.ts",
+                    "content": """
+import { Router } from "express";
+import jwt from "jsonwebtoken";
+
+const router = Router();
+
+router.get("/reports/:reportId/export", exportReport);
+
+async function exportReport(req: Request, res: Response) {
+  const claims = jwt.decode(req.headers.authorization || "");
+  const verifiedClaims = jwt.verify(req.headers.authorization || "", verificationKey); return sendFile(verifiedClaims.path);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_jwt_verification"
+        for fact in result.facts
+    )
+
+
+
 def test_map_authorized_code_files_marks_outbound_fetch_without_ssrf_guard_as_gap_candidate():
     result = map_authorized_code_files(
         {
@@ -5006,6 +10376,499 @@ async function deliver_webhook(req: Request, res: Response) {
     assert gap.authz_hint == "missing_handler_ssrf_check"
     assert gap.payload["root_cause"] == "missing_ssrf_validation"
     assert "fetch" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_marks_explicit_axios_request_as_ssrf_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import axios from "axios";
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const target = req.body.subscriberUrl;
+  return axios.get(target);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "axios_get"
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert sink.payload["input_ref"] == "input:target"
+    assert gap.authz_hint == "missing_handler_ssrf_check"
+    assert gap.payload["root_cause"] == "missing_ssrf_validation"
+    assert "axios_get" in gap.payload["sink_symbols"]
+
+
+def test_map_authorized_code_files_accepts_matching_ssrf_guard_for_axios():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import axios from "axios";
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const target = req.body.subscriberUrl;
+  validateUrlForSSRF(target);
+  return axios.post(target, {});
+}
+""",
+                }
+            ]
+        }
+    )
+
+    ssrf_facts = [
+        fact
+        for fact in result.facts
+        if fact.authz_hint == "ssrf_validation_check"
+        or fact.symbol_name == "axios_post"
+    ]
+
+    assert {fact.payload.get("input_ref") for fact in ssrf_facts} == {"input:target"}
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_marks_default_axios_alias_as_ssrf_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import outbound from "axios";
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  return outbound.get(req.body.subscriberUrl);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "axios_get"
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert sink.payload["input_ref"] == "input:req.body.subscriberUrl"
+    assert gap.authz_hint == "missing_handler_ssrf_check"
+
+
+def test_map_authorized_code_files_accepts_ssrf_guard_for_require_axios_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+const outbound: AxiosStatic = require("axios");
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const target = req.body.subscriberUrl;
+  validateUrlForSSRF(target);
+  return outbound.post(target, {});
+}
+""",
+                }
+            ]
+        }
+    )
+
+    ssrf_facts = [
+        fact
+        for fact in result.facts
+        if fact.authz_hint == "ssrf_validation_check"
+        or fact.symbol_name == "axios_post"
+    ]
+
+    assert {fact.payload.get("input_ref") for fact in ssrf_facts} == {"input:target"}
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_marks_namespace_axios_alias_as_ssrf_gap():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import * as outbound from "axios";
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  return outbound.put(req.body.subscriberUrl, {});
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "axios_put"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "outbound_call"),
+    (
+        ('import outboundFetch from "node-fetch";', "outboundFetch(target)"),
+        ('import * as outbound from "node-fetch";', "outbound.default(target)"),
+        ('import outbound from "got";', "outbound.get(target)"),
+        ('import * as outbound from "node:https";', "outbound.request(target)"),
+        ('import * as outbound from "undici";', "outbound.fetch(target)"),
+        (
+            'import { request as outboundRequest } from "undici";',
+            "outboundRequest(target)",
+        ),
+    ),
+)
+def test_map_authorized_code_files_marks_explicit_http_sdk_alias_as_ssrf_gap(
+    import_statement,
+    outbound_call,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": f"""
+{import_statement}
+import {{ Router }} from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {{
+  const target = req.body.subscriberUrl;
+  return {outbound_call};
+}}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_accepts_ssrf_guard_for_require_got_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+const outbound = require("got");
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const target = req.body.subscriberUrl;
+  validateUrlForSSRF(target);
+  return outbound.post(target, {});
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_guess_local_http_client_alias_as_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import outbound from "./outbound-client";
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  return outbound(req.body.subscriberUrl);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_node_fetch_namespace_as_direct_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import * as outbound from "node-fetch";
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  return outbound(req.body.subscriberUrl);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "outbound_call"),
+    (
+        ("import requests", "requests.get(target)"),
+        ("import httpx as outbound", "outbound.post(target, json={})"),
+        ("import requests", 'requests.request("GET", target)'),
+    ),
+)
+def test_map_authorized_code_files_marks_explicit_python_http_sdk_as_ssrf_gap(
+    import_statement,
+    outbound_call,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+{import_statement}
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(target: str):
+    return {outbound_call}
+""",
+                }
+            ]
+        }
+    )
+
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+    )
+    assert sink.payload["input_ref"] == "input:target"
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_accepts_ssrf_guard_for_python_http_sdk_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+import requests as outbound
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(target: str):
+    validate_url_for_ssrf(target)
+    return outbound.post(target, json={})
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_guess_python_http_client_alias_as_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+import local_client as outbound
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(target: str):
+    return outbound.request("GET", target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_guess_generic_get_as_http_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const target = req.body.subscriberUrl;
+  return client.get(target);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "axios_get"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
 
 
 def test_map_authorized_code_files_treats_ssrf_guard_as_control_for_outbound_fetch():
@@ -5049,7 +10912,665 @@ async function deliver_webhook(req: Request, res: Response) {
     assert fact_types.count("sensitive_sink") >= 1
     assert authz.symbol_name == "validateUrlForSSRF"
     assert authz.payload["handler"] == "verify_subscriber_url"
-    assert gaps  # emitted for route-level review; hunter refutes via control evidence
+    assert any(
+        gap.payload["root_cause"] == "missing_ssrf_validation" for gap in gaps
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_when_guard_validates_different_typescript_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const serviceTarget = req.body.serviceUrl;
+  const attackerTarget = req.body.callbackUrl;
+  validateUrlForSSRF(serviceTarget);
+  return fetch(attackerTarget);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    guard = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "ssrf_validation_check"
+    )
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+    )
+
+    assert guard.payload["input_ref"] == "input:serviceTarget"
+    assert sink.payload["input_ref"] == "input:attackerTarget"
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_when_guard_validates_different_python_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(service_url: str, attacker_url: str):
+    validate_outbound_url(service_url)
+    return fetch(attacker_url)
+""",
+                }
+            ]
+        }
+    )
+
+    guard = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.authz_hint == "ssrf_validation_check"
+    )
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+    )
+
+    assert guard.payload["input_ref"] == "input:service_url"
+    assert sink.payload["input_ref"] == "input:attacker_url"
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_requires_ssrf_guard_for_every_outbound_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const serviceTarget = req.body.serviceUrl;
+  const attackerTarget = req.body.callbackUrl;
+  validateUrlForSSRF(serviceTarget);
+  await fetch(serviceTarget);
+  return fetch(attackerTarget);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_for_unmapped_service_call_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  const url = req.body.serviceUrl;
+  validateUrlForSSRF(url);
+  return fetch_remote(req.body.callbackUrl);
+}
+
+async function fetch_remote(url: string) {
+  return fetch(url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_multilang_keeps_every_outbound_ssrf_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "WebhookController.java",
+                    "content": """
+@PostMapping("/webhooks/deliver")
+public Object deliver(String serviceUrl, String callbackUrl) {
+  validateUrlForSSRF(serviceUrl);
+  fetch(serviceUrl); return fetch(callbackUrl);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    sink_input_refs = {
+        fact.payload.get("input_ref")
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+    }
+
+    assert sink_input_refs == {"input:serviceUrl", "input:callbackUrl"}
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_python_input_reassignment():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(service_url: str, callback_url: str):
+    url = service_url
+    validate_outbound_url(url)
+    url = callback_url
+    return fetch(url)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_typescript_input_reassignment():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  let url: string = req.body.serviceUrl;
+  validateUrlForSSRF(url);
+  url = req.body.callbackUrl;
+  return fetch(url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_multilang_input_reassignment():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "WebhookController.java",
+                    "content": """
+@PostMapping("/webhooks/deliver")
+public Object deliver(String serviceUrl, String callbackUrl) {
+  String url = serviceUrl;
+  validateUrlForSSRF(url);
+  url = callbackUrl;
+  return fetch(url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_input_attribute_mutation():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_python(target):
+    validate_outbound_url(target.service_url)
+    target.service_url = target.callback_url
+    return fetch(target.service_url)
+""",
+                },
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_typescript);
+
+async function deliver_typescript(req: Request, res: Response) {
+  const target = req.body;
+  validateUrlForSSRF(target.serviceUrl);
+  target.serviceUrl = target.callbackUrl;
+  return fetch(target.serviceUrl);
+}
+""",
+                },
+                {
+                    "path": "WebhookController.java",
+                    "content": """
+@PostMapping("/webhooks/deliver")
+public Object deliverJava(Target target) {
+  validateUrlForSSRF(target.serviceUrl);
+  target.serviceUrl = target.callbackUrl;
+  return fetch(target.serviceUrl);
+}
+""",
+                },
+            ]
+        }
+    )
+
+    gap_paths = {
+        fact.source_path
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+    }
+
+    assert gap_paths == {
+        "apps/api/routes/webhooks.py",
+        "apps/api/routes/webhooks.ts",
+        "WebhookController.java",
+    }
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_loop_input_binding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_python(url: str, callback_urls: list[str]):
+    validate_outbound_url(url)
+    for url in callback_urls:
+        return fetch(url)
+""",
+                },
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_typescript);
+
+async function deliver_typescript(req: Request, res: Response) {
+  let url = req.body.serviceUrl;
+  validateUrlForSSRF(url);
+  for (url of req.body.callbackUrls) {
+    return fetch(url);
+  }
+}
+""",
+                },
+                {
+                    "path": "proxy.go",
+                    "content": """
+func mount(r Router) { r.POST("/webhooks/deliver", proxy) }
+func proxy() {
+  validateUrlForSSRF(url)
+  for _, url := range callbackUrls {
+    fetch(url)
+  }
+}
+""",
+                },
+            ]
+        }
+    )
+
+    gap_paths = {
+        fact.source_path
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+    }
+
+    assert gap_paths == {
+        "apps/api/routes/webhooks.py",
+        "apps/api/routes/webhooks.ts",
+        "proxy.go",
+    }
+
+
+def test_map_authorized_code_files_accepts_initial_typescript_destructuring_ssrf_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/object", deliver_object);
+router.post("/webhooks/array", deliver_array);
+
+async function deliver_object(req: Request, res: Response) {
+  const { url } = req.body;
+  validateUrlForSSRF(url);
+  return fetch(url);
+}
+
+async function deliver_array(req: Request, res: Response) {
+  const [url] = req.body.urls;
+  validateUrlForSSRF(url);
+  return fetch(url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    ssrf_facts = [
+        fact
+        for fact in result.facts
+        if fact.authz_hint == "ssrf_validation_check" or fact.symbol_name == "fetch"
+    ]
+
+    assert {fact.payload.get("input_ref") for fact in ssrf_facts} == {"input:url"}
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_typescript_destructuring_rebinding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/object", deliver_object);
+router.post("/webhooks/array", deliver_array);
+
+async function deliver_object(req: Request, res: Response) {
+  let url = req.body.serviceUrl;
+  validateUrlForSSRF(url);
+  ({ callback: { url } } = req.body);
+  return fetch(url);
+}
+
+async function deliver_array(req: Request, res: Response) {
+  let url = req.body.serviceUrl;
+  validateUrlForSSRF(url);
+  [url] = req.body.callbackUrls;
+  return fetch(url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    gap_routes = {
+        fact.route_path
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+    }
+
+    assert gap_routes == {"/webhooks/object", "/webhooks/array"}
+
+
+def test_map_authorized_code_files_keeps_inline_typescript_control_scoped_to_its_statement():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  if (req.body.audit) recordAudit();
+  validateUrlForSSRF(req.body.url);
+  return fetch(req.body.url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    ssrf_facts = [
+        fact
+        for fact in result.facts
+        if fact.authz_hint == "ssrf_validation_check" or fact.symbol_name == "fetch"
+    ]
+
+    assert {fact.payload.get("input_ref") for fact in ssrf_facts} == {"input:req.body.url"}
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_go_tuple_rebinding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "proxy.go",
+                    "content": """
+func mount(r Router) { r.POST("/webhooks/deliver", proxy) }
+func proxy(url string, callbackUrl string) {
+  validateUrlForSSRF(url)
+  url, err := callbackUrl, error(nil)
+  fetch(url)
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_accepts_go_initial_short_tuple_declaration_ssrf_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "proxy.go",
+                    "content": """
+func mount(r Router) { r.POST("/webhooks/deliver", proxy) }
+func proxy(requestUrl string) {
+  url, err := requestUrl, error(nil)
+  validateUrlForSSRF(url)
+  fetch(url)
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_ssrf_gap_after_python_match_capture_rebinding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(url: str, payload: dict):
+    validate_outbound_url(url)
+    match payload:
+        case {"callback_url": url}:
+            pass
+    return fetch(url)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_treats_typescript_sink_helper_control_as_covered():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.ts",
+                    "content": """
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/webhooks/deliver", deliver_webhook);
+
+async function deliver_webhook(req: Request, res: Response) {
+  return deliver_safe(req.body.subscriberUrl);
+}
+
+async function deliver_safe(url: string) {
+  validateUrlForSSRF(url);
+  return fetch(url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "ssrf_validation_check"
+        and fact.payload["handler"] == "deliver_safe"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
 
 
 def test_map_authorized_code_files_keeps_ssrf_gap_when_guard_follows_service_sink():
@@ -5115,6 +11636,141 @@ def deliver_webhook(subscriber_url: str):
     )
     assert gap.authz_hint == "missing_handler_ssrf_check"
     assert gap.payload["root_cause"] == "missing_ssrf_validation"
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "sink_symbol"),
+    [
+        (
+            "ProxyController.java",
+            """
+@PostMapping("/webhooks")
+public Object proxy(String url) {
+  return restTemplate.getForObject(url, String.class);
+}
+""",
+            "rest_template_get_for_object",
+        ),
+        (
+            "proxy.go",
+            """
+func mount(r Router) { r.POST("/webhooks", proxy) }
+func proxy(url string) { http.Get(url) }
+""",
+            "http_get",
+        ),
+        (
+            "ProxyController.cs",
+            """
+[HttpPost("/webhooks")]
+public IActionResult Proxy(string url) {
+  return _httpClient.GetAsync(url);
+}
+""",
+            "http_client_get_async",
+        ),
+    ],
+)
+def test_map_authorized_code_files_maps_explicit_http_sdk_calls_as_ssrf_sinks(
+    path,
+    content,
+    sink_symbol,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": path, "content": content}]}
+    )
+
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == sink_symbol
+    )
+
+    assert sink.payload["input_ref"] == "input:url"
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        (
+            "ProxyController.java",
+            """
+@PostMapping("/webhooks")
+public Object proxy(String url) {
+  validateUrl(url);
+  return restTemplate.getForEntity(url, String.class);
+}
+""",
+        ),
+        (
+            "proxy.go",
+            """
+func mount(r Router) { r.POST("/webhooks", proxy) }
+func proxy(url string) {
+  validateUrl(url)
+  http.Post(url, "application/json", body)
+}
+""",
+        ),
+        (
+            "ProxyController.cs",
+            """
+[HttpPost("/webhooks")]
+public IActionResult Proxy(string url) {
+  ValidateUrl(url);
+  return _httpClient.PostAsync(url, body);
+}
+""",
+        ),
+    ],
+)
+def test_map_authorized_code_files_refutes_explicit_http_sdk_sink_with_matching_guard(
+    path,
+    content,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": path, "content": content}]}
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_guess_generic_client_method_as_http_sdk():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "ProxyController.cs",
+                    "content": """
+[HttpPost("/webhooks")]
+public IActionResult Proxy(string url) {
+  return client.GetAsync(url);
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink"
+        and fact.symbol_name == "http_client_get_async"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
 
 
 def test_map_authorized_code_files_marks_get_blob_without_path_guard_as_gap_candidate():
@@ -5511,6 +12167,265 @@ def test_map_authorized_code_files_treats_command_validation_as_control(
 
     assert authz.symbol_name == expected_guard
     assert any(fact.fact_type == "sensitive_sink" for fact in result.facts)
+
+
+@pytest.mark.parametrize(
+    ("route_path", "parameters", "guard_call", "sink_call", "root_cause"),
+    (
+        (
+            "/media/read",
+            "safe_path: str, attacker_path: str",
+            "safe_join(safe_path)",
+            "read_file(attacker_path)",
+            "missing_path_validation",
+        ),
+        (
+            "/users/update",
+            "safe_body: dict, attacker_body: dict",
+            "forbid_privilege_fields(safe_body)",
+            'update_user("record", attacker_body)',
+            "missing_mass_assignment_guard",
+        ),
+        (
+            "/users/persist",
+            "safe_body: dict, attacker_body: dict",
+            "forbid_privilege_fields(safe_body)",
+            'persist_user("record", attacker_body)',
+            "missing_mass_assignment_guard",
+        ),
+        (
+            "/search",
+            "safe_query: str, attacker_query: str",
+            "parameterize(safe_query)",
+            "run_sql(attacker_query)",
+            "missing_injection_validation",
+        ),
+        (
+            "/maintenance/run",
+            "safe_command: str, attacker_command: str",
+            "validate_command(safe_command)",
+            "system(attacker_command)",
+            "missing_command_injection_validation",
+        ),
+        (
+            "/imports/profile",
+            "safe_payload: bytes, attacker_payload: bytes",
+            "validate_serialized_payload(safe_payload)",
+            "pickle.loads(attacker_payload)",
+            "missing_unsafe_deserialization_guard",
+        ),
+        (
+            "/uploads",
+            "safe_document: bytes, attacker_document: bytes",
+            "validate_upload(safe_document)",
+            "save_upload(attacker_document)",
+            "missing_file_upload_validation",
+        ),
+    ),
+)
+def test_map_authorized_code_files_keeps_input_bound_gap_for_different_guard_input(
+    route_path,
+    parameters,
+    guard_call,
+    sink_call,
+    root_cause,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/input_binding.py",
+                    "content": f'''
+import pickle
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("{route_path}")
+def handle({parameters}):
+    {guard_call}
+    return {sink_call}
+''',
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == root_cause
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_closes_command_gap_for_same_validated_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/maintenance.py",
+                    "content": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/maintenance/run")
+def run_maintenance(command: str):
+    validate_command(command)
+    return system(command)
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_accepts_validated_command_result_binding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/maintenance.py",
+                    "content": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/maintenance/run")
+def run_maintenance(command: str):
+    safe_command = validate_command(command)
+    return system(safe_command)
+''',
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_command_gap_when_validation_follows_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/maintenance.py",
+                    "content": '''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/maintenance/run")
+def run_maintenance(command: str):
+    result = system(command)
+    validate_command(command)
+    return result
+''',
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_typescript_command_gap_for_different_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/maintenance.ts",
+                    "content": '''
+import { Router } from "express";
+
+const router = Router();
+
+router.post("/maintenance/run", runMaintenance);
+
+async function runMaintenance(req: Request, res: Response) {
+  const safeCommand = req.body.safeCommand;
+  const attackerCommand = req.body.attackerCommand;
+  validateCommand(safeCommand);
+  return exec(attackerCommand);
+}
+''',
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("route_path", "sink", "wrong_guard", "root_cause"),
+    (
+        ("/webhooks/deliver", "fetch", "validate_command", "missing_ssrf_validation"),
+        ("/media/{filepath}", "read_file", "validate_command", "missing_path_validation"),
+        ("/users/{user_id}", "update_user", "validate_command", "missing_mass_assignment_guard"),
+        ("/search", "run_sql", "validate_command", "missing_injection_validation"),
+        ("/maintenance/run", "system", "parameterize", "missing_command_injection_validation"),
+        ("/imports", "pickle_loads", "validate_command", "missing_unsafe_deserialization_guard"),
+        ("/uploads", "save_upload", "validate_command", "missing_file_upload_validation"),
+        ("/payments", "charge_card", "validate_command", "missing_server_authoritative_amount_check"),
+        ("/redemptions", "consume_one_time_token", "validate_command", "missing_transactional_state_guard"),
+        ("/agents/{agent_id}/tools/execute", "execute_agent_tool", "validate_command", "missing_agent_tool_authorization_check"),
+    ),
+)
+def test_map_authorized_code_files_requires_a_matching_static_gap_control(
+    route_path,
+    sink,
+    wrong_guard,
+    root_cause,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/semantic_gaps.py",
+                    "content": f'''
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("{route_path}")
+def handle(value: str):
+    {wrong_guard}(value)
+    return {sink}(value)
+''',
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check" and fact.symbol_name == wrong_guard
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == root_cause
+        for fact in result.facts
+    )
 
 
 def test_map_authorized_code_files_marks_pickle_loads_without_guard_as_gap_candidate():
@@ -6445,6 +13360,181 @@ def redeem_token(token_id: str):
     )
 
 
+@pytest.mark.parametrize(
+    ("source_path", "source_code", "expected_sink"),
+    (
+        (
+            "MaintenanceController.java",
+            """
+@RestController
+public class MaintenanceController {
+  @PostMapping("/maintenance/run")
+  public Object runMaintenance(String command) {
+    return Runtime.getRuntime().exec(command);
+  }
+}
+""",
+            "exec",
+        ),
+        (
+            "maintenance.rb",
+            """
+post "/maintenance/run", to: "maintenance#run_maintenance"
+
+def run_maintenance
+  system(params[:command])
+end
+""",
+            "system",
+        ),
+    ),
+)
+def test_map_static_multilang_marks_command_execution_without_matching_guard(
+    source_path,
+    source_code,
+    expected_sink,
+):
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": source_path, "content": source_code}]}
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == expected_sink
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_treats_command_validation_as_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "MaintenanceController.java",
+                    "content": """
+@RestController
+public class MaintenanceController {
+  @PostMapping("/maintenance/run")
+  public Object runMaintenance(String command) {
+    String allowed = validateCommand(command);
+    return Runtime.getRuntime().exec(allowed);
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "command_injection_validation_check"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_keeps_command_gap_for_different_guard_input():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "MaintenanceController.java",
+                    "content": """
+@RestController
+public class MaintenanceController {
+  @PostMapping("/maintenance/run")
+  public Object runMaintenance(String safeCommand, String attackerCommand) {
+    validateCommand(safeCommand);
+    return Runtime.getRuntime().exec(attackerCommand);
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_does_not_treat_system_receiver_as_command_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "StatusController.java",
+                    "content": """
+@RestController
+public class StatusController {
+  @GetMapping("/status")
+  public Object status() {
+    System.out.println("healthy");
+    return "ok";
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "System"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_does_not_treat_command_variable_as_control():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "MaintenanceController.java",
+                    "content": """
+@RestController
+public class MaintenanceController {
+  @PostMapping("/maintenance/run")
+  public Object runMaintenance(String command) {
+    String safeCommand = command;
+    return Runtime.getRuntime().exec(safeCommand);
+  }
+}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "command_injection_validation_check"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
 def test_map_static_multilang_treats_transactional_state_guard_as_control():
     result = map_authorized_code_files(
         {
@@ -6964,6 +14054,388 @@ public class RecordsController {
     )
 
 
+def test_map_static_multilang_propagates_spring_class_route_and_authz():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/v1")
+@PreAuthorize("hasRole('RECORD_READER')")
+public class RecordsController {
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "route_handler"
+        and fact.symbol_name == "readRecord"
+        and fact.route_method == "GET"
+        and fact.route_path == "/api/v1/records/{recordId}"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == "PreAuthorize"
+        and fact.authz_hint == "role_check"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_keeps_gap_for_spring_class_permit_all():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/v1")
+@PreAuthorize("permitAll()")
+public class RecordsController {
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "route_handler"
+        and fact.symbol_name == "readRecord"
+        and fact.route_path == "/api/v1/records/{recordId}"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "public_access"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_keeps_gap_for_java_security_permit_all():
+    content = """
+import jakarta.annotation.security.PermitAll;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RecordsController {
+  @PermitAll
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == "PermitAll"
+        and fact.authz_hint == "public_access"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_suppresses_gap_for_java_security_class_deny_all():
+    content = """
+import jakarta.annotation.security.DenyAll;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@DenyAll
+public class RecordsController {
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == "DenyAll"
+        and fact.authz_hint == "access_denied_check"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_suppresses_static_gap_for_java_security_deny_all():
+    content = """
+import jakarta.annotation.security.DenyAll;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@DenyAll
+public class MaintenanceController {
+  @PostMapping("/maintenance/run")
+  public Object runMaintenance(String command) {
+    return Runtime.getRuntime().exec(command);
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "MaintenanceController.java", "content": content}
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "access_denied_check"
+        and fact.payload.get("handler") == "runMaintenance"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_command_injection_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_keeps_gap_for_spring_constant_true_access():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RecordsController {
+  @PreAuthorize(value = "true")
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "public_access"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "permitAll() || hasRole('RECORD_READER')",
+        "true || hasRole('RECORD_READER')",
+        "true or hasRole('RECORD_READER')",
+        "(permitAll() || hasRole('RECORD_READER'))",
+        "((permitAll() || hasRole('RECORD_READER')))",
+    ),
+)
+def test_map_static_multilang_keeps_gap_for_spring_public_or_expression(expression):
+    content = f"""
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RecordsController {{
+  @PreAuthorize("{expression}")
+  @GetMapping("/records/{{recordId}}")
+  public Object readRecord(String recordId) {{
+    return sendFile(loadRecord(recordId).getPath());
+  }}
+}}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "route_handler"
+        and fact.symbol_name == "readRecord"
+        and fact.route_path == "/records/{recordId}"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "public_access"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_method_permit_all_overrides_spring_class_role_guard():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@PreAuthorize("hasRole('RECORD_READER')")
+public class RecordsController {
+  @PreAuthorize("permitAll()")
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    authz = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "readRecord"
+    ]
+    assert [fact.authz_hint for fact in authz] == ["public_access"]
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_keeps_gap_for_spring_authentication_only_check():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RecordsController {
+  @PreAuthorize("isAuthenticated()")
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "authentication_check"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_does_not_leak_spring_class_annotations_to_nested_controller():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RequestMapping("/outer")
+@PreAuthorize("hasRole('OUTER_READER')")
+public class OuterController {
+  @RestController
+  public static class PublicController {
+    @GetMapping("/records/{recordId}")
+    public Object readRecord(String recordId) {
+      return sendFile(loadRecord(recordId).getPath());
+    }
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "OuterController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "route_handler"
+        and fact.symbol_name == "readRecord"
+        and fact.route_path == "/records/{recordId}"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.symbol_name == "PreAuthorize"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
 def test_map_static_multilang_maps_explicit_spring_request_mapping_methods():
     content = """
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -7006,6 +14478,7 @@ public class RecordsController {
     ("annotation", "symbol_name"),
     (
         ('@PreAuthorize("hasRole(\'RECORD_READER\')")', "PreAuthorize"),
+        ('@PreAuthorize("hasRole(\'RECORD_READER\') && permitAll()")', "PreAuthorize"),
         ('@Secured("ROLE_RECORD_READER")', "Secured"),
         ('@RolesAllowed("RECORD_READER")', "RolesAllowed"),
     ),
@@ -7419,6 +14892,274 @@ public class RecordsController {
         authz = [f for f in result.facts if f.fact_type == "authz_check"]
         assert any(f.authz_hint in expect_hint for f in authz)
 
+
+@pytest.mark.parametrize(
+    ("attribute", "expected_hint", "expects_gap"),
+    (
+        ("[AllowAnonymous]", "public_access", True),
+        ("[Authorize]", "authentication_check", True),
+        ('[Authorize(Roles = "RECORD_READER")]', "role_check", False),
+        (
+            '[Authorize(Roles = "RECORD_READER")]\n  [Authorize]',
+            "role_check",
+            False,
+        ),
+    ),
+)
+def test_map_static_multilang_maps_csharp_method_declarative_authz(
+    attribute,
+    expected_hint,
+    expects_gap,
+):
+    content = f"""
+public class RecordsController {{
+  {attribute}
+  [HttpGet("/records/{{recordId}}")]
+  public IActionResult ReadRecord(string recordId) {{
+    return File(loadRecord(recordId).Path);
+  }}
+}}
+"""
+
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RecordsController.cs", "content": content}
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == expected_hint
+        and fact.payload.get("handler") == "ReadRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "ReadRecord"
+        for fact in result.facts
+    ) is expects_gap
+
+
+def test_map_static_multilang_maps_csharp_controller_authz_and_method_override():
+    class_role_content = """
+[Authorize(Roles = "RECORD_READER")]
+public class RecordsController {
+  [Authorize]
+  [HttpGet("/records/{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+}
+"""
+    method_override_content = """
+[Authorize]
+public class RecordsController {
+  [AllowAnonymous]
+  [HttpGet("/records/{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+}
+"""
+
+    class_role_result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RecordsController.cs", "content": class_role_content}
+            ]
+        }
+    )
+    method_override_result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RecordsController.cs", "content": method_override_content}
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "role_check"
+        and fact.payload.get("handler") == "ReadRecord"
+        for fact in class_role_result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "ReadRecord"
+        for fact in class_role_result.facts
+    )
+    override_authz = [
+        fact.authz_hint
+        for fact in method_override_result.facts
+        if fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "ReadRecord"
+    ]
+    assert override_authz == ["public_access"]
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "ReadRecord"
+        for fact in method_override_result.facts
+    )
+
+
+def test_map_static_multilang_keeps_nested_csharp_controller_public():
+    content = """
+[Authorize(Roles = "OUTER_READER")]
+[Route("/outer")]
+public class OuterController {
+  public class PublicController {
+    [HttpGet("/records/{recordId}")]
+    public IActionResult ReadRecord(string recordId) {
+      return File(loadRecord(recordId).Path);
+    }
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "OuterController.cs", "content": content}]}
+    )
+
+    assert not any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "role_check"
+        and fact.payload.get("handler") == "ReadRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "ReadRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "route_handler"
+        and fact.symbol_name == "ReadRecord"
+        and fact.route_path == "/records/{recordId}"
+        for fact in result.facts
+    )
+
+
+def test_map_static_multilang_combines_csharp_controller_route_prefix():
+    content = """
+[Route("/api/v1/records")]
+public class RecordsController {
+  [HttpGet("{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+
+  [HttpGet]
+  public IActionResult ListRecords() {
+    return Ok();
+  }
+
+  [HttpGet("/health")]
+  public IActionResult Health() {
+    return Ok();
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RecordsController.cs", "content": content}
+            ]
+        }
+    )
+    route_paths = {
+        fact.symbol_name: fact.route_path
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+
+    assert route_paths == {
+        "ReadRecord": "/api/v1/records/{recordId}",
+        "ListRecords": "/api/v1/records",
+        "Health": "/health",
+    }
+
+
+def test_map_static_multilang_uses_csharp_method_route_template():
+    content = """
+[Route("/api/v1")]
+public class RecordsController {
+  [Route("records/{recordId}")]
+  [HttpGet]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+
+  [Route("/health")]
+  [HttpGet]
+  public IActionResult Health() {
+    return Ok();
+  }
+
+  [Route("legacy/{recordId}")]
+  [HttpGet("records/{recordId}")]
+  public IActionResult ReadCurrentRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+
+  [Route("named/{recordId}")]
+  [HttpGet(Name = "ReadNamedRecordRoute")]
+  public IActionResult ReadNamedRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RecordsController.cs", "content": content}
+            ]
+        }
+    )
+    route_paths = {
+        fact.symbol_name: fact.route_path
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+
+    assert route_paths == {
+        "ReadRecord": "/api/v1/records/{recordId}",
+        "Health": "/health",
+        "ReadCurrentRecord": "/api/v1/records/{recordId}",
+        "ReadNamedRecord": "/api/v1/named/{recordId}",
+    }
+
+
+def test_map_static_multilang_ignores_commented_csharp_http_route():
+    content = """
+public class RecordsController {
+  // [HttpGet("/comment-only")]
+  [HttpGet("/records/{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RecordsController.cs", "content": content}
+            ]
+        }
+    )
+    routes = [
+        (fact.symbol_name, fact.route_path)
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    ]
+
+    assert routes == [("ReadRecord", "/records/{recordId}")]
+
+
 def test_map_static_multilang_kotlin_ownership_and_role_facts():
     kotlin = """
 @RestController
@@ -7457,6 +15198,61 @@ class RecordsController {
         assert "authz_check" in types
         authz = [f for f in result.facts if f.fact_type == "authz_check"]
         assert any(f.authz_hint in expect_hint for f in authz)
+
+
+def test_map_static_multilang_maps_kotlin_controller_prefix_and_declarative_authz():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+import jakarta.annotation.security.PermitAll
+
+@RestController
+@RequestMapping("/api/v1")
+@PreAuthorize("hasRole('RECORD_READER')")
+class RecordsController {
+  @GetMapping("/records/{recordId}")
+  fun readRecord(recordId: String): Any {
+    return sendFile(loadRecord(recordId).path)
+  }
+
+  @PermitAll
+  @GetMapping("/public/{recordId}")
+  fun downloadRecord(recordId: String): Any {
+    return sendFile(loadRecord(recordId).path)
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.kt", "content": content}]}
+    )
+    routes = {
+        fact.symbol_name: fact.route_path
+        for fact in result.facts
+        if fact.fact_type == "route_handler"
+    }
+    authz_by_handler = {
+        fact.payload.get("handler"): fact.authz_hint
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+    }
+    gap_handlers = {
+        fact.symbol_name
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    }
+
+    assert routes == {
+        "readRecord": "/api/v1/records/{recordId}",
+        "downloadRecord": "/api/v1/public/{recordId}",
+    }
+    assert authz_by_handler == {
+        "readRecord": "role_check",
+        "downloadRecord": "public_access",
+    }
+    assert gap_handlers == {"downloadRecord"}
 
 
 def test_map_static_multilang_rust_scala_ownership_and_role_facts():
@@ -7518,3 +15314,83 @@ class RecordsController {
         assert "authz_check" in types
         authz = [f for f in result.facts if f.fact_type == "authz_check"]
         assert any(f.authz_hint in expect_hint for f in authz)
+
+
+def test_map_authorized_code_files_maps_strawberry_graphql_query_without_http_route():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    operations = [
+        fact for fact in result.facts if fact.fact_type == "graphql_operation"
+    ]
+    gaps = [
+        fact for fact in result.facts if fact.fact_type == "authorization_gap_candidate"
+    ]
+
+    assert len(operations) == 1
+    operation = operations[0]
+    assert operation.source_path == "gql/records.py"
+    assert operation.symbol_name == "record"
+    assert operation.route_method is None
+    assert operation.route_path is None
+    assert operation.payload["handler"] == "record"
+    assert operation.payload["operation_type"] == "query"
+    assert operation.payload["operation_name"] == "record"
+    assert operation.payload["framework"] == "strawberry"
+
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap.symbol_name == "record"
+    assert gap.route_method is None
+    assert gap.route_path is None
+    assert gap.payload["entrypoint_kind"] == "graphql_operation"
+    assert gap.payload["graphql_operation_type"] == "query"
+    assert gap.payload["graphql_operation_name"] == "record"
+
+
+def test_map_authorized_code_files_skips_ambiguous_strawberry_graphql_bindings():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field(name="record")
+    def read_record(self, info, record_id: str):
+        return send_file(record_id)
+
+    @strawberry.field(name="record")
+    def backup_record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )

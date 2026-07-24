@@ -22,6 +22,27 @@ SHA256_HEX_PATTERN = r"^[a-f0-9]{64}$"
 REQUIRED_ARTIFACT_KINDS = {"scope", "policy", "code", "api", "har"}
 SURFACE_ARTIFACT_KINDS = {"api", "har"}
 SAFE_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+_SOURCE_SNAPSHOT_DIGEST_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$", re.ASCII)
+_SAFE_CAMPAIGN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,100}$", re.ASCII)
+_SAFE_ADVISORY_ARTIFACT_ID_PATTERN = re.compile(
+    r"^artifact_[A-Za-z0-9_-]{1,90}$",
+    re.ASCII,
+)
+_SAFE_ADVISORY_RULE_ID_PATTERN = re.compile(
+    r"^(?=.{1,128}$)(?!\.{1,2}(?:/|$))(?!.*(?:/)\.{1,2}(?:/|$))"
+    r"[A-Za-z0-9_.:-]+(?:/[A-Za-z0-9_.:-]+)*$",
+    re.ASCII,
+)
+_REGISTERED_LOCAL_ADVISORY_TOOLS = {"semgrep_local", "codeql_local"}
+_REGISTERED_LOCAL_DEPENDENCY_ADVISORY_TOOLS = {"dependency_sbom_local"}
+_SAFE_DEPENDENCY_ADVISORY_VALUE_PATTERN = re.compile(
+    r"^[@A-Za-z0-9][A-Za-z0-9._+/@:~^<>=*|\-]{0,199}$",
+    re.ASCII,
+)
+_SAFE_MODEL_NAME_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$",
+    re.ASCII,
+)
 SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"\bbearer\s+\S+", re.IGNORECASE),
     re.compile(r"\b(?:api[_-]?key|password|secret|token)\s*[:=]", re.IGNORECASE),
@@ -44,6 +65,17 @@ class CandidateModelConfig(_StrictModel):
     provider: ProviderName
     model: str = Field(min_length=1, max_length=255)
     mode: Literal[LLMMode.LIVE] = LLMMode.LIVE
+
+    @model_validator(mode="after")
+    def validate_model_name(self) -> CandidateModelConfig:
+        model = self.model.strip()
+        if (
+            _SAFE_MODEL_NAME_PATTERN.fullmatch(model) is None
+            or _contains_sensitive_text(model)
+        ):
+            raise ValueError("model_invalid")
+        self.model = model
+        return self
 
 
 class RouteReference(_StrictModel):
@@ -422,6 +454,326 @@ def build_fact_pack(
         baseline_candidates=_baseline_summaries(baseline_candidates, normalized_facts),
         allowed_fact_refs=allowed_fact_refs,
     )
+
+
+def registered_local_advisory_fact_references(
+    *,
+    artifacts: list[object],
+    campaign_id: str,
+    source_snapshot_digest: str,
+    artifact_ids: list[str] | None = None,
+) -> list[FactReference]:
+    """Project registered local scanner metadata into snapshot-bound facts.
+
+    Only the scanner rule ID, workspace-relative path, and line number are
+    retained. Scanner text and raw output never enter the fact path. A bound
+    artifact list limits projection to immutable task inputs.
+    """
+    if (
+        _SAFE_CAMPAIGN_ID_PATTERN.fullmatch(campaign_id) is None
+        or _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest)
+        is None
+    ):
+        return []
+
+    bound_artifact_ids = (
+        {
+            artifact_id
+            for artifact_id in artifact_ids
+            if isinstance(artifact_id, str)
+            and _SAFE_ADVISORY_ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is not None
+        }
+        if artifact_ids is not None
+        else None
+    )
+    facts: list[FactReference] = []
+    for artifact in artifacts:
+        registered_artifact = _registered_local_advisory_artifact(
+            artifact=artifact,
+            campaign_id=campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        if registered_artifact is None:
+            continue
+        artifact_id, findings = registered_artifact
+        if bound_artifact_ids is not None and artifact_id not in bound_artifact_ids:
+            continue
+        for finding in findings[:200]:
+            if not isinstance(finding, dict):
+                continue
+            rule_id = _safe_text(finding.get("rule_id"))
+            source_path = _safe_relative_path(finding.get("path"))
+            line_number = finding.get("line")
+            if (
+                _SAFE_ADVISORY_RULE_ID_PATTERN.fullmatch(rule_id) is None
+                or not source_path
+                or not isinstance(line_number, int)
+                or isinstance(line_number, bool)
+                or not 1 <= line_number <= 9_999_999
+            ):
+                continue
+            facts.append(
+                FactReference(
+                    fact_ref=(
+                        f"static_advisory:{artifact_id}:{line_number}:{rule_id}"
+                    ),
+                    fact_type="static_advisory",
+                    artifact_kind="static_advisory",
+                    source_path=source_path,
+                    symbol_name=rule_id,
+                )
+            )
+    return sorted(facts, key=lambda fact: fact.fact_ref)
+
+
+def registered_local_advisory_artifact_ids(
+    *,
+    artifacts: list[object],
+    campaign_id: str,
+    source_snapshot_digest: str,
+) -> list[str]:
+    """Return only valid local-advisory IDs for an immutable task binding."""
+    if (
+        _SAFE_CAMPAIGN_ID_PATTERN.fullmatch(campaign_id) is None
+        or _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest)
+        is None
+    ):
+        return []
+    artifact_ids = []
+    for artifact in artifacts:
+        registered_artifact = _registered_local_advisory_artifact(
+            artifact=artifact,
+            campaign_id=campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        dependency_artifact = _registered_local_dependency_advisory_artifact(
+            artifact=artifact,
+            campaign_id=campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        if registered_artifact is not None:
+            artifact_ids.append(registered_artifact[0])
+        if dependency_artifact is not None:
+            artifact_ids.append(dependency_artifact[0])
+    return sorted(set(artifact_ids))
+
+
+def registered_local_dependency_advisory_facts(
+    *,
+    artifacts: list[object],
+    campaign_id: str,
+    source_snapshot_digest: str,
+    artifact_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Project reachable offline dependency advisories into minimal SBOM facts."""
+    if (
+        _SAFE_CAMPAIGN_ID_PATTERN.fullmatch(campaign_id) is None
+        or _SOURCE_SNAPSHOT_DIGEST_PATTERN.fullmatch(source_snapshot_digest)
+        is None
+    ):
+        return []
+
+    bound_artifact_ids = (
+        {
+            artifact_id
+            for artifact_id in artifact_ids
+            if isinstance(artifact_id, str)
+            and _SAFE_ADVISORY_ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is not None
+        }
+        if artifact_ids is not None
+        else None
+    )
+    facts: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        registered_artifact = _registered_local_dependency_advisory_artifact(
+            artifact=artifact,
+            campaign_id=campaign_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+        if registered_artifact is None:
+            continue
+        artifact_id, advisories = registered_artifact
+        if bound_artifact_ids is not None and artifact_id not in bound_artifact_ids:
+            continue
+        for advisory in advisories[:100]:
+            facts.extend(
+                _registered_local_dependency_advisory_facts_for_entry(
+                    artifact_id=artifact_id,
+                    advisory=advisory,
+                )
+            )
+    return sorted(facts, key=lambda fact: str(fact["fact_ref"]))
+
+
+def _registered_local_advisory_artifact(
+    *,
+    artifact: object,
+    campaign_id: str,
+    source_snapshot_digest: str,
+) -> tuple[str, list[dict]] | None:
+    if (
+        _artifact_value(artifact, "kind") != "static_advisory"
+        or _artifact_value(artifact, "source_type") != "registered_local_tool"
+        or _artifact_value(artifact, "ingestion_status") != "advisory_only"
+    ):
+        return None
+    artifact_id = _safe_text(_artifact_value(artifact, "id"))
+    if _SAFE_ADVISORY_ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
+        return None
+    provenance = _artifact_value(artifact, "provenance")
+    derived_facts = _artifact_value(artifact, "derived_facts")
+    if not isinstance(provenance, dict) or not isinstance(derived_facts, dict):
+        return None
+    if (
+        provenance.get("campaign_id") != campaign_id
+        or provenance.get("source_snapshot_digest") != source_snapshot_digest
+        or provenance.get("raw_payload_processed") is not False
+        or provenance.get("tool_id") not in _REGISTERED_LOCAL_ADVISORY_TOOLS
+        or any(
+            derived_facts.get(field) is not False
+            for field in (
+                "execution_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+    ):
+        return None
+    findings = derived_facts.get("advisory_findings")
+    return (artifact_id, findings) if isinstance(findings, list) else None
+
+
+def _registered_local_dependency_advisory_artifact(
+    *,
+    artifact: object,
+    campaign_id: str,
+    source_snapshot_digest: str,
+) -> tuple[str, list[dict]] | None:
+    if (
+        _artifact_value(artifact, "kind") != "dependency_sbom_advisory"
+        or _artifact_value(artifact, "source_type") != "registered_local_tool"
+        or _artifact_value(artifact, "ingestion_status") != "advisory_only"
+    ):
+        return None
+    artifact_id = _safe_text(_artifact_value(artifact, "id"))
+    if _SAFE_ADVISORY_ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
+        return None
+    provenance = _artifact_value(artifact, "provenance")
+    derived_facts = _artifact_value(artifact, "derived_facts")
+    if not isinstance(provenance, dict) or not isinstance(derived_facts, dict):
+        return None
+    profile = derived_facts.get("dependency_profile")
+    if not isinstance(profile, dict) or any(
+        profile.get(field) is not False
+        for field in (
+            "network_access",
+            "live_advisory_lookup",
+            "execution_allowed",
+            "validation_allowed",
+            "candidate_promotion_allowed",
+            "report_submission_allowed",
+        )
+    ):
+        return None
+    if (
+        provenance.get("campaign_id") != campaign_id
+        or provenance.get("source_snapshot_digest") != source_snapshot_digest
+        or provenance.get("raw_payload_processed") is not False
+        or provenance.get("tool_id") not in _REGISTERED_LOCAL_DEPENDENCY_ADVISORY_TOOLS
+        or any(
+            derived_facts.get(field) is not False
+            for field in (
+                "execution_allowed",
+                "validation_allowed",
+                "candidate_promotion_allowed",
+                "report_submission_allowed",
+            )
+        )
+    ):
+        return None
+    advisories = derived_facts.get("dependency_advisories")
+    return (artifact_id, advisories) if isinstance(advisories, list) else None
+
+
+def _registered_local_dependency_advisory_facts_for_entry(
+    *,
+    artifact_id: str,
+    advisory: object,
+) -> list[dict[str, Any]]:
+    if not isinstance(advisory, dict):
+        return []
+    package = _safe_dependency_advisory_value(advisory.get("package"))
+    version = _safe_dependency_advisory_value(advisory.get("version"))
+    ecosystem = _safe_dependency_advisory_value(advisory.get("ecosystem"))
+    advisory_id = _safe_dependency_advisory_value(advisory.get("advisory_id"))
+    priority = _safe_dependency_advisory_value(advisory.get("priority"))
+    if (
+        not all((package, version, ecosystem, advisory_id, priority))
+        or priority not in {"critical", "high", "medium", "low", "info"}
+    ):
+        return []
+    source_paths = advisory.get("source_paths")
+    if not isinstance(source_paths, list):
+        return []
+    safe_paths = sorted(
+        {
+            path
+            for value in source_paths[:20]
+            if (path := _safe_relative_path(value))
+            and not _contains_sensitive_text(path)
+        }
+    )
+    if not safe_paths:
+        return []
+    facts = []
+    for source_path in safe_paths:
+        identity = json.dumps(
+            {
+                "artifact_id": artifact_id,
+                "package": package,
+                "version": version,
+                "ecosystem": ecosystem,
+                "advisory_id": advisory_id,
+                "source_path": source_path,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        facts.append(
+            {
+                "fact_ref": "sbom_artifact:dependency:"
+                + sha256(identity.encode("utf-8")).hexdigest(),
+                "fact_type": "dependency_signal",
+                "artifact_kind": "sbom",
+                "source_path": source_path,
+                "symbol_name": package,
+                "package_name": package,
+                "package_version": version,
+                "ecosystem": ecosystem,
+                "vulnerability_id": advisory_id,
+                "severity": priority,
+                "advisory_only": True,
+            }
+        )
+    return facts
+
+
+def _safe_dependency_advisory_value(value: object) -> str:
+    text = _safe_text(value)
+    if (
+        _SAFE_DEPENDENCY_ADVISORY_VALUE_PATTERN.fullmatch(text) is None
+        or _contains_sensitive_text(text)
+    ):
+        return ""
+    return text
+
+
+def _artifact_value(artifact: object, field: str) -> object:
+    if isinstance(artifact, dict):
+        return artifact.get(field)
+    return getattr(artifact, field, None)
 
 
 def build_candidate_replay_envelope(
@@ -1017,7 +1369,14 @@ def _validate_model_proposal(
     if _proposal_has_forbidden_claim(proposal):
         return None, "forbidden_claim"
     cited_facts = [facts_by_ref[fact_ref] for fact_ref in cited_refs]
-    if not any(_routes_match(proposal.affected_endpoint, fact.route) for fact in cited_facts):
+    if not any(
+        _routes_match(
+            proposal.affected_endpoint,
+            fact.route,
+            allow_observed_route_values=fact.artifact_kind == "har",
+        )
+        for fact in cited_facts
+    ):
         return None, "route_not_cited"
     if proposal.affected_code_path is not None and not _code_path_is_cited(
         proposal.affected_code_path,
@@ -1389,7 +1748,12 @@ def _has_cross_source_evidence(
     return "code" in kinds and bool(kinds & SURFACE_ARTIFACT_KINDS)
 
 
-def _routes_match(left: RouteReference, right: RouteReference | None) -> bool:
+def _routes_match(
+    left: RouteReference,
+    right: RouteReference | None,
+    *,
+    allow_observed_route_values: bool = False,
+) -> bool:
     if right is None or left.method != right.method:
         return False
     left_segments = [segment for segment in left.path.strip("/").split("/") if segment]
@@ -1397,13 +1761,64 @@ def _routes_match(left: RouteReference, right: RouteReference | None) -> bool:
     if len(left_segments) != len(right_segments):
         return False
     return all(
-        current == observed
-        or current.startswith("{") and current.endswith("}")
-        or observed.startswith("{") and observed.endswith("}")
-        or current.startswith(":")
-        or observed.startswith(":")
+        _route_segments_match(
+            current,
+            observed,
+            allow_observed_route_values=allow_observed_route_values,
+        )
         for current, observed in zip(left_segments, right_segments, strict=True)
     )
+
+
+def _route_segments_match(
+    left: str,
+    right: str,
+    *,
+    allow_observed_route_values: bool,
+) -> bool:
+    if left == right:
+        return True
+    left_template = _route_segment_is_template(left)
+    right_template = _route_segment_is_template(right)
+    if left_template and right_template:
+        return True
+    return allow_observed_route_values and (
+        (
+            left_template
+            and _route_segment_looks_observed_dynamic(right)
+        )
+        or (
+            right_template
+            and _route_segment_looks_observed_dynamic(left)
+        )
+    )
+
+
+def _route_segment_is_template(segment: str) -> bool:
+    return (
+        segment.startswith(":")
+        or segment.startswith("{") and segment.endswith("}")
+        or segment.startswith("<") and segment.endswith(">")
+    )
+
+
+def _route_segment_looks_observed_dynamic(segment: str) -> bool:
+    if segment.isdigit():
+        return True
+    lowered = segment.lower()
+    parts = lowered.split("-")
+    if (
+        len(parts) == 5
+        and [len(part) for part in parts] == [8, 4, 4, 4, 12]
+        and all(_is_hex(part) for part in parts)
+    ):
+        return True
+    compact = lowered.replace("-", "")
+    return len(compact) >= 16 and compact.isalnum() and not compact.isalpha()
+
+
+def _is_hex(value: str) -> bool:
+    return bool(value) and all(character in "0123456789abcdef" for character in value)
 
 
 def _code_path_is_cited(
@@ -1526,6 +1941,28 @@ def _risk_priority(risk: str) -> int:
     return {"critical": 100, "high": 80, "medium": 60, "low": 40, "info": 20}[risk]
 
 
+def candidate_model_config_from_value(value: object) -> CandidateModelConfig | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return CandidateModelConfig.model_validate(value)
+    except ValidationError:
+        return None
+
+
+def candidate_model_config_digest(config: CandidateModelConfig) -> str:
+    serialized = json.dumps(
+        {
+            "provider": config.provider.value,
+            "model": config.model,
+            "mode": config.mode.value,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def _identifier(value: object) -> str:
     text = _safe_text(value)
     snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
@@ -1546,7 +1983,12 @@ __all__ = [
     "build_candidate_prompt",
     "build_candidate_replay_envelope",
     "build_fact_pack",
+    "candidate_model_config_digest",
+    "candidate_model_config_from_value",
     "candidate_hunter_inputs",
     "generate_cross_source_candidates",
     "generation_stage_payload",
+    "registered_local_advisory_artifact_ids",
+    "registered_local_advisory_fact_references",
+    "registered_local_dependency_advisory_facts",
 ]
