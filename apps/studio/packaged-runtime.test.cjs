@@ -356,13 +356,13 @@ test("packaged maintenance stops children, uses only frozen API, and always rest
   assert.equal(apiChildren[0].killCalls, 1);
   assert.equal(webChildren[0].killCalls, 1);
   assert.equal(maintenanceCalls.length, 1);
-  assert.equal(maintenanceCalls[0].command, fixture.resources + "\\api\\mythos-api.exe");
+  assert.equal(maintenanceCalls[0].command, path.join(fixture.resources, "api", "mythos-api.exe"));
   assert.deepEqual(maintenanceCalls[0].args, [
     "--host", "127.0.0.1",
     "--port", "48123",
     "--web-port", "48124",
     "--user-data-dir", fixture.userData,
-    "--resources-dir", fixture.resources + "\\api\\_internal",
+    "--resources-dir", path.join(fixture.resources, "api", "_internal"),
     "--application-version", "0.1.0",
     "--maintenance", "backup",
     "--destination", "C:\\backups\\portable.mythos-backup.zip",
