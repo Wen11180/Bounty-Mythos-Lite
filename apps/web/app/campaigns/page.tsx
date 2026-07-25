@@ -22,8 +22,8 @@ async function launchCampaignAction(formData: FormData) {
     },
     created_by: formValue(formData, "created_by", "operator"),
     default_asset: formValue(formData, "default_asset", "authorized.local"),
-    name: formValue(formData, "name", "Authorized research campaign"),
-    policy_text: formValue(formData, "policy_text", "Authorized testing only."),
+    name: formValue(formData, "name", "授权研究活动"),
+    policy_text: formValue(formData, "policy_text", "仅限授权测试。"),
     program_id: optionalFormValue(formData.get("program_id")),
     scope_status: formValue(formData, "scope_status", "in_scope"),
     target_classes: splitList(formData.get("target_classes")),
@@ -46,13 +46,13 @@ export default async function CampaignsPage() {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ShieldCheck size={17} aria-hidden="true" />
-          Campaign Control Center
+          研究活动控制中心
         </p>
         <h1 className="mt-3 max-w-4xl text-3xl font-semibold leading-tight text-balance">
-          Authorized research campaigns
+          已授权研究活动
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Inspect campaign state, blockers, review gates, budgets, and audited agent activity.
+          查看研究活动状态、阻断项、审核门、预算和已审计的智能体活动。
         </p>
       </header>
 
@@ -61,59 +61,59 @@ export default async function CampaignsPage() {
           <div>
             <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
               <ShieldCheck size={17} aria-hidden="true" />
-              Authorized Campaign Launchpad
+              已授权研究活动启动台
             </p>
             <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">
-              Scope Guard starts first. Validation, evidence promotion, and report submission stay behind human review gates.
+              范围守卫先行；验证、证据晋级和报告提交均受人工审核门控制。
             </p>
           </div>
         </div>
         <form action={launchCampaignAction} className="grid gap-4 lg:grid-cols-2">
-          <LaunchField label="Name" name="name" defaultValue="Authorized research campaign" />
-          <LaunchField label="Program" name="program_id" defaultValue="program_example" />
-          <LaunchField label="Asset" name="default_asset" defaultValue="api.example.com" />
+          <LaunchField label="名称" name="name" defaultValue="授权研究活动" />
+          <LaunchField label="项目" name="program_id" defaultValue="program_example" />
+          <LaunchField label="资产" name="default_asset" defaultValue="api.example.com" />
           <label className="grid gap-1 text-sm">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Scope</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">范围</span>
             <select
               name="scope_status"
               defaultValue="in_scope"
               className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
             >
-              <option value="in_scope">In scope</option>
-              <option value="needs_review">Needs review</option>
-              <option value="out_of_scope">Out of scope</option>
+              <option value="in_scope">范围内</option>
+              <option value="needs_review">需要审核</option>
+              <option value="out_of_scope">范围外</option>
             </select>
           </label>
           <label className="grid gap-1 text-sm">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Autonomy</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">自动化等级</span>
             <select
               name="autonomy_level"
               defaultValue="level_0_read_only"
               className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
             >
-              <option value="level_0_read_only">Level 0 read only</option>
-              <option value="level_1_local_validation">Level 1 local validation</option>
-              <option value="level_2_test_account_validation">Level 2 test-account validation</option>
+              <option value="level_0_read_only">等级 0：只读</option>
+              <option value="level_1_local_validation">等级 1：本地验证</option>
+              <option value="level_2_test_account_validation">等级 2：测试账号验证</option>
             </select>
           </label>
-          <LaunchField label="Authorized tools" name="allowed_tools" defaultValue="static_analyzer" />
-          <LaunchField label="Target classes" name="target_classes" defaultValue="idor" />
-          <LaunchField label="Created by" name="created_by" defaultValue="operator" />
+          <LaunchField label="已授权工具" name="allowed_tools" defaultValue="static_analyzer" />
+          <LaunchField label="目标类别" name="target_classes" defaultValue="idor" />
+          <LaunchField label="创建者" name="created_by" defaultValue="operator" />
           <label className="grid gap-1 text-sm lg:col-span-2">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Policy text</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">策略文本</span>
             <textarea
               name="policy_text"
-              defaultValue="Authorized testing only. No destructive testing, no real user data, no automatic submission."
+              defaultValue="仅限授权测试。不进行破坏性测试，不使用真实用户数据，不自动提交报告。"
               className="min-h-28 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
             />
           </label>
           <LaunchField
-            label="Authorized code path"
+            label="已授权代码路径"
             name="authorized_code_path"
             defaultValue=""
           />
           <label className="grid gap-1 text-sm">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Authorized code snippet</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">已授权代码片段</span>
             <textarea
               name="authorized_code_content"
               defaultValue=""
@@ -121,17 +121,17 @@ export default async function CampaignsPage() {
             />
           </label>
           <LaunchField
-            label="Authorized API artifact kind"
+            label="已授权 API 资料类型"
             name="authorized_api_artifact_kind"
             defaultValue=""
           />
           <LaunchField
-            label="Authorized API artifact source"
+            label="已授权 API 资料来源"
             name="authorized_api_artifact_source"
             defaultValue=""
           />
           <label className="grid gap-1 text-sm lg:col-span-2">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Authorized API/HAR JSON</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">已授权 API/HAR JSON</span>
             <textarea
               name="authorized_api_artifact_payload"
               defaultValue=""
@@ -139,17 +139,17 @@ export default async function CampaignsPage() {
             />
           </label>
           <div className="grid gap-3 sm:grid-cols-4 lg:col-span-2">
-            <LaunchField label="Minutes" name="time_budget_minutes" defaultValue="30" inputMode="numeric" />
-            <LaunchField label="Tokens" name="token_budget" defaultValue="5000" inputMode="numeric" />
-            <LaunchField label="Tool calls" name="tool_call_budget" defaultValue="10" inputMode="numeric" />
-            <LaunchField label="Validations" name="validation_budget" defaultValue="1" inputMode="numeric" />
+            <LaunchField label="分钟数" name="time_budget_minutes" defaultValue="30" inputMode="numeric" />
+            <LaunchField label="令牌数" name="token_budget" defaultValue="5000" inputMode="numeric" />
+            <LaunchField label="工具调用数" name="tool_call_budget" defaultValue="10" inputMode="numeric" />
+            <LaunchField label="验证次数" name="validation_budget" defaultValue="1" inputMode="numeric" />
           </div>
           <button
             type="submit"
             className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white lg:col-span-2"
           >
             <ShieldCheck size={17} aria-hidden="true" />
-            Create and start safe campaign
+            创建并启动安全研究活动
           </button>
         </form>
       </section>
@@ -158,20 +158,20 @@ export default async function CampaignsPage() {
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
           <p className="flex items-center gap-2 text-sm font-semibold text-[var(--warning)]">
             <AlertTriangle size={17} aria-hidden="true" />
-            No campaign audit feed
+            暂无研究活动审计流
           </p>
           <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-            Launch an authorized campaign to populate the operator console.
+            启动已授权研究活动以填充操作控制台。
           </p>
         </section>
       ) : (
         <section className="mt-5 border border-[var(--line)] bg-white">
           <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] md:grid-cols-[minmax(0,1fr)_140px_140px_180px_160px]">
-            <span>Campaign</span>
-            <span>Status</span>
-            <span>Scope</span>
-            <span>Budget</span>
-            <span>Autonomy</span>
+            <span>研究活动</span>
+            <span>状态</span>
+            <span>范围</span>
+            <span>预算</span>
+            <span>自动化等级</span>
           </div>
           <div className="divide-y divide-[var(--line)]">
             {campaigns.map((campaign) => (
@@ -206,7 +206,7 @@ function PageBack() {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Dashboard
+      控制台
     </Link>
   );
 }

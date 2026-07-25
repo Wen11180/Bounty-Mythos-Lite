@@ -16,6 +16,7 @@ import {
   toCampaignValidationEvidenceQualitySummary,
   toCampaignValidationEvidenceReviewSummaries,
 } from "@/lib/campaigns-data";
+import { formatLabel } from "@/lib/workbench-detail-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string }>;
@@ -47,7 +48,7 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
   const validationEvidenceQuality = toCampaignValidationEvidenceQualitySummary(validationEvidence);
   const researchFeedbackEvidence = toCampaignResearchFeedbackEvidenceSummaries(researchReviews);
   const promotionBlockReviews = toCampaignPromotionBlockReviewSummaries(researchFeedbackEvidence);
-  const manualResultRecordedLabel = "Manual result recorded";
+  const noReviewGateLabel = "无审核门";
   const findingCandidateGate = toCampaignFindingCandidateGateSummary(
     previews,
     researchFeedbackEvidence,
@@ -61,87 +62,85 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <FileCheck2 size={17} aria-hidden="true" />
-          Evidence Review
+          证据审核
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
-            Read only
+            只读
           </span>
         </p>
         <h1 className="mt-3 max-w-4xl break-words text-3xl font-semibold leading-tight text-balance">
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Claim evidence readiness across campaign-linked report previews, with ref counts instead
-          of raw evidence, provenance, request, or response payloads.
+          汇总研究活动关联报告预览中的声明证据就绪度，仅显示引用计数，不展示原始证据、溯源、请求或响应载荷。
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-5">
-        <Metric label="Research audits" value={runIds.length} />
-        <Metric label="Claims" value={claims.length} />
-        <Metric label="Validation evidence" value={validationEvidence.length} />
-        <Metric label="Research feedback" value={researchFeedbackEvidence.length} />
-        <Metric label="Promotion blocks" value={findingCandidateGate.promotionAuditBlockedCount} />
-        <Metric label="Clean reviews" value={validationEvidenceQuality.cleanReviewCount} />
-        <Metric label="Redacted reviews" value={validationEvidenceQuality.redactedReviewCount} />
-        <Metric label="Unsafe refs" value={validationEvidenceQuality.unsafeEvidenceRefCount} />
-        <Metric label="Strong evidence" value={validationEvidenceQuality.strongEvidenceCount} />
-        <Metric label="Promotion gated" value={validationEvidenceQuality.gatedPromotionReviewCount} />
+        <Metric label="研究审计" value={runIds.length} />
+        <Metric label="声明" value={claims.length} />
+        <Metric label="验证证据" value={validationEvidence.length} />
+        <Metric label="研究反馈" value={researchFeedbackEvidence.length} />
+        <Metric label="晋级阻塞项" value={findingCandidateGate.promotionAuditBlockedCount} />
+        <Metric label="已清理审核" value={validationEvidenceQuality.cleanReviewCount} />
+        <Metric label="已脱敏审核" value={validationEvidenceQuality.redactedReviewCount} />
+        <Metric label="不安全引用" value={validationEvidenceQuality.unsafeEvidenceRefCount} />
+        <Metric label="强证据" value={validationEvidenceQuality.strongEvidenceCount} />
+        <Metric label="晋级受控" value={validationEvidenceQuality.gatedPromotionReviewCount} />
       </section>
 
       <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
         <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px_150px_150px]">
           <div className="min-w-0">
-            <p className="font-semibold">Blocked Promotion Review</p>
+            <p className="font-semibold">已阻断晋级审核</p>
             <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
-              Finding promotion remains manual-only. Blocked attempts are summarized as counts and
-              sanitized reasons so reviewers can revisit evidence without exposing raw refs.
+              发现晋级仍仅可人工操作。已阻断尝试以计数和已清理原因汇总，便于审核人复查证据且不暴露原始引用。
             </p>
           </div>
           <Field
-            label="Promotion attempts blocked"
+            label="已阻断晋级尝试"
             value={String(findingCandidateGate.promotionAuditBlockedCount)}
           />
           <Field
-            label="Promotion reviews"
+            label="晋级审核"
             value={String(findingCandidateGate.promotionAuditCreatedCount)}
           />
           <Field
-            label="Required evidence holds"
+            label="所需证据阻塞项"
             value={String(findingCandidateGate.requiredEvidenceBlockedCount)}
           />
           <Field
-            label="Provenance refs"
+            label="溯源引用"
             value={String(findingCandidateGate.promotionAuditProvenanceRefCount)}
           />
           <Field
-            label="Review evidence"
+            label="审核证据"
             value={String(findingCandidateGate.promotionAuditReviewEvidenceRefCount)}
           />
           <Field
-            label="Latest reason"
+            label="最近原因"
             value={
               findingCandidateGate.status === "blocked_by_required_evidence"
-                ? "Required evidence blocks promotion"
+                ? "所需证据阻断晋级"
                 : findingCandidateGate.status === "blocked_by_research_feedback"
-                ? "Research feedback blocks promotion"
-                : findingCandidateGate.promotionAuditLatestReason ?? "No promotion block recorded"
+                ? "研究反馈阻断晋级"
+                : findingCandidateGate.promotionAuditLatestReason ?? "尚未记录晋级阻塞项"
             }
           />
-          <Field label="Next review action" value={findingCandidateGate.nextAllowedAction} />
+          <Field label="下一步审核操作" value={findingCandidateGate.nextAllowedAction} />
         </div>
       </section>
 
       <section className="mb-5 border border-[var(--line)] bg-white">
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
-          <span>Promotion Block Review Queue</span>
-          <span>Validation audit</span>
-          <span>Gate reason</span>
-          <span>Evidence refs</span>
+          <span>晋级阻塞审核队列</span>
+          <span>验证审计</span>
+          <span>审核门原因</span>
+          <span>证据引用</span>
         </div>
         {promotionBlockReviews.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No blocked promotion review items queued.
+            暂无已加入队列的晋级阻塞审核项。
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -158,26 +157,26 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                     {item.reviewTitle}
                   </Link>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Review item" value={item.taskId} />
-                    <Field label="Plan" value={item.planId} />
-                    <Field label="Review gate" value={item.approvalId} />
-                    <Field label="Feedback stage" value={item.feedbackStageId} />
+                    <Field label="审核项" value={item.taskId} />
+                    <Field label="计划" value={item.planId} />
+                    <Field label="审核门" value={item.approvalId} />
+                    <Field label="反馈阶段" value={item.feedbackStageId} />
                   </dl>
                   <Link
                     href={`/campaigns/${encodeURIComponent(campaignId)}/feedback-reviews/${encodeURIComponent(item.feedbackStageId)}`}
                     className="mt-3 inline-flex min-h-9 items-center rounded-md border border-[var(--line)] px-3 text-xs font-semibold text-[var(--accent-strong)]"
                   >
-                    Review promotion gate
+                    审核晋级门
                   </Link>
                 </div>
-                <Field label="Validation audit" value={item.validationRunId} />
+                <Field label="验证审计" value={item.validationRunId} />
                 <div className="grid content-start gap-2">
                   <GateText value={item.promotionGateReason} />
                   <p className="break-words text-xs text-[var(--muted)]">{item.nextAllowedAction}</p>
                 </div>
                 <dl className="grid content-start gap-2 text-xs text-[var(--muted)]">
-                  <Field label="Evidence refs" value={String(item.evidenceRefCount)} />
-                  <Field label="Provenance refs" value={String(item.promotionProvenanceRefCount)} />
+                  <Field label="证据引用" value={String(item.evidenceRefCount)} />
+                  <Field label="溯源引用" value={String(item.promotionProvenanceRefCount)} />
                 </dl>
               </article>
             ))}
@@ -187,15 +186,15 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
 
       <section className="border border-[var(--line)] bg-white">
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
-          <span>Claim</span>
-          <span>Review</span>
-          <span>Evidence refs</span>
-          <span>Report chain</span>
+          <span>声明</span>
+          <span>审核</span>
+          <span>证据引用</span>
+          <span>报告链</span>
         </div>
         {claims.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No report claims queued for evidence review.
+            暂无加入证据审核队列的报告声明。
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -207,39 +206,39 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{claim.claimText}</p>
                   <dl className="mt-2 grid gap-1 text-xs text-[var(--muted)]">
-                    <Field label="Research audit" value={claim.runId} />
-                    <Field label="Claim" value={claim.claimId} />
-                    <Field label="Type" value={claim.claimType} />
-                    <Field label="Status" value={claim.status} />
+                    <Field label="研究审计" value={claim.runId} />
+                    <Field label="声明" value={claim.claimId} />
+                    <Field label="类型" value={formatLabel(claim.claimType)} />
+                    <Field label="状态" value={formatLabel(claim.status)} />
                   </dl>
                 </div>
                 <div className="grid content-start gap-2">
                   <StatusText value={claim.reviewStatus} />
                   <p className="text-xs text-[var(--muted)]">
-                    {claim.humanReviewRequired ? "Human review required" : "Human review not required"}
+                    {claim.humanReviewRequired ? "需要人工审核" : "无需人工审核"}
                   </p>
                   {claim.reviewRationale ? (
                     <p className="break-words text-xs text-[var(--muted)]">{claim.reviewRationale}</p>
                   ) : null}
                 </div>
                 <dl className="grid content-start gap-2 text-xs text-[var(--muted)]">
-                  <Field label="Evidence refs" value={String(claim.evidenceRefCount)} />
-                  <Field label="Review refs" value={String(claim.reviewEvidenceRefCount)} />
-                  <Field label="Provenance refs" value={String(claim.provenanceRefCount)} />
-                  <Field label="Redaction" value={claim.redactionStatus} />
+                  <Field label="证据引用" value={String(claim.evidenceRefCount)} />
+                  <Field label="审核引用" value={String(claim.reviewEvidenceRefCount)} />
+                  <Field label="溯源引用" value={String(claim.provenanceRefCount)} />
+                  <Field label="脱敏" value={formatLabel(claim.redactionStatus)} />
                 </dl>
                 <div className="grid content-start gap-2">
                   <GateText
-                    value={claim.reportChainEligible ? "Report chain evidence present" : "Report chain review required"}
+                    value={claim.reportChainEligible ? "已具备报告链证据" : "报告链需要审核"}
                   />
                   <p className="text-xs text-[var(--muted)]">{claim.readinessLevel}</p>
                   <p className="text-xs font-semibold tabular-nums text-[var(--muted)]">
-                    Quality {claim.qualityScore}/100
+                    质量 {claim.qualityScore}/100
                   </p>
                   {claim.readinessBlockers.length > 0 ? (
                     <ul className="grid gap-1 text-xs text-[var(--warning)]">
                       {claim.readinessBlockers.map((blocker) => (
-                        <li key={`${claim.runId}-${claim.claimId}-${blocker}`}>{blocker}</li>
+                        <li key={`${claim.runId}-${claim.claimId}-${blocker}`}>{formatLabel(blocker)}</li>
                       ))}
                     </ul>
                   ) : null}
@@ -252,15 +251,15 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
 
       <section className="mt-5 border border-[var(--line)] bg-white">
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
-          <span>Validation Evidence</span>
-          <span>Status</span>
-          <span>Report chain</span>
-          <span>Evidence refs</span>
+          <span>验证证据</span>
+          <span>状态</span>
+          <span>报告链</span>
+          <span>证据引用</span>
         </div>
         {validationEvidence.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No validation evidence queued for review.
+            暂无加入审核队列的验证证据。
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -273,26 +272,26 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                   <p className="break-words font-semibold">{run.validationMode}</p>
                   <p className="mt-2 break-words text-[var(--muted)]">{run.summary}</p>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Validation audit" value={run.validationRunId} />
-                    <Field label="Target" value={run.targetRef} />
-                    <Field label="Review item" value={run.reviewItem || "No review item"} />
-                    <Field label="Review gate" value={run.reviewGate || "No review gate"} />
+                    <Field label="验证审计" value={run.validationRunId} />
+                    <Field label="目标" value={run.targetRef} />
+                    <Field label="审核项" value={run.reviewItem || "暂无审核项"} />
+                    <Field label="审核门" value={run.reviewGate || "暂无审核门"} />
                   </dl>
                   {run.manualValidationReview ? (
                     <div className="mt-3 grid gap-1 text-xs font-semibold text-[var(--muted)]">
                       <p>
-                        Quality review · Score: {run.manualValidationReview.qualityScore}/100 ·
-                        Redaction: {run.manualValidationReview.redactionStatus} · Promotion review:{" "}
-                        {run.manualValidationReview.promotionReviewState}
+                        质量审核 · 评分：{run.manualValidationReview.qualityScore}/100 ·
+                        脱敏：{formatLabel(run.manualValidationReview.redactionStatus)} · 晋级审核：
+                        {formatLabel(run.manualValidationReview.promotionReviewState)}
                       </p>
                       <p>
-                        Evidence quality: {run.manualValidationReview.evidenceQuality} · Safe refs:{" "}
-                        {run.manualValidationReview.safeEvidenceRefCount} · Unsafe refs:{" "}
+                        证据质量：{formatLabel(run.manualValidationReview.evidenceQuality)} · 安全引用：
+                        {run.manualValidationReview.safeEvidenceRefCount} · 不安全引用：
                         {run.manualValidationReview.unsafeEvidenceRefCount}
                       </p>
                       {run.manualValidationReview.qualityReasons.length > 0 ? (
                         <p className="break-words">
-                          Reasons: {run.manualValidationReview.qualityReasons.join(", ")}
+                          原因：{run.manualValidationReview.qualityReasons.map((reason) => formatLabel(reason)).join("、")}
                         </p>
                       ) : null}
                     </div>
@@ -301,22 +300,18 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                 <div className="grid content-start gap-2">
                   <StatusText value={run.status} />
                   <p className="text-xs text-[var(--muted)]">{run.candidateEvidenceState}</p>
-                  <p className="text-xs text-[var(--muted)]">
-                    {run.preflightState === manualResultRecordedLabel
-                      ? manualResultRecordedLabel
-                      : run.preflightState}
-                  </p>
+                  <p className="text-xs text-[var(--muted)]">{run.preflightState}</p>
                 </div>
                 <div className="grid content-start gap-2">
                   <GateText value={run.reportChainState} />
                   <p className="text-xs text-[var(--muted)]">
-                    {run.reviewGate === "No review gate" ? "Review gate required" : "Review gate recorded"}
+                    {run.reviewGate === noReviewGateLabel ? "需要审核门" : "已记录审核门"}
                   </p>
                   <p className="break-words text-xs text-[var(--muted)]">{run.nextReviewAction}</p>
                 </div>
                 <dl className="grid content-start gap-2 text-xs text-[var(--muted)]">
-                  <Field label="Evidence refs" value={String(run.evidenceRefCount)} />
-                  <Field label="Plan" value={run.planDigest ?? "No plan digest"} />
+                  <Field label="证据引用" value={String(run.evidenceRefCount)} />
+                  <Field label="计划" value={run.planDigest ?? "暂无计划摘要"} />
                 </dl>
               </article>
             ))}
@@ -326,15 +321,15 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
 
       <section className="mt-5 border border-[var(--line)] bg-white">
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
-          <span>Research Feedback Evidence</span>
-          <span>Status</span>
-          <span>Promotion gate</span>
-          <span>Evidence refs</span>
+          <span>研究反馈证据</span>
+          <span>状态</span>
+          <span>晋级门</span>
+          <span>证据引用</span>
         </div>
         {researchFeedbackEvidence.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No research validation feedback queued for review.
+            暂无加入审核队列的研究验证反馈。
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -346,12 +341,12 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{feedback.reviewTitle}</p>
                   <dl className="mt-3 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Review item" value={feedback.taskId} />
-                    <Field label="Plan" value={feedback.planId} />
-                    <Field label="Review gate" value={feedback.approvalId} />
-                    <Field label="Feedback stage" value={feedback.feedbackStageId} />
-                    <Field label="Validation audit" value={feedback.validationRunId} />
-                    <Field label="Provenance refs" value={String(feedback.promotionProvenanceRefCount)} />
+                    <Field label="审核项" value={feedback.taskId} />
+                    <Field label="计划" value={feedback.planId} />
+                    <Field label="审核门" value={feedback.approvalId} />
+                    <Field label="反馈阶段" value={feedback.feedbackStageId} />
+                    <Field label="验证审计" value={feedback.validationRunId} />
+                    <Field label="溯源引用" value={String(feedback.promotionProvenanceRefCount)} />
                   </dl>
                 </div>
                 <div className="grid content-start gap-2">
@@ -362,9 +357,9 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                   </p>
                 </div>
                 <div className="grid content-start gap-2">
-                  <GateText value={feedback.promotionGate || "Manual review required"} />
+                  <GateText value={feedback.promotionGate || "需要人工审核"} />
                   <p className="text-xs text-[var(--muted)]">
-                    {feedback.findingPromotionAllowed ? "Promotion review requires manual decision" : "Promotion review blocked"}
+                    {feedback.findingPromotionAllowed ? "晋级审核需要人工决策" : "晋级审核已阻断"}
                   </p>
                   <p className="break-words text-xs text-[var(--muted)]">
                     {feedback.promotionGateReason}
@@ -374,7 +369,7 @@ export default async function CampaignEvidenceReviewPage({ params }: PageProps) 
                     href={`/campaigns/${encodeURIComponent(campaignId)}/feedback-reviews/${encodeURIComponent(feedback.feedbackStageId)}`}
                     className="inline-flex min-h-9 items-center justify-self-start rounded-md border border-[var(--line)] px-3 text-xs font-semibold text-[var(--accent-strong)]"
                   >
-                    Review promotion gate
+                    审核晋级门
                   </Link>
                 </div>
                 <span className="font-semibold tabular-nums">{feedback.evidenceRefCount}</span>
@@ -394,7 +389,7 @@ function PageBack({ campaignId }: { campaignId: string }) {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Campaign
+      研究活动
     </Link>
   );
 }
@@ -427,5 +422,5 @@ function GateText({ value }: { value: string }) {
 }
 
 function StatusText({ value }: { value: string }) {
-  return <span className="break-words font-semibold">{value}</span>;
+  return <span className="break-words font-semibold">{formatLabel(value)}</span>;
 }

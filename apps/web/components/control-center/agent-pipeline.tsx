@@ -10,9 +10,9 @@ interface AgentPipelineProps {
 
 export function AgentPipeline({ stages }: AgentPipelineProps) {
   return (
-    <section aria-label="Agent 研究流水线" className="border-b border-border py-5">
+    <section aria-label="智能体研究流水线" className="border-b border-border py-5">
       <SectionHeader
-        title="Agent 研究流水线"
+        title="智能体研究流水线"
         description="每个阶段都来自持久化审计记录；阻断与等待不会被解释为成功。"
         className="px-4 lg:px-6"
       />

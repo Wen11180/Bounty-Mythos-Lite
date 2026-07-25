@@ -38,6 +38,7 @@ import {
   resolveControlCenterDataMode,
   type ControlCenterSnapshot,
 } from "@/lib/control-center-data";
+import { formatLabel } from "@/lib/workbench-display";
 
 const QualityCharts = dynamic(
   () => import("./quality-charts").then((module) => module.QualityCharts),
@@ -65,7 +66,7 @@ function navigationFor(snapshot: ControlCenterSnapshot): AppShellNavigationItem[
     { href: "/campaigns", label: "授权项目", icon: ShieldCheck },
     { href: "/artifacts", label: "授权资料", icon: Archive },
     { href: "/source-audit", label: "本地代码审计", icon: FileSearch },
-    { href: "/studio", label: "研究 Studio", icon: Bot },
+    { href: "/studio", label: "研究工作台", icon: Bot },
   ];
   const campaign = snapshot.campaigns[0];
   if (!campaign) {
@@ -78,7 +79,7 @@ function navigationFor(snapshot: ControlCenterSnapshot): AppShellNavigationItem[
     { href: `${root}/validation-queue`, label: "验证批准", icon: ClipboardCheck },
     { href: `${root}/report-drafts`, label: "报告草稿", icon: FileLock2 },
     { href: `${root}/timeline`, label: "审计日志", icon: Gauge },
-    { href: `${root}/validation-runs`, label: "Scope Guard", icon: ShieldCheck },
+    { href: `${root}/validation-runs`, label: "范围守卫", icon: ShieldCheck },
   );
   return navigation;
 }
@@ -140,16 +141,16 @@ export function ControlCenterOverview({ initialSnapshot, campaignId }: ControlCe
       />
       <AppShell
       navigation={navigationFor(snapshot)}
-      productName="Bounty Mythos-Lite"
+      productName="赏金神话·轻量版"
       productDescription="授权漏洞研究控制中心"
       footer={
         activeCampaign ? (
           <div className="min-w-0">
             <p className="truncate text-xs font-medium">{activeCampaign.name}</p>
-            <p className="mt-1 truncate font-mono text-[0.6875rem] text-muted-foreground">{activeCampaign.status}</p>
+            <p className="mt-1 truncate font-mono text-[0.6875rem] text-muted-foreground">{formatLabel(activeCampaign.status)}</p>
           </div>
         ) : (
-          <p className="text-xs leading-5 text-muted-foreground">Campaign 工作区导航已禁用，请先选择授权项目。</p>
+          <p className="text-xs leading-5 text-muted-foreground">项目工作区导航已禁用，请先选择授权项目。</p>
         )
       }
       commandBar={
@@ -203,17 +204,17 @@ export function ControlCenterOverview({ initialSnapshot, campaignId }: ControlCe
             <div className="min-w-0">
               <p className="flex items-center gap-2 text-xs font-medium text-primary">
                 <ShieldCheck aria-hidden="true" className="size-4" />
-                授权研究态势 · Scope Guard 优先
+                授权研究态势 · 范围守卫优先
               </p>
-              <h1 className="mt-2 text-2xl font-semibold">Bounty Mythos-Lite 控制中心</h1>
+              <h1 className="mt-2 text-2xl font-semibold">赏金神话·轻量版控制中心</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-                汇总授权输入、研究任务、候选反证、人工批准和 submission-blocked 报告草稿。
+                汇总授权输入、研究任务、候选反证、人工批准和提交已阻断的报告草稿。
               </p>
             </div>
             <dl className="grid min-w-64 grid-cols-2 gap-x-4 gap-y-2 text-xs">
               <dt className="text-muted-foreground">快照时间</dt>
               <dd className="text-right font-mono">{formatSnapshotTime(snapshot.generatedAt)}</dd>
-              <dt className="text-muted-foreground">Campaign</dt>
+              <dt className="text-muted-foreground">项目</dt>
               <dd className="truncate text-right">{activeCampaign?.name ?? "未选择"}</dd>
             </dl>
           </div>
@@ -229,7 +230,7 @@ export function ControlCenterOverview({ initialSnapshot, campaignId }: ControlCe
           <PanelState
             state="error"
             title="无法读取实时控制中心"
-            detail={`${snapshot.error}。系统没有回退到演示数据。`}
+            detail={`${formatLabel(snapshot.error)}。系统没有回退到演示数据。`}
             className="border-b border-border"
           />
         ) : null}
@@ -265,7 +266,7 @@ export function ControlCenterOverview({ initialSnapshot, campaignId }: ControlCe
           <Metric
             label="安全与政策阻断"
             value={snapshot.metrics.safetyBlocks ?? undefined}
-            detail="Scope Guard 与安全门"
+            detail="范围守卫与安全门"
             valueClassName="text-danger"
             className="border-t border-border px-4 xl:border-t-0 lg:px-6"
           />
@@ -277,7 +278,7 @@ export function ControlCenterOverview({ initialSnapshot, campaignId }: ControlCe
           <PanelState
             state="empty"
             title="控制中心尚无授权研究记录"
-            detail="先创建 Campaign，并摄入政策、Scope Guard 规则、API / HAR 或授权本地代码。"
+            detail="先创建研究项目，并摄入策略、范围守卫规则、API / HAR 或授权本地代码。"
             className="border-b border-border"
           />
         ) : null}

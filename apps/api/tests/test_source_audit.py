@@ -21,6 +21,7 @@ from app.source_audit import (
     SourceAuditBlocked,
     StaticFinding,
     build_finding_json,
+    build_intake_profile,
     build_source_audit_pipeline_payload,
     build_source_hypotheses,
     collect_authorized_code_files,
@@ -255,6 +256,56 @@ def test_run_source_audit_raises_authorization_hypothesis_for_flask_sensitive_ro
     ]
     assert result.hypotheses[0].location == "GET /files/<file_id>/export"
     assert "traceable_source_fact" in result.hypotheses[0].ranking_reasons
+
+
+def test_run_source_audit_raises_ssrf_hypothesis_for_explicit_stdlib_urllib_call(
+    tmp_path,
+):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "routes.py").write_text(
+        "\n".join(
+            [
+                "import urllib.request",
+                "from fastapi import APIRouter",
+                "",
+                "router = APIRouter()",
+                "",
+                '@router.post("/webhooks/deliver")',
+                "def deliver_webhook(target: str):",
+                "    return urllib.request.urlopen(target)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scope = tmp_path / "scope.yaml"
+    scope.write_text(f"allowed_repos:\n  - {repo}\n", encoding="utf-8")
+
+    result = run_source_audit(
+        repo,
+        scope,
+        semgrep_runner=lambda _: {"status": "completed", "results": []},
+    )
+
+    hypothesis = next(
+        item for item in result.hypotheses if item.vuln_type == "ssrf"
+    )
+    finding = next(
+        item for item in result.finding_json if item["vuln_type"] == "ssrf"
+    )
+
+    assert hypothesis.location == "POST /webhooks/deliver"
+    assert "outbound HTTP sink" in hypothesis.reason
+    assert finding["root_cause"] == "missing_ssrf_validation"
+    assert finding["semantic_evidence"] == {
+        "authz_hint": "missing_handler_ssrf_check",
+        "review_state": "needs_human_review",
+        "sink_count": 1,
+        "sink_symbols": ["fetch"],
+        "execution_allowed": False,
+        "validation_allowed": False,
+        "report_submission_allowed": False,
+    }
 
 
 def test_run_source_audit_raises_authorization_hypothesis_for_flask_add_url_rule_function_without_authz(
@@ -5212,6 +5263,112 @@ import strawberry
 class Query:
     @strawberry.field
     def record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    hypotheses = build_source_hypotheses(mapped.facts, [])
+
+    assert len(hypotheses) == 1
+    hypothesis = hypotheses[0]
+    assert hypothesis.location == "GraphQL query record"
+    assert hypothesis.source_facts[0]["entrypoint_kind"] == "graphql_operation"
+    assert hypothesis.source_facts[0]["graphql_operation_type"] == "query"
+    assert hypothesis.source_facts[0]["graphql_operation_name"] == "record"
+
+
+def test_graphql_operations_have_distinct_intake_and_evidence_references(tmp_path):
+    authorized_files = [
+        {
+            "path": "gql/records.py",
+            "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(self, info, record_id: str):
+        return send_file(record_id)
+
+    @strawberry.field
+    def invoice(self, info, invoice_id: str):
+        return send_file(invoice_id)
+""",
+        }
+    ]
+    mapped = map_authorized_code_files({"authorized_code_files": authorized_files})
+
+    intake = build_intake_profile(tmp_path, authorized_files, mapped.facts)
+    hypotheses = build_source_hypotheses(mapped.facts, [])
+
+    assert intake.entrypoints == ["GraphQL query invoice", "GraphQL query record"]
+    assert {
+        hypothesis.source_facts[0]["fact_ref"] for hypothesis in hypotheses
+    } == {
+        "codebase_fact:authorization_gap_candidate:graphql:gql/records.py:query:invoice",
+        "codebase_fact:authorization_gap_candidate:graphql:gql/records.py:query:record",
+    }
+
+
+def test_graphql_operation_evidence_references_keep_the_source_path():
+    authorized_files = [
+        {
+            "path": "gql/a.py",
+            "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+        },
+        {
+            "path": "gql/b.py",
+            "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+        },
+    ]
+    mapped = map_authorized_code_files({"authorized_code_files": authorized_files})
+
+    hypotheses = build_source_hypotheses(mapped.facts, [])
+
+    assert {
+        hypothesis.source_facts[0]["fact_ref"] for hypothesis in hypotheses
+    } == {
+        "codebase_fact:authorization_gap_candidate:graphql:gql/a.py:query:record",
+        "codebase_fact:authorization_gap_candidate:graphql:gql/b.py:query:record",
+    }
+
+
+def test_build_source_hypotheses_labels_graphene_operations_without_http_verb():
+    mapped = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import graphene
+
+
+class Query(graphene.ObjectType):
+    record = graphene.Field(str)
+
+    def resolve_record(self, info, record_id):
         return send_file(record_id)
 """,
                 }

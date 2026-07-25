@@ -36,6 +36,13 @@ const { createProgramRuleApiClient } = require("./program-rule-api-client.cjs");
 const { createProgramRuleRefreshPump } = require("./program-rule-refresh-pump.cjs");
 const { createProgramRuleRunner } = require("./program-rule-runner.cjs");
 const { createRemoteLeaseApiClient } = require("./remote-api-client.cjs");
+const { createAutopilotApiClient } = require("./autopilot-api-client.cjs");
+const { createAutopilotEmergencyStopWatcher } = require("./autopilot-emergency-stop-watcher.cjs");
+const { createAutopilotBrowserWorkerRunner } = require("./autopilot-browser-worker.cjs");
+const { createAutopilotR2Runner } = require("./autopilot-r2-runner.cjs");
+const { createAccountVault } = require("./account-vault.cjs");
+const { createSessionBroker } = require("./autopilot-session-broker.cjs");
+const { assertGatewayBoundLabPod } = require("./autopilot-pod.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const children = [];
@@ -46,12 +53,22 @@ let developmentStartupLiveness = null;
 let studioApiBaseUrl = null;
 let studioLaunchConfig = null;
 let autonomousResearchCapability = null;
+let autopilotRunnerCapability = null;
 const localResearchWakeup = createLocalResearchWakeup({
   getBaseUrl: () => studioApiBaseUrl,
   getCapability: () => autonomousResearchCapability,
 });
 const remoteLeaseApi = createRemoteLeaseApiClient({
   getBaseUrl: () => studioApiBaseUrl,
+});
+const autopilotApi = createAutopilotApiClient({
+  getBaseUrl: () => studioApiBaseUrl,
+  getCapability: () => autopilotRunnerCapability,
+});
+const autopilotBrowserRunner = createAutopilotBrowserWorkerRunner({
+  utilityProcess,
+  getBaseUrl: () => studioApiBaseUrl,
+  getCapability: () => autopilotRunnerCapability,
 });
 const programRuleApi = createProgramRuleApiClient({
   getBaseUrl: () => studioApiBaseUrl,
@@ -68,9 +85,73 @@ const dispatchBlackBoxLine = createLocalLabDispatchHandler({
   getApiBaseUrl: () => studioApiBaseUrl,
   runRunner: (line) => blackBoxRunner.handleLine(line),
 });
+const autopilotSessionBroker = createSessionBroker();
+let accountVault = null;
+
+function getAutopilotAccountVault() {
+  if (accountVault === null) {
+    const { safeStorage } = require("electron");
+    accountVault = createAccountVault({
+      safeStorage,
+      userDataPath: app.getPath("userData"),
+      fs: require("node:fs"),
+    });
+  }
+  return accountVault;
+}
+
+const autopilotR2Runner = createAutopilotR2Runner({
+  apiClient: autopilotApi,
+  assertPodStart: ({ gateway, binding, mainSessionBound }) => assertGatewayBoundLabPod({
+    gatewayStatus: gateway?.status,
+    policyMode: binding.policy_mode,
+    workerIsolated: false,
+    mainSessionBound,
+  }),
+  hasAccountAlias: (accountAlias) => getAutopilotAccountVault().hasAlias(accountAlias),
+  openSession: (binding) => {
+    const vault = getAutopilotAccountVault();
+    if (!vault.hasAlias(binding.account_alias)) {
+      throw new Error("r2_account_session_required");
+    }
+    return autopilotSessionBroker.issueBoundHandle({
+      campaignId: binding.campaign_id,
+      leaseId: binding.lease_id,
+      planDigest: binding.plan_digest,
+      accountAlias: binding.account_alias,
+      podId: "autopilot_r2_main",
+      materialize: () => vault.materializeForInjection(binding.account_alias),
+    });
+  },
+  revokeSession: (handle) => autopilotSessionBroker.revoke(handle?.handleId),
+  runWithSession: (handle, binding, callback) => (
+    autopilotSessionBroker.withBoundSession(handle?.handleId, binding, callback)
+  ),
+});
+
+async function stopAutopilotCampaign(campaignId) {
+  await Promise.all([
+    autopilotBrowserRunner.closeCampaign(campaignId),
+    autopilotR2Runner.closeCampaign(campaignId),
+  ]);
+  autopilotSessionBroker.revokeCampaign(campaignId);
+}
+
+const autopilotEmergencyStopWatcher = createAutopilotEmergencyStopWatcher({
+  apiClient: autopilotApi,
+  getActiveCampaignIds: () => [
+    autopilotBrowserRunner.activeCampaignId(),
+    autopilotR2Runner.activeCampaignId(),
+  ],
+  stopLocalCampaign: stopAutopilotCampaign,
+});
 
 function spawnChild(command, args, cwd, env = {}) {
-  const { AUTONOMOUS_RESEARCH_CAPABILITY: _ignoredCapability, ...baseEnvironment } = process.env;
+  const {
+    AUTONOMOUS_RESEARCH_CAPABILITY: _ignoredAutonomousCapability,
+    AUTOPILOT_RUNNER_CAPABILITY: _ignoredAutopilotCapability,
+    ...baseEnvironment
+  } = process.env;
   const child = spawn(command, args, {
     cwd,
     shell: true,
@@ -88,7 +169,7 @@ function spawnChild(command, args, cwd, env = {}) {
   return child;
 }
 
-function startDevelopmentServices(config, workspaceRoot, capability) {
+function startDevelopmentServices(config, workspaceRoot, capability, autopilotCapability) {
   preflightDevelopmentRuntime({
     apiDirectory: path.join(root, "apps", "api"),
     dataDirectory: resolveDevelopmentDataDirectory(
@@ -116,6 +197,7 @@ function startDevelopmentServices(config, workspaceRoot, capability) {
       STUDIO_WORKSPACE_ROOT: workspaceRoot,
       STUDIO_WEB_ORIGIN: studioWebOrigin,
       AUTONOMOUS_RESEARCH_CAPABILITY: capability,
+      AUTOPILOT_RUNNER_CAPABILITY: autopilotCapability,
     },
   );
   developmentStartupLiveness.watch(apiChild, "api_exited");
@@ -133,7 +215,7 @@ function startDevelopmentServices(config, workspaceRoot, capability) {
   return developmentStartupLiveness;
 }
 
-function startServices(config, workspaceRoot, capability) {
+function startServices(config, workspaceRoot, capability, autopilotCapability) {
   if (app.isPackaged) {
     packagedRuntime = createPackagedRuntime({
       app,
@@ -143,13 +225,14 @@ function startServices(config, workspaceRoot, capability) {
       utilityProcess,
     });
     packagedRuntime.preflight();
-    packagedRuntime.start(config, capability);
+    packagedRuntime.start(config, capability, autopilotCapability);
     return packagedRuntime;
   }
-  return startDevelopmentServices(config, workspaceRoot, capability);
+  return startDevelopmentServices(config, workspaceRoot, capability, autopilotCapability);
 }
 
 async function killChildren() {
+  await autopilotEmergencyStopWatcher.stop();
   developmentStartupLiveness?.stopMonitoring();
   developmentStartupLiveness = null;
   const runtime = packagedRuntime;
@@ -179,7 +262,11 @@ const handleBeforeQuit = createAppExitHandler({
   closeSessions: async (reason) => {
     await programRulePump.close(reason);
     await localResearchWakeup.stop();
+    await autopilotEmergencyStopWatcher.stop();
+    await autopilotBrowserRunner.close(reason);
+    await autopilotR2Runner.close(reason);
     await blackBoxRunner.closeSessions(reason);
+    autopilotSessionBroker.revokeAll();
   },
   exit: (code) => app.exit(code),
   killChildren,
@@ -189,7 +276,7 @@ function createWindow(apiBaseUrl) {
   const window = new BrowserWindow({
     width: 1440,
     height: 920,
-    title: "Mythos Studio",
+    title: "赏金神话研究工作台",
     webPreferences: {
       additionalArguments: [`--mythos-api-base-url=${apiBaseUrl}`],
       contextIsolation: true,
@@ -208,6 +295,9 @@ function createWindow(apiBaseUrl) {
           window.webContents,
           (rendererGenerations.get(window.webContents) ?? 0) + 1,
         );
+        autopilotSessionBroker.revokeAll();
+        void autopilotBrowserRunner.close("page_closed");
+        void autopilotR2Runner.close("page_closed");
         void blackBoxRunner.closeSessions("page_closed");
       }
     },
@@ -217,6 +307,9 @@ function createWindow(apiBaseUrl) {
       window.webContents,
       (rendererGenerations.get(window.webContents) ?? 0) + 1,
     );
+    autopilotSessionBroker.revokeAll();
+    void autopilotBrowserRunner.close("browser_crash");
+    void autopilotR2Runner.close("browser_crash");
     void blackBoxRunner.closeSessions("browser_crash");
   });
 
@@ -242,6 +335,28 @@ ipcMain.handle("mythos:black-box-runner", (event, line) => {
   });
 });
 
+ipcMain.handle("mythos:autopilot-browser-map", (event, payload) => {
+  const sender = event.sender;
+  const generation = rendererGenerations.get(sender) ?? 0;
+  return autopilotBrowserRunner.run(payload, {
+    isCurrent: () => (
+      !sender.isDestroyed()
+      && rendererGenerations.get(sender) === generation
+    ),
+  });
+});
+
+ipcMain.handle("mythos:autopilot-r2-differential", (event, payload) => {
+  const sender = event.sender;
+  const generation = rendererGenerations.get(sender) ?? 0;
+  return autopilotR2Runner.run(payload, {
+    isCurrent: () => (
+      !sender.isDestroyed()
+      && rendererGenerations.get(sender) === generation
+    ),
+  });
+});
+
 ipcMain.handle("mythos:create-backup", async (event) => {
   if (!packagedRuntime || !studioLaunchConfig) {
     return { status: "unavailable" };
@@ -252,6 +367,8 @@ ipcMain.handle("mythos:create-backup", async (event) => {
     return { status: "cancelled" };
   }
   await blackBoxRunner.closeSessions("operator_stop");
+  await autopilotBrowserRunner.close("operator_stop");
+  await autopilotR2Runner.close("operator_stop");
   try {
     const result = await packagedRuntime.createBackup(destination);
     await waitForDesktopServices();
@@ -272,6 +389,8 @@ ipcMain.handle("mythos:restore-backup", async (event) => {
     return { status: "cancelled" };
   }
   await blackBoxRunner.closeSessions("operator_stop");
+  await autopilotBrowserRunner.close("operator_stop");
+  await autopilotR2Runner.close("operator_stop");
   try {
     const result = await packagedRuntime.restoreBackup(archive);
     await waitForDesktopServices();
@@ -286,6 +405,22 @@ ipcMain.handle("mythos:refresh-program-rules", () => {
   return programRulePump.kick();
 });
 
+
+ipcMain.handle("mythos:autopilot-vault-put", (_event, payload = {}) => {
+  const alias = payload && payload.alias;
+  const secret = payload && payload.secret;
+  return getAutopilotAccountVault().putSecret(alias, secret);
+});
+
+ipcMain.handle("mythos:autopilot-vault-list", () => {
+  return getAutopilotAccountVault().listAliases();
+});
+
+ipcMain.handle("mythos:autopilot-emergency-stop-local", async (_event, campaignId) => {
+  autopilotEmergencyStopWatcher.trackLocalStop(campaignId);
+  return { tracking: true };
+});
+
 app.whenReady().then(async () => {
   let window;
   try {
@@ -295,11 +430,13 @@ app.whenReady().then(async () => {
     const workspaceRoot =
       process.env.STUDIO_WORKSPACE_ROOT || path.join(app.getPath("userData"), "workspaces");
     autonomousResearchCapability = randomBytes(32).toString("base64url");
+    autopilotRunnerCapability = randomBytes(32).toString("base64url");
     studioApiBaseUrl = config.apiBaseUrl;
     const startupController = startServices(
       config,
       workspaceRoot,
       autonomousResearchCapability,
+      autopilotRunnerCapability,
     );
     await waitForApiHealth(config.apiBaseUrl, {
       getStartupFailure: () => startupController.getStartupFailure(),
@@ -310,6 +447,7 @@ app.whenReady().then(async () => {
     startupController.markStartupReady();
     localResearchWakeup.start();
     programRulePump.start();
+    autopilotEmergencyStopWatcher.start();
     installStudioNavigationGuard(window, config.studioUrl);
     window.loadURL(config.studioUrl);
   } catch (error) {

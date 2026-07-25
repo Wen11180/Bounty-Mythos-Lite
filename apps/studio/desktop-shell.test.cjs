@@ -84,13 +84,13 @@ test("desktop shell derives the workspace root after Electron is ready unless ex
     main,
     /process\.env\.STUDIO_WORKSPACE_ROOT\s*\|\|\s*path\.join\(app\.getPath\("userData"\),\s*"workspaces"\)/,
   );
-  assert.match(main, /startServices\(config,\s*workspaceRoot,\s*capability\)/);
+  assert.match(main, /startServices\(config,\s*workspaceRoot,\s*capability,\s*autopilotCapability\)/);
 });
 
 test("desktop shell gives child services the derived workspace root and local Studio origin", async () => {
   const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
 
-  assert.match(main, /function startServices\(config,\s*workspaceRoot,\s*capability\)/);
+  assert.match(main, /function startServices\(config,\s*workspaceRoot,\s*capability,\s*autopilotCapability\)/);
   assert.match(main, /const studioWebOrigin\s*=\s*new URL\(config\.studioUrl\)\.origin/);
   assert.match(main, /STUDIO_WORKSPACE_ROOT:\s*workspaceRoot/);
   assert.match(main, /NEXT_PUBLIC_STUDIO_WORKSPACE_ROOT:\s*workspaceRoot/);
@@ -135,6 +135,35 @@ test("desktop main rechecks local trial authority at the derived API immediately
   assert.doesNotMatch(preload, /preflight|grant|authority/);
 });
 
+test("desktop Autopilot egress stays in the main process behind one narrow IPC bridge", async () => {
+  const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
+  const preload = await fs.readFile(path.join(__dirname, "preload.cjs"), "utf8");
+
+  assert.match(main, /createAutopilotApiClient/);
+  assert.match(main, /createAutopilotBrowserWorkerRunner/);
+  assert.match(main, /autopilot-browser-worker\.cjs/);
+  assert.match(main, /utilityProcess/);
+  assert.match(main, /getBaseUrl:\s*\(\) => studioApiBaseUrl/);
+  assert.match(main, /ipcMain\.handle\("mythos:autopilot-browser-map"/);
+  assert.match(main, /createAutopilotR2Runner/);
+  assert.match(main, /ipcMain\.handle\("mythos:autopilot-r2-differential"/);
+  assert.match(main, /autopilotSessionBroker\.issueBoundHandle/);
+  assert.match(main, /autopilotSessionBroker\.withBoundSession/);
+  assert.match(main, /autopilotBrowserRunner\.close\("page_closed"\)/);
+  assert.match(main, /autopilotR2Runner\.close\("page_closed"\)/);
+  assert.match(main, /autopilotBrowserRunner\.close\("browser_crash"\)/);
+  assert.match(preload, /runAutopilotBrowserMapping\(payload\)/);
+  assert.match(preload, /ipcRenderer\.invoke\("mythos:autopilot-browser-map", payload\)/);
+  assert.match(preload, /runAutopilotR2Differential\(payload\)/);
+  assert.match(preload, /ipcRenderer\.invoke\("mythos:autopilot-r2-differential", payload\)/);
+  assert.doesNotMatch(preload, /createAutopilotBrowserRunner|executeBoundHttpRequest|node:http/);
+  assert.doesNotMatch(preload, /autopilot-session-(issue|projection|revoke)/);
+  assert.doesNotMatch(main, /mythos:autopilot-session-(issue|projection|revoke)/);
+  assert.doesNotMatch(main, /payload\?\.policyMode|payload\?\.leaseActive|payload\?\.campaignAuthorized/);
+  assert.doesNotMatch(main, /mythos:autopilot-pod-start/);
+  assert.doesNotMatch(preload, /startAutopilotPod|mythos:autopilot-pod-start/);
+});
+
 test("desktop startup preflights local services and cleans up before rendering a bounded diagnostic", async () => {
   const main = await fs.readFile(path.join(__dirname, "main.cjs"), "utf8");
 
@@ -150,7 +179,7 @@ test("desktop startup preflights local services and cleans up before rendering a
   );
   assert.match(
     main,
-    /autonomousResearchCapability\s*=\s*randomBytes\(32\)\.toString\("base64url"\);\s*studioApiBaseUrl\s*=\s*config\.apiBaseUrl;\s*const startupController = startServices\(\s*config,\s*workspaceRoot,\s*autonomousResearchCapability,\s*\);\s*await waitForApiHealth\(config\.apiBaseUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*await waitForStudio\(config\.studioUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*startupController\.markStartupReady\(\);/s,
+    /autonomousResearchCapability\s*=\s*randomBytes\(32\)\.toString\("base64url"\);\s*autopilotRunnerCapability\s*=\s*randomBytes\(32\)\.toString\("base64url"\);\s*studioApiBaseUrl\s*=\s*config\.apiBaseUrl;\s*const startupController = startServices\(\s*config,\s*workspaceRoot,\s*autonomousResearchCapability,\s*autopilotRunnerCapability,\s*\);\s*await waitForApiHealth\(config\.apiBaseUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*await waitForStudio\(config\.studioUrl,\s*\{\s*getStartupFailure:\s*\(\) => startupController\.getStartupFailure\(\),\s*\}\);\s*startupController\.markStartupReady\(\);/s,
   );
   assert.match(
     main,
@@ -180,7 +209,21 @@ test("desktop shell wakes only the local read-only research runtime after startu
   );
   assert.match(
     main,
-    /closeSessions:\s*async \(reason\) => \{\s*await programRulePump\.close\(reason\);\s*await localResearchWakeup\.stop\(\);\s*await blackBoxRunner\.closeSessions\(reason\);\s*\}/s,
+    /closeSessions:\s*async \(reason\) => \{\s*await programRulePump\.close\(reason\);\s*await localResearchWakeup\.stop\(\);\s*await autopilotEmergencyStopWatcher\.stop\(\);\s*await autopilotBrowserRunner\.close\(reason\);\s*await autopilotR2Runner\.close\(reason\);\s*await blackBoxRunner\.closeSessions\(reason\);\s*autopilotSessionBroker\.revokeAll\(\);\s*\}/s,
+  );
+  assert.match(main, /createAccountVault/);
+  assert.match(main, /createSessionBroker/);
+  assert.match(main, /createAutopilotEmergencyStopWatcher/);
+  assert.match(main, /stopLocalCampaign:\s*stopAutopilotCampaign/);
+  assert.match(main, /autopilotEmergencyStopWatcher\.start\(\)/);
+  assert.match(
+    main,
+    /ipcMain\.handle\("mythos:autopilot-emergency-stop-local",\s*async \(_event, campaignId\) => \{\s*autopilotEmergencyStopWatcher\.trackLocalStop\(campaignId\);\s*return \{ tracking: true \};\s*\}\);/s,
+  );
+  assert.match(preload, /listAutopilotAliases/);
+  assert.match(
+    preload,
+    /emergencyStopAutopilotLocal\(campaignId\)\s*\{\s*return ipcRenderer\.invoke\("mythos:autopilot-emergency-stop-local", campaignId\);\s*\}/s,
   );
   assert.doesNotMatch(wakeup, /blackBoxRunner|BrowserWindow|createRemoteLeaseApiClient/);
   assert.doesNotMatch(preload, /AUTONOMOUS_RESEARCH_CAPABILITY/);

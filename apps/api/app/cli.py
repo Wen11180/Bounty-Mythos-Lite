@@ -429,9 +429,17 @@ def main(argv: list[str] | None = None) -> int:
     export_track.add_argument("--program-authorization-id", default="")
     export_track.add_argument("--language-family", default="unknown")
     export_track.add_argument(
+        "--evaluation-top-k",
+        type=int,
+        help="Optional K for operator-attested precision@K calculation",
+    )
+    export_track.add_argument(
         "--declare-real-package",
         action="store_true",
-        help="Mark export as authorized_redacted_real (requires --program-authorization-id)",
+        help=(
+            "Mark export as authorized_redacted_real (requires --program-authorization-id "
+            "and non-synthetic/non-template inputs)"
+        ),
     )
     export_track.add_argument(
         "--human-allow-export-write",
@@ -481,9 +489,17 @@ def main(argv: list[str] | None = None) -> int:
     capture_track.add_argument("--hypothesis-class", default="authorization")
     capture_track.add_argument("--vuln-family", default="idor")
     capture_track.add_argument(
+        "--evaluation-top-k",
+        type=int,
+        help="Optional K for operator-attested precision@K calculation",
+    )
+    capture_track.add_argument(
         "--declare-real-package",
         action="store_true",
-        help="Mark export as authorized_redacted_real (requires --program-authorization-id)",
+        help=(
+            "Mark export as authorized_redacted_real (requires --program-authorization-id "
+            "and non-synthetic/non-template inputs)"
+        ),
     )
     capture_track.add_argument(
         "--human-allow-export-write",
@@ -1527,6 +1543,7 @@ def run_export_research_track_record_command(args) -> int:
             or None,
             declare_real_package=bool(getattr(args, "declare_real_package", False)),
             language_family=str(getattr(args, "language_family", "unknown") or "unknown"),
+            evaluation_top_k=getattr(args, "evaluation_top_k", None),
             human_allow_export_write=bool(
                 getattr(args, "human_allow_export_write", False)
             ),
@@ -1645,6 +1662,7 @@ def run_capture_research_session_track_record_command(args) -> int:
                 getattr(args, "hypothesis_class", "authorization") or "authorization"
             ),
             vuln_family=str(getattr(args, "vuln_family", "idor") or "idor"),
+            evaluation_top_k=getattr(args, "evaluation_top_k", None),
             human_allow_export_write=True,
             rescore_market=rescore,
             session_notes_path=getattr(args, "session_notes", None),

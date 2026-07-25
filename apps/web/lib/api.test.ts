@@ -48,6 +48,8 @@ import {
   SourceAuditScanError,
   type Finding,
   type ProgramIntelligenceProfile,
+  type StudioBlackBoxLabBoundedTrace,
+  type StudioBlackBoxLabCompletePlan,
 } from "./api.ts";
 import type {
   CampaignPipelineStage,
@@ -96,6 +98,7 @@ const fallbackProgramProfile: ProgramIntelligenceProfile = {
     na_count: 0,
     penalized_playbooks: [],
     rejected_count: 0,
+    rejection_risk_delta: 0,
     severity_down_count: 0,
     severity_up_count: 0,
     strong_evidence_count: 0,
@@ -445,7 +448,7 @@ test("runSourceAuditScan posts only the local source audit request", async () =>
   }
 });
 
-test("runSourceAuditScan exposes Scope Guard block reasons", async () => {
+test("runSourceAuditScan exposes 范围守卫 block reasons", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ detail: "repo_not_allowlisted" }), {
@@ -549,7 +552,7 @@ test("recordCandidateHunterLearningOutcome posts only a Brain learning signal", 
     assert.deepEqual(requestedBody, {
       evidence_quality: "adequate",
       notes:
-        "Candidate hunter outcome (confirmed) by analyst: Triager accepted the ownership boundary finding.",
+        "候选挖掘结果（confirmed），审核人：analyst：Triager accepted the ownership boundary finding.",
       outcome: "accepted",
       playbook_id: "candidate_hunter:H-001",
       program_id: "program_1",
@@ -647,7 +650,7 @@ test("recordCandidateHunterLearningOutcome carries candidate evidence context sa
     );
     assert.match(
       (requestedBody as { notes?: string } | null)?.notes ?? "",
-      /evidence ready false; trace needs_evidence; missing evidence independent_cross_check; missing required artifacts policy/i,
+      /证据就绪：否；轨迹：needs_evidence；缺少证据：independent_cross_check；缺少必需资料：policy/,
     );
     assert.equal(
       (requestedBody as { evidence_quality?: string } | null)?.evidence_quality,
@@ -703,7 +706,7 @@ test("recordCandidateHunterLearningOutcome carries learned evidence reasons safe
     );
     assert.match(
       (requestedBody as { notes?: string } | null)?.notes ?? "",
-      /learned evidence lesson_evidence_needed_candidate_gap, lesson_evidence_needed_missing_evidence_independent_cross_check, lesson_evidence_needed_missing_required_artifact_policy/i,
+      /学习证据：lesson_evidence_needed_candidate_gap, lesson_evidence_needed_missing_evidence_independent_cross_check, lesson_evidence_needed_missing_required_artifact_policy/,
     );
     assert.doesNotMatch(
       JSON.stringify(requestedBody),
@@ -975,7 +978,7 @@ test("studio local-lab exact preflight sends the approval, lease, and original c
   const originalFetch = globalThis.fetch;
   let requestedBody: unknown = null;
   let requestedUrl = "";
-  const completePlan = {
+  const completePlan: StudioBlackBoxLabCompletePlan = {
     lease_preview: {
       active_origin: "http://127.0.0.1:43110",
       sessions: [
@@ -1086,7 +1089,7 @@ test("studio local-lab bounded result sends only the exact preflight and normali
       account_alias: "account_b",
       object_aliases: ["widget_a"],
       role_alias: "member",
-      session_alias: "session_b",
+      session_alias: "session_b" as const,
       workflow_alias: "read_widget_a",
     },
     method: "GET" as const,
@@ -1095,7 +1098,7 @@ test("studio local-lab bounded result sends only the exact preflight and normali
     route_template: "/widgets/{object}",
     status_class: "2xx" as const,
     timing_bucket: "under_500ms" as const,
-  };
+  } satisfies StudioBlackBoxLabBoundedTrace;
   globalThis.fetch = async (input, init) => {
     requestedUrl = String(input);
     requestedBody = JSON.parse(String(init?.body));
@@ -1233,7 +1236,9 @@ test("studio research API helpers keep reports submission-blocked", async () => 
               location: "GET /files/{file_id}/export",
               risk: "high",
               safe_verification: true,
-              submission_blocked: true,
+              report_readiness: {
+                submission_blocked: true,
+              },
               vuln_type: "authorization",
             },
           ],
@@ -1413,7 +1418,7 @@ test("studio research API helpers keep reports submission-blocked", async () => 
       "pipeline_run_1",
       { candidates: [], run_id: null },
     );
-    assert.equal(candidates.candidates[0]?.submission_blocked, true);
+    assert.equal(candidates.candidates[0]?.report_readiness?.submission_blocked, true);
 
     const exported = await exportStudioWorkspaceReport(
       { run_id: "pipeline_run_1", workspace_path: "C:/workspaces/acme-api" },
@@ -1664,12 +1669,15 @@ test("studio mission API helper reads the local workbench state without unsafe c
       null,
     );
 
-    assert.equal(mission?.mode, "local_ai_vulnerability_research_workbench");
-    assert.equal(mission?.quality_gates.report_submission_allowed, false);
-    assert.equal(mission?.quality_gates.validation_execution_allowed, false);
-    assert.equal(mission?.quality_gates.top_candidate_quality_gate, true);
-    assert.equal(mission?.quality_summary?.top_candidate_quality_gate, "passed");
-    assert.equal(mission?.top_candidates[0]?.execution_allowed, false);
+    assert.ok(mission);
+    assert.ok(mission.quality_gates);
+    assert.ok(mission.top_candidates);
+    assert.equal(mission.mode, "local_ai_vulnerability_research_workbench");
+    assert.equal(mission.quality_gates.report_submission_allowed, false);
+    assert.equal(mission.quality_gates.validation_execution_allowed, false);
+    assert.equal(mission.quality_gates.top_candidate_quality_gate, true);
+    assert.equal(mission.quality_summary?.top_candidate_quality_gate, "passed");
+    assert.equal(mission.top_candidates[0]?.execution_allowed, false);
     assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
       "/mythos/studio/workspaces/mission",
     ]);
@@ -1702,7 +1710,7 @@ test("studio mission handoff helper reads the review-only handoff pack", async (
             handoff_item_count: 1,
             handoff_items: [
               {
-                assigned_agent: "Evidence Planner",
+                assigned_agent: "证据计划ner",
                 execution_allowed: true,
                 handoff_id: "handoff:H-002:draft_validation_plan",
                 report_submission_allowed: true,
@@ -1717,11 +1725,11 @@ test("studio mission handoff helper reads the review-only handoff pack", async (
           },
           candidate_hunter_plan: {
             execution_allowed: false,
-            next_review_agent: "Evidence Planner",
+            next_review_agent: "证据计划ner",
             plan_id: "candidate_hunter:autonomous_review_plan",
             plan_steps: [
               {
-                assigned_agent: "Evidence Planner",
+                assigned_agent: "证据计划ner",
                 execution_allowed: false,
                 report_submission_allowed: false,
                 step_id: "candidate_hunter:plan:H-002:draft_validation_plan",
@@ -1739,7 +1747,7 @@ test("studio mission handoff helper reads the review-only handoff pack", async (
             active_step_count: 1,
             execution_allowed: true,
             loop_id: "candidate_hunter:next_review_loop",
-            next_review_agent: "Evidence Planner",
+            next_review_agent: "证据计划ner",
             report_submission_allowed: true,
             safety_gate: "unsafe_override",
             status: "needs_review",
@@ -2172,7 +2180,7 @@ test("completeCampaignCycleReview posts only the manual cycle review gate", asyn
       "stage_cycle_1",
       {
         actor: "lead_reviewer",
-        reason: "Cycle reviewed. Authorization: Bearer secret-token",
+        reason: "周期审核ed. Authorization: Bearer secret-token",
       },
     );
 
@@ -2182,7 +2190,7 @@ test("completeCampaignCycleReview posts only the manual cycle review gate", asyn
     );
     assert.deepEqual(requestedBody, {
       actor: "lead_reviewer",
-      reason: "Cycle reviewed. Authorization: Bearer secret-token",
+      reason: "周期审核ed. Authorization: Bearer secret-token",
     });
     assert.deepEqual(stage.payload, {
       execution_allowed: false,
@@ -2234,7 +2242,7 @@ test("materializeResearchQueueTask posts only a review queue materialization req
       "campaign_1",
       {
         queue_key: "autonomous_hunt:run_1:hunt_queue_candidate_1",
-        reason: "Queue review item from control center.",
+        reason: "从控制中心加入审核项。",
         requester: "operator",
       },
     );
@@ -2245,7 +2253,7 @@ test("materializeResearchQueueTask posts only a review queue materialization req
     );
     assert.deepEqual(requestedBody, {
       queue_key: "autonomous_hunt:run_1:hunt_queue_candidate_1",
-      reason: "Queue review item from control center.",
+      reason: "从控制中心加入审核项。",
       requester: "operator",
     });
     assert.equal(task.status, "queued_review");
@@ -2264,7 +2272,7 @@ test("createResearchReviewPlan posts only advisory refutation and evidence plann
     evidence_plan: [],
     execution_allowed: false,
     hypothesis: "Fallback hypothesis",
-    next_allowed_action: "Review hypothesis board and request approval before validation.",
+    next_allowed_action: "审核假设看板 and request approval before validation.",
     plan_id: "fallback_plan",
     refutation_questions: [],
     report_submission_allowed: false,
@@ -2316,6 +2324,7 @@ test("createResearchReviewPlan posts only advisory refutation and evidence plann
       refutation_questions: ["Can existing evidence refute the candidate?"],
       reviewer: "operator",
     });
+    assert.ok(plan);
     assert.equal(plan.status, "drafted");
     assert.equal(plan.execution_allowed, false);
     assert.equal(plan.dispatch_allowed, false);
@@ -2335,7 +2344,7 @@ test("createResearchRefutationDecision records needs-evidence without validation
     decision_id: "fallback_decision",
     dispatch_allowed: false,
     execution_allowed: false,
-    next_allowed_action: "Collect redacted evidence or refine the hypothesis before validation.",
+    next_allowed_action: "验证前请收集脱敏证据或完善假设。",
     plan_id: "research_plan_1",
     rationale: "Fallback rationale",
     refutation_answers: [],
@@ -2373,7 +2382,7 @@ test("createResearchRefutationDecision records needs-evidence without validation
         },
         decision: "needs_evidence",
         plan_id: "research_plan_1",
-        rationale: "Needs more redacted evidence before validation.",
+        rationale: "验证前需要更多已脱敏证据。",
         refutation_answers: ["Current redacted evidence is insufficient."],
         reviewer: "operator",
       },
@@ -2392,7 +2401,7 @@ test("createResearchRefutationDecision records needs-evidence without validation
       },
       decision: "needs_evidence",
       plan_id: "research_plan_1",
-      rationale: "Needs more redacted evidence before validation.",
+      rationale: "验证前需要更多已脱敏证据。",
       refutation_answers: ["Current redacted evidence is insufficient."],
       reviewer: "operator",
     });

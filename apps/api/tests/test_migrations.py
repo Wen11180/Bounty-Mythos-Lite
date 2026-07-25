@@ -1,4 +1,5 @@
 from importlib.util import module_from_spec, spec_from_file_location
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,6 @@ from app.db import initialize_database
 from app.db_models import (
     AgentRunRecord,
     CampaignLocalToolExecutionSlotRecord,
-    CampaignRecord,
     CampaignTaskRecord,
 )
 from app.repository import DatabaseRepository
@@ -27,6 +27,48 @@ PROGRAM_RULE_TABLES = {
 }
 WAKEUP_TABLES = {"autonomous_research_wakeup_states"}
 LOCAL_TOOL_SLOT_TABLES = {"campaign_local_tool_execution_slots"}
+AUTOPILOT_TABLES = {
+    "campaign_authorizations",
+    "campaign_assets",
+    "campaign_asset_admission_events",
+    "research_branches",
+    "validation_plans",
+    "execution_leases",
+    "execution_request_ledger",
+    "autopilot_observations",
+}
+HEAD_REVISION = "0029_bounty_autopilot_schema_alignment"
+
+def _insert_pre_autopilot_campaign(session, *, campaign_id, name, status, payload, allowed_tools):
+    """Insert a campaigns row against pre-0020 schema (no campaign_mode column)."""
+    session.execute(
+        text(
+            """
+            INSERT INTO campaigns (
+                id, program_id, name, autonomy_level, scope_status, policy_text_hash,
+                default_asset, target_classes, allowed_tools, created_by, status, payload, created_at
+            ) VALUES (
+                :id, NULL, :name, :autonomy_level, :scope_status, :policy_text_hash,
+                :default_asset, :target_classes, :allowed_tools, :created_by, :status, :payload, :created_at
+            )
+            """
+        ),
+        {
+            "id": campaign_id,
+            "name": name,
+            "autonomy_level": "level_1_local_validation",
+            "scope_status": "in_scope",
+            "policy_text_hash": f"sha256:{'b' * 64}",
+            "default_asset": "local.example",
+            "target_classes": "[]",
+            "allowed_tools": json.dumps(allowed_tools),
+            "created_by": "operator",
+            "status": status,
+            "payload": json.dumps(payload),
+            "created_at": datetime.now(UTC).replace(tzinfo=None),
+        },
+    )
+
 
 
 def test_initialize_database_distinguishes_engines_when_legacy_ids_collide(monkeypatch):
@@ -128,6 +170,18 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         column["name"]
         for column in inspector.get_columns("campaign_local_tool_execution_slots")
     }
+    execution_lease_columns = {
+        column["name"] for column in inspector.get_columns("execution_leases")
+    }
+    execution_lease_indexes = inspector.get_indexes("execution_leases")
+    request_ledger_indexes = inspector.get_indexes("execution_request_ledger")
+    observation_columns = {
+        column["name"] for column in inspector.get_columns("autopilot_observations")
+    }
+    observation_indexes = inspector.get_indexes("autopilot_observations")
+    llm_run_columns = {
+        column["name"]: column for column in inspector.get_columns("llm_runs")
+    }
 
     assert "target_relationships" in learning_columns
     assert "identity_hash" in learning_columns
@@ -151,7 +205,7 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         "scanner_runs",
         "validation_runs",
         "campaign_local_tool_execution_slots",
-    } <= tables
+    } | AUTOPILOT_TABLES <= tables
     assert PROGRAM_RULE_TABLES <= tables
     assert WAKEUP_TABLES <= tables
     assert {
@@ -204,6 +258,34 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         "active_execution_claim_id",
         "legacy_active_task_count",
     } <= local_tool_slot_columns
+    assert {
+        "authorization_id",
+        "expires_at",
+        "duration_reserved_seconds",
+        "cost_units_reserved",
+    } <= execution_lease_columns
+    assert {"lease_id", "reservation_id", "comparison_reservation_id"} <= observation_columns
+    assert llm_run_columns["created_at"]["nullable"] is False
+    assert any(
+        index["name"] == "ix_execution_leases_campaign_status"
+        and index["column_names"] == ["campaign_id", "status"]
+        for index in execution_lease_indexes
+    )
+    assert any(
+        index["name"] == "ix_execution_leases_campaign_authorization_status"
+        and index["column_names"] == ["campaign_id", "authorization_id", "status"]
+        for index in execution_lease_indexes
+    )
+    assert any(
+        index["name"] == "ix_execution_request_ledger_campaign_lease"
+        and index["column_names"] == ["campaign_id", "lease_id"]
+        for index in request_ledger_indexes
+    )
+    assert any(
+        index["name"] == "ix_autopilot_observations_campaign_branch"
+        and index["column_names"] == ["campaign_id", "branch_id"]
+        for index in observation_indexes
+    )
 
     source_unique = {
         tuple(constraint["column_names"])
@@ -250,6 +332,60 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         "ck_autonomous_research_wakeup_validation_allowed_false",
         "ck_autonomous_research_wakeup_report_submission_allowed_false",
     } <= wakeup_checks
+    engine.dispose()
+    command.check(config)
+
+
+def test_schema_alignment_migration_backfills_legacy_llm_run_timestamp(tmp_path, monkeypatch):
+    database_path = tmp_path / "schema-alignment.db"
+    database_url = f"sqlite:///{database_path}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(str(api_root / "alembic.ini"))
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0028_bounty_autopilot_r2_observation_pair")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO llm_runs (
+                    id, provider, model, purpose, prompt_hash, mode, safety_notes, created_at
+                ) VALUES (
+                    :id, :provider, :model, :purpose, :prompt_hash, :mode, :safety_notes, NULL
+                )
+                """
+            ),
+            {
+                "id": "legacy-null-created-at",
+                "provider": "test-provider",
+                "model": "test-model",
+                "purpose": "general",
+                "prompt_hash": "sha256:legacy",
+                "mode": "test",
+                "safety_notes": "[]",
+            },
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        created_at = connection.execute(
+            text("SELECT created_at FROM llm_runs WHERE id = :id"),
+            {"id": "legacy-null-created-at"},
+        ).scalar_one()
+    assert created_at is not None
+    created_at_column = next(
+        column
+        for column in inspect(engine).get_columns("llm_runs")
+        if column["name"] == "created_at"
+    )
+    assert created_at_column["nullable"] is False
+    engine.dispose()
 
 
 def test_program_rule_migration_downgrade_removes_only_new_tables(tmp_path, monkeypatch):
@@ -271,7 +407,12 @@ def test_program_rule_migration_downgrade_removes_only_new_tables(tmp_path, monk
     tables_after = set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    new_tables = PROGRAM_RULE_TABLES | WAKEUP_TABLES | LOCAL_TOOL_SLOT_TABLES
+    new_tables = (
+        PROGRAM_RULE_TABLES
+        | WAKEUP_TABLES
+        | LOCAL_TOOL_SLOT_TABLES
+        | AUTOPILOT_TABLES
+    )
     assert new_tables <= tables_before
     assert new_tables.isdisjoint(tables_after)
     assert tables_after == tables_before - new_tables
@@ -293,20 +434,15 @@ def test_local_tool_slot_migration_backfills_active_task(tmp_path, monkeypatch):
     source_snapshot_digest = f"sha256:{'a' * 64}"
     now = datetime.now(UTC)
     with Session() as session:
-        campaign = CampaignRecord(
-            id="campaign_active_local_slot",
-            program_id=None,
+        _insert_pre_autopilot_campaign(
+            session,
+            campaign_id="campaign_active_local_slot",
             name="Active local-tool migration campaign",
-            autonomy_level="level_1_local_validation",
-            scope_status="in_scope",
-            policy_text_hash=f"sha256:{'b' * 64}",
-            default_asset="local.example",
-            target_classes=[],
-            allowed_tools=["static_analyzer"],
-            created_by="operator",
             status="dispatched",
             payload={"source_snapshot_digest": source_snapshot_digest},
+            allowed_tools=["static_analyzer"],
         )
+        campaign = SimpleNamespace(id="campaign_active_local_slot")
         task = CampaignTaskRecord(
             id="campaign_task_active_local_slot",
             campaign_id=campaign.id,
@@ -341,7 +477,7 @@ def test_local_tool_slot_migration_backfills_active_task(tmp_path, monkeypatch):
             stop_reason=None,
             payload={},
         )
-        session.add_all([campaign, task, agent_run])
+        session.add_all([task, agent_run])
         session.commit()
         campaign_id = campaign.id
         task_id = task.id
@@ -408,20 +544,15 @@ def test_local_tool_slot_migration_keeps_legacy_tasks_blocking_until_finished(
     owner_agent_run_id = "agent_run_local_slot_owner"
     legacy_agent_run_id = "agent_run_local_slot_legacy"
     with Session() as session:
-        campaign = CampaignRecord(
-            id=campaign_id,
-            program_id=None,
+        _insert_pre_autopilot_campaign(
+            session,
+            campaign_id=campaign_id,
             name="Duplicate active local-tool migration campaign",
-            autonomy_level="level_1_local_validation",
-            scope_status="in_scope",
-            policy_text_hash=f"sha256:{'b' * 64}",
-            default_asset="local.example",
-            target_classes=[],
-            allowed_tools=["static_analyzer", "codeql_local"],
-            created_by="operator",
             status="running",
             payload={"source_snapshot_digest": source_snapshot_digest},
+            allowed_tools=["static_analyzer", "codeql_local"],
         )
+        campaign = SimpleNamespace(id=campaign_id)
         owner_task = CampaignTaskRecord(
             id=owner_task_id,
             campaign_id=campaign.id,
@@ -468,7 +599,6 @@ def test_local_tool_slot_migration_keeps_legacy_tasks_blocking_until_finished(
         )
         session.add_all(
             [
-                campaign,
                 owner_task,
                 legacy_task,
                 AgentRunRecord(
@@ -623,7 +753,7 @@ def test_initialize_database_upgrades_persistent_sqlite_from_0010(tmp_path, monk
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
     unique_constraints = inspect(engine).get_unique_constraints("artifacts")
-    assert version == "0019_campaign_local_tool_execution_slot"
+    assert version == HEAD_REVISION
     assert any(
         constraint["name"] == "uq_artifacts_program_source_hash"
         and constraint["column_names"] == ["program_id", "source_hash"]
@@ -648,7 +778,7 @@ def test_initialize_database_adopts_unversioned_0010_sqlite(tmp_path, monkeypatc
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0019_campaign_local_tool_execution_slot"
+    assert version == HEAD_REVISION
     assert any(
         constraint["name"] == "uq_artifacts_program_source_hash"
         for constraint in inspect(engine).get_unique_constraints("artifacts")
@@ -672,7 +802,7 @@ def test_initialize_database_adopts_unversioned_field_pilot_schema(tmp_path, mon
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0019_campaign_local_tool_execution_slot"
+    assert version == HEAD_REVISION
     assert "field_pilot_feedback" in {
         column["name"] for column in inspect(engine).get_columns("learning_signals")
     }
@@ -696,7 +826,7 @@ def test_initialize_database_adopts_unversioned_program_rule_schema(tmp_path, mo
 
     with engine.connect() as connection:
         version = connection.execute(text("select version_num from alembic_version")).scalar_one()
-    assert version == "0019_campaign_local_tool_execution_slot"
+    assert version == HEAD_REVISION
     assert PROGRAM_RULE_TABLES <= set(inspect(engine).get_table_names())
     assert WAKEUP_TABLES <= set(inspect(engine).get_table_names())
     engine.dispose()

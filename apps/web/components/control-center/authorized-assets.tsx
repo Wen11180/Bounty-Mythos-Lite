@@ -15,10 +15,10 @@ export function AuthorizedAssets({ assets }: AuthorizedAssetsProps) {
   return (
     <section aria-label="授权资产" className="min-w-0 border border-border bg-[var(--surface)]">
       <div className="px-4 pt-4">
-        <SectionHeader title="授权资产" description="仅显示 Scope Guard 已建模的目标摘要。" />
+        <SectionHeader title="授权资产" description="仅显示范围守卫已建模的目标摘要。" />
       </div>
       {assets.length === 0 ? (
-        <PanelState state="empty" detail="先创建授权 Campaign 并完成政策与范围摄入。" />
+        <PanelState state="empty" detail="先创建授权项目并完成策略与范围摄入。" />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[38rem] border-collapse text-left text-sm">
@@ -26,7 +26,7 @@ export function AuthorizedAssets({ assets }: AuthorizedAssetsProps) {
               <tr>
                 <th className="px-4 py-2.5 font-medium">目标</th>
                 <th className="px-4 py-2.5 font-medium">范围状态</th>
-                <th className="px-4 py-2.5 font-medium">Campaign</th>
+                <th className="px-4 py-2.5 font-medium">项目</th>
                 <th className="px-4 py-2.5 text-right font-medium">查看</th>
               </tr>
             </thead>
@@ -63,7 +63,7 @@ export function AuthorizedAssets({ assets }: AuthorizedAssetsProps) {
                   <td className="px-4 py-3 text-right">
                     <Link
                       href={`/campaigns/${encodeURIComponent(asset.campaignId)}`}
-                      aria-label={`查看 ${asset.asset} 的 Campaign`}
+                      aria-label={`查看 ${asset.asset} 所属项目`}
                       className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <ExternalLink aria-hidden="true" className="size-4" />

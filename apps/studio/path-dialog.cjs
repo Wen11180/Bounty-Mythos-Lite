@@ -2,7 +2,7 @@ async function selectStudioFile(dialog, browserWindow, options = {}) {
   const result = await dialog.showOpenDialog(browserWindow, {
     filters: options.filters ?? [],
     properties: ["openFile"],
-    title: options.title ?? "Select authorized artifact",
+    title: options.title ?? "选择授权资料",
   });
   return selectedPath(result);
 }
@@ -10,7 +10,7 @@ async function selectStudioFile(dialog, browserWindow, options = {}) {
 async function selectStudioDirectory(dialog, browserWindow, options = {}) {
   const result = await dialog.showOpenDialog(browserWindow, {
     properties: ["openDirectory"],
-    title: options.title ?? "Select authorized directory",
+    title: options.title ?? "选择授权目录",
   });
   return selectedPath(result);
 }
@@ -18,8 +18,8 @@ async function selectStudioDirectory(dialog, browserWindow, options = {}) {
 async function selectDesktopBackupDestination(dialog, browserWindow) {
   const result = await dialog.showSaveDialog(browserWindow, {
     defaultPath: "mythos-backup.mythos-backup.zip",
-    filters: [{ name: "Mythos backup", extensions: ["zip"] }],
-    title: "Create Mythos backup",
+    filters: [{ name: "研究工作台备份", extensions: ["zip"] }],
+    title: "创建研究工作台备份",
   });
   if (result.canceled || !result.filePath) {
     return null;
@@ -31,8 +31,8 @@ async function selectDesktopBackupDestination(dialog, browserWindow) {
 
 async function selectDesktopRestoreArchive(dialog, browserWindow) {
   return selectStudioFile(dialog, browserWindow, {
-    filters: [{ name: "Mythos backup", extensions: ["zip"] }],
-    title: "Select Mythos backup",
+    filters: [{ name: "研究工作台备份", extensions: ["zip"] }],
+    title: "选择研究工作台备份",
   });
 }
 
@@ -41,11 +41,11 @@ async function confirmDesktopRestore(dialog, browserWindow, archive) {
     return false;
   }
   const result = await dialog.showMessageBox(browserWindow, {
-    buttons: ["Cancel", "Restore"],
+    buttons: ["取消", "恢复"],
     cancelId: 0,
     defaultId: 0,
-    message: "Restore this local Mythos backup?",
-    title: "Restore Mythos backup",
+    message: "要恢复此本地研究工作台备份吗？",
+    title: "恢复研究工作台备份",
     type: "warning",
   });
   return result.response === 1;

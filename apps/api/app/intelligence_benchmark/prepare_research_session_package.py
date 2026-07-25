@@ -66,7 +66,8 @@ def prepare_research_session_package(
         )
         written.append(str(notes_example))
 
-        # Starter session notes copy for dry-run (still synthetic until declare)
+        # Starter session notes copy for dry-run. Its source marker prevents an
+        # accidental real-package declaration until it is replaced.
         notes = inputs / "session_notes.json"
         if not notes.exists():
             notes.write_text(
@@ -79,6 +80,8 @@ def prepare_research_session_package(
         wall_example = inputs / "wall_clock_runner.example.json"
         wall_payload = {
             "schema_version": "wall_clock_multi_hour_runner_v1",
+            "source_kind": "synthetic",
+            "fixture_kind": "synthetic_research_session_wall_clock_example",
             "package_id": root.name,
             "program_handle": handle,
             "total_wall_clock_minutes": 70.0,
@@ -103,19 +106,18 @@ def prepare_research_session_package(
             "python -m app capture-research-session-track-record "
             f"--package-root {root} "
             "--out-dir <out> --human-allow-export-write"
-            + (
-                f" --program-handle {handle} --program-authorization-id {auth} "
-                "--declare-real-package"
-                if auth
-                else "  # add --declare-real-package + --program-authorization-id for real"
-            )
         ),
+        "real_capture_requires": [
+            "replace_synthetic_or_template_inputs",
+            "--declare-real-package",
+            "--program-authorization-id <auth-ref>",
+        ],
         "execution_allowed": False,
         "report_submission_allowed": False,
         "auto_attack_allowed": False,
         "non_claims": [
             "Scaffold only; does not create real authorized outcomes.",
-            "has_real_* remains false until declare + auth ref + real fields.",
+            "has_real_* remains false until non-synthetic inputs + declare + auth ref + real fields.",
         ],
         "written": written,
     }
@@ -154,7 +156,9 @@ Never flips `has_real_*`.
 
 ## Real authorized attach
 
-1. Replace example notes with **redacted real** session outcomes.
+1. Replace every `source_kind=synthetic` or template-marked example with
+   **redacted real** session outcomes. Merely adding `--declare-real-package`
+   to scaffold input is rejected.
 2. Ensure entries include `wall_clock_minutes` and at least one
    `human_confirmed_valid` + `report_outcome_ref` when claiming valid-report gap.
 3. No secrets/tokens/cookies/Authorization headers.
@@ -195,6 +199,7 @@ def _checklist_text(*, auth: str) -> str:
 - [ ] `wall_clock_minutes` on real entries (for wall-clock gap)
 - [ ] `human_confirmed_valid` + `report_outcome_ref` (for valid-report gap)
 - [ ] `execution_allowed=false`, `report_submission_allowed=false`
+- [ ] All synthetic/template markers were replaced with operator-attested input
 - [ ] Human explicitly passes `--declare-real-package`
 - [ ] Human re-scores market/delivery after capture
 

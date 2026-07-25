@@ -1,11 +1,13 @@
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import hmac
 import json
 import re
+import secrets
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from sqlalchemy import and_, case, func, or_, select, update
@@ -17,13 +19,19 @@ from app.db_models import (
     AgentRunRecord,
     ApprovalRecord,
     ArtifactRecord,
+    AutopilotObservationRecord,
     AutonomousResearchWakeupStateRecord,
+    CampaignAuthorizationRecord,
+    CampaignAssetRecord,
+    CampaignAssetAdmissionEventRecord,
     CampaignBudgetRecord,
     CampaignLocalToolExecutionSlotRecord,
     CampaignRecord,
     CampaignTaskRecord,
     CodebaseFactRecord,
     CodebaseMapRecord,
+    ExecutionLeaseRecord,
+    ExecutionRequestLedgerRecord,
     FindingRecord,
     LearningSignalRecord,
     LLMRunRecord,
@@ -34,7 +42,9 @@ from app.db_models import (
     ProgramScopeRuleRecord,
     ProgramRecord,
     ReportRecord,
+    ResearchBranchRecord,
     ScannerRunRecord,
+    ValidationPlanRecord,
     ValidationRunRecord,
 )
 from app.models import Finding, Program, ReportDraft
@@ -104,6 +114,18 @@ _LOCAL_TOOL_CALL_RESERVATION_METADATA_KEYS = (
     "tool_call_reservation_source_snapshot_digest",
     "tool_call_reservation_tool_id",
 )
+_REQUEST_RESERVATION_RUNTIME_METADATA_KEYS = frozenset(
+    {
+        "gateway_authorized",
+        "gateway_authorized_at",
+        "gateway_authorization_id",
+        "transport_challenge",
+        "transport_receipt",
+        "transport_receipt_id",
+        "transport_receipt_digest",
+        "transport_receipt_consumed_at",
+    }
+)
 AUTONOMOUS_RESEARCH_WAKEUP_INTERVAL_SECONDS = 60
 AUTONOMOUS_RESEARCH_TASK_LEASE_SECONDS = 900
 _AUTONOMOUS_RESEARCH_RUNTIME_SCHEMA = "autonomous_research_v1"
@@ -165,6 +187,24 @@ _PROGRAM_RULE_FORBIDDEN_KEYS = {
     "username",
     "userphone",
 }
+_AUTOPILOT_OBSERVATION_SAFE_KEYS = frozenset(
+    {
+        "observation_id",
+        "branch_id",
+        "plan_digest",
+        "lease_id",
+        "reservation_id",
+        "receipt_digest",
+        "grade",
+        "outcome_class",
+        "summary",
+        "evidence_refs",
+        "status_class",
+        "content_type_class",
+        "byte_length",
+        "third_party_data_discarded",
+    }
+)
 
 
 def _campaign_task_requires_execution_lease(
@@ -211,6 +251,73 @@ def _campaign_local_tool_execution_slot_id(
 ) -> str:
     identity = f"{campaign_id}:{source_snapshot_digest}".encode("utf-8")
     return f"local_tool_slot_{sha256(identity).hexdigest()}"
+
+
+def _request_reservation_payload_for_idempotency(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise TypeError("request_reservation_payload_invalid")
+    # Gateway trace data changes after reservation and is not request intent.
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in _REQUEST_RESERVATION_RUNTIME_METADATA_KEYS
+    }
+
+
+def _request_reservations_have_matching_intent(
+    incoming: Any,
+    persisted_payload: Any,
+) -> bool:
+    from app.bounty_autopilot.request_ledger import RequestReservation
+
+    persisted = RequestReservation.model_validate(
+        _request_reservation_payload_for_idempotency(persisted_payload)
+    )
+    incoming_intent = incoming.model_dump(mode="json")
+    persisted_intent = persisted.model_dump(mode="json")
+    for intent in (incoming_intent, persisted_intent):
+        intent.pop("reservation_id", None)
+        intent.pop("status", None)
+    return incoming_intent == persisted_intent
+
+
+def _validate_r2_observation_metadata(*, observation, primary_receipt: Any, comparison_receipt: Any) -> None:
+    """Bind an R2 differential to signed, metadata-only receipt projections."""
+
+    primary = _safe_transport_receipt_projection(primary_receipt)
+    comparison = _safe_transport_receipt_projection(comparison_receipt)
+    if primary is None or comparison is None:
+        raise ValueError("r2_transport_receipt_projection_required")
+    if (
+        observation.status_class != primary["status_class"]
+        or observation.content_type_class != primary["content_type_class"]
+        or observation.byte_length != primary["byte_length"]
+        or observation.comparison_status_class != comparison["status_class"]
+        or observation.comparison_content_type_class != comparison["content_type_class"]
+        or observation.comparison_byte_length != comparison["byte_length"]
+    ):
+        raise ValueError("r2_observation_metadata_mismatch")
+
+
+def _safe_transport_receipt_projection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    status_code = value.get("status_code")
+    byte_length = value.get("byte_length")
+    content_type_class = value.get("content_type_class")
+    if (
+        not isinstance(status_code, int)
+        or not 100 <= status_code <= 599
+        or not isinstance(byte_length, int)
+        or not 0 <= byte_length <= 5_000_001
+        or content_type_class not in {"json", "html", "text", "other", "unknown"}
+    ):
+        return None
+    return {
+        "status_class": f"{status_code // 100}xx",
+        "content_type_class": content_type_class,
+        "byte_length": byte_length,
+    }
 
 
 class DatabaseRepository:
@@ -1438,11 +1545,16 @@ class DatabaseRepository:
         allowed_tools: list[str] | None = None,
         created_by: str,
         payload: dict | None = None,
+        campaign_mode: str = "legacy",
     ) -> CampaignRecord:
+        mode = _safe_display_value(campaign_mode or "legacy")
+        if mode not in {"legacy", "bounty_autopilot"}:
+            raise ValueError("unsupported_campaign_mode")
         record = CampaignRecord(
             id=f"campaign_{uuid4().hex}",
             program_id=program_id,
             name=_safe_display_value(name),
+            campaign_mode=mode,
             autonomy_level=_safe_display_value(autonomy_level),
             scope_status=_safe_display_value(scope_status),
             policy_text_hash=sha256(policy_text.encode("utf-8")).hexdigest(),
@@ -1457,6 +1569,2372 @@ class DatabaseRepository:
         self.session.commit()
         self.session.refresh(record)
         return record
+
+
+    def create_campaign_authorization(
+        self,
+        *,
+        campaign_id: str,
+        authorization_payload: dict,
+        issued_at: datetime | None = None,
+    ) -> CampaignAuthorizationRecord:
+        """Persist one immutable authorization generation and mark it current."""
+
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+        )
+
+        try:
+            auth = authorization_from_payload(authorization_payload)
+        except Exception as exc:  # noqa: BLE001 - map to typed reason
+            raise ValueError("authorization_payload_invalid") from exc
+        if auth.campaign_id != campaign_id:
+            raise ValueError("authorization_campaign_mismatch")
+
+        campaign = self.get_campaign(campaign_id)
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        expected_policy_digest = "sha256:" + str(campaign.policy_text_hash).removeprefix(
+            "sha256:"
+        )
+        if auth.policy_digest != expected_policy_digest:
+            raise ValueError("authorization_policy_mismatch")
+
+        current_rows = self.session.scalars(
+            select(CampaignAuthorizationRecord).where(
+                CampaignAuthorizationRecord.campaign_id == campaign_id,
+                CampaignAuthorizationRecord.is_current.is_(True),
+            )
+        ).all()
+        next_generation = 1
+        max_generation = self.session.scalar(
+            select(func.max(CampaignAuthorizationRecord.generation)).where(
+                CampaignAuthorizationRecord.campaign_id == campaign_id
+            )
+        )
+        if max_generation is not None:
+            next_generation = int(max_generation) + 1
+        now = issued_at or datetime.now(UTC)
+        for row in current_rows:
+            row.is_current = False
+            row.revoked_at = now
+            row.revocation_reason = "superseded"
+
+        record = CampaignAuthorizationRecord(
+            id=f"campauth_{uuid4().hex}",
+            campaign_id=campaign_id,
+            generation=next_generation,
+            schema_version=auth.schema_version,
+            authorization_digest=auth.authorization_digest,
+            scope_snapshot_id=auth.scope_snapshot_id,
+            scope_snapshot_digest=auth.scope_snapshot_digest,
+            policy_digest=auth.policy_digest,
+            operator_id=auth.operator_id,
+            payload=auth.model_dump(mode="json"),
+            is_current=True,
+            issued_at=now,
+            expires_at=auth.expires_at,
+            revoked_at=None,
+            revocation_reason=None,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def get_current_campaign_authorization(
+        self,
+        campaign_id: str,
+    ) -> CampaignAuthorizationRecord | None:
+        return self.session.scalar(
+            select(CampaignAuthorizationRecord)
+            .where(
+                CampaignAuthorizationRecord.campaign_id == campaign_id,
+                CampaignAuthorizationRecord.is_current.is_(True),
+                CampaignAuthorizationRecord.revoked_at.is_(None),
+            )
+            .order_by(CampaignAuthorizationRecord.generation.desc())
+        )
+
+    def list_campaign_authorizations(
+        self,
+        campaign_id: str,
+    ) -> list[CampaignAuthorizationRecord]:
+        return list(
+            self.session.scalars(
+                select(CampaignAuthorizationRecord)
+                .where(CampaignAuthorizationRecord.campaign_id == campaign_id)
+                .order_by(CampaignAuthorizationRecord.generation.desc())
+            ).all()
+        )
+
+    def revoke_campaign_authorization(
+        self,
+        *,
+        campaign_id: str,
+        authorization_id: str,
+        reason: str,
+        revoked_at: datetime | None = None,
+    ) -> CampaignAuthorizationRecord | None:
+        record = self.session.get(CampaignAuthorizationRecord, authorization_id)
+        if record is None or record.campaign_id != campaign_id:
+            return None
+        now = revoked_at or datetime.now(UTC)
+        record.is_current = False
+        record.revoked_at = now
+        record.revocation_reason = _safe_display_value(reason)[:255]
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def upsert_campaign_asset_admission(
+        self,
+        *,
+        campaign_id: str,
+        admission: dict,
+        now: datetime | None = None,
+    ) -> CampaignAssetRecord:
+        """Persist latest asset admission and append an immutable event."""
+
+        from app.bounty_autopilot.asset_admission import AssetAdmissionRecord
+
+        record_model = AssetAdmissionRecord.model_validate(admission)
+        timestamp = now or datetime.now(UTC)
+        existing = self.session.scalar(
+            select(CampaignAssetRecord).where(
+                CampaignAssetRecord.campaign_id == campaign_id,
+                CampaignAssetRecord.asset_id == record_model.asset_id,
+            )
+        )
+        network = record_model.network.model_dump(mode="json")
+        if existing is None:
+            existing = CampaignAssetRecord(
+                id=f"campasset_{uuid4().hex}",
+                campaign_id=campaign_id,
+                asset_id=record_model.asset_id,
+                identity_digest=record_model.identity_digest,
+                scheme=record_model.identity.scheme,
+                host=record_model.identity.host,
+                port=record_model.identity.port,
+                path_authority=record_model.identity.path_authority,
+                provenance=record_model.identity.provenance.value,
+                admission_decision=record_model.decision.value,
+                scope_snapshot_digest=record_model.scope_snapshot_digest,
+                network_identity=network,
+                source=record_model.source,
+                reason=record_model.reason,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+                payload={},
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self.session.add(existing)
+        else:
+            existing.identity_digest = record_model.identity_digest
+            existing.scheme = record_model.identity.scheme
+            existing.host = record_model.identity.host
+            existing.port = record_model.identity.port
+            existing.path_authority = record_model.identity.path_authority
+            existing.provenance = record_model.identity.provenance.value
+            existing.admission_decision = record_model.decision.value
+            existing.scope_snapshot_digest = record_model.scope_snapshot_digest
+            existing.network_identity = network
+            existing.source = record_model.source
+            existing.reason = record_model.reason
+            existing.last_seen_at = timestamp
+            existing.updated_at = timestamp
+
+        event = CampaignAssetAdmissionEventRecord(
+            id=f"assetadm_{uuid4().hex}",
+            campaign_id=campaign_id,
+            asset_id=record_model.asset_id,
+            identity_digest=record_model.identity_digest,
+            decision=record_model.decision.value,
+            scope_snapshot_digest=record_model.scope_snapshot_digest,
+            network_identity=network,
+            source=record_model.source,
+            reason=record_model.reason,
+            recorded_at=timestamp,
+            payload={},
+        )
+        self.session.add(event)
+        self.session.commit()
+        self.session.refresh(existing)
+        return existing
+
+    def list_campaign_assets(self, campaign_id: str) -> list[CampaignAssetRecord]:
+        return list(
+            self.session.scalars(
+                select(CampaignAssetRecord)
+                .where(CampaignAssetRecord.campaign_id == campaign_id)
+                .order_by(CampaignAssetRecord.asset_id.asc())
+            ).all()
+        )
+
+    def get_campaign_asset(
+        self,
+        *,
+        campaign_id: str,
+        asset_id: str,
+    ) -> CampaignAssetRecord | None:
+        return self.session.scalar(
+            select(CampaignAssetRecord).where(
+                CampaignAssetRecord.campaign_id == campaign_id,
+                CampaignAssetRecord.asset_id == asset_id,
+            )
+        )
+
+    def list_admitted_campaign_asset_ids(
+        self,
+        campaign_id: str,
+        *,
+        scope_snapshot_digest: str,
+    ) -> set[str]:
+        rows = self.session.scalars(
+            select(CampaignAssetRecord).where(
+                CampaignAssetRecord.campaign_id == campaign_id,
+                CampaignAssetRecord.admission_decision == "admitted",
+                CampaignAssetRecord.scope_snapshot_digest == scope_snapshot_digest,
+            )
+        ).all()
+        return {row.asset_id for row in rows}
+
+    def create_research_branch(
+        self,
+        *,
+        campaign_id: str,
+        branch: dict,
+        now: datetime | None = None,
+    ) -> ResearchBranchRecord:
+        from app.bounty_autopilot.branches import ResearchBranch
+
+        model = ResearchBranch.model_validate(branch)
+        if model.campaign_id != campaign_id:
+            raise ValueError("branch_campaign_mismatch")
+        timestamp = now or datetime.now(UTC)
+        record = ResearchBranchRecord(
+            id=f"rbranch_{uuid4().hex}",
+            campaign_id=campaign_id,
+            branch_id=model.branch_id,
+            asset_id=model.asset_id,
+            status=model.status.value,
+            priority=model.priority,
+            risk_tier=model.risk_tier.value,
+            hypothesis_id=model.hypothesis_id,
+            parent_signal_id=None,
+            recipe_id=model.recipe_ref.recipe_id if model.recipe_ref else None,
+            recipe_version=model.recipe_ref.version if model.recipe_ref else None,
+            account_aliases=list(model.account_aliases),
+            budget_counters=model.budget.model_dump(mode="json"),
+            stop_reason=model.stop_reason,
+            version=model.version,
+            payload={},
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def list_research_branches(self, campaign_id: str) -> list[ResearchBranchRecord]:
+        return list(
+            self.session.scalars(
+                select(ResearchBranchRecord)
+                .where(ResearchBranchRecord.campaign_id == campaign_id)
+                .order_by(
+                    ResearchBranchRecord.priority.desc(),
+                    ResearchBranchRecord.branch_id.asc(),
+                )
+            ).all()
+        )
+
+    def transition_research_branch(
+        self,
+        *,
+        campaign_id: str,
+        branch_id: str,
+        new_status: str,
+        expected_version: int,
+        stop_reason: str | None = None,
+        now: datetime | None = None,
+    ) -> ResearchBranchRecord:
+        from app.bounty_autopilot.branches import (
+            BranchBudgetCounters,
+            BranchStatus,
+            ResearchBranch,
+            transition_branch,
+        )
+        from app.bounty_autopilot.contracts import RecipeRef, RiskTier
+
+        record = self.session.scalar(
+            select(ResearchBranchRecord).where(
+                ResearchBranchRecord.campaign_id == campaign_id,
+                ResearchBranchRecord.branch_id == branch_id,
+            )
+        )
+        if record is None:
+            raise ValueError("branch_not_found")
+        recipe_ref = None
+        if record.recipe_id and record.recipe_version:
+            recipe_ref = RecipeRef(
+                recipe_id=record.recipe_id,
+                version=record.recipe_version,
+            )
+        budget_payload = record.budget_counters if isinstance(record.budget_counters, dict) else {}
+        current = ResearchBranch(
+            branch_id=record.branch_id,
+            campaign_id=record.campaign_id,
+            asset_id=record.asset_id,
+            status=BranchStatus(record.status),
+            priority=record.priority,
+            recipe_ref=recipe_ref,
+            risk_tier=RiskTier(record.risk_tier),
+            hypothesis_id=record.hypothesis_id,
+            account_aliases=tuple(record.account_aliases or ()),
+            budget=BranchBudgetCounters.model_validate(budget_payload or {}),
+            stop_reason=record.stop_reason,
+            version=record.version,
+        )
+        updated = transition_branch(
+            current,
+            new_status=BranchStatus(new_status),
+            expected_version=expected_version,
+            stop_reason=stop_reason,
+        )
+        timestamp = now or datetime.now(UTC)
+        record.status = updated.status.value
+        record.stop_reason = updated.stop_reason
+        record.version = updated.version
+        record.updated_at = timestamp
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def steer_research_branch(
+        self,
+        *,
+        campaign_id: str,
+        branch_id: str,
+        priority: int | None = None,
+        hypothesis_guidance: str | None = None,
+        actor: str = "operator",
+        reason: str = "operator_steering",
+        now: datetime | None = None,
+    ) -> ResearchBranchRecord:
+        """Apply only bounded steering fields to one persisted branch."""
+
+        if priority is None and hypothesis_guidance is None:
+            raise ValueError("steering_change_required")
+        timestamp = now or datetime.now(UTC)
+        record = self.session.scalar(
+            select(ResearchBranchRecord)
+            .where(
+                ResearchBranchRecord.campaign_id == campaign_id,
+                ResearchBranchRecord.branch_id == branch_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise ValueError("branch_not_found")
+        if self.campaign_is_emergency_stopped(campaign_id):
+            raise ValueError("emergency_stopped")
+        if record.status in {"completed", "closed", "blocked"}:
+            raise ValueError("branch_not_steerable")
+        if priority is not None:
+            if priority < 0 or priority > 100:
+                raise ValueError("priority_out_of_range")
+            record.priority = priority
+        payload = dict(record.payload or {})
+        if hypothesis_guidance is not None:
+            payload["hypothesis_guidance"] = _safe_display_value(hypothesis_guidance)[:512]
+        payload["last_steering"] = {
+            "actor": _safe_display_value(actor)[:255],
+            "reason": _safe_display_value(reason)[:256],
+            "updated_at": timestamp.isoformat(),
+        }
+        record.payload = payload
+        record.version += 1
+        record.updated_at = timestamp
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def create_validation_plan(
+        self,
+        *,
+        campaign_id: str,
+        plan_payload: dict,
+        now: datetime | None = None,
+    ) -> ValidationPlanRecord:
+        """Persist an immutable validation plan (digest-bound payload)."""
+
+        from app.bounty_autopilot.plans import ValidationPlan, build_validation_plan
+
+        # Prefer re-building so digest is server-validated.
+        if "plan_digest" in plan_payload and "recipe_ref" in plan_payload:
+            try:
+                plan = ValidationPlan.model_validate(plan_payload)
+            except Exception:
+                plan = build_validation_plan(**{
+                    k: v for k, v in plan_payload.items() if k != "plan_digest"
+                })
+        else:
+            plan = build_validation_plan(**plan_payload)
+        if plan.campaign_id != campaign_id:
+            raise ValueError("campaign_id_mismatch")
+        existing = self.session.scalar(
+            select(ValidationPlanRecord).where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == plan.plan_id,
+            )
+        )
+        if existing is not None:
+            if existing.plan_digest != plan.plan_digest:
+                raise ValueError("plan_immutable_digest_conflict")
+            return existing
+        timestamp = now or datetime.now(UTC)
+        record = ValidationPlanRecord(
+            id=f"vplan_{uuid4().hex}",
+            campaign_id=campaign_id,
+            plan_id=plan.plan_id,
+            plan_digest=plan.plan_digest,
+            branch_id=plan.branch_id,
+            asset_id=plan.asset_id,
+            risk_tier=plan.risk_tier.value,
+            status="ready",
+            payload=plan.model_dump(mode="json"),
+            created_at=timestamp,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def get_validation_plan(
+        self,
+        *,
+        campaign_id: str,
+        plan_id: str,
+    ) -> ValidationPlanRecord | None:
+        return self.session.scalar(
+            select(ValidationPlanRecord).where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == plan_id,
+            )
+        )
+
+    def list_validation_plans(self, campaign_id: str) -> list[ValidationPlanRecord]:
+        return list(
+            self.session.scalars(
+                select(ValidationPlanRecord)
+                .where(ValidationPlanRecord.campaign_id == campaign_id)
+                .order_by(ValidationPlanRecord.created_at.desc())
+            ).all()
+        )
+
+    def _validate_autopilot_plan_authority(
+        self,
+        *,
+        campaign_id: str,
+        plan: Any,
+        authorization_digest: str,
+        scope_snapshot_digest: str,
+        policy_mode: str,
+        now: datetime,
+    ) -> str | None:
+        """Re-resolve mutable plan bindings when durable authority exists.
+
+        Every Autopilot lease is checked against its current server-owned
+        authorization and admitted asset before issuance.
+        """
+
+        current = self.get_current_campaign_authorization(campaign_id)
+        if current is None:
+            return "authorization_missing"
+        from app.bounty_autopilot.asset_admission import (
+            AssetIdentity,
+            AssetProvenance,
+            compute_identity_digest,
+        )
+        from app.bounty_autopilot.authority import (
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+        from app.bounty_autopilot.contracts import PolicyMode, RiskTier
+        from app.bounty_autopilot.recipes import get_recipe
+
+        try:
+            authorization = authorization_from_payload(current.payload)
+            campaign = self.get_campaign(campaign_id)
+            if campaign is None:
+                return "campaign_not_found"
+            expected_policy_digest = "sha256:" + str(
+                campaign.policy_text_hash
+            ).removeprefix("sha256:")
+            validate_current_authorization(
+                authorization,
+                now=now,
+                expected_policy_digest=expected_policy_digest,
+            )
+        except Exception:  # noqa: BLE001 - persisted authority fails closed
+            return "authorization_invalid"
+        if authorization.campaign_id != campaign_id:
+            return "authorization_campaign_mismatch"
+        if authorization_digest != authorization.authorization_digest:
+            return "authorization_digest_mismatch"
+        if scope_snapshot_digest != authorization.scope_snapshot_digest:
+            return "scope_snapshot_mismatch"
+        try:
+            requested_mode = PolicyMode(policy_mode)
+        except ValueError:
+            return "policy_mode_invalid"
+        if requested_mode is not authorization.policy_mode:
+            return "policy_mode_mismatch"
+        if now.hour not in authorization.active_hours_utc:
+            return "active_hours_closed"
+        if (
+            plan.authorization_digest != authorization.authorization_digest
+            or plan.scope_snapshot_digest != authorization.scope_snapshot_digest
+        ):
+            return "plan_authorization_stale"
+        if plan.asset_id not in authorization.asset_ids:
+            return "asset_not_authorized"
+        if not authorization.permits_recipe(plan.recipe_ref):
+            return "recipe_not_authorized"
+
+        risk_order = {tier: index for index, tier in enumerate(RiskTier)}
+        if risk_order[plan.risk_tier] > risk_order[authorization.risk_ceiling]:
+            return "risk_ceiling_exceeded"
+        if any(alias not in authorization.account_aliases for alias in plan.account_aliases):
+            return "account_alias_not_authorized"
+        if (
+            plan.max_requests > authorization.budget.max_requests
+            or plan.max_response_bytes > authorization.budget.max_response_bytes
+            or plan.max_duration_seconds > authorization.budget.max_duration_seconds
+            or plan.cost_units > authorization.budget.max_cost_units
+        ):
+            return "plan_budget_exceeded"
+
+        recipe = get_recipe(plan.recipe_ref.recipe_id, plan.recipe_ref.version)
+        if recipe is None:
+            return "unknown_recipe_ref"
+        if authorization.policy_mode not in recipe.policy_modes:
+            return "policy_mode_blocks_active_execution"
+        if risk_order[plan.risk_tier] < risk_order[recipe.risk_tier]:
+            return "plan_risk_below_recipe"
+        if set(plan.methods) != set(plan.mutation_inventory.methods) or not set(
+            plan.methods
+        ).issubset(recipe.mutation_inventory.methods):
+            return "recipe_method_mismatch"
+        if (
+            plan.mutation_inventory.mutates_state != recipe.mutation_inventory.mutates_state
+            or plan.mutation_inventory.reversible != recipe.mutation_inventory.reversible
+            or plan.mutation_inventory.requires_owned_accounts
+            != recipe.mutation_inventory.requires_owned_accounts
+        ):
+            return "recipe_mutation_mismatch"
+        if not set(recipe.required_account_aliases).issubset(plan.account_aliases):
+            return "required_account_aliases_missing"
+
+        asset = self.get_campaign_asset(campaign_id=campaign_id, asset_id=plan.asset_id)
+        if asset is None or asset.admission_decision != "admitted":
+            return "asset_not_admitted"
+        if asset.scope_snapshot_digest != authorization.scope_snapshot_digest:
+            return "asset_scope_stale"
+        try:
+            identity = AssetIdentity(
+                scheme=asset.scheme,
+                host=asset.host,
+                port=asset.port,
+                path_authority=asset.path_authority,
+                provenance=AssetProvenance(asset.provenance),
+            )
+        except (TypeError, ValueError):
+            return "asset_identity_invalid"
+        if compute_identity_digest(identity) != asset.identity_digest:
+            return "asset_identity_stale"
+        if (
+            plan.destination_scheme != identity.scheme
+            or plan.destination_host.lower().rstrip(".") != identity.host
+            or plan.destination_port != identity.port
+        ):
+            return "plan_destination_not_admitted"
+        asset_path = asset.path_authority.rstrip("/") or "/"
+        plan_path = plan.destination_path.rstrip("/") or "/"
+        if asset_path != "/" and plan_path not in {asset_path} and not plan_path.startswith(
+            f"{asset_path}/"
+        ):
+            return "plan_destination_not_admitted"
+        return None
+
+    @staticmethod
+    def _r3_approval_binding_error(
+        *,
+        approval: ApprovalRecord,
+        plan: Any,
+        authorization_digest: str,
+        scope_snapshot_digest: str,
+        consumed_by_lease_id: str | None = None,
+    ) -> str | None:
+        """Validate the immutable details an R3 approval must bind."""
+
+        if approval.approval_type != "r3_exact_plan":
+            return "approval_type_mismatch"
+        if approval.plan_digest is None:
+            return "approval_plan_required"
+        if approval.plan_digest != plan.plan_digest:
+            return "approval_plan_mismatch"
+        payload = approval.payload
+        if not isinstance(payload, dict):
+            return "approval_payload_invalid"
+        if payload.get("plan_digest") != plan.plan_digest:
+            return "approval_payload_plan_mismatch"
+        if payload.get("authorization_digest") != authorization_digest:
+            return "approval_authorization_mismatch"
+        if payload.get("scope_snapshot_digest") != scope_snapshot_digest:
+            return "approval_scope_mismatch"
+        aliases = payload.get("account_aliases")
+        if not isinstance(aliases, (list, tuple)) or not all(
+            isinstance(alias, str) for alias in aliases
+        ):
+            return "approval_account_aliases_required"
+        if (
+            len(aliases) != len(plan.account_aliases)
+            or set(aliases) != set(plan.account_aliases)
+        ):
+            return "approval_account_alias_mismatch"
+        if consumed_by_lease_id is not None and (
+            approval.status != "used"
+            or approval.consumed_at is None
+            or approval.consumed_by_lease_id != consumed_by_lease_id
+        ):
+            return "approval_consumption_mismatch"
+        return None
+
+    def _current_autopilot_execution_authority(
+        self,
+        *,
+        campaign: CampaignRecord,
+        now: datetime,
+    ) -> tuple[CampaignAuthorizationRecord, Any]:
+        """Load the current authorization used by a durable execution record."""
+
+        from app.bounty_autopilot.authority import (
+            AuthorizationValidationError,
+            authorization_from_payload,
+            validate_current_authorization,
+        )
+
+        record = self.get_current_campaign_authorization(campaign.id)
+        if record is None:
+            raise ValueError("authorization_missing")
+        try:
+            authorization = authorization_from_payload(record.payload)
+            expected_policy_digest = "sha256:" + str(
+                campaign.policy_text_hash
+            ).removeprefix("sha256:")
+            validate_current_authorization(
+                authorization,
+                now=now,
+                expected_policy_digest=expected_policy_digest,
+            )
+        except AuthorizationValidationError as exc:
+            raise ValueError(exc.reason) from exc
+        except Exception as exc:  # noqa: BLE001 - persisted authority fails closed
+            raise ValueError("authorization_invalid") from exc
+        if authorization.campaign_id != campaign.id:
+            raise ValueError("authorization_campaign_mismatch")
+        return record, authorization
+
+    def get_autopilot_authorization_budget_usage(
+        self,
+        *,
+        campaign_id: str,
+        authorization_id: str,
+        for_update: bool = False,
+    ) -> dict[str, int] | None:
+        """Return durable reservations for one authorization generation.
+
+        Older lease rows without the duration/cost ledger are intentionally
+        non-executable under that generation rather than being guessed.
+        """
+
+        statement = select(ExecutionLeaseRecord).where(
+            ExecutionLeaseRecord.campaign_id == campaign_id,
+            ExecutionLeaseRecord.authorization_id == authorization_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        records = list(self.session.scalars(statement).all())
+        if any(
+            record.duration_reserved_seconds is None
+            or record.cost_units_reserved is None
+            for record in records
+        ):
+            return None
+        return {
+            "requests_reserved": sum(int(record.requests_reserved or 0) for record in records),
+            "duration_reserved_seconds": sum(
+                int(record.duration_reserved_seconds or 0) for record in records
+            ),
+            "cost_units_reserved": sum(
+                int(record.cost_units_reserved or 0) for record in records
+            ),
+        }
+
+    @staticmethod
+    def _lease_expiry(lease: Any, record: ExecutionLeaseRecord) -> datetime | None:
+        value = getattr(lease, "expires_at", None)
+        parsed = _payload_datetime(value)
+        if parsed is None:
+            return None
+        if record.expires_at is None or _as_utc(record.expires_at) != parsed:
+            return None
+        return parsed
+
+    def _expire_execution_lease_record(
+        self,
+        *,
+        record: ExecutionLeaseRecord,
+        now: datetime,
+    ) -> None:
+        """Persist terminal expiry and release unsent capability together."""
+
+        if record.status != "active":
+            return
+        record.status = "expired"
+        record.revoked_at = now
+        payload = dict(record.payload or {})
+        payload["status"] = "expired"
+        record.payload = payload
+        for reservation in self.session.scalars(
+            select(ExecutionRequestLedgerRecord).where(
+                ExecutionRequestLedgerRecord.campaign_id == record.campaign_id,
+                ExecutionRequestLedgerRecord.lease_id == record.lease_id,
+                ExecutionRequestLedgerRecord.status == "reserved",
+            )
+        ).all():
+            reservation.status = "expired"
+            reservation.completed_at = now
+            reservation_payload = dict(reservation.payload or {})
+            reservation_payload["status"] = "expired"
+            reservation.payload = reservation_payload
+
+    def _require_current_execution_lease(
+        self,
+        *,
+        campaign: CampaignRecord,
+        record: ExecutionLeaseRecord,
+        lease: Any,
+        now: datetime,
+    ) -> tuple[CampaignAuthorizationRecord, Any]:
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        if (
+            record.duration_reserved_seconds is None
+            or record.cost_units_reserved is None
+            or "duration_reserved_seconds" not in payload
+            or "cost_units_reserved" not in payload
+            or payload.get("duration_reserved_seconds")
+            != record.duration_reserved_seconds
+            or payload.get("cost_units_reserved") != record.cost_units_reserved
+            or record.duration_reserved_seconds != lease.duration_reserved_seconds
+            or record.cost_units_reserved != lease.cost_units_reserved
+        ):
+            raise ValueError("authorization_budget_ledger_invalid")
+        authorization_record, authorization = self._current_autopilot_execution_authority(
+            campaign=campaign,
+            now=now,
+        )
+        if (
+            lease.authorization_id != authorization_record.id
+            or record.authorization_id != authorization_record.id
+            or lease.authorization_digest != authorization.authorization_digest
+            or lease.scope_snapshot_digest != authorization.scope_snapshot_digest
+        ):
+            raise ValueError("lease_authorization_stale")
+        expires_at = self._lease_expiry(lease, record)
+        if expires_at is None:
+            raise ValueError("lease_expiry_integrity_invalid")
+        if expires_at <= now:
+            self._expire_execution_lease_record(record=record, now=now)
+            self.session.commit()
+            raise ValueError("lease_expired")
+        return authorization_record, authorization
+
+    def campaign_is_emergency_stopped(self, campaign_id: str) -> bool:
+        campaign = self.session.get(CampaignRecord, campaign_id)
+        if campaign is None:
+            return True
+        if campaign.status in {"stopped", "emergency_stopped"}:
+            return True
+        payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+        return bool(payload.get("emergency_stopped"))
+
+    def get_autopilot_local_stop_status(self, campaign_id: str) -> dict:
+        campaign = self.session.get(CampaignRecord, campaign_id)
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+        confirmation = payload.get("emergency_stop_local_confirmation")
+        confirmed = (
+            isinstance(confirmation, dict)
+            and confirmation.get("status") == "confirmed"
+            and isinstance(confirmation.get("confirmed_at"), str)
+        )
+        return {
+            "campaign_id": campaign_id,
+            "emergency_stopped": self.campaign_is_emergency_stopped(campaign_id),
+            "local_stop_confirmed": confirmed,
+        }
+
+    def acknowledge_autopilot_local_stop(
+        self,
+        *,
+        campaign_id: str,
+        now: datetime | None = None,
+    ) -> dict:
+        """Record only a local teardown confirmation after server authority is revoked."""
+
+        timestamp = now or datetime.now(UTC)
+        campaign = self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+        )
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        if not self.campaign_is_emergency_stopped(campaign_id):
+            raise ValueError("emergency_stop_not_requested")
+
+        payload = dict(campaign.payload or {})
+        current = payload.get("emergency_stop_local_confirmation")
+        requested_at = (
+            current.get("requested_at")
+            if isinstance(current, dict) and isinstance(current.get("requested_at"), str)
+            else timestamp.isoformat()
+        )
+        if not (
+            isinstance(current, dict)
+            and current.get("status") == "confirmed"
+            and isinstance(current.get("confirmed_at"), str)
+        ):
+            payload["emergency_stop_local_confirmation"] = {
+                "status": "confirmed",
+                "requested_at": requested_at,
+                "confirmed_at": timestamp.isoformat(),
+            }
+            campaign.payload = payload
+            self.session.commit()
+
+        return self.get_autopilot_local_stop_status(campaign_id)
+
+    def prepare_emergency_stop_confirmation(
+        self,
+        *,
+        campaign_id: str,
+        actor: str,
+        reason: str,
+        now: datetime | None = None,
+        ttl_seconds: int = 120,
+    ) -> dict:
+        """Issue a short-lived, single-use stop confirmation without storing it."""
+
+        if ttl_seconds < 30 or ttl_seconds > 600:
+            raise ValueError("invalid_confirmation_ttl")
+        timestamp = now or datetime.now(UTC)
+        campaign = self.session.get(CampaignRecord, campaign_id)
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        if self.campaign_is_emergency_stopped(campaign_id):
+            raise ValueError("already_stopped")
+
+        nonce = secrets.token_urlsafe(32)
+        nonce_digest = f"sha256:{sha256(nonce.encode('utf-8')).hexdigest()}"
+        expires_at = timestamp + timedelta(seconds=ttl_seconds)
+        payload = dict(campaign.payload or {})
+        payload["emergency_stop_confirmation"] = {
+            "nonce_digest": nonce_digest,
+            "actor": _safe_display_value(actor),
+            "reason": _safe_display_value(reason),
+            "issued_at": timestamp.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }
+        campaign.payload = payload
+        self.session.commit()
+        return {
+            "campaign_id": campaign_id,
+            "confirmation_nonce": nonce,
+            "expires_at": expires_at.isoformat(),
+        }
+
+    def issue_execution_lease(
+        self,
+        *,
+        campaign_id: str,
+        plan_id: str,
+        lease_id: str | None = None,
+        authorization_digest: str,
+        scope_snapshot_digest: str,
+        authorization_recipe_allowed: bool,
+        policy_mode: str,
+        approval_id: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[bool, str, ExecutionLeaseRecord | None]:
+        """Atomically re-check authority and issue a durable lease."""
+
+        from app.bounty_autopilot.contracts import PolicyMode, RecipeRef, RiskTier
+        from app.bounty_autopilot.leases import (
+            ExecutionLease,
+            LeaseStatus,
+            issue_execution_lease as pure_issue,
+            r3_approval_freshness_error,
+        )
+        from app.bounty_autopilot.plans import ValidationPlan
+
+        timestamp = now or datetime.now(UTC)
+        now_iso = timestamp.isoformat()
+        campaign = self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+        )
+        if campaign is None:
+            return False, "campaign_not_found", None
+        # SQLite does not implement SELECT FOR UPDATE. A no-op write acquires
+        # the same campaign-level writer lock used by reservation and stop.
+        self.session.execute(
+            update(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .values(status=CampaignRecord.status)
+        )
+        if campaign.status in {"stopped", "emergency_stopped"} or (
+            isinstance(campaign.payload, dict) and campaign.payload.get("emergency_stopped")
+        ):
+            return False, "emergency_stopped", None
+
+        plan_record = self.session.scalar(
+            select(ValidationPlanRecord)
+            .where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == plan_id,
+            )
+            .with_for_update()
+        )
+        if plan_record is None:
+            return False, "plan_not_found", None
+        plan = ValidationPlan.model_validate(plan_record.payload)
+
+        lease_key = lease_id or f"lease_{uuid4().hex}"
+        existing = self.session.scalar(
+            select(ExecutionLeaseRecord).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == lease_key,
+            )
+        )
+        if existing is not None:
+            authority_error = self._validate_autopilot_plan_authority(
+                campaign_id=campaign_id,
+                plan=plan,
+                authorization_digest=authorization_digest,
+                scope_snapshot_digest=scope_snapshot_digest,
+                policy_mode=policy_mode,
+                now=timestamp,
+            )
+            if authority_error is not None:
+                return False, authority_error, None
+            try:
+                persisted = ExecutionLease.model_validate(existing.payload)
+            except Exception:  # noqa: BLE001 - persisted leases fail closed
+                return False, "lease_integrity_invalid", None
+            if existing.status != LeaseStatus.ACTIVE.value:
+                return False, "lease_not_active", None
+            try:
+                self._require_current_execution_lease(
+                    campaign=campaign,
+                    record=existing,
+                    lease=persisted,
+                    now=timestamp,
+                )
+            except ValueError as exc:
+                return False, str(exc), None
+            if (
+                persisted.plan_id != plan.plan_id
+                or persisted.plan_digest != plan.plan_digest
+                or persisted.authorization_digest != authorization_digest
+                or persisted.scope_snapshot_digest != scope_snapshot_digest
+            ):
+                return False, "lease_integrity_mismatch", None
+            if plan.risk_tier.value == "R3":
+                if approval_id != persisted.r3_approval_id:
+                    return False, "approval_lease_mismatch", None
+                approval = self.session.get(ApprovalRecord, approval_id)
+                if approval is None:
+                    return False, "approval_not_found", None
+                approval_error = self._r3_approval_binding_error(
+                    approval=approval,
+                    plan=plan,
+                    authorization_digest=authorization_digest,
+                    scope_snapshot_digest=scope_snapshot_digest,
+                    consumed_by_lease_id=persisted.lease_id,
+                )
+                if approval_error is not None:
+                    return False, approval_error, None
+            return True, "already_issued", existing
+
+        authority_error = self._validate_autopilot_plan_authority(
+            campaign_id=campaign_id,
+            plan=plan,
+            authorization_digest=authorization_digest,
+            scope_snapshot_digest=scope_snapshot_digest,
+            policy_mode=policy_mode,
+            now=timestamp,
+        )
+        if authority_error is not None:
+            return False, authority_error, None
+        try:
+            authorization_record, authorization = self._current_autopilot_execution_authority(
+                campaign=campaign,
+                now=timestamp,
+            )
+        except ValueError as exc:
+            return False, str(exc), None
+        budget_usage = self.get_autopilot_authorization_budget_usage(
+            campaign_id=campaign_id,
+            authorization_id=authorization_record.id,
+            for_update=True,
+        )
+        if budget_usage is None:
+            return False, "authorization_budget_ledger_invalid", None
+        if (
+            budget_usage["duration_reserved_seconds"] + plan.max_duration_seconds
+            > authorization.budget.max_duration_seconds
+        ):
+            return False, "authorization_duration_budget_exhausted", None
+        if (
+            budget_usage["cost_units_reserved"] + plan.cost_units
+            > authorization.budget.max_cost_units
+        ):
+            return False, "authorization_cost_budget_exhausted", None
+
+        # Durable single-use R3 consumption via CAS.
+        approval_token = None
+        approval_store = None
+        approval_expires_at = None
+        if plan.risk_tier.value == "R3":
+            if not approval_id:
+                return False, "r3_approval_required", None
+            approval = self.session.get(ApprovalRecord, approval_id)
+            if approval is None:
+                return False, "approval_not_found", None
+            if approval.campaign_id != campaign_id:
+                return False, "approval_campaign_mismatch", None
+            if approval.consumed_at is not None or approval.consumed_by_lease_id is not None:
+                return False, "approval_already_consumed", None
+            if approval.status not in {"approved", "used"}:
+                return False, "approval_not_approved", None
+            if approval.status == "used":
+                return False, "approval_already_consumed", None
+            expires_at = approval.expires_at
+            if expires_at is None:
+                return False, "approval_expiry_required", None
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            approval_freshness_error = r3_approval_freshness_error(
+                approved_at=approval.decided_at,
+                expires_at=expires_at,
+                now=timestamp,
+            )
+            if approval_freshness_error is not None:
+                return False, approval_freshness_error, None
+            approval_error = self._r3_approval_binding_error(
+                approval=approval,
+                plan=plan,
+                authorization_digest=authorization_digest,
+                scope_snapshot_digest=scope_snapshot_digest,
+            )
+            if approval_error is not None:
+                return False, approval_error, None
+            payload = approval.payload if isinstance(approval.payload, dict) else {}
+            nonce = approval.single_use_nonce_digest
+            if not nonce:
+                candidate = payload.get("nonce_digest")
+                if isinstance(candidate, str) and candidate.startswith("sha256:"):
+                    nonce = candidate
+            if not nonce:
+                return False, "approval_nonce_required", None
+            from app.bounty_autopilot.leases import ApprovalStore, R3ApprovalToken
+
+            approval_token = R3ApprovalToken(
+                approval_id=approval.id,
+                plan_digest=plan.plan_digest,
+                scope_snapshot_digest=scope_snapshot_digest,
+                authorization_digest=authorization_digest,
+                account_aliases=tuple(payload["account_aliases"]),
+                nonce_digest=nonce,
+                expires_at=expires_at.isoformat(),
+            )
+            approval_store = ApprovalStore()
+            approval_store.put(approval_token)
+            approval_expires_at = expires_at
+
+        active_for_plan = self.session.scalar(
+            select(ExecutionLeaseRecord)
+            .where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.plan_id == plan.plan_id,
+                ExecutionLeaseRecord.status == LeaseStatus.ACTIVE.value,
+            )
+            .with_for_update()
+        )
+        if active_for_plan is not None:
+            try:
+                active_lease = ExecutionLease.model_validate(active_for_plan.payload)
+            except Exception:  # noqa: BLE001 - existing durable lease fails closed
+                return False, "lease_integrity_invalid", None
+            active_expires_at = self._lease_expiry(active_lease, active_for_plan)
+            if active_expires_at is None:
+                return False, "lease_expiry_integrity_invalid", None
+            if active_expires_at > timestamp:
+                return False, "plan_lease_already_active", None
+            self._expire_execution_lease_record(
+                record=active_for_plan,
+                now=timestamp,
+            )
+
+        result = pure_issue(
+            plan=plan,
+            policy_mode=PolicyMode(policy_mode),
+            authorization_recipe_allowed=authorization_recipe_allowed,
+            authorization_digest=authorization_digest,
+            scope_snapshot_digest=scope_snapshot_digest,
+            lease_id=lease_key,
+            now_iso=now_iso,
+            emergency_stopped=False,
+            approval_store=approval_store,
+            approval_token=approval_token,
+        )
+        if not result.allowed or result.lease is None:
+            return False, result.reason, None
+
+        if plan.risk_tier.value == "R3" and approval_id:
+            cas = self.session.execute(
+                update(ApprovalRecord)
+                .where(ApprovalRecord.id == approval_id)
+                .where(ApprovalRecord.consumed_at.is_(None))
+                .where(ApprovalRecord.status == "approved")
+                .values(
+                    consumed_at=timestamp,
+                    consumed_by_lease_id=lease_key,
+                    status="used",
+                )
+            )
+            if cas.rowcount != 1:
+                self.session.rollback()
+                durable_approval = self.session.get(ApprovalRecord, approval_id)
+                if (
+                    durable_approval is not None
+                    and durable_approval.consumed_by_lease_id == lease_key
+                ):
+                    return self.issue_execution_lease(
+                        campaign_id=campaign_id,
+                        plan_id=plan_id,
+                        lease_id=lease_key,
+                        authorization_digest=authorization_digest,
+                        scope_snapshot_digest=scope_snapshot_digest,
+                        authorization_recipe_allowed=authorization_recipe_allowed,
+                        policy_mode=policy_mode,
+                        approval_id=approval_id,
+                        now=timestamp,
+                    )
+                return False, "approval_already_consumed", None
+
+        lease_expires_at = _payload_datetime(result.lease.expires_at)
+        if lease_expires_at is None:
+            return False, "lease_expiry_integrity_invalid", None
+        authorization_expires_at = _as_utc(authorization_record.expires_at)
+        if authorization_expires_at <= timestamp:
+            return False, "authorization_expired", None
+        expiry_candidates = [lease_expires_at, authorization_expires_at]
+        if approval_expires_at is not None:
+            expiry_candidates.append(_as_utc(approval_expires_at))
+        lease = result.lease.model_copy(
+            update={
+                "authorization_id": authorization_record.id,
+                "expires_at": min(expiry_candidates).isoformat(),
+            }
+        )
+        record = ExecutionLeaseRecord(
+            id=f"lease_row_{uuid4().hex}",
+            campaign_id=campaign_id,
+            lease_id=lease.lease_id,
+            plan_id=lease.plan_id,
+            plan_digest=lease.plan_digest,
+            status=lease.status.value,
+            authorization_id=lease.authorization_id,
+            r3_approval_id=lease.r3_approval_id,
+            requests_reserved=lease.requests_reserved,
+            duration_reserved_seconds=lease.duration_reserved_seconds,
+            cost_units_reserved=lease.cost_units_reserved,
+            payload=lease.model_dump(mode="json"),
+            created_at=timestamp,
+            expires_at=_payload_datetime(lease.expires_at),
+            revoked_at=None,
+        )
+        self.session.add(record)
+        plan_record.status = "issued"
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(ExecutionLeaseRecord).where(
+                    ExecutionLeaseRecord.campaign_id == campaign_id,
+                    ExecutionLeaseRecord.lease_id == lease_key,
+                )
+            )
+            if existing is not None:
+                return self.issue_execution_lease(
+                    campaign_id=campaign_id,
+                    plan_id=plan_id,
+                    lease_id=lease_key,
+                    authorization_digest=authorization_digest,
+                    scope_snapshot_digest=scope_snapshot_digest,
+                    authorization_recipe_allowed=authorization_recipe_allowed,
+                    policy_mode=policy_mode,
+                    approval_id=approval_id,
+                    now=timestamp,
+                )
+            raise
+        self.session.refresh(record)
+        return True, "issued", record
+
+    def list_execution_leases(
+        self,
+        campaign_id: str,
+        *,
+        status: str | None = None,
+    ) -> list[ExecutionLeaseRecord]:
+        statement = select(ExecutionLeaseRecord).where(
+            ExecutionLeaseRecord.campaign_id == campaign_id
+        )
+        if status is not None:
+            statement = statement.where(ExecutionLeaseRecord.status == status)
+        return list(
+            self.session.scalars(
+                statement.order_by(ExecutionLeaseRecord.created_at.desc())
+            ).all()
+        )
+
+    def get_execution_lease(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+    ) -> ExecutionLeaseRecord | None:
+        return self.session.scalar(
+            select(ExecutionLeaseRecord).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == lease_id,
+            )
+        )
+
+    def reserve_execution_request(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+        reservation_payload: dict,
+        now: datetime | None = None,
+    ) -> ExecutionRequestLedgerRecord:
+        """Reserve a request under an active lease with idempotency."""
+
+        from app.bounty_autopilot.leases import ExecutionLease, LeaseStatus
+        from app.bounty_autopilot.request_ledger import (
+            RequestReservation,
+            RequestReservationStatus,
+        )
+
+        timestamp = now or datetime.now(UTC)
+        campaign = self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+        )
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        campaign_payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+        if campaign.status in {"stopped", "emergency_stopped"} or campaign_payload.get(
+            "emergency_stopped"
+        ):
+            raise ValueError("emergency_stopped")
+        # SQLite does not implement SELECT FOR UPDATE; a no-op write acquires
+        # the same campaign-level writer lock used by emergency stop there.
+        self.session.execute(
+            update(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .values(status=CampaignRecord.status)
+        )
+        lease_record = self.session.scalar(
+            select(ExecutionLeaseRecord)
+            .where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == lease_id,
+            )
+            .with_for_update()
+        )
+        if lease_record is None:
+            raise ValueError("lease_not_found")
+        if lease_record.status != LeaseStatus.ACTIVE.value:
+            raise ValueError("lease_not_active")
+        lease = ExecutionLease.model_validate(lease_record.payload)
+        authorization_record, authorization = self._require_current_execution_lease(
+            campaign=campaign,
+            record=lease_record,
+            lease=lease,
+            now=timestamp,
+        )
+        plan_record = self.session.scalar(
+            select(ValidationPlanRecord)
+            .where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == lease.plan_id,
+            )
+            .with_for_update()
+        )
+        if plan_record is None:
+            raise ValueError("plan_not_found")
+        from app.bounty_autopilot.plans import ValidationPlan
+
+        try:
+            plan = ValidationPlan.model_validate(plan_record.payload)
+        except Exception:  # noqa: BLE001 - persisted plans fail closed
+            raise ValueError("plan_integrity_invalid") from None
+        if (
+            plan.plan_digest != lease.plan_digest
+            or plan_record.plan_digest != plan.plan_digest
+            or plan.plan_id != lease.plan_id
+        ):
+            raise ValueError("lease_plan_integrity_invalid")
+        reservation = RequestReservation.model_validate(reservation_payload)
+        if reservation.lease_id != lease_id:
+            raise ValueError("lease_mismatch")
+        if reservation.plan_id != lease.plan_id:
+            raise ValueError("plan_id_mismatch")
+        if reservation.plan_digest != lease.plan_digest:
+            raise ValueError("plan_digest_mismatch")
+        decoded_path = unquote(reservation.destination_path)
+        plan_path = plan.destination_path.rstrip("/") or "/"
+        if (
+            not reservation.destination_path.startswith("/")
+            or
+            decoded_path != reservation.destination_path
+            or any(
+                char in reservation.destination_path
+                for char in ("\\", "?", "#", "\x00", "%")
+            )
+            or "\\" in decoded_path
+            or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+            or reservation.destination_host.lower().rstrip(".")
+            != plan.destination_host.lower().rstrip(".")
+            or reservation.destination_port != plan.destination_port
+            or (plan_path != "/" and decoded_path != plan_path and not decoded_path.startswith(f"{plan_path}/"))
+        ):
+            raise ValueError("request_destination_mismatch")
+        if reservation.method not in plan.methods:
+            raise ValueError("request_method_mismatch")
+        if not plan.mutation_inventory.mutates_state and reservation.mutation_class != "none":
+            raise ValueError("request_mutation_mismatch")
+        if plan.mutation_inventory.requires_owned_accounts:
+            if reservation.account_alias is None:
+                raise ValueError("request_account_alias_required")
+            if reservation.account_alias not in plan.account_aliases:
+                raise ValueError("request_account_alias_not_authorized")
+        elif reservation.account_alias is not None:
+            raise ValueError("request_account_alias_not_applicable")
+
+        existing = self.session.scalar(
+            select(ExecutionRequestLedgerRecord).where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.lease_id == lease_id,
+                ExecutionRequestLedgerRecord.idempotency_key == reservation.idempotency_key,
+            )
+        )
+        if existing is not None:
+            try:
+                intents_match = _request_reservations_have_matching_intent(
+                    reservation,
+                    existing.payload,
+                )
+            except Exception:  # noqa: BLE001 - persisted reservations fail closed
+                raise ValueError("reservation_integrity_invalid") from None
+            if not intents_match:
+                raise ValueError("idempotency_key_conflict")
+            return existing
+        reservation_conflict = self.session.scalar(
+            select(ExecutionRequestLedgerRecord).where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.reservation_id == reservation.reservation_id,
+            )
+        )
+        if reservation_conflict is not None:
+            raise ValueError("reservation_id_conflict")
+        if int(lease_record.requests_reserved or 0) >= lease.max_requests:
+            raise ValueError("request_budget_exhausted")
+        authorization_requests_reserved = self.session.scalar(
+            select(func.coalesce(func.sum(ExecutionLeaseRecord.requests_reserved), 0)).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.authorization_id == authorization_record.id,
+            )
+        )
+        if int(authorization_requests_reserved or 0) >= authorization.budget.max_requests:
+            raise ValueError("authorization_request_budget_exhausted")
+        expected_remaining = lease.max_requests - int(lease_record.requests_reserved or 0) - 1
+        if reservation.remaining_request_budget != expected_remaining:
+            raise ValueError("request_budget_mismatch")
+
+        reservation_update = self.session.execute(
+            update(ExecutionLeaseRecord)
+            .where(
+                ExecutionLeaseRecord.id == lease_record.id,
+                ExecutionLeaseRecord.status == LeaseStatus.ACTIVE.value,
+                ExecutionLeaseRecord.requests_reserved < lease.max_requests,
+            )
+            .values(
+                requests_reserved=ExecutionLeaseRecord.requests_reserved + 1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if reservation_update.rowcount != 1:
+            self.session.expire(lease_record)
+            self.session.refresh(lease_record)
+            existing = self.session.scalar(
+                select(ExecutionRequestLedgerRecord).where(
+                    ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                    ExecutionRequestLedgerRecord.lease_id == lease_id,
+                    ExecutionRequestLedgerRecord.idempotency_key
+                    == reservation.idempotency_key,
+                )
+            )
+            if existing is not None:
+                try:
+                    intents_match = _request_reservations_have_matching_intent(
+                        reservation,
+                        existing.payload,
+                    )
+                except Exception:  # noqa: BLE001 - persisted reservations fail closed
+                    raise ValueError("reservation_integrity_invalid") from None
+                if not intents_match:
+                    raise ValueError("idempotency_key_conflict")
+                return existing
+            if lease_record.status != LeaseStatus.ACTIVE.value:
+                raise ValueError("lease_not_active")
+            raise ValueError("request_budget_exhausted")
+
+        record = ExecutionRequestLedgerRecord(
+            id=f"req_{uuid4().hex}",
+            campaign_id=campaign_id,
+            reservation_id=reservation.reservation_id,
+            lease_id=lease_id,
+            plan_digest=reservation.plan_digest,
+            idempotency_key=reservation.idempotency_key,
+            status=reservation.status.value,
+            payload=reservation.model_dump(mode="json"),
+            created_at=timestamp,
+            completed_at=None,
+        )
+        # Update lease reserved counter in payload.
+        payload = dict(lease_record.payload or {})
+        payload["requests_reserved"] = int(lease_record.requests_reserved or 0) + 1
+        lease_record.payload = payload
+        lease_record.requests_reserved = int(lease_record.requests_reserved or 0) + 1
+        self.session.add(record)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(ExecutionRequestLedgerRecord).where(
+                    ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                    ExecutionRequestLedgerRecord.lease_id == lease_id,
+                    ExecutionRequestLedgerRecord.idempotency_key
+                    == reservation.idempotency_key,
+                )
+            )
+            if existing is not None:
+                try:
+                    intents_match = _request_reservations_have_matching_intent(
+                        reservation,
+                        existing.payload,
+                    )
+                except Exception:  # noqa: BLE001 - persisted reservations fail closed
+                    raise ValueError("reservation_integrity_invalid") from None
+                if not intents_match:
+                    raise ValueError("idempotency_key_conflict")
+                return existing
+            reservation_conflict = self.session.scalar(
+                select(ExecutionRequestLedgerRecord).where(
+                    ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                    ExecutionRequestLedgerRecord.reservation_id
+                    == reservation.reservation_id,
+                )
+            )
+            if reservation_conflict is not None:
+                raise ValueError("reservation_id_conflict")
+            raise
+        self.session.refresh(record)
+        return record
+
+    def complete_execution_request(
+        self,
+        *,
+        campaign_id: str,
+        reservation_id: str,
+        outcome: str,
+        now: datetime | None = None,
+    ) -> ExecutionRequestLedgerRecord:
+        from app.bounty_autopilot.request_ledger import RequestReservationStatus
+
+        timestamp = now or datetime.now(UTC)
+        record = self.session.scalar(
+            select(ExecutionRequestLedgerRecord)
+            .where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.reservation_id == reservation_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise ValueError("reservation_not_found")
+        try:
+            status = RequestReservationStatus(outcome)
+        except ValueError as exc:
+            raise ValueError("invalid_outcome") from exc
+        if record.status == status.value:
+            return record
+        if record.status in {
+            RequestReservationStatus.COMPLETED.value,
+            RequestReservationStatus.AWAITING_HUMAN.value,
+            RequestReservationStatus.EXPIRED.value,
+            RequestReservationStatus.REVOKED.value,
+            RequestReservationStatus.NO_SEND_FAILURE.value,
+        }:
+            raise ValueError("reservation_state_conflict")
+        if status in {
+            RequestReservationStatus.RESERVED,
+        }:
+            raise ValueError("invalid_outcome")
+        if status in {
+            RequestReservationStatus.COMPLETED,
+        }:
+            payload = record.payload if isinstance(record.payload, dict) else {}
+            if not payload.get("transport_receipt_id") or not payload.get(
+                "transport_receipt_digest"
+            ):
+                raise ValueError("transport_receipt_required")
+        record.status = status.value
+        payload = dict(record.payload or {})
+        payload["status"] = status.value
+        record.payload = payload
+        if status in {
+            RequestReservationStatus.COMPLETED,
+            RequestReservationStatus.AWAITING_HUMAN,
+            RequestReservationStatus.EXPIRED,
+            RequestReservationStatus.REVOKED,
+            RequestReservationStatus.NO_SEND_FAILURE,
+        }:
+            record.completed_at = timestamp
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def authorize_execution_request(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+        reservation_id: str | None,
+        destination_host: str,
+        destination_port: int,
+        destination_path: str,
+        method: str,
+        body_digest: str | None = None,
+        account_alias: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[ExecutionRequestLedgerRecord, str]:
+        """Record gateway pre-authorization without claiming a network send.
+
+        The returned challenge is single-use and must be included in a signed
+        transport receipt before the reservation can enter ``sent``.
+        """
+
+        from app.bounty_autopilot.leases import ExecutionLease, LeaseStatus
+        from app.bounty_autopilot.request_ledger import (
+            RequestReservation,
+            RequestReservationStatus,
+        )
+
+        timestamp = now or datetime.now(UTC)
+        campaign = self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+        )
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        self.session.execute(
+            update(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .values(status=CampaignRecord.status)
+        )
+        if campaign.status in {"stopped", "emergency_stopped"} or (
+            isinstance(campaign.payload, dict) and campaign.payload.get("emergency_stopped")
+        ):
+            raise ValueError("emergency_stopped")
+        lease_row = self.session.scalar(
+            select(ExecutionLeaseRecord)
+            .where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == lease_id,
+            )
+            .with_for_update()
+        )
+        if lease_row is None:
+            raise ValueError("lease_not_found")
+        if lease_row.status != LeaseStatus.ACTIVE.value:
+            raise ValueError("lease_not_active")
+        lease = ExecutionLease.model_validate(lease_row.payload)
+        authorization_record, authorization = self._require_current_execution_lease(
+            campaign=campaign,
+            record=lease_row,
+            lease=lease,
+            now=timestamp,
+        )
+        query = (
+            select(ExecutionRequestLedgerRecord)
+            .where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.lease_id == lease_id,
+                ExecutionRequestLedgerRecord.status == RequestReservationStatus.RESERVED.value,
+            )
+            .order_by(ExecutionRequestLedgerRecord.created_at.asc())
+            .with_for_update()
+        )
+        if reservation_id is not None:
+            query = query.where(
+                ExecutionRequestLedgerRecord.reservation_id == reservation_id
+            )
+        rows = list(self.session.scalars(query).all())
+        if not rows:
+            raise ValueError(
+                "request_reservation_required"
+                if reservation_id is None
+                else "request_reservation_not_pending"
+            )
+        if len(rows) != 1:
+            raise ValueError("request_reservation_required")
+        record = rows[0]
+        reservation = RequestReservation.model_validate(
+            _request_reservation_payload_for_idempotency(record.payload)
+        )
+        decoded_path = unquote(destination_path)
+        if (
+            not destination_path.startswith("/")
+            or decoded_path != destination_path
+            or any(char in destination_path for char in ("\\", "?", "#", "\x00", "%"))
+            or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+        ):
+            raise ValueError("request_reservation_mismatch")
+        if reservation.lease_id != lease_id or reservation.plan_digest != lease.plan_digest:
+            raise ValueError("reservation_integrity_invalid")
+        if (
+            reservation.destination_host.lower().rstrip(".")
+            != destination_host.lower().rstrip(".")
+            or reservation.destination_port != destination_port
+            or reservation.destination_path != destination_path
+            or reservation.method != method.upper()
+            or reservation.account_alias != account_alias
+            or reservation.body_digest != body_digest
+        ):
+            raise ValueError("request_reservation_mismatch")
+        payload = dict(record.payload or {})
+        existing_challenge = payload.get("transport_challenge")
+        existing_authorized = payload.get("gateway_authorized") is True
+        if existing_authorized:
+            if not isinstance(existing_challenge, str):
+                raise ValueError("reservation_integrity_invalid")
+            return record, existing_challenge
+        in_flight = list(
+            self.session.scalars(
+                select(ExecutionRequestLedgerRecord)
+                .join(
+                    ExecutionLeaseRecord,
+                    (ExecutionLeaseRecord.campaign_id == ExecutionRequestLedgerRecord.campaign_id)
+                    & (ExecutionLeaseRecord.lease_id == ExecutionRequestLedgerRecord.lease_id),
+                )
+                .where(
+                    ExecutionLeaseRecord.campaign_id == campaign_id,
+                    ExecutionLeaseRecord.authorization_id == authorization_record.id,
+                    ExecutionRequestLedgerRecord.status.in_(
+                        (
+                            RequestReservationStatus.RESERVED.value,
+                            RequestReservationStatus.SENT.value,
+                        )
+                    ),
+                )
+                .with_for_update()
+            ).all()
+        )
+        in_flight_count = sum(
+            row.status == RequestReservationStatus.SENT.value
+            or (
+                row.status == RequestReservationStatus.RESERVED.value
+                and isinstance(row.payload, dict)
+                and row.payload.get("gateway_authorized") is True
+            )
+            for row in in_flight
+        )
+        if in_flight_count >= authorization.budget.max_concurrent_requests:
+            raise ValueError("authorization_concurrency_exhausted")
+        challenge = secrets.token_urlsafe(32)
+        payload["gateway_authorized"] = True
+        payload["gateway_authorized_at"] = timestamp.isoformat()
+        payload["gateway_authorization_id"] = authorization_record.id
+        payload["transport_challenge"] = challenge
+        payload["transport_receipt"] = None
+        payload["transport_receipt_digest"] = None
+        record.payload = payload
+        self.session.commit()
+        self.session.refresh(record)
+        return record, challenge
+
+    def record_transport_receipt(
+        self,
+        *,
+        campaign_id: str,
+        receipt,
+        signature: str,
+        capability: str,
+        now: datetime | None = None,
+    ) -> ExecutionRequestLedgerRecord:
+        """Atomically consume a signed post-transport receipt exactly once."""
+
+        from app.bounty_autopilot.leases import ExecutionLease, LeaseStatus
+        from app.bounty_autopilot.plans import ValidationPlan
+        from app.bounty_autopilot.request_ledger import RequestReservation, RequestReservationStatus
+        from app.bounty_autopilot.transport import (
+            TransportReceipt,
+            digest_transport_receipt,
+            sign_transport_receipt,
+        )
+
+        if not isinstance(receipt, TransportReceipt):
+            raise ValueError("transport_receipt_invalid")
+        expected_signature = sign_transport_receipt(receipt, capability)
+        if not hmac.compare_digest(expected_signature, signature):
+            raise ValueError("transport_receipt_signature_invalid")
+        receipt_digest = digest_transport_receipt(receipt)
+        timestamp = now or datetime.now(UTC)
+        campaign = self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+        )
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        # SQLite ignores SELECT FOR UPDATE; share the campaign writer lock with
+        # lease issuance, gateway authorization, and emergency stop.
+        self.session.execute(
+            update(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .values(status=CampaignRecord.status)
+        )
+        self.session.refresh(campaign)
+        if campaign.status in {"stopped", "emergency_stopped"} or (
+            isinstance(campaign.payload, dict) and campaign.payload.get("emergency_stopped")
+        ):
+            raise ValueError("emergency_stopped")
+        record = self.session.scalar(
+            select(ExecutionRequestLedgerRecord)
+            .where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.reservation_id == receipt.reservation_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise ValueError("reservation_not_found")
+        payload = dict(record.payload or {})
+        if record.status != RequestReservationStatus.RESERVED.value:
+            stored_digest = payload.get("transport_receipt_digest")
+            if (
+                payload.get("transport_receipt_id") == receipt.receipt_id
+                and isinstance(stored_digest, str)
+                and hmac.compare_digest(stored_digest, receipt_digest)
+            ):
+                return record
+            raise ValueError("transport_receipt_replay")
+        if (
+            record.lease_id != receipt.lease_id
+            or record.plan_digest != receipt.plan_digest
+            or payload.get("gateway_authorized") is not True
+            or payload.get("transport_challenge") != receipt.challenge
+        ):
+            raise ValueError("transport_receipt_binding_mismatch")
+        reservation = RequestReservation.model_validate(
+            _request_reservation_payload_for_idempotency(payload)
+        )
+        if reservation.reservation_id != receipt.reservation_id:
+            raise ValueError("transport_receipt_binding_mismatch")
+        if (
+            reservation.destination_host.lower().rstrip(".") != receipt.host.lower().rstrip(".")
+            or reservation.destination_port != receipt.port
+            or reservation.destination_path != receipt.path
+            or reservation.method != receipt.method
+            or reservation.body_digest != receipt.body_digest
+        ):
+            raise ValueError("transport_receipt_request_mismatch")
+        lease_row = self.session.scalar(
+            select(ExecutionLeaseRecord)
+            .where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == receipt.lease_id,
+            )
+            .with_for_update()
+        )
+        if lease_row is None or lease_row.status != LeaseStatus.ACTIVE.value:
+            raise ValueError("lease_not_active")
+        lease = ExecutionLease.model_validate(lease_row.payload)
+        try:
+            self._require_current_execution_lease(
+                campaign=campaign,
+                record=lease_row,
+                lease=lease,
+                now=timestamp,
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+        if lease.plan_id != receipt.plan_id or lease.branch_id != receipt.branch_id:
+            raise ValueError("transport_receipt_lease_mismatch")
+        plan_row = self.session.scalar(
+            select(ValidationPlanRecord).where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == receipt.plan_id,
+            )
+        )
+        if plan_row is None or plan_row.plan_digest != receipt.plan_digest:
+            raise ValueError("transport_receipt_plan_mismatch")
+        plan = ValidationPlan.model_validate(plan_row.payload)
+        if (
+            receipt.campaign_id != campaign_id
+            or receipt.scheme != plan.destination_scheme
+            or receipt.host.lower().rstrip(".") != plan.destination_host.lower().rstrip(".")
+            or receipt.port != plan.destination_port
+            or plan.plan_id != lease.plan_id
+            or plan.plan_digest != lease.plan_digest
+            or receipt.byte_length > plan.max_response_bytes + 1
+        ):
+            raise ValueError("transport_receipt_plan_mismatch")
+        authorized_at = _payload_datetime(payload.get("gateway_authorized_at"))
+        sent_at = _as_utc(receipt.sent_at)
+        if authorized_at is None or sent_at < authorized_at - timedelta(seconds=60):
+            raise ValueError("transport_receipt_time_invalid")
+        if sent_at > timestamp + timedelta(seconds=5):
+            raise ValueError("transport_receipt_time_invalid")
+        max_window = max(60, int(plan.max_duration_seconds) + 60)
+        if sent_at > authorized_at + timedelta(seconds=max_window):
+            raise ValueError("transport_receipt_expired")
+        payload["status"] = RequestReservationStatus.SENT.value
+        payload["transport_receipt_id"] = receipt.receipt_id
+        payload["transport_receipt_digest"] = receipt_digest
+        payload["transport_receipt"] = {
+            "schema_version": receipt.schema_version,
+            "receipt_id": receipt.receipt_id,
+            "status_code": receipt.status_code,
+            "content_type_class": receipt.content_type_class,
+            "byte_length": receipt.byte_length,
+            "sent_at": receipt.sent_at.isoformat(),
+            "transport": receipt.transport,
+        }
+        payload["transport_receipt_consumed_at"] = timestamp.isoformat()
+        record.payload = payload
+        record.status = RequestReservationStatus.SENT.value
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def mark_execution_request_sent(
+        self,
+        *,
+        campaign_id: str,
+        lease_id: str,
+        reservation_id: str | None = None,
+        destination_host: str,
+        destination_port: int,
+        destination_path: str,
+        method: str,
+        body_digest: str | None = None,
+        gateway_authorized: bool = False,
+        now: datetime | None = None,
+    ) -> ExecutionRequestLedgerRecord:
+        """Reject the pre-receipt send transition retained for old callers."""
+
+        raise ValueError("transport_receipt_required")
+
+    def emergency_stop_campaign(
+        self,
+        *,
+        campaign_id: str,
+        actor: str,
+        reason: str,
+        confirmation_nonce: str | None = None,
+        require_confirmation: bool = False,
+        now: datetime | None = None,
+    ) -> dict:
+        """Stop campaign, revoke active leases, release safe unused reservations."""
+
+        timestamp = now or datetime.now(UTC)
+        campaign = self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+        )
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        payload = dict(campaign.payload or {})
+        if require_confirmation:
+            if not confirmation_nonce:
+                raise ValueError("emergency_stop_confirmation_required")
+            confirmation = payload.get("emergency_stop_confirmation")
+            if not isinstance(confirmation, dict):
+                raise ValueError("emergency_stop_confirmation_required")
+            expected_digest = confirmation.get("nonce_digest")
+            actual_digest = f"sha256:{sha256(confirmation_nonce.encode('utf-8')).hexdigest()}"
+            if not isinstance(expected_digest, str) or not hmac.compare_digest(
+                expected_digest,
+                actual_digest,
+            ):
+                raise ValueError("emergency_stop_confirmation_invalid")
+            if confirmation.get("consumed_at") is not None:
+                raise ValueError("emergency_stop_confirmation_used")
+            expires_at = _payload_datetime(confirmation.get("expires_at"))
+            if expires_at is None or expires_at <= timestamp:
+                raise ValueError("emergency_stop_confirmation_expired")
+            confirmation = dict(confirmation)
+            confirmation["consumed_at"] = timestamp.isoformat()
+            confirmation["consumed_by"] = _safe_display_value(actor)
+            payload["emergency_stop_confirmation"] = confirmation
+        payload["emergency_stopped"] = True
+        payload["emergency_stopped_at"] = timestamp.isoformat()
+        payload["emergency_stopped_by"] = actor
+        payload["emergency_stop_reason"] = reason
+        local_confirmation = payload.get("emergency_stop_local_confirmation")
+        if not (
+            isinstance(local_confirmation, dict)
+            and local_confirmation.get("status") == "confirmed"
+            and isinstance(local_confirmation.get("confirmed_at"), str)
+        ):
+            payload["emergency_stop_local_confirmation"] = {
+                "status": "pending",
+                "requested_at": timestamp.isoformat(),
+            }
+        campaign.payload = payload
+        campaign.status = "stopped"
+
+        revoked_leases = 0
+        for lease in self.session.scalars(
+            select(ExecutionLeaseRecord).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.status == "active",
+            )
+        ).all():
+            lease.status = "revoked"
+            lease.revoked_at = timestamp
+            lease_payload = dict(lease.payload or {})
+            lease_payload["status"] = "revoked"
+            lease_payload["emergency_stopped"] = True
+            lease.payload = lease_payload
+            revoked_leases += 1
+
+        released_reservations = 0
+        for reservation in self.session.scalars(
+            select(ExecutionRequestLedgerRecord).where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.status == "reserved",
+            )
+        ).all():
+            reservation.status = "revoked"
+            reservation.completed_at = timestamp
+            res_payload = dict(reservation.payload or {})
+            res_payload["status"] = "revoked"
+            reservation.payload = res_payload
+            released_reservations += 1
+
+        self.session.commit()
+        return {
+            "campaign_id": campaign_id,
+            "status": "stopped",
+            "revoked_leases": revoked_leases,
+            "released_reservations": released_reservations,
+            "emergency_stopped": True,
+            "local_stop_confirmation": "pending",
+            "actor": actor,
+            "reason": reason,
+        }
+
+    def create_autopilot_observation(
+        self,
+        *,
+        campaign_id: str,
+        observation=None,
+        observation_payload: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> AutopilotObservationRecord:
+        """Persist one sanitized observation bound to a terminal tool run."""
+
+        from app.bounty_autopilot.leases import ExecutionLease
+        from app.bounty_autopilot.observations import AutopilotObservationInput
+        from app.bounty_autopilot.plans import ValidationPlan
+        from app.bounty_autopilot.request_ledger import (
+            RequestReservation,
+            RequestReservationStatus,
+        )
+
+        if observation is None and observation_payload is not None:
+            try:
+                observation = AutopilotObservationInput.model_validate(observation_payload)
+            except Exception:  # noqa: BLE001 - untrusted observation payloads fail closed
+                raise ValueError("observation_contract_invalid") from None
+        if not isinstance(observation, AutopilotObservationInput):
+            raise ValueError("observation_contract_invalid")
+        timestamp = now or datetime.now(UTC)
+        reservation = self.session.scalar(
+            select(ExecutionRequestLedgerRecord)
+            .where(
+                ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                ExecutionRequestLedgerRecord.reservation_id == observation.reservation_id,
+            )
+            .with_for_update()
+        )
+        if reservation is None:
+            raise ValueError("observation_reservation_not_found")
+        if reservation.status not in {
+            RequestReservationStatus.COMPLETED.value,
+            RequestReservationStatus.AWAITING_HUMAN.value,
+            RequestReservationStatus.NO_SEND_FAILURE.value,
+        }:
+            raise ValueError("observation_reservation_not_terminal")
+        if (
+            reservation.lease_id != observation.lease_id
+            or reservation.plan_digest != observation.plan_digest
+            or not isinstance(reservation.payload, dict)
+            or reservation.payload.get("gateway_authorized") is not True
+        ):
+            raise ValueError("observation_reservation_mismatch")
+        receipt_digest = reservation.payload.get("transport_receipt_digest")
+        if reservation.status == RequestReservationStatus.COMPLETED.value:
+            if not receipt_digest:
+                raise ValueError("observation_transport_receipt_required")
+            if observation.receipt_digest != receipt_digest:
+                raise ValueError("observation_receipt_mismatch")
+        elif observation.receipt_digest is not None and observation.receipt_digest != receipt_digest:
+            raise ValueError("observation_receipt_mismatch")
+        lease_row = self.session.scalar(
+            select(ExecutionLeaseRecord).where(
+                ExecutionLeaseRecord.campaign_id == campaign_id,
+                ExecutionLeaseRecord.lease_id == observation.lease_id,
+            )
+        )
+        if lease_row is None or lease_row.plan_digest != observation.plan_digest:
+            raise ValueError("observation_lease_mismatch")
+        try:
+            lease = ExecutionLease.model_validate(lease_row.payload)
+        except Exception:  # noqa: BLE001 - persisted execution records fail closed
+            raise ValueError("observation_lease_integrity_invalid") from None
+        if lease.plan_digest != observation.plan_digest or lease.lease_id != observation.lease_id:
+            raise ValueError("observation_lease_integrity_invalid")
+        plan_row = self.session.scalar(
+            select(ValidationPlanRecord).where(
+                ValidationPlanRecord.campaign_id == campaign_id,
+                ValidationPlanRecord.plan_id == lease.plan_id,
+            )
+        )
+        if plan_row is None or plan_row.plan_digest != observation.plan_digest:
+            raise ValueError("observation_plan_mismatch")
+        try:
+            plan = ValidationPlan.model_validate(plan_row.payload)
+        except Exception:  # noqa: BLE001 - persisted plans fail closed
+            raise ValueError("observation_plan_integrity_invalid") from None
+        if (
+            plan.plan_digest != observation.plan_digest
+            or plan.branch_id != observation.branch_id
+            or plan.plan_id != lease.plan_id
+        ):
+            raise ValueError("observation_plan_mismatch")
+
+        comparison_reservation = None
+        comparison_receipt_digest = None
+        is_r2_differential = plan.risk_tier.value == "R2"
+        if is_r2_differential:
+            if observation.comparison_reservation_id is None:
+                raise ValueError("r2_comparison_reservation_required")
+            if reservation.status != RequestReservationStatus.COMPLETED.value:
+                raise ValueError("r2_primary_reservation_not_completed")
+            comparison_reservation = self.session.scalar(
+                select(ExecutionRequestLedgerRecord)
+                .where(
+                    ExecutionRequestLedgerRecord.campaign_id == campaign_id,
+                    ExecutionRequestLedgerRecord.reservation_id
+                    == observation.comparison_reservation_id,
+                )
+                .with_for_update()
+            )
+            if comparison_reservation is None:
+                raise ValueError("r2_comparison_reservation_not_found")
+            if comparison_reservation.status != RequestReservationStatus.COMPLETED.value:
+                raise ValueError("r2_comparison_reservation_not_completed")
+            if (
+                comparison_reservation.lease_id != observation.lease_id
+                or comparison_reservation.plan_digest != observation.plan_digest
+                or not isinstance(comparison_reservation.payload, dict)
+                or comparison_reservation.payload.get("gateway_authorized") is not True
+            ):
+                raise ValueError("r2_comparison_reservation_mismatch")
+            comparison_receipt_digest = comparison_reservation.payload.get(
+                "transport_receipt_digest"
+            )
+            if (
+                not isinstance(comparison_receipt_digest, str)
+                or observation.comparison_receipt_digest != comparison_receipt_digest
+            ):
+                raise ValueError("r2_comparison_receipt_mismatch")
+            try:
+                primary_request = RequestReservation.model_validate(
+                    _request_reservation_payload_for_idempotency(reservation.payload)
+                )
+                comparison_request = RequestReservation.model_validate(
+                    _request_reservation_payload_for_idempotency(
+                        comparison_reservation.payload
+                    )
+                )
+            except Exception:  # noqa: BLE001 - persisted reservations fail closed
+                raise ValueError("r2_reservation_integrity_invalid") from None
+            if (
+                primary_request.account_alias is None
+                or comparison_request.account_alias is None
+                or primary_request.account_alias == comparison_request.account_alias
+                or {primary_request.account_alias, comparison_request.account_alias}
+                != set(plan.account_aliases)
+                or len(plan.account_aliases) != 2
+            ):
+                raise ValueError("r2_owned_account_pair_mismatch")
+            if any(
+                getattr(primary_request, field) != getattr(comparison_request, field)
+                for field in (
+                    "destination_host",
+                    "destination_port",
+                    "destination_path",
+                    "method",
+                    "body_digest",
+                    "mutation_class",
+                )
+            ):
+                raise ValueError("r2_comparison_request_mismatch")
+            _validate_r2_observation_metadata(
+                observation=observation,
+                primary_receipt=reservation.payload.get("transport_receipt"),
+                comparison_receipt=comparison_reservation.payload.get("transport_receipt"),
+            )
+        elif observation.comparison_reservation_id is not None:
+            raise ValueError("comparison_not_supported_for_plan")
+
+        reservation_ids = [observation.reservation_id]
+        if observation.comparison_reservation_id is not None:
+            reservation_ids.append(observation.comparison_reservation_id)
+        existing = self.session.scalar(
+            select(AutopilotObservationRecord).where(
+                AutopilotObservationRecord.campaign_id == campaign_id,
+                or_(
+                    AutopilotObservationRecord.reservation_id.in_(reservation_ids),
+                    AutopilotObservationRecord.comparison_reservation_id.in_(reservation_ids),
+                ),
+            )
+        )
+        if existing is not None:
+            if (
+                existing.observation_id == observation.observation_id
+                and existing.reservation_id == observation.reservation_id
+                and existing.comparison_reservation_id
+                == observation.comparison_reservation_id
+            ):
+                return existing
+            raise ValueError("observation_reservation_already_recorded")
+
+        safe_summary = _safe_display_value(observation.summary)
+        safe_payload: dict[str, Any] = {
+            "observation_id": observation.observation_id,
+            "branch_id": observation.branch_id,
+            "plan_digest": observation.plan_digest,
+            "lease_id": observation.lease_id,
+            "reservation_id": observation.reservation_id,
+            "receipt_digest": receipt_digest,
+            "grade": observation.grade.value,
+            "outcome_class": observation.outcome_class.value,
+            "summary": safe_summary[:512] if isinstance(safe_summary, str) else REDACTED,
+            "evidence_refs": [
+                safe_ref[:128]
+                for ref in observation.evidence_refs
+                if (safe_ref := _safe_display_value(ref)) != REDACTED
+            ][:16],
+            "status_class": observation.status_class,
+            "content_type_class": observation.content_type_class,
+            "byte_length": observation.byte_length,
+            "third_party_data_discarded": observation.third_party_data_discarded,
+        }
+        if comparison_reservation is not None:
+            safe_payload.update(
+                {
+                    "comparison_reservation_id": observation.comparison_reservation_id,
+                    "comparison_receipt_digest": comparison_receipt_digest,
+                    "comparison_status_class": observation.comparison_status_class,
+                    "comparison_content_type_class": observation.comparison_content_type_class,
+                    "comparison_byte_length": observation.comparison_byte_length,
+                    "difference_labels": list(observation.difference_labels),
+                }
+            )
+        if observation.outcome_class.value == "third_party_data":
+            safe_payload["summary"] = "third_party_data_discarded"
+            safe_payload["evidence_refs"] = []
+            safe_payload["byte_length"] = 0
+            safe_payload["third_party_data_discarded"] = True
+        safe_payload["raw_content_retained"] = False
+        safe_payload["candidate_promotion_allowed"] = False
+        safe_payload["report_submission_allowed"] = False
+        record = AutopilotObservationRecord(
+            id=f"obs_row_{uuid4().hex}",
+            campaign_id=campaign_id,
+            observation_id=observation.observation_id,
+            branch_id=observation.branch_id,
+            plan_digest=observation.plan_digest,
+            lease_id=observation.lease_id,
+            reservation_id=observation.reservation_id,
+            comparison_reservation_id=observation.comparison_reservation_id,
+            grade=observation.grade.value,
+            outcome_class=observation.outcome_class.value,
+            payload=safe_payload,
+            created_at=timestamp,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+
+    def list_execution_request_ledger(
+        self,
+        campaign_id: str,
+    ) -> list[ExecutionRequestLedgerRecord]:
+        return list(
+            self.session.scalars(
+                select(ExecutionRequestLedgerRecord)
+                .where(ExecutionRequestLedgerRecord.campaign_id == campaign_id)
+                .order_by(ExecutionRequestLedgerRecord.created_at.desc())
+            ).all()
+        )
+
+    def list_autopilot_observations(
+        self,
+        campaign_id: str,
+    ) -> list[AutopilotObservationRecord]:
+        return list(
+            self.session.scalars(
+                select(AutopilotObservationRecord)
+                .where(AutopilotObservationRecord.campaign_id == campaign_id)
+                .order_by(AutopilotObservationRecord.created_at.desc())
+            ).all()
+        )
+
+    def evaluate_autopilot_release_gate(self, campaign_id: str):
+        """Derive the lab release gate from durable Autopilot evidence."""
+
+        from app.bounty_autopilot.release_gate import (
+            derive_release_counters,
+            evaluate_release_gate,
+        )
+
+        authorizations = [
+            {
+                "id": row.id,
+                "authorization_id": row.id,
+                "authorization_digest": row.authorization_digest,
+                "payload": row.payload,
+            }
+            for row in self.list_campaign_authorizations(campaign_id)
+        ]
+        plans = [
+            {
+                "plan_id": row.plan_id,
+                "plan_digest": row.plan_digest,
+                "risk_tier": row.risk_tier,
+                "payload": row.payload,
+            }
+            for row in self.list_validation_plans(campaign_id)
+        ]
+        leases = [
+            {
+                "lease_id": row.lease_id,
+                "plan_digest": row.plan_digest,
+                "authorization_id": row.authorization_id,
+                "r3_approval_id": row.r3_approval_id,
+                "payload": row.payload,
+            }
+            for row in self.list_execution_leases(campaign_id)
+        ]
+        requests = [
+            {
+                "reservation_id": row.reservation_id,
+                "lease_id": row.lease_id,
+                "plan_digest": row.plan_digest,
+                "status": row.status,
+                "payload": row.payload,
+            }
+            for row in self.list_execution_request_ledger(campaign_id)
+        ]
+        observations = [
+            {
+                "observation_id": row.observation_id,
+                "branch_id": row.branch_id,
+                "plan_digest": row.plan_digest,
+                "lease_id": row.lease_id,
+                "reservation_id": row.reservation_id,
+                "comparison_reservation_id": row.comparison_reservation_id,
+                "outcome_class": row.outcome_class,
+                "payload": row.payload,
+            }
+            for row in self.list_autopilot_observations(campaign_id)
+        ]
+        approvals = [
+            {
+                "id": row.id,
+                "approval_id": row.id,
+                "status": row.status,
+                "consumed_by_lease_id": row.consumed_by_lease_id,
+                "payload": row.payload,
+            }
+            for row in self.list_campaign_approval_records(campaign_id)
+        ]
+        return evaluate_release_gate(
+            derive_release_counters(
+                authorizations=authorizations,
+                plans=plans,
+                leases=leases,
+                requests=requests,
+                observations=observations,
+                approvals=approvals,
+            )
+        )
 
     def list_campaigns(self) -> list[CampaignRecord]:
         return self.session.scalars(
@@ -3366,6 +5844,7 @@ class DatabaseRepository:
         status: str | None = None,
         expires_at: datetime | None = None,
         payload: dict | None = None,
+        single_use_nonce_digest: str | None = None,
     ) -> ApprovalRecord:
         record_id = _safe_display_value(approval_id) if approval_id is not None else (
             f"approval_{uuid4().hex}"
@@ -3389,6 +5868,9 @@ class DatabaseRepository:
             status=_approval_initial_status(status, campaign_id=campaign_id),
             expires_at=expires_at,
             payload=_safe_display_value(payload or {}),
+            single_use_nonce_digest=_safe_display_value(single_use_nonce_digest)
+            if single_use_nonce_digest is not None
+            else None,
         )
         self.session.add(record)
         try:
@@ -4925,12 +7407,24 @@ def _safe_display_value(value: Any) -> Any:
         structured_secret_value_keys = _structured_secret_pair_value_keys(value)
         return {
             _safe_display_key(key): REDACTED
-            if _is_secret_key(str(key))
+            if (
+                _is_secret_key(str(key))
+                and not _is_auditable_authority_digest(key, nested_value)
+            )
             or _is_structured_secret_value_key(key, structured_secret_value_keys)
             else _safe_display_value(nested_value)
             for key, nested_value in value.items()
         }
     return value
+
+
+def _is_auditable_authority_digest(key: Any, value: Any) -> bool:
+    return (
+        isinstance(key, str)
+        and key.lower() == "authorization_digest"
+        and isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value, flags=re.ASCII) is not None
+    )
 
 
 def _studio_bounded_result_digest(value: object) -> bool:

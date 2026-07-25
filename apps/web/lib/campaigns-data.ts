@@ -1,4 +1,5 @@
 import type { ArtifactRecord, PipelineRunDetail, ProgramIntelligenceProfile, ReportPreview } from "./api";
+import { formatLabel } from "./workbench-display.ts";
 
 export type CampaignControlCenter = {
   campaign: {
@@ -1040,12 +1041,7 @@ export type CampaignAttackSurfaceMapView = {
 };
 
 function humanize(value: string): string {
-  return value
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase()
-    .replace(/^\w/, (letter) => letter.toUpperCase());
+  return formatLabel(value);
 }
 
 function stripUrlQuery(value: string): string {
@@ -1064,11 +1060,11 @@ function safeText(value: string | null | undefined, fallback: string): string {
   const text = typeof value === "string" ? value.trim() : "";
 
   if (!text) {
-    return fallback;
+    return formatLabel(fallback);
   }
 
   if (containsRestrictedDisplayText(text)) {
-    return fallback;
+    return formatLabel(fallback);
   }
 
   const protectedValues: string[] = [];
@@ -1080,23 +1076,24 @@ function safeText(value: string | null | undefined, fallback: string): string {
   return stripUrlQuery(text)
     .replace(
       /\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^,;\s]+/gi,
-      () => protect("Authorization=[redacted]"),
+      () => protect("Authorization=[已脱敏]"),
     )
     .replace(
       /\b(session|token|cookie)\b\s*[:=]\s*[^,;\s]+/gi,
-      (match, key: string) => protect(`${key}=[redacted]`),
+      (match, key: string) => protect(`${key}=[已脱敏]`),
     )
-    .replace(/\bbearer\s+[^,;\s]+/gi, () => protect("Bearer [redacted]"))
-    .replace(/\b[^\s,;]*(?:secret|token|cookie|session)[^\s,;]*\b/gi, "[redacted]")
-    .replace(/__SAFE_REDACTION_(\d+)__/g, (_, index: string) => protectedValues[Number(index)] ?? "[redacted]");
+    .replace(/\bbearer\s+[^,;\s]+/gi, () => protect("Bearer [已脱敏]"))
+    .replace(/\b[^\s,;]*(?:secret|token|cookie|session)[^\s,;]*\b/gi, "[已脱敏]")
+    .replace(/__SAFE_REDACTION_(\d+)__/g, (_, index: string) => protectedValues[Number(index)] ?? "[已脱敏]");
 }
 
 function safeReasonText(value: string): string {
   if (containsRestrictedDisplayText(value) || containsSecretTokenText(value)) {
-    return "[redacted]";
+    return "[已脱敏]";
   }
 
-  return safeText(humanize(value), "Reason");
+  const isIdentifier = /^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*$/i.test(value.trim());
+  return safeText(isIdentifier ? humanize(value) : value, "原因");
 }
 
 function containsRestrictedDisplayText(value: string): boolean {
@@ -1186,7 +1183,7 @@ function reviewPriorityScore(
 function routeLabel(method: unknown, path: unknown): string {
   return safeText(
     [stringValue(method), stringValue(path)].filter((part): part is string => Boolean(part)).join(" "),
-    "Route",
+    "路由",
   );
 }
 
@@ -1210,14 +1207,14 @@ function toolCallBudgetPart(budget: CampaignControlCenter["budget"]): string | n
     return null;
   }
   if (typeof used !== "number" || !Number.isFinite(used)) {
-    return budgetPart(limit, " tools");
+    return budgetPart(limit, " 次工具调用");
   }
 
   const remainingLabel =
     typeof remaining === "number" && Number.isFinite(remaining)
-      ? `, ${remaining} remaining`
+      ? `，剩余 ${remaining}`
       : "";
-  return `${used}/${limit} tools used${remainingLabel}`;
+  return `${used}/${limit} 次工具调用${remainingLabel}`;
 }
 
 function validationBudgetPart(budget: CampaignControlCenter["budget"]): string | null {
@@ -1232,27 +1229,27 @@ function validationBudgetPart(budget: CampaignControlCenter["budget"]): string |
     return null;
   }
   if (typeof used !== "number" || !Number.isFinite(used)) {
-    return budgetPart(limit, " validations");
+    return budgetPart(limit, " 次验证");
   }
 
   const remainingLabel =
     typeof remaining === "number" && Number.isFinite(remaining)
-      ? `, ${remaining} remaining`
+      ? `，剩余 ${remaining}`
       : "";
-  return `${used}/${limit} validations used${remainingLabel}`;
+  return `${used}/${limit} 次验证${remainingLabel}`;
 }
 
 export function campaignBudgetLabel(
   budget: CampaignControlCenter["budget"] | undefined,
 ): string {
   if (!budget) {
-    return "No budget configured";
+    return "未配置预算";
   }
 
   return (
     [
-      budgetPart(budget.time_budget_minutes, "m"),
-      budgetPart(budget.token_budget, " tokens"),
+      budgetPart(budget.time_budget_minutes, " 分钟"),
+      budgetPart(budget.token_budget, " 个令牌"),
       toolCallBudgetPart(budget),
       validationBudgetPart(budget),
     ]
@@ -1295,63 +1292,72 @@ function safeNextHref(campaignId: string, action: string): string | null {
 
 function safeNextActionLabel(action: string): string {
   const labelByAction: Record<string, string> = {
-    complete_cycle_review: "Review campaign cycle",
-    dispatch_ready_tasks: "Review research tasks",
-    execute_validation: "Review validation audit",
-    monitor_agent_runs: "Review agent runs",
-    review_approval_queue: "Review gate requests",
-    review_attack_surface_map: "Review attack surface map",
-    review_blocked_promotion: "Review blocked promotion evidence",
-    review_campaign_cycle: "Review campaign cycle",
-    review_evidence_or_report_drafts: "Review evidence or report drafts",
-    review_hypothesis_board: "Review hypothesis board",
-    review_learning_outcome: "Review learning outcome",
-    review_ready_tasks: "Review research tasks",
-    review_validation_queue: "Review validation audit",
-    record_validation_observation: "Review manual validation observation",
-    promote_finding_candidate: "Promote finding candidate",
-    record_learning_outcome: "Review learning outcome",
-    resolve_blockers: "Resolve blockers",
-    submit_report: "Review report drafts",
+    complete_cycle_review: "审核活动周期",
+    dispatch_ready_tasks: "审核研究任务",
+    execute_validation: "审核验证审计",
+    monitor_agent_runs: "审核智能体运行",
+    review_approval_queue: "审核门请求",
+    review_attack_surface_map: "审核攻击面映射",
+    review_blocked_promotion: "审核被阻断的晋级证据",
+    review_campaign_cycle: "审核活动周期",
+    review_evidence_or_report_drafts: "审核证据或报告草稿",
+    review_hypothesis_board: "审核假设看板",
+    review_learning_outcome: "审核学习结果",
+    review_ready_tasks: "审核研究任务",
+    review_validation_queue: "审核验证审计",
+    record_validation_observation: "审核人工验证观察",
+    promote_finding_candidate: "晋级漏洞候选",
+    record_learning_outcome: "审核学习结果",
+    resolve_blockers: "处理阻断项",
+    submit_report: "审核报告草稿",
   };
 
-  return labelByAction[action] ?? "Review campaign state";
+  return labelByAction[action] ?? "审核活动状态";
 }
 
 function reviewGateLanguage(text: string): string {
-  const matchCase = (match: string, replacement: string): string =>
-    match[0] === match[0]?.toUpperCase()
-      ? `${replacement[0]?.toUpperCase() ?? ""}${replacement.slice(1)}`
-      : replacement;
-
   return text
-    .replace(/\bconfirmed\b/gi, (match) => matchCase(match, "human reviewed"))
-    .replace(/\bhuman-approved\b/gi, (match) => matchCase(match, "human-reviewed"))
-    .replace(/\bhuman approval\b/gi, (match) => matchCase(match, "human review"))
-    .replace(/\bapproval required\b/gi, (match) => matchCase(match, "review required"))
-    .replace(/\bawaiting approval\b/gi, (match) => matchCase(match, "awaiting review gate"))
-    .replace(/\bauthorization check\b/gi, (match) => matchCase(match, "review check"))
-    .replace(/\bneeds approval\b/gi, (match) => matchCase(match, "needs review"))
-    .replace(/\brequires approval\b/gi, (match) => matchCase(match, "requires review"))
-    .replace(/\brequest approval\b/gi, (match) => matchCase(match, "request review"));
+    .replace(
+      /\bprepare a human-approved validation plan without executing it\.?/gi,
+      "准备经人工审核的验证计划，不执行验证。",
+    )
+    .replace(
+      /\breview hypothesis board and request approval before validation\.?/gi,
+      "验证前请审核假设看板并请求审核。",
+    )
+    .replace(/\bconfirmed observed fact\b/gi, "已确认的观察事实")
+    .replace(/\bawaiting human review\b/gi, "等待人工审核")
+    .replace(/\bcampaign cycle review required\b/gi, "需要审核活动周期")
+    .replace(/\brequired evidence missing\b/gi, "缺少必需证据")
+    .replace(/\bresearch task review plan\b/gi, "研究任务审核计划")
+    .replace(/\bresearch validation feedback is advisory\b/gi, "研究验证反馈仅作建议性参考")
+    .replace(/\bconfirmed\b/gi, "已人工审核")
+    .replace(/\bhuman-approved\b/gi, "已人工审核")
+    .replace(/\bhuman approval\b/gi, "人工审核")
+    .replace(/\bapproval required\b/gi, "需要审核")
+    .replace(/\bawaiting approval\b/gi, "等待审核门")
+    .replace(/\bauthorization check\b/gi, "审核检查")
+    .replace(/\bneeds approval\b/gi, "需要审核")
+    .replace(/\brequires approval\b/gi, "需要审核")
+    .replace(/\brequest approval\b/gi, "请求审核");
 }
 
 function safetyGateDecisionLabel(state: string): string {
   const normalized = state.trim().toLowerCase();
   const labelByState: Record<string, string> = {
-    allowed: "Scope Guard reviewed",
-    blocked: "Scope Guard blocked",
-    needs_review: "Scope Guard needs review",
-    requested: "Review gate requested",
+    allowed: "范围守卫已审核",
+    blocked: "范围守卫已阻断",
+    needs_review: "范围守卫需要审核",
+    requested: "已请求审核门",
   };
 
-  return labelByState[normalized] ?? safeText(humanize(state), "Unknown gate");
+  return labelByState[normalized] ?? safeText(humanize(state), "未知审核门");
 }
 
 export function toCampaignControlSummary(
   controlCenter: CampaignControlCenter,
 ): CampaignControlSummary {
-  const campaignId = safeText(controlCenter.campaign.id, "campaign");
+  const campaignId = safeText(controlCenter.campaign.id, "活动");
   const validationEvidence = toCampaignReportDraftEvidenceSummary(controlCenter.validation_runs ?? []);
   const cycleReviewStages = controlCenter.pipeline_stages.filter(
     (stage) => stage.stage_key === "campaign_cycle_review",
@@ -1361,7 +1367,7 @@ export function toCampaignControlSummary(
   return {
     agentRunCount: controlCenter.agent_runs.length,
     blockedReasons: controlCenter.blocked_reasons.map((reason) =>
-      reviewGateLanguage(safeText(humanize(reason), "Blocked")),
+      reviewGateLanguage(safeText(humanize(reason), "已阻断")),
     ),
     blockedStageCount: controlCenter.pipeline_stages.filter((stage) => stage.status === "blocked")
       .length,
@@ -1371,9 +1377,9 @@ export function toCampaignControlSummary(
       .length,
     cycleReviewCompletedCount: cycleReviewStages.filter((stage) => stage.status === "completed")
       .length,
-    defaultAsset: safeText(controlCenter.campaign.default_asset, "unknown asset"),
+    defaultAsset: safeText(controlCenter.campaign.default_asset, "未知资产"),
     executionAllowed: controlCenter.execution_allowed === true,
-    name: safeText(controlCenter.campaign.name, "Untitled campaign"),
+    name: safeText(controlCenter.campaign.name, "未命名活动"),
     pendingApprovalCount: controlCenter.approvals.filter((approval) =>
       ["pending", "requested"].includes(approval.status)
       && (approval.expires_at === null || Date.parse(approval.expires_at) > now),
@@ -1385,11 +1391,11 @@ export function toCampaignControlSummary(
     promotionReviewFindingPromotionAllowed:
       controlCenter.promotion_review?.finding_promotion_allowed === true,
     promotionReviewLatestReason: controlCenter.promotion_review?.latest_reason
-      ? safeText(humanize(controlCenter.promotion_review.latest_reason), "Promotion blocked")
+      ? safeText(humanize(controlCenter.promotion_review.latest_reason), "漏洞候选晋级已阻断")
       : null,
     promotionReviewNextAllowedAction: safeText(
       controlCenter.promotion_review?.next_allowed_action,
-      "Review claim evidence and human gates before candidate promotion.",
+      "晋级漏洞候选前，请审核声明证据和人工审核门。",
     ),
     promotionReviewProvenanceRefCount: Math.max(
       0,
@@ -1407,36 +1413,36 @@ export function toCampaignControlSummary(
     researchQueueSuggestions: (controlCenter.research_queue_suggestions ?? []).map((suggestion) => ({
       blockedActionCount: Math.max(0, Math.round(suggestion.blocked_action_count ?? 0)),
       candidateStatus: suggestion.candidate_status
-        ? safeText(humanize(suggestion.candidate_status), "Candidate")
+        ? safeText(humanize(suggestion.candidate_status), "候选项")
         : null,
       executionAllowed: false,
       humanApprovalRequired: suggestion.human_approval_required !== false,
       nextAllowedAction: safeText(
         suggestion.next_allowed_action,
-        "Review hypothesis board and plan non-destructive evidence work.",
+        "审核假设看板并规划非破坏性证据工作。",
       ),
-      playbookId: safeText(suggestion.playbook_id, "playbook"),
+      playbookId: safeText(suggestion.playbook_id, "研究手册"),
       priorityScore: Math.max(0, Math.min(100, Math.round(suggestion.priority_score))),
       rawPriorityScore: percentScore(suggestion.raw_priority_score),
       qualityGateReasons: safeLabelList(suggestion.quality_gate_reasons ?? [], 5),
       evidenceNeeded: safeLabelList(suggestion.evidence_needed ?? [], 5),
       evidenceTraceSummary: safeEvidenceTraceSummary(suggestion.evidence_trace_summary),
       reportReadiness: safeReportReadiness(suggestion.report_readiness),
-      queueKey: safeText(suggestion.queue_key, "reasoning_memory"),
+      queueKey: safeText(suggestion.queue_key, "推理记忆"),
       refutationQuestionCount: Math.max(0, Math.round(suggestion.refutation_question_count ?? 0)),
       requiredEvidence: safeLabelList(suggestion.required_evidence ?? [], 5),
       satisfiedEvidence: safeLabelList(suggestion.satisfied_evidence ?? [], 5),
-      safetyGate: safeText(humanize(suggestion.safety_gate), "Advisory memory only"),
-      source: safeText(humanize(suggestion.source), "Mythos brain reasoning memory"),
-      surfaceKey: suggestion.surface_key ? safeText(suggestion.surface_key, "surface") : null,
-      title: safeText(suggestion.title, "Review reasoning memory"),
+      safetyGate: safeText(humanize(suggestion.safety_gate), "仅作建议性记忆"),
+      source: safeText(humanize(suggestion.source), "研究大脑推理记忆"),
+      surfaceKey: suggestion.surface_key ? safeText(suggestion.surface_key, "攻击面") : null,
+      title: safeText(suggestion.title, "审核推理记忆"),
       topCandidateRank: safeTopCandidateRank(suggestion.top_candidate_rank),
       validationStepCount: Math.max(0, Math.round(suggestion.validation_step_count ?? 0)),
     })),
     safeNextAction: safeNextActionLabel(controlCenter.safe_next_action),
     safeNextHref: safeNextHref(campaignId, controlCenter.safe_next_action),
-    scopeStatus: safeText(humanize(controlCenter.campaign.scope_status), "Unknown scope"),
-    status: safeText(humanize(controlCenter.campaign.status), "Unknown status"),
+    scopeStatus: safeText(humanize(controlCenter.campaign.scope_status), "未知范围"),
+    status: safeText(humanize(controlCenter.campaign.status), "未知状态"),
     taskCount: controlCenter.tasks.length,
     validationEvidenceCount: validationEvidence.manualEvidenceCount,
     validationEvidenceGapCount: validationEvidence.evidenceGapCount,
@@ -1454,18 +1460,18 @@ export function toCampaignAgentRunSummaries(
   runs: CampaignAgentRun[],
 ): CampaignAgentRunSummary[] {
   return runs.map((run) => ({
-    agentType: safeText(humanize(run.agent_type), "Agent"),
+    agentType: safeText(humanize(run.agent_type), "智能体"),
     finishedAt: run.finished_at,
-    id: safeText(run.id, "agent_run"),
+    id: safeText(run.id, "智能体运行"),
     inputRefCount: run.input_refs.length,
     outputRefCount: run.output_refs.length,
     safetyGateState: reviewGateLanguage(safetyGateDecisionLabel(run.safety_gate_state)),
     startedAt: run.created_at,
-    status: safeText(humanize(run.status), "Unknown status"),
+    status: safeText(humanize(run.status), "未知状态"),
     stopReason: run.stop_reason
-      ? reviewGateLanguage(safeText(humanize(run.stop_reason), "Stopped"))
+      ? reviewGateLanguage(safeText(humanize(run.stop_reason), "已停止"))
       : null,
-    taskId: run.task_id ? safeText(run.task_id, "task") : null,
+    taskId: run.task_id ? safeText(run.task_id, "任务") : null,
   }));
 }
 
@@ -1473,14 +1479,14 @@ export function toCampaignTaskSummaries(
   tasks: CampaignTask[],
 ): CampaignTaskSummary[] {
   return tasks.map((task) => ({
-    agentType: safeText(humanize(task.agent_type), "Agent"),
+    agentType: safeText(humanize(task.agent_type), "智能体"),
     createdAt: task.created_at,
-    id: safeText(task.id, "task"),
+    id: safeText(task.id, "任务"),
     inputRefCount: task.input_refs.length,
     outputRefCount: task.output_refs.length,
-    status: safeText(humanize(task.status), "Unknown status"),
-    taskType: safeText(humanize(task.task_type), "Task"),
-    title: safeText(task.title, "Untitled task"),
+    status: safeText(humanize(task.status), "未知状态"),
+    taskType: safeText(humanize(task.task_type), "任务"),
+    title: safeText(task.title, "未命名任务"),
   }));
 }
 
@@ -1491,7 +1497,7 @@ export function toCampaignResearchTaskReviewSummary(
     autonomousCandidateContext: review.autonomous_candidate_context
       ? toCampaignAutonomousCandidateContextSummary(review.autonomous_candidate_context)
       : null,
-    campaignId: safeText(review.campaign_id, "campaign"),
+    campaignId: safeText(review.campaign_id, "活动"),
     dispatchAllowed: false,
     executionAllowed: false,
     latestReviewPlan: review.latest_review_plan
@@ -1505,27 +1511,27 @@ export function toCampaignResearchTaskReviewSummary(
       : null,
     nextAllowedAction: safeText(
       review.next_allowed_action,
-      "Review hypothesis board and plan non-destructive evidence work.",
+      "审核假设看板并规划非破坏性证据工作。",
     ),
     nonDestructivePlan: review.non_destructive_plan
       .slice(0, 6)
-      .map((step) => safeText(step, "Plan step redacted")),
-    playbookId: review.playbook_id ? safeText(review.playbook_id, "playbook") : null,
+      .map((step) => safeText(step, "计划步骤已脱敏")),
+    playbookId: review.playbook_id ? safeText(review.playbook_id, "研究手册") : null,
     priorityScore: Math.max(0, Math.min(100, Math.round(review.priority_score))),
-    queueKey: safeText(review.queue_key, "research_queue"),
+    queueKey: safeText(review.queue_key, "研究队列"),
     reportSubmissionAllowed: false,
     requiredHumanGates: review.required_human_gates
       .slice(0, 6)
-      .map((gate) => reviewGateLanguage(safeText(humanize(gate), "Human gate"))),
-    safetyGate: reviewGateLanguage(safeText(humanize(review.safety_gate), "Advisory memory only")),
-    source: safeText(humanize(review.source), "Mythos brain reasoning memory"),
-    status: safeText(humanize(review.status), "Queued review"),
+      .map((gate) => reviewGateLanguage(safeText(humanize(gate), "人工审核门"))),
+    safetyGate: reviewGateLanguage(safeText(humanize(review.safety_gate), "仅作建议性记忆")),
+    source: safeText(humanize(review.source), "研究大脑推理记忆"),
+    status: safeText(humanize(review.status), "已排入审核队列"),
     suggestedRefutationDecision: review.suggested_refutation_decision
       ? toCampaignSuggestedRefutationDecisionSummary(review.suggested_refutation_decision)
       : null,
-    surfaceKey: review.surface_key ? safeText(review.surface_key, "surface") : null,
-    taskId: safeText(review.task_id, "task"),
-    title: safeText(review.title, "Research task review"),
+    surfaceKey: review.surface_key ? safeText(review.surface_key, "攻击面") : null,
+    taskId: safeText(review.task_id, "任务"),
+    title: safeText(review.title, "研究任务审核"),
   };
 }
 
@@ -1533,25 +1539,25 @@ function toCampaignSuggestedRefutationDecisionSummary(
   decision: CampaignSuggestedRefutationDecision,
 ): CampaignSuggestedRefutationDecisionSummary {
   return {
-    decision: safeText(humanize(decision.decision), "Needs validation review"),
+    decision: safeText(humanize(decision.decision), "需要验证审核"),
     dispatchAllowed: false,
     executionAllowed: false,
     humanReviewRequired: decision.human_review_required !== false,
     nextAllowedAction: reviewGateLanguage(
       safeText(
         decision.next_allowed_action,
-        "Prepare a human-reviewed validation plan without executing it.",
+        "准备经人工审核的验证计划，不执行验证。",
       ),
     ),
-    planId: safeText(decision.plan_id, "research_plan"),
+    planId: safeText(decision.plan_id, "研究计划"),
     rationale: safeReasonText(decision.rationale),
     refutationAnswerCount: Math.max(0, Math.round(decision.refutation_answer_count)),
     refutationQuestionCount: Math.max(0, Math.round(decision.refutation_question_count)),
     reportSubmissionAllowed: false,
-    targetRef: decision.target_ref ? safeText(decision.target_ref, "target") : null,
+    targetRef: decision.target_ref ? safeText(decision.target_ref, "目标") : null,
     validationAllowed: false,
     validationMode: decision.validation_mode
-      ? reviewGateLanguage(safeText(humanize(decision.validation_mode), "Validation mode"))
+      ? reviewGateLanguage(safeText(humanize(decision.validation_mode), "验证模式"))
       : null,
   };
 }
@@ -1562,10 +1568,10 @@ function toCampaignAutonomousCandidateContextSummary(
   return {
     blockedActions: context.blocked_actions
       .slice(0, 8)
-      .map((action) => safeText(humanize(action), "Blocked action")),
-    candidateId: safeText(context.candidate_id, "candidate"),
+      .map((action) => safeText(humanize(action), "已阻断操作")),
+    candidateId: safeText(context.candidate_id, "候选项"),
     candidateStatus: reviewGateLanguage(
-      safeText(humanize(context.candidate_status), "Awaiting human review"),
+      safeText(humanize(context.candidate_status), "等待人工审核"),
     ),
     dispatchAllowed: false,
     evidenceNeeded: safeLabelList(context.evidence_needed ?? [], 6),
@@ -1575,29 +1581,29 @@ function toCampaignAutonomousCandidateContextSummary(
     executionAllowed: false,
     humanApprovalRequired: context.human_approval_required !== false,
     hypothesis: safeReasonText(context.hypothesis),
-    pipelineRunId: safeText(context.pipeline_run_id, "pipeline_run"),
+    pipelineRunId: safeText(context.pipeline_run_id, "流程运行"),
     rawPriorityScore: percentScore(context.raw_priority_score),
     qualityGateReasons: safeLabelList(context.quality_gate_reasons ?? [], 6),
     refutationQuestions: context.refutation_questions
       .slice(0, 8)
-      .map((question) => safeText(question, "Refutation question redacted")),
-    refutationStatus: safeText(humanize(context.refutation_status), "Needs evidence"),
+      .map((question) => safeText(question, "反证问题已脱敏")),
+    refutationStatus: safeText(humanize(context.refutation_status), "需要证据"),
     requiredEvidence: safeLabelList(context.required_evidence ?? [], 6),
     satisfiedEvidence: safeLabelList(context.satisfied_evidence ?? [], 6),
     reportSubmissionAllowed: false,
     safetyNotes: context.safety_notes
       .slice(0, 8)
-      .map((note) => safeText(humanize(note), "Safety note")),
+      .map((note) => safeText(humanize(note), "安全说明")),
     sourceFactTypes: sourceFactTypeLabels(context.source_fact_types ?? [], 4),
     triageSignals: safeReviewLabelList(context.triage_signals ?? [], 4),
     validationAllowed: false,
     validationPlanStatus: safeText(
       reviewGateLanguage(humanize(context.validation_plan_status)),
-      "Requires review",
+      "需要审核",
     ),
     validationSteps: context.validation_steps
       .slice(0, 8)
-      .map((step) => safeText(step, "Validation step redacted")),
+      .map((step) => safeText(step, "验证步骤已脱敏")),
   };
 }
 
@@ -1605,26 +1611,26 @@ function toCampaignResearchValidationFeedbackSummary(
   feedback: CampaignResearchValidationFeedback,
 ): CampaignResearchValidationFeedbackSummary {
   return {
-    approvalId: safeText(feedback.approval_id, "approval"),
-    campaignId: safeText(feedback.campaign_id, "campaign"),
-    decisionId: safeText(feedback.decision_id, "refutation_decision"),
+    approvalId: safeText(feedback.approval_id, "审批记录"),
+    campaignId: safeText(feedback.campaign_id, "活动"),
+    decisionId: safeText(feedback.decision_id, "反证决策"),
     dispatchAllowed: false,
     evidenceRefCount: Math.max(0, Math.round(feedback.evidence_ref_count)),
     executionAllowed: false,
-    feedbackStageId: safeText(feedback.feedback_stage_id, "feedback_stage"),
+    feedbackStageId: safeText(feedback.feedback_stage_id, "反馈阶段"),
     findingConfirmationAllowed: false,
     nextAllowedAction: safeText(
       feedback.next_allowed_action,
-      "Review validation evidence before finding promotion.",
+      "晋级漏洞候选前，请审核验证证据。",
     ),
-    outcome: safeText(humanize(feedback.outcome), "Needs evidence"),
-    planId: safeText(feedback.plan_id, "research_plan"),
+    outcome: safeText(humanize(feedback.outcome), "需要证据"),
+    planId: safeText(feedback.plan_id, "研究计划"),
     reportSubmissionAllowed: false,
-    safetyGate: safeText(humanize(feedback.safety_gate), "Advisory validation feedback only"),
-    status: safeText(humanize(feedback.status), "Evidence recorded"),
-    taskId: safeText(feedback.task_id, "task"),
+    safetyGate: safeText(humanize(feedback.safety_gate), "仅作建议性验证反馈"),
+    status: safeText(humanize(feedback.status), "证据已记录"),
+    taskId: safeText(feedback.task_id, "任务"),
     validationAllowed: false,
-    validationRunId: safeText(feedback.validation_run_id, "validation_run"),
+    validationRunId: safeText(feedback.validation_run_id, "验证运行"),
   };
 }
 
@@ -1650,16 +1656,16 @@ export function toCampaignResearchFeedbackEvidenceSummaries(
         planId: feedback.planId,
         promotionGate: safeText(
           humanize(promotionGate?.status ?? "manual_review_required"),
-          "Manual review required",
+          "需要人工审核",
         ),
         promotionGateReason: safeText(
           humanize(promotionGate?.reason ?? "research_validation_feedback_is_advisory"),
-          "Research validation feedback is advisory",
+          "研究验证反馈仅作建议性参考",
         ),
         promotionProvenanceRefCount: Array.isArray(promotionGate?.provenance_refs)
           ? promotionGate.provenance_refs.length
           : 0,
-        reviewTitle: safeText(review.title, "Research feedback review"),
+        reviewTitle: safeText(review.title, "研究反馈审核"),
         safetyGate: feedback.safetyGate,
         status: feedback.status,
         taskId: feedback.taskId,
@@ -1691,26 +1697,26 @@ function toCampaignResearchRefutationDecisionSummary(
   decision: CampaignResearchRefutationDecision,
 ): CampaignResearchRefutationDecisionSummary {
   return {
-    approvalId: decision.approval_id ? safeText(decision.approval_id, "approval") : null,
-    campaignId: safeText(decision.campaign_id, "campaign"),
-    decision: safeText(humanize(decision.decision), "Needs evidence"),
-    decisionId: safeText(decision.decision_id, "refutation_decision"),
+    approvalId: decision.approval_id ? safeText(decision.approval_id, "审批记录") : null,
+    campaignId: safeText(decision.campaign_id, "活动"),
+    decision: safeText(humanize(decision.decision), "需要证据"),
+    decisionId: safeText(decision.decision_id, "反证决策"),
     dispatchAllowed: false,
     executionAllowed: false,
     nextAllowedAction: safeText(
       decision.next_allowed_action,
-      "Collect redacted evidence or refine the hypothesis before validation.",
+      "验证前请收集脱敏证据或完善假设。",
     ),
-    planId: safeText(decision.plan_id, "research_plan"),
+    planId: safeText(decision.plan_id, "研究计划"),
     rationale: safeReasonText(decision.rationale),
     refutationAnswers: decision.refutation_answers
       .slice(0, 8)
       .map((answer) => safeReasonText(answer)),
     reportSubmissionAllowed: false,
-    taskId: safeText(decision.task_id, "task"),
+    taskId: safeText(decision.task_id, "任务"),
     validationAllowed: false,
     validationRunId: decision.validation_run_id
-      ? safeText(decision.validation_run_id, "validation_run")
+      ? safeText(decision.validation_run_id, "验证运行")
       : null,
   };
 }
@@ -1719,7 +1725,7 @@ function toCampaignResearchReviewPlanSummary(
   plan: CampaignResearchReviewPlan,
 ): CampaignResearchReviewPlanSummary {
   return {
-    campaignId: safeText(plan.campaign_id, "campaign"),
+    campaignId: safeText(plan.campaign_id, "活动"),
     dispatchAllowed: false,
     evidencePlan: plan.evidence_plan.slice(0, 8).map((step) => safeReasonText(step)),
     executionAllowed: false,
@@ -1727,20 +1733,20 @@ function toCampaignResearchReviewPlanSummary(
     nextAllowedAction: reviewGateLanguage(
       safeText(
         plan.next_allowed_action,
-        "Review hypothesis board and request review before validation.",
+        "验证前请审核假设看板并请求审核。",
       ),
     ),
-    planId: safeText(plan.plan_id, "research_plan"),
+    planId: safeText(plan.plan_id, "研究计划"),
     refutationQuestions: plan.refutation_questions
       .slice(0, 8)
       .map((question) => safeReasonText(question)),
     reportSubmissionAllowed: false,
     requiredHumanGates: plan.required_human_gates
       .slice(0, 6)
-      .map((gate) => reviewGateLanguage(safeText(humanize(gate), "Human gate"))),
-    safetyGate: safeText(humanize(plan.safety_gate), "Advisory plan only"),
-    status: safeText(humanize(plan.status), "Drafted"),
-    taskId: safeText(plan.task_id, "task"),
+      .map((gate) => reviewGateLanguage(safeText(humanize(gate), "人工审核门"))),
+    safetyGate: safeText(humanize(plan.safety_gate), "仅作建议性计划"),
+    status: safeText(humanize(plan.status), "已起草"),
+    taskId: safeText(plan.task_id, "任务"),
     validationAllowed: false,
   };
 }
@@ -1752,15 +1758,15 @@ export function toCampaignArtifactSummaries(
     const usageRecords = artifact.usage_records ?? [];
 
     return {
-      asset: safeText(artifact.asset, "asset"),
+      asset: safeText(artifact.asset, "资产"),
       createdAt: artifact.created_at,
-      id: safeText(artifact.id, "artifact"),
-      ingestionStatus: safeText(humanize(artifact.ingestion_status), "Unknown status"),
-      kind: safeText(humanize(artifact.kind), "Artifact"),
+      id: safeText(artifact.id, "资料"),
+      ingestionStatus: safeText(humanize(artifact.ingestion_status), "未知状态"),
+      kind: safeText(humanize(artifact.kind), "资料"),
       reportChainAllowed: artifact.report_chain_allowed === true,
       safetyBlockerCount: artifact.safety_blockers.length,
-      sensitivityLabel: safeText(humanize(artifact.sensitivity_label), "Unknown sensitivity"),
-      sourceType: safeText(humanize(artifact.source_type), "Source"),
+      sensitivityLabel: safeText(humanize(artifact.sensitivity_label), "未知敏感度"),
+      sourceType: safeText(humanize(artifact.source_type), "来源"),
       usageCount: usageRecords.length,
       usageStages: usageCounts(usageRecords, "stage"),
       usageTypes: usageCounts(usageRecords, "usage_type"),
@@ -1777,7 +1783,7 @@ function usageCounts(
     const value = typeof record[key] === "string" && record[key]?.trim()
       ? record[key]
       : "unknown";
-    const label = safeText(humanize(value), "Usage");
+    const label = safeText(humanize(value), "用途");
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   return Array.from(counts, ([label, count]) => ({ count, label }));
@@ -1787,25 +1793,27 @@ export function toCampaignValidationQueueSummaries(
   approvals: CampaignApproval[],
 ): CampaignValidationQueueSummary[] {
   return approvals.map((approval) => ({
-    approvalType: safeText(humanize(approval.approval_type), "Review gate"),
-    asset: approval.asset ? safeText(approval.asset, "asset") : null,
+    approvalType: approval.approval_type
+      ? safeText(humanize(approval.approval_type), "审核门")
+      : "审核门",
+    asset: approval.asset ? safeText(approval.asset, "资产") : null,
     createdAt: approval.created_at,
     expiresAt: approval.expires_at ?? null,
-    id: safeText(approval.id, "approval"),
+    id: safeText(approval.id, "审批记录"),
     nextAction: validationQueueNextAction(approval),
-    planDigest: approval.plan_digest ? safeText(approval.plan_digest, "plan") : null,
-    reason: reviewGateLanguage(safeText(approval.reason, "Reason redacted")),
+    planDigest: approval.plan_digest ? safeText(approval.plan_digest, "计划") : null,
+    reason: reviewGateLanguage(safeText(approval.reason, "原因已脱敏")),
     requestedAction: approval.requested_action
-      ? reviewGateLanguage(safeText(humanize(approval.requested_action), "Requested action"))
+      ? reviewGateLanguage(safeText(humanize(approval.requested_action), "已请求操作"))
       : null,
-    runId: approval.run_id ? safeText(approval.run_id, "run") : null,
+    runId: approval.run_id ? safeText(approval.run_id, "运行") : null,
     safetyGateState: reviewGateLanguage(
-      safeText(humanize(approval.safety_gate_state), "Unknown gate"),
+      safeText(humanize(approval.safety_gate_state), "未知审核门"),
     ),
-    status: safeText(humanize(approval.status), "Unknown status"),
-    taskId: approval.task_id ? safeText(approval.task_id, "task") : null,
+    status: safeText(humanize(approval.status), "未知状态"),
+    taskId: approval.task_id ? safeText(approval.task_id, "任务") : null,
     validationMode: approval.validation_mode
-      ? reviewGateLanguage(safeText(humanize(approval.validation_mode), "Validation mode"))
+      ? reviewGateLanguage(safeText(humanize(approval.validation_mode), "验证模式"))
       : null,
   }));
 }
@@ -1817,7 +1825,7 @@ export function toCampaignValidationRunSummaries(
     const executionState = validationRunExecutionState(run);
     return {
       allowedToExecute: run.allowed_to_execute === true,
-      approvalId: run.approval_id ? safeText(run.approval_id, "approval") : null,
+      approvalId: run.approval_id ? safeText(run.approval_id, "审批记录") : null,
       approvalRequired: run.approval_required === true,
       attentionState: validationRunAttentionState(run, executionState),
       createdAt: run.created_at,
@@ -1825,36 +1833,36 @@ export function toCampaignValidationRunSummaries(
       executionStarted: run.execution_started === true,
       executionState,
       finishedAt: run.finished_at ?? null,
-      id: safeText(run.id, "validation_run"),
+      id: safeText(run.id, "验证运行"),
       nextAction: validationRunNextAction(run, executionState),
-      planDigest: run.plan_digest ? safeText(run.plan_digest, "plan") : null,
+      planDigest: run.plan_digest ? safeText(run.plan_digest, "计划") : null,
       preflightPassed: validationRunPreflightPassed(run),
-      safetyGateState: reviewGateLanguage(safeText(humanize(run.safety_gate_state), "Unknown gate")),
-      status: reviewGateLanguage(safeText(humanize(run.status), "Unknown status")),
-      summary: reviewGateLanguage(safeText(run.summary, "Summary redacted")),
-      targetRef: safeText(run.target_ref, "target"),
-      taskId: run.task_id ? safeText(run.task_id, "task") : null,
-      validationMode: reviewGateLanguage(safeText(humanize(run.validation_mode), "Validation mode")),
+      safetyGateState: reviewGateLanguage(safeText(humanize(run.safety_gate_state), "未知审核门")),
+      status: reviewGateLanguage(safeText(humanize(run.status), "未知状态")),
+      summary: reviewGateLanguage(safeText(run.summary, "摘要已脱敏")),
+      targetRef: safeText(run.target_ref, "目标"),
+      taskId: run.task_id ? safeText(run.task_id, "任务") : null,
+      validationMode: reviewGateLanguage(safeText(humanize(run.validation_mode), "验证模式")),
     };
   });
 }
 
 function validationQueueNextAction(approval: CampaignApproval): string {
   if (approval.status === "approved") {
-    return "Run Scope Guard preflight before validation.";
+    return "验证前请执行范围守卫预检。";
   }
   if (approval.status === "denied" || approval.status === "revoked" || approval.status === "expired") {
-    return "Create a fresh reviewed gate before any validation.";
+    return "验证前请创建新的已审核门。";
   }
-  return "Review the gate record, then run Scope Guard preflight before validation.";
+  return "审核门记录后，再执行范围守卫预检。";
 }
 
 function validationRunExecutionState(run: CampaignValidationRun): string {
   if (run.execution_started === true) {
-    return "Validation started";
+    return "验证已启动";
   }
   if (validationRunPreflightPassed(run)) {
-    return "Preflight passed";
+    return "预检已通过";
   }
   if (
     run.approval_required === true
@@ -1862,12 +1870,12 @@ function validationRunExecutionState(run: CampaignValidationRun): string {
     && run.status === "ready"
     && run.safety_gate_state === "approved_validation_record"
   ) {
-    return "Preflight required";
+    return "需要预检";
   }
   if (run.approval_required === true && !run.approval_id) {
-    return "Awaiting review gate";
+    return "等待审核门";
   }
-  return "Preflight blocked";
+  return "预检已阻断";
 }
 
 function validationRunAttentionState(
@@ -1875,18 +1883,18 @@ function validationRunAttentionState(
   executionState: string,
 ): string {
   if (run.execution_started === true) {
-    return "Validation started";
+    return "验证已启动";
   }
-  if (executionState === "Preflight passed") {
-    return "Preflight passed";
+  if (executionState === "预检已通过") {
+    return "预检已通过";
   }
-  if (executionState === "Preflight required") {
-    return "Preflight required";
+  if (executionState === "需要预检") {
+    return "需要预检";
   }
   if (run.approval_required === true && !run.approval_id) {
-    return "Review gate missing";
+    return "缺少审核门";
   }
-  return "Preflight blocked";
+  return "预检已阻断";
 }
 
 function validationRunNextAction(
@@ -1894,18 +1902,18 @@ function validationRunNextAction(
   executionState: string,
 ): string {
   if (run.execution_started === true) {
-    return "Monitor the audit trail and keep evidence redacted.";
+    return "监控审计轨迹并保持证据脱敏。";
   }
-  if (executionState === "Preflight passed") {
-    return "Review manual validation observation before any evidence promotion.";
+  if (executionState === "预检已通过") {
+    return "在晋级任何证据前审核人工验证观察。";
   }
-  if (executionState === "Preflight required") {
-    return "Run Scope Guard preflight before validation.";
+  if (executionState === "需要预检") {
+    return "验证前请执行范围守卫预检。";
   }
   if (run.approval_required === true && !run.approval_id) {
-    return "Review the validation gate before preflight.";
+    return "预检前请审核验证门。";
   }
-  return "Resolve scope, approval, or preflight blockers before validation.";
+  return "验证前请处理范围、审批或预检阻断项。";
 }
 
 function validationRunPreflightPassed(run: CampaignValidationRun): boolean {
@@ -1921,7 +1929,7 @@ export function toCampaignTimelineSummaries(
   stages: CampaignPipelineStage[],
 ): CampaignTimelineSummary[] {
   return stages.map((stage) => {
-    const stageKey = safeText(humanize(stage.stage_key), "Stage");
+    const stageKey = safeText(humanize(stage.stage_key), "阶段");
     const isCycleReview = stage.stage_key === "campaign_cycle_review";
     const isLearningOutcome = stage.stage_key === "learning_outcome_recorded";
     const isManualValidationResult = stage.stage_key === "validation_manual_result";
@@ -1955,25 +1963,25 @@ export function toCampaignTimelineSummaries(
 
     return {
       auditLabel: isCycleReview
-        ? "Campaign cycle review"
+        ? "活动周期审核"
         : isLearningOutcome
-          ? "Advisory Brain learning"
+          ? "建议性大脑学习"
           : isManualValidationResult
-            ? "Manual validation result"
+            ? "人工验证结果"
             : isFindingPromotion
-              ? "Finding promotion review"
+              ? "漏洞候选晋级审核"
               : isFindingPromotionBlocked
-                ? "Finding promotion blocked"
+                ? "漏洞候选晋级已阻断"
                 : isResearchQueueMaterialized
-                  ? "Research review queued"
+                  ? "研究审核已排队"
                   : isResearchPlan
-                    ? "Research plan drafted"
+                    ? "研究计划已起草"
                     : isResearchRefutationDecision
-                      ? "Refutation decision"
+                      ? "反证决策"
                       : isResearchValidationFeedback
-                        ? "Research validation feedback"
+                        ? "研究验证反馈"
                         : isValidationFeedbackReview
-                          ? "Validation feedback review"
+                          ? "验证反馈审核"
                           : stageKey,
       ...(isResearchRefutationDecision
         ? { approvalCreated: payload.approval_created === true }
@@ -1986,13 +1994,13 @@ export function toCampaignTimelineSummaries(
         ? { blockedActionCount: safeCount(payload.blocked_action_count) ?? 0 }
         : {}),
       ...(isResearchQueueMaterialized && typeof payload.candidate_status === "string"
-        ? { candidateStatus: safeText(humanize(payload.candidate_status), "Candidate") }
+        ? { candidateStatus: safeText(humanize(payload.candidate_status), "候选项") }
         : {}),
       ...(isResearchRefutationDecision && typeof payload.decision === "string"
-        ? { decision: safeText(humanize(payload.decision), "Decision") }
+        ? { decision: safeText(humanize(payload.decision), "决策") }
         : {}),
       ...(isValidationFeedbackReview && typeof payload.decision === "string"
-        ? { decision: safeText(humanize(payload.decision), "Decision") }
+        ? { decision: safeText(humanize(payload.decision), "决策") }
         : {}),
       ...(isValidationFeedbackReview
         ? {
@@ -2028,11 +2036,11 @@ export function toCampaignTimelineSummaries(
         ? {
             hunterOperatingAction: safeText(
               humanize(payload.hunter_operating_action),
-              "Hunter action",
+              "挖掘操作",
             ),
           }
         : {}),
-      id: safeText(stage.id, "stage"),
+      id: safeText(stage.id, "阶段"),
       inputRefCount: stage.input_refs.length,
       isCycleReview,
       ...(isFindingPromotion ? { isFindingPromotion: true } : {}),
@@ -2046,10 +2054,10 @@ export function toCampaignTimelineSummaries(
       ...(isResearchValidationFeedback ? { isResearchValidationFeedback: true } : {}),
       ...(isValidationFeedbackReview ? { isValidationFeedbackReview: true } : {}),
       ...(isFindingPromotion && typeof llmAudit.mode === "string"
-        ? { llmAuditMode: safeText(humanize(llmAudit.mode), "Audit mode") }
+        ? { llmAuditMode: safeText(humanize(llmAudit.mode), "审核模式") }
         : {}),
       ...(isFindingPromotion && llmAuditPromptHash
-        ? { llmAuditPromptHash: safeText(llmAuditPromptHash, "Audit hash") }
+        ? { llmAuditPromptHash: safeText(llmAuditPromptHash, "审核哈希") }
         : {}),
       ...(isFindingPromotion && typeof llmAudit.prompt_text_stored === "boolean"
         ? { llmAuditPromptTextStored: llmAudit.prompt_text_stored }
@@ -2066,14 +2074,14 @@ export function toCampaignTimelineSummaries(
         ? { refutationQuestionCount: safeCount(payload.refutation_question_count) ?? 0 }
         : {}),
       ...(reviewEvidenceRefCount !== undefined ? { reviewEvidenceRefCount } : {}),
-      safetyGateState: safeText(humanize(stage.safety_gate_state), "Unknown gate"),
+      safetyGateState: safeText(humanize(stage.safety_gate_state), "未知审核门"),
       stageKey,
       stageOrder: stage.stage_order,
-      status: safeText(humanize(stage.status), "Unknown status"),
+      status: safeText(humanize(stage.status), "未知状态"),
       stopReason: stage.stop_reason
-        ? reviewGateLanguage(safeText(humanize(stage.stop_reason), "Stopped"))
+        ? reviewGateLanguage(safeText(humanize(stage.stop_reason), "已停止"))
         : null,
-      taskId: stage.task_id ? safeText(stage.task_id, "task") : null,
+      taskId: stage.task_id ? safeText(stage.task_id, "任务") : null,
       ...(isResearchQueueMaterialized
         ? { validationStepCount: safeCount(payload.validation_step_count) ?? 0 }
         : {}),
@@ -2092,15 +2100,15 @@ function manualValidationReviewSummary(
   }
 
   return {
-    evidenceQuality: safeText(humanize(String(review.evidence_quality ?? "weak")), "Weak"),
+    evidenceQuality: safeText(humanize(String(review.evidence_quality ?? "weak")), "低"),
     promotionReviewReady: review.promotion_review_ready === true,
     qualityReasons: stringList(review.quality_reasons).map(safeReasonText),
     qualityScore: percentScore(review.quality_score) ?? 0,
-    redactionStatus: safeText(humanize(String(review.redaction_status ?? "unknown")), "Unknown"),
+    redactionStatus: safeText(humanize(String(review.redaction_status ?? "unknown")), "未知"),
     safeEvidenceRefCount: safeCount(review.safe_evidence_ref_count) ?? 0,
     sourceType: safeText(
       humanize(String(review.source_type ?? "manual_safe_observation")),
-      "Manual safe observation",
+      "人工安全观察",
     ),
     unsafeEvidenceRefCount: safeCount(review.unsafe_evidence_ref_count) ?? 0,
   };
@@ -2114,26 +2122,26 @@ export function toCampaignBrainSummary(
     appliedLessonCount: profile.applied_lessons.length,
     appliedLessons: profile.applied_lessons.slice(0, 5).map((lesson) => ({
       confidence: lesson.confidence,
-      id: safeText(lesson.id, "lesson"),
-      recommendation: safeText(humanize(lesson.recommendation), "Recommendation"),
+      id: safeText(lesson.id, "经验"),
+      recommendation: safeText(humanize(lesson.recommendation), "建议"),
       reasons: lesson.reasons.slice(0, 4).map((reason) => safeReasonText(reason)),
       scoreDelta: lesson.score_delta,
-      surfacePattern: safeText(lesson.surface_pattern, "Surface"),
+      surfacePattern: safeText(lesson.surface_pattern, "攻击面"),
     })),
     executionAllowed: false,
     objectCount: profile.attack_surface_memory.objects.length,
-    programId: safeText(profile.program_id, "program"),
-    programName: safeText(profile.program_name, "Program"),
+    programId: safeText(profile.program_id, "项目"),
+    programName: safeText(profile.program_name, "项目"),
     programScore: profile.program_score,
     recentSignals: profile.recent_learning_signals.slice(0, 5).map((signal) => ({
       evidenceQuality: signal.evidence_quality
-        ? safeText(humanize(signal.evidence_quality), "Evidence quality")
+        ? safeText(humanize(signal.evidence_quality), "证据质量")
         : null,
-      id: safeText(signal.id ?? "signal", "signal"),
-      notes: safeText(signal.notes, "Notes redacted"),
-      outcome: safeText(humanize(signal.outcome), "Outcome"),
-      playbookId: safeText(signal.playbook_id, "playbook"),
-      surfaceKey: signal.surface_key ? safeText(signal.surface_key, "surface") : null,
+      id: safeText(signal.id ?? "信号", "信号"),
+      notes: safeText(signal.notes, "说明已脱敏"),
+      outcome: safeText(humanize(signal.outcome), "结果"),
+      playbookId: safeText(signal.playbook_id, "研究手册"),
+      surfaceKey: signal.surface_key ? safeText(signal.surface_key, "攻击面") : null,
     })),
     roleCount: profile.attack_surface_memory.roles.length,
     reasoningMemory: {
@@ -2151,18 +2159,18 @@ export function toCampaignBrainSummary(
           candidateContextCount: playbook.candidate_context_count,
           highestReasoningReviewScore: playbook.highest_reasoning_review_score,
           learningSignalContextCount: playbook.learning_signal_context_count,
-          playbookId: safeText(playbook.playbook_id, "playbook"),
+          playbookId: safeText(playbook.playbook_id, "研究手册"),
         })),
     },
     sensitiveActionCount: profile.attack_surface_memory.sensitive_actions.length,
     signalCount: profile.recent_learning_signals.length,
     skippedLessonCount: profile.skipped_lessons.length,
     topSurfaces: profile.high_value_surfaces.slice(0, 5).map((surface) => ({
-      action: safeText(humanize(surface.action), "Action"),
-      objectName: safeText(surface.object_name, "Object"),
-      path: safeText(surface.paths[0] ?? "", "No path"),
+      action: safeText(humanize(surface.action), "操作"),
+      objectName: safeText(surface.object_name, "对象"),
+      path: safeText(surface.paths[0] ?? "", "无路径"),
       score: surface.score,
-      surfaceKey: safeText(surface.surface_key, "surface"),
+      surfaceKey: safeText(surface.surface_key, "攻击面"),
     })),
   };
 }
@@ -2197,39 +2205,39 @@ export function toCampaignCodebaseMapView(
 ): CampaignCodebaseMapView {
   const maps = codebaseMap.maps.map((map) => ({
     authzCheckCount: map.authz_check_count,
-    commitRef: map.commit_ref ? safeText(map.commit_ref, "commit") : null,
+    commitRef: map.commit_ref ? safeText(map.commit_ref, "提交") : null,
     createdAt: map.created_at,
     handlerCount: map.handler_count,
-    id: safeText(map.id, "codebase_map"),
+    id: safeText(map.id, "代码库映射"),
     modelCount: map.model_count,
-    repository: safeText(map.repository, "repository"),
+    repository: safeText(map.repository, "代码仓库"),
     routeCount: map.route_count,
-    safetyGateState: safeText(humanize(map.safety_gate_state), "Unknown gate"),
+    safetyGateState: safeText(humanize(map.safety_gate_state), "未知审核门"),
     sensitiveSinkCount: map.sensitive_sink_count,
-    sourceRef: safeText(map.source_ref, "source"),
-    status: safeText(humanize(map.status), "Unknown status"),
+    sourceRef: safeText(map.source_ref, "来源"),
+    status: safeText(humanize(map.status), "未知状态"),
   }));
   const facts = codebaseMap.facts.map((fact) => ({
     authzHint: fact.authz_hint ? codebaseAuthzHintLabel(fact.authz_hint) : null,
     factType: codebaseFactTypeLabel(fact.fact_type),
-    id: safeText(fact.id, "fact"),
+    id: safeText(fact.id, "事实"),
     route:
       fact.route_method || fact.route_path
-        ? safeText(`${fact.route_method ?? ""} ${fact.route_path ?? ""}`.trim(), "Route")
+        ? safeText(`${fact.route_method ?? ""} ${fact.route_path ?? ""}`.trim(), "路由")
         : null,
-    sensitivityLabel: safeText(humanize(fact.sensitivity_label), "Sensitivity"),
-    sourcePath: safeText(fact.source_path, "source"),
-    symbolName: fact.symbol_name ? safeText(fact.symbol_name, "symbol") : null,
+    sensitivityLabel: safeText(humanize(fact.sensitivity_label), "敏感度"),
+    sourcePath: safeText(fact.source_path, "来源"),
+    symbolName: fact.symbol_name ? safeText(fact.symbol_name, "符号") : null,
   }));
   const scannerRuns = codebaseMap.scanner_runs.map((run) => ({
     candidateCount: run.candidate_count,
-    commandHash: safeText(run.command_hash, "command"),
+    commandHash: safeText(run.command_hash, "命令"),
     findingCount: run.finding_count,
-    id: safeText(run.id, "scanner_run"),
-    safetyGateState: safeText(humanize(run.safety_gate_state), "Unknown gate"),
-    status: safeText(humanize(run.status), "Unknown status"),
-    summary: safeText(run.summary, "Summary redacted"),
-    toolName: safeText(run.tool_name, "tool"),
+    id: safeText(run.id, "扫描运行"),
+    safetyGateState: safeText(humanize(run.safety_gate_state), "未知审核门"),
+    status: safeText(humanize(run.status), "未知状态"),
+    summary: safeText(run.summary, "摘要已脱敏"),
+    toolName: safeText(run.tool_name, "工具"),
   }));
 
   return {
@@ -2250,11 +2258,11 @@ export function toCampaignCodebaseMapView(
 }
 
 function codebaseAuthzHintLabel(authzHint: string): string {
-  return safeText(humanize(authzHint), "Access-control hint").replace(/\bauthz\b/gi, "access-control");
+  return safeText(humanize(authzHint), "访问控制提示").replace(/\bauthz\b/gi, "访问控制");
 }
 
 function codebaseFactTypeLabel(factType: string): string {
-  return safeText(humanize(factType), "Fact").replace(/\bauthorization\b/gi, "Access-control");
+  return safeText(humanize(factType), "事实").replace(/\bauthorization\b/gi, "访问控制");
 }
 
 export function toCampaignEvidenceReviewSummaries(
@@ -2262,18 +2270,18 @@ export function toCampaignEvidenceReviewSummaries(
 ): CampaignEvidenceReviewSummary[] {
   return previews.flatMap((preview) =>
     preview.claim_ledger.map((claim) => ({
-      claimId: safeText(claim.claim_id, "claim"),
-      claimText: safeText(claim.text, "Claim text redacted"),
-      claimType: safeText(humanize(claim.claim_type), "Claim"),
+      claimId: safeText(claim.claim_id, "声明"),
+      claimText: safeText(claim.text, "声明文本已脱敏"),
+      claimType: safeText(humanize(claim.claim_type), "声明"),
       evidenceRefCount: claim.evidence_refs.length,
       humanReviewRequired: claim.human_review_required === true,
       provenanceRefCount: claim.provenance_refs.length,
       qualityScore: claim.quality_score,
       readinessBlockers: claim.readiness_blockers.map((blocker) =>
-        safeText(humanize(blocker), "Blocker"),
+        safeText(humanize(blocker), "阻断项"),
       ),
-      readinessLevel: safeText(humanize(claim.readiness_level), "Readiness"),
-      redactionStatus: safeText(humanize(claim.redaction_status), "Redaction"),
+      readinessLevel: safeText(humanize(claim.readiness_level), "就绪度"),
+      redactionStatus: safeText(humanize(claim.redaction_status), "脱敏"),
       reportChainEligible:
         claim.review_status === "confirmed_observed_fact" &&
         claim.readiness_level === "human_reviewed_gated" &&
@@ -2281,10 +2289,10 @@ export function toCampaignEvidenceReviewSummaries(
         claim.review_evidence_refs.length > 0,
       reviewEvidenceRefCount: claim.review_evidence_refs.length,
       reviewRationale: claim.review_rationale
-        ? reviewGateLanguage(safeText(claim.review_rationale, "Review rationale redacted"))
+        ? reviewGateLanguage(safeText(claim.review_rationale, "审核理由已脱敏"))
         : null,
-      reviewStatus: reviewGateLanguage(safeText(humanize(claim.review_status), "Review status")),
-      runId: safeText(preview.run_id, "run"),
+      reviewStatus: reviewGateLanguage(safeText(humanize(claim.review_status), "审核状态")),
+      runId: safeText(preview.run_id, "运行"),
       status: evidenceReviewClaimStatusText(claim.status),
     })),
   );
@@ -2292,9 +2300,9 @@ export function toCampaignEvidenceReviewSummaries(
 
 function evidenceReviewClaimStatusText(status: string): string {
   if (status === "report_ready") {
-    return "Report review gated";
+    return "报告审核受控";
   }
-  return reviewGateLanguage(safeText(humanize(status), "Status"));
+  return reviewGateLanguage(safeText(humanize(status), "状态"));
 }
 
 export function toCampaignReportDraftSummaries(
@@ -2310,16 +2318,16 @@ export function toCampaignReportDraftSummaries(
       evidenceRefCount: preview.evidence_refs.length,
       humanReviewRequired: preview.human_review_required === true,
       readyClaimCount,
-      runId: safeText(preview.run_id, "run"),
+      runId: safeText(preview.run_id, "运行"),
       safetyNotes: preview.safety_notes
         .slice(0, 4)
-        .map((note) => safeText(/[_-]/.test(note) ? humanize(note) : note, "Safety note")),
-      scopeStatus: safeText(humanize(preview.scope_status), "Unknown scope"),
-      severity: safeText(humanize(preview.severity), "Unknown severity"),
+        .map((note) => safeText(/[_-]/.test(note) ? humanize(note) : note, "安全说明")),
+      scopeStatus: safeText(humanize(preview.scope_status), "未知范围"),
+      severity: safeText(humanize(preview.severity), "未知严重性"),
       submissionBlocked: preview.submission_blocked === true,
-      title: safeText(preview.title, "Untitled report draft"),
+      title: safeText(preview.title, "未命名报告草稿"),
       topClaims: preview.claim_ledger.slice(0, 3).map((claim) =>
-        safeText(claim.text, "Claim text redacted"),
+        safeText(claim.text, "声明文本已脱敏"),
       ),
     };
   });
@@ -2361,25 +2369,25 @@ export function toCampaignValidationEvidenceReviewSummaries(
       const manualValidationReview = validationReviews.get(run.id);
       return {
         candidateEvidenceState: hasEvidenceRefs
-          ? "Candidate evidence review required"
-          : "Evidence gap review required",
+          ? "候选证据需要审核"
+          : "证据缺口需要审核",
         evidenceRefCount: run.evidence_ref_count,
         ...(manualValidationReview
           ? { manualValidationReview: validationEvidenceManualReviewSummary(manualValidationReview) }
           : {}),
         nextReviewAction: hasEvidenceRefs
-          ? "Review redaction, provenance, and claim coverage before report-chain use."
-          : "Collect redacted evidence refs before report-chain use.",
-        planDigest: run.plan_digest ? safeText(run.plan_digest, "plan") : null,
-        preflightState: "Manual result recorded",
-        reportChainState: hasEvidenceRefs ? "Report chain review required" : "Report chain blocked",
-        reviewGate: run.approval_id ? safeText(run.approval_id, "approval") : "No review gate",
-        reviewItem: run.task_id ? safeText(run.task_id, "task") : "No review item",
-        status: reviewGateLanguage(safeText(humanize(run.status), "Status")),
+          ? "报告链使用前请审核脱敏、溯源与声明覆盖情况。"
+          : "报告链使用前请收集脱敏证据引用。",
+        planDigest: run.plan_digest ? safeText(run.plan_digest, "计划") : null,
+        preflightState: "人工结果已记录",
+        reportChainState: hasEvidenceRefs ? "报告链需要审核" : "报告链已阻断",
+        reviewGate: run.approval_id ? safeText(run.approval_id, "审批记录") : "无审核门",
+        reviewItem: run.task_id ? safeText(run.task_id, "任务") : "无审核项",
+        status: reviewGateLanguage(safeText(humanize(run.status), "状态")),
         summary: reviewEvidenceSummaryText(run.summary),
-        targetRef: safeText(run.target_ref, "target"),
-        validationMode: reviewGateLanguage(safeText(humanize(run.validation_mode), "Validation mode")),
-        validationRunId: safeText(run.id, "validation_run"),
+        targetRef: safeText(run.target_ref, "目标"),
+        validationMode: reviewGateLanguage(safeText(humanize(run.validation_mode), "验证模式")),
+        validationRunId: safeText(run.id, "验证运行"),
       };
     });
 }
@@ -2390,8 +2398,8 @@ function validationEvidenceManualReviewSummary(
   return {
     evidenceQuality: review.evidenceQuality,
     promotionReviewState: review.promotionReviewReady
-      ? "Promotion review requires human decision"
-      : "Promotion review gated",
+      ? "漏洞候选晋级审核需要人工决策"
+      : "漏洞候选晋级审核受控",
     qualityReasons: review.qualityReasons,
     qualityScore: review.qualityScore,
     redactionStatus: review.redactionStatus,
@@ -2442,13 +2450,13 @@ export function toCampaignValidationEvidenceQualitySummary(
     .filter((review): review is CampaignValidationEvidenceManualReviewSummary => Boolean(review));
 
   return {
-    cleanReviewCount: reviews.filter((review) => review.redactionStatus === "Clean").length,
+    cleanReviewCount: reviews.filter((review) => review.redactionStatus === "已清理").length,
     gatedPromotionReviewCount: reviews.filter(
-      (review) => review.promotionReviewState === "Promotion review gated",
+      (review) => review.promotionReviewState === "漏洞候选晋级审核受控",
     ).length,
-    redactedReviewCount: reviews.filter((review) => review.redactionStatus === "Redacted").length,
+    redactedReviewCount: reviews.filter((review) => review.redactionStatus === "已脱敏").length,
     reviewedEvidenceCount: reviews.length,
-    strongEvidenceCount: reviews.filter((review) => review.evidenceQuality === "Strong").length,
+    strongEvidenceCount: reviews.filter((review) => review.evidenceQuality === "强").length,
     unsafeEvidenceRefCount: reviews.reduce(
       (total, review) => total + review.unsafeEvidenceRefCount,
       0,
@@ -2457,9 +2465,9 @@ export function toCampaignValidationEvidenceQualitySummary(
 }
 
 function reviewEvidenceSummaryText(summary: string): string {
-  return reviewGateLanguage(safeText(summary, "Summary redacted")).replace(
-    /\b(authorization|cookie|session|token)=\[redacted\]/gi,
-    (_match, key: string) => `${key} [redacted]`,
+  return reviewGateLanguage(safeText(summary, "摘要已脱敏")).replace(
+    /\b(authorization|cookie|session|token)=\[(?:redacted|已脱敏)\]/gi,
+    (_match, key: string) => `${formatLabel(key)} [已脱敏]`,
   );
 }
 
@@ -2541,18 +2549,18 @@ export function toCampaignFindingCandidateGateSummary(
     manualPromotionOnly: true,
     nextAllowedAction:
       status === "blocked_by_promotion_audit"
-        ? "Review blocked promotion evidence before retrying candidate promotion."
+        ? "再次晋级漏洞候选前，请审核被阻断的晋级证据。"
         : status === "blocked_by_required_evidence"
-        ? "Resolve required evidence gaps before candidate promotion."
+        ? "晋级漏洞候选前，请处理必需证据缺口。"
         : status === "blocked_by_research_feedback"
-        ? "Review validation feedback before candidate promotion."
+        ? "晋级漏洞候选前，请审核验证反馈。"
         : status === "ready_for_manual_promotion"
-        ? "Reviewed claims require a manual promotion decision after human review."
-        : "Complete claim review and evidence checks before promotion.",
+        ? "已审核声明需要在人工审核后由人工决定是否晋级。"
+        : "晋级前请完成声明审核和证据检查。",
     promotionAuditBlockedCount: promotionBlockedStages.length,
     promotionAuditCreatedCount: promotionCreatedStages.length,
     promotionAuditLatestReason: latestPromotionBlock?.stop_reason
-      ? safeText(humanize(latestPromotionBlock.stop_reason), "Promotion blocked")
+      ? safeText(humanize(latestPromotionBlock.stop_reason), "漏洞候选晋级已阻断")
       : null,
     promotionAuditProvenanceRefCount:
       safeCountOrListLength(
@@ -2575,7 +2583,7 @@ export function toCampaignFindingCandidateGateSummary(
       status === "ready_for_manual_promotion"
         ? previews
             .filter(previewHasEligibleClaim)
-            .map((preview) => safeText(preview.run_id, "run"))
+            .map((preview) => safeText(preview.run_id, "运行"))
             .filter((runId) => runId !== "[redacted]")
         : [],
     runCount: previews.length,
@@ -2598,18 +2606,18 @@ export function toCampaignHypothesisBoardSummaries(
         const exploitChain = asRecord(assessment.exploit_chain);
         const primitives = stringList(exploitChain.primitives)
           .slice(0, 3)
-          .map((primitive) => safeText(primitive, "Primitive"));
+          .map((primitive) => safeText(primitive, "原语"));
         const preconditions = stringList(exploitChain.preconditions)
           .slice(0, 3)
-          .map((precondition) => safeText(precondition, "Precondition"));
+          .map((precondition) => safeText(precondition, "前置条件"));
         const refutationQuestions = stringList(assessment.refutation?.questions)
           .slice(0, 3)
-          .map((question) => safeText(question, "Refutation question"));
+          .map((question) => safeText(question, "反证问题"));
         const primitiveCount = stringList(exploitChain.primitives).length;
         const preconditionCount = stringList(exploitChain.preconditions).length;
         const refutationQuestionCount = stringList(assessment.refutation?.questions).length;
         const hunterPriorityScore = hunter?.hunter_priority_score ?? 0;
-        const candidateId = safeText(assessment.candidate_id ?? `candidate_${index + 1}`, "candidate");
+        const candidateId = safeText(assessment.candidate_id ?? `candidate_${index + 1}`, "候选项");
         const sourceFactTypes = sourceFactTypeLabels(
           (hypothesis?.source_facts ?? [])
             .map((fact) => fact.fact_type)
@@ -2620,30 +2628,30 @@ export function toCampaignHypothesisBoardSummaries(
         const evidenceFocus = safeLabelList(hunter?.evidence_focus ?? [], 4).map(accessControlLabel);
         const researchQueueHandoff = researchQueueHandoffForCandidate(
           researchQueueSuggestions,
-          safeText(run.id, "run"),
+          safeText(run.id, "运行"),
           candidateId,
           fallbackCampaignId,
         );
 
         return {
           brokenInvariant: hypothesis?.broken_invariant
-            ? safeText(hypothesis.broken_invariant, "Invariant")
+            ? safeText(hypothesis.broken_invariant, "安全不变量")
             : null,
           candidateId,
-          candidateStatus: safeText(humanize(assessment.candidate_status ?? "candidate"), "Candidate"),
+          candidateStatus: safeText(humanize(assessment.candidate_status ?? "candidate"), "候选项"),
           chainConfidence: percentScore(exploitChain.confidence),
-          chainImpact: stringValue(exploitChain.impact) ? safeText(stringValue(exploitChain.impact), "Chain impact") : null,
+          chainImpact: stringValue(exploitChain.impact) ? safeText(stringValue(exploitChain.impact), "链路影响") : null,
           duplicateRiskScore: hunter?.duplicate_risk_score ?? 0,
           evidenceFocusCount: hunter?.evidence_focus?.length ?? 0,
           evidenceFocus,
           evidenceNeededCount: hypothesis?.evidence_needed?.length ?? 0,
           hunterPriorityScore,
-          hypothesis: safeText(hypothesis?.hypothesis, "Hypothesis redacted"),
+          hypothesis: safeText(hypothesis?.hypothesis, "假设已脱敏"),
           impactScore: hunter?.impact_score ?? 0,
-          nextAction: hunter?.next_action ? safeText(hunter.next_action, "Next action") : null,
-          playbook: safeText(hunter?.playbook_label ?? hunter?.playbook_id, "No playbook"),
+          nextAction: hunter?.next_action ? safeText(hunter.next_action, "下一步操作") : null,
+          playbook: safeText(hunter?.playbook_label ?? hunter?.playbook_id, "无研究手册"),
           policyRisk: hypothesis?.policy_risk
-            ? safeText(humanize(hypothesis.policy_risk), "Policy risk")
+            ? safeText(humanize(hypothesis.policy_risk), "策略风险")
             : null,
           policyRiskScore: hunter?.policy_risk_score ?? 0,
           preconditionCount,
@@ -2656,11 +2664,11 @@ export function toCampaignHypothesisBoardSummaries(
           primitiveCount,
           primitives,
           reasons: (hunter?.reasons ?? []).slice(0, 4).map((reason) => safeReasonText(reason)),
-          recommendation: safeText(humanize(hunter?.recommendation ?? "needs_review"), "Recommendation"),
+          recommendation: safeText(humanize(hunter?.recommendation ?? "needs_review"), "建议"),
           refutationQuestionCount,
           refutationQuestions,
           refutationStatus: assessment.refutation?.status
-            ? safeText(humanize(assessment.refutation.status), "Refutation")
+            ? safeText(humanize(assessment.refutation.status), "反证")
             : null,
           researchQueueHandoff,
           reviewPriorityScore: reviewPriorityScore(
@@ -2669,13 +2677,13 @@ export function toCampaignHypothesisBoardSummaries(
             preconditionCount,
             refutationQuestionCount,
           ),
-          riskLevel: hypothesis?.risk_level ? safeText(humanize(hypothesis.risk_level), "Risk") : null,
-          runId: safeText(run.id, "run"),
-          source: "Pipeline run",
+          riskLevel: hypothesis?.risk_level ? safeText(humanize(hypothesis.risk_level), "风险") : null,
+          runId: safeText(run.id, "运行"),
+          source: "流程运行",
           sourceFactTypes,
           triageSignals,
           validationMode: hypothesis?.validation_mode
-            ? safeText(humanize(hypothesis.validation_mode), "Validation mode")
+            ? safeText(humanize(hypothesis.validation_mode), "验证模式")
             : null,
         };
       }),
@@ -2689,8 +2697,8 @@ export function toCampaignHypothesisBoardSummaries(
 
     return {
       brokenInvariant: null,
-      candidateId: safeText(plan.plan_id, "research_plan"),
-      candidateStatus: safeText(humanize(plan.status), "Drafted"),
+      candidateId: safeText(plan.plan_id, "研究计划"),
+      candidateStatus: safeText(humanize(plan.status), "已起草"),
       chainConfidence: null,
       chainImpact: null,
       duplicateRiskScore: 0,
@@ -2698,15 +2706,15 @@ export function toCampaignHypothesisBoardSummaries(
       evidenceFocus: plan.evidence_plan.slice(0, 4).map((step) => safeReasonText(step)),
       evidenceNeededCount: evidencePlanCount,
       hunterPriorityScore: 50,
-      hypothesis: safeText(plan.hypothesis, "Hypothesis redacted"),
+      hypothesis: safeText(plan.hypothesis, "假设已脱敏"),
       impactScore: 0,
       nextAction: reviewGateLanguage(
         safeText(
           plan.next_allowed_action,
-          "Review hypothesis board and request review before validation.",
+          "验证前请审核假设看板并请求审核。",
         ),
       ),
-      playbook: safeText(humanize(plan.safety_gate), "Advisory plan only"),
+      playbook: safeText(humanize(plan.safety_gate), "仅作建议性计划"),
       policyRisk: null,
       policyRiskScore: 0,
       preconditionCount: 0,
@@ -2716,21 +2724,21 @@ export function toCampaignHypothesisBoardSummaries(
       primitives: [],
       reasons: plan.required_human_gates
         .slice(0, 4)
-        .map((gate) => reviewGateLanguage(safeText(humanize(gate), "Human gate"))),
-      recommendation: "Needs review",
+        .map((gate) => reviewGateLanguage(safeText(humanize(gate), "人工审核门"))),
+      recommendation: "需要审核",
       refutationQuestionCount,
       refutationQuestions,
       refutationStatus: null,
       researchQueueHandoff: null,
       reviewPriorityScore: reviewPriorityScore(50 + evidencePlanCount * 3, 0, 0, refutationQuestionCount),
       riskLevel: null,
-      runId: safeText(plan.campaign_id, "campaign"),
-      source: "Research review plan",
+      runId: safeText(plan.campaign_id, "活动"),
+      source: "研究审核计划",
       sourceFactTypes: [],
       triageSignals: plan.required_human_gates
         .slice(0, 4)
-        .map((gate) => reviewGateLanguage(safeText(humanize(gate), "Human gate"))),
-      validationMode: "Review only",
+        .map((gate) => reviewGateLanguage(safeText(humanize(gate), "人工审核门"))),
+      validationMode: "仅供审核",
     };
   });
 
@@ -2756,8 +2764,8 @@ function sourceFactTypeLabels(values: string[], limit: number): string[] {
 
 function accessControlLabel(label: string): string {
   return label
-    .replace(/\bAccess control\b/g, "Access-control")
-    .replace(/\baccess control\b/g, "access-control");
+    .replace(/\bAccess control\b/g, "访问控制")
+    .replace(/\baccess control\b/g, "访问控制");
 }
 
 function safeReviewLabelList(values: string[], limit: number): string[] {
@@ -2771,14 +2779,14 @@ function priorityReasonLabels(
 ): string[] {
   const reasons: string[] = [];
   const combined = [...triageSignals, ...evidenceFocus, ...sourceFactTypes];
-  if (combined.some((value) => /access[- ]control gap candidate/i.test(value))) {
-    reasons.push("Access-control gap candidate");
+  if (combined.some((value) => /access[- ]control gap candidate|访问控制缺口候选/i.test(value))) {
+    reasons.push("访问控制缺口候选");
   }
-  if (combined.some((value) => /same handler (authz|access[- ]control) evidence/i.test(value))) {
-    reasons.push("Same-handler access-control evidence needed");
+  if (combined.some((value) => /same handler (authz|access[- ]control) evidence|同处理器访问控制证据/i.test(value))) {
+    reasons.push("需要同处理器访问控制证据");
   }
-  if (combined.some((value) => /sensitive sink present|sensitive sink/i.test(value))) {
-    reasons.push("Sensitive sink present");
+  if (combined.some((value) => /sensitive sink present|sensitive sink|敏感汇点/i.test(value))) {
+    reasons.push("存在敏感汇点");
   }
   return reasons;
 }
@@ -2801,13 +2809,13 @@ function researchQueueHandoffForCandidate(
     evidenceNeeded: suggestion.evidenceNeeded,
     executionAllowed: false,
     humanApprovalRequired: suggestion.humanApprovalRequired,
-    nextAllowedAction: safeText(suggestion.nextAllowedAction, "Review validation plan before any execution."),
+    nextAllowedAction: safeText(suggestion.nextAllowedAction, "执行前请审核验证计划。"),
     queueKey: safeText(suggestion.queueKey, "autonomous_hunt"),
     refutationQuestionCount: suggestion.refutationQuestionCount,
     requiredEvidence: suggestion.requiredEvidence,
     reviewHref: `/campaigns/${encodeURIComponent(campaignId)}/tasks`,
-    safetyGate: safeText(suggestion.safetyGate, "Review gate"),
-    title: safeText(suggestion.title, "Review autonomous hunt candidate"),
+    safetyGate: safeText(suggestion.safetyGate, "审核门"),
+    title: safeText(suggestion.title, "审核自动挖掘候选"),
     topCandidateRank: suggestion.topCandidateRank,
     validationStepCount: suggestion.validationStepCount,
   };
@@ -2842,7 +2850,7 @@ function safeReportReadiness(
   return {
     nextAllowedAction: safeText(
       readiness?.next_allowed_action,
-      "Review evidence gates before report drafting.",
+      "起草报告前请审核证据门。",
     ),
     reportSubmissionAllowed: false,
     requiredEvidenceCount: safeCount(readiness?.required_evidence_count) ?? 0,
@@ -2871,7 +2879,7 @@ export function toCampaignAttackSurfaceMapView(
   const roles = new Set<string>();
 
   for (const run of runs) {
-    const runId = safeText(run.id, "run");
+    const runId = safeText(run.id, "运行");
     const targetModel = asRecord(run.payload?.target_model);
 
     for (const endpointValue of asArray(targetModel.endpoints)) {
@@ -2879,7 +2887,7 @@ export function toCampaignAttackSurfaceMapView(
       endpoints.push({
         route: routeLabel(endpoint.method, endpoint.path),
         runId,
-        summary: stringValue(endpoint.summary) ? safeText(stringValue(endpoint.summary), "Summary") : null,
+        summary: stringValue(endpoint.summary) ? safeText(stringValue(endpoint.summary), "摘要") : null,
       });
     }
 
@@ -2887,19 +2895,19 @@ export function toCampaignAttackSurfaceMapView(
       const object = asRecord(objectValue);
       objects.push({
         identifierCount: stringList(object.identifiers).length,
-        name: safeText(stringValue(object.name), "Object"),
+        name: safeText(stringValue(object.name), "对象"),
         runId,
       });
     }
 
     for (const role of stringList(targetModel.roles)) {
-      roles.add(safeText(role, "Role"));
+      roles.add(safeText(role, "角色"));
     }
 
     for (const actionValue of asArray(targetModel.sensitive_actions)) {
       const action = asRecord(actionValue);
       sensitiveActions.push({
-        action: safeText(stringValue(action.action), "Action"),
+        action: safeText(stringValue(action.action), "操作"),
         roleCount: stringList(action.roles).length,
         route: routeLabel(action.method, action.path),
         runId,
@@ -2908,11 +2916,11 @@ export function toCampaignAttackSurfaceMapView(
 
     for (const relationshipValue of asArray(targetModel.relationships)) {
       const relationship = asRecord(relationshipValue);
-      const parent = safeText(stringValue(relationship.parent_object), "Parent");
-      const child = safeText(stringValue(relationship.child_object), "Child");
+      const parent = safeText(stringValue(relationship.parent_object), "父对象");
+      const child = safeText(stringValue(relationship.child_object), "子对象");
       relationships.push({
         pathCount: stringList(relationship.paths).length,
-        relationship: safeText(stringValue(relationship.relationship), "Relationship"),
+        relationship: safeText(stringValue(relationship.relationship), "关系"),
         runId,
         summary: `${parent} -> ${child}`,
       });

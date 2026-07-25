@@ -3,16 +3,16 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const diagnosticDetails = Object.freeze({
-  api_exited: "The local API stopped before startup completed.",
-  api_timeout: "The local API did not become ready in time.",
-  api_unhealthy: "The local API did not pass its health check.",
-  port_unavailable: "The local startup ports are unavailable.",
-  resources_missing: "Required local startup resources are unavailable.",
-  startup_unknown: "The local startup check did not complete.",
-  state_unwritable: "Local application state is not writable.",
-  web_exited: "The local Studio service stopped before startup completed.",
-  web_timeout: "The local Studio service did not become ready in time.",
-  web_unhealthy: "The local Studio service did not pass its readiness check.",
+  api_exited: "本地 API 在启动完成前已停止。",
+  api_timeout: "本地 API 未在规定时间内就绪。",
+  api_unhealthy: "本地 API 未通过健康检查。",
+  port_unavailable: "本地启动端口不可用。",
+  resources_missing: "缺少所需的本地启动资源。",
+  startup_unknown: "本地启动检查未能完成。",
+  state_unwritable: "本地应用状态目录不可写。",
+  web_exited: "本地研究工作台服务在启动完成前已停止。",
+  web_timeout: "本地研究工作台服务未在规定时间内就绪。",
+  web_unhealthy: "本地研究工作台服务未通过就绪检查。",
 });
 
 const diagnosticCodes = new Set(Object.keys(diagnosticDetails));

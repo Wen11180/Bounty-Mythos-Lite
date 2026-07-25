@@ -1,9 +1,11 @@
 {
   "schema_version": "authorized_live_outcomes_v1",
-  "source_kind": "authorized_redacted_real",
+  "source_kind": "template",
+  "fixture_kind": "authorized_live_outcome_template",
   "program_authorization_id": "REPLACE_WITH_AUTH_PROGRAM_REF",
-  "claim_scope": "authorized_live_calibration_real_package",
-  "description": "Template for attaching redacted real authorized program outcomes. Replace placeholders. Never include secrets/tokens/cookies.",
+  "evaluation_top_k": 1,
+  "claim_scope": "authorized_live_calibration_template_only",
+  "description": "Template only. Replace all placeholders, set source_kind to authorized_redacted_real, and remove fixture_kind after supplying redacted operator-attested data. Never include secrets/tokens/cookies.",
   "execution_allowed": false,
   "report_submission_allowed": false,
   "auto_attack_allowed": false,
@@ -15,6 +17,9 @@
       "authorized": true,
       "human_confirmed": true,
       "outcome": "human_confirmed_valid",
+      "candidate_rank": 1,
+      "report_ready": true,
+      "report_valid": true,
       "wall_clock_minutes": 0,
       "report_outcome_ref": "REPLACE_REPORT_REF",
       "language_family": "python",
@@ -25,7 +30,7 @@
       "execution_allowed": false,
       "report_submission_allowed": false,
       "auto_submitted": false,
-      "source_kind": "authorized_redacted_real"
+      "source_kind": "template"
     }
   ]
 }

@@ -8,7 +8,8 @@ Safety:
 - Never unlocks execution, validation, or report submission
 - Never auto-submits reports
 - source_kind becomes authorized_redacted_real only when caller both provides
-  program_authorization_id and sets declare_real_package=True
+  program_authorization_id and sets declare_real_package=True without a
+  synthetic/template input marker
 - Default / demo path remains synthetic and must not flip has_real_* flags
 - Secret-like content is rejected (not written)
 """
@@ -49,6 +50,17 @@ REAL_SOURCE_KINDS = frozenset(
     {"authorized_redacted_real", "authorized_program_redacted"}
 )
 SYNTHETIC_SOURCE_KIND = "synthetic"
+_NON_REAL_SOURCE_MARKERS = frozenset(
+    {
+        "synthetic",
+        "lab_fixture",
+        "synthetic_authorized_live_fixture",
+        "synthetic_human_hour_fixture",
+        "template",
+        "example",
+        "scaffold",
+    }
+)
 
 _SECRET_VALUE_RE = re.compile(
     r"(?i)(bearer\s+[a-z0-9._\-+=/]{8,}|api[_-]?key\s*[:=]\s*\S+|"
@@ -125,14 +137,15 @@ def export_research_track_record(
     language_family: str = "unknown",
     hypothesis_class: str = "authorization",
     vuln_family: str = "idor",
+    evaluation_top_k: int | None = None,
     human_allow_export_write: bool = False,
     out_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build redacted live + human-hour packages from research-session artifacts.
 
     Real package flags only flip when declare_real_package is True, a non-empty
-    program_authorization_id is provided, and entries carry the fields required
-    by detect_real_* helpers. Synthetic default never uses REAL_SOURCE_KINDS.
+    program_authorization_id is provided, no input is marked synthetic/template,
+    and entries carry the fields required by detect_real_* helpers.
     """
     handle = _safe_label(program_handle) or "research-session"
     pkg_id = _safe_label(package_id) or _safe_label(package_label) or "research-package"
@@ -141,6 +154,12 @@ def export_research_track_record(
     hyp = _safe_label(hypothesis_class) or "authorization"
     vuln = _safe_label(vuln_family) or "idor"
     auth_ref = str(program_authorization_id or "").strip()
+    if evaluation_top_k is not None and (
+        isinstance(evaluation_top_k, bool)
+        or not isinstance(evaluation_top_k, int)
+        or evaluation_top_k < 1
+    ):
+        raise TrackRecordExportError("evaluation_top_k_invalid")
 
     if declare_real_package and not auth_ref:
         raise TrackRecordExportError(
@@ -168,6 +187,18 @@ def export_research_track_record(
     runner = _normalize_wall_clock_runner(wall_clock_runner)
     session_wall = _wall_clock_minutes_from_runner(runner)
     notes = [n for n in (session_notes or []) if isinstance(n, dict)]
+    non_real_inputs = _non_real_input_contexts(
+        session_notes=notes,
+        residual_decisions=residual_decisions,
+        approvals=approvals,
+        approvals_bundle=approvals_bundle,
+        wall_clock_runner=runner,
+    )
+    if declare_real_package and non_real_inputs:
+        raise TrackRecordExportError(
+            "declare_real_package_rejects_synthetic_input:"
+            + ",".join(non_real_inputs)
+        )
 
     live_entries: list[dict[str, Any]] = []
     hh_entries: list[dict[str, Any]] = []
@@ -297,6 +328,10 @@ def export_research_track_record(
             "Redacted research-session live outcomes exported by Mythos-Lite. "
             "No secrets; execution and submission blocked."
         ),
+        "attestation_status": (
+            "operator_attested" if source_kind in REAL_SOURCE_KINDS else "synthetic"
+        ),
+        "independent_verification": False,
         "execution_allowed": False,
         "report_submission_allowed": False,
         "auto_attack_allowed": False,
@@ -315,6 +350,10 @@ def export_research_track_record(
             "Redacted research-session human-hour review logs exported by Mythos-Lite. "
             "No secrets; execution and submission blocked."
         ),
+        "attestation_status": (
+            "operator_attested" if source_kind in REAL_SOURCE_KINDS else "synthetic"
+        ),
+        "independent_verification": False,
         "execution_allowed": False,
         "report_submission_allowed": False,
         "package_id": pkg_id,
@@ -323,6 +362,8 @@ def export_research_track_record(
     if auth_ref:
         live_package["program_authorization_id"] = auth_ref
         hh_package["program_authorization_id"] = auth_ref
+    if evaluation_top_k is not None:
+        live_package["evaluation_top_k"] = evaluation_top_k
 
     if not _blob_safe(live_package) or not _blob_safe(hh_package):
         raise TrackRecordExportError("exported_package_secret_like_content")
@@ -384,6 +425,9 @@ def export_research_track_record(
         "source_kind": source_kind,
         "declare_real_package": bool(declare_real_package),
         "program_authorization_id": auth_ref or None,
+        "evaluation_top_k": evaluation_top_k,
+        "attestation_status": live_package["attestation_status"],
+        "independent_verification": False,
         "package_id": pkg_id,
         "package_label": pkg_label,
         "program_handle": handle,
@@ -410,7 +454,7 @@ def export_research_track_record(
             "no_auto_attack",
             "no_auto_submit",
             "no_raw_secrets",
-            "synthetic_default_unless_declare_real_and_auth_ref",
+            "synthetic_or_template_inputs_cannot_be_declared_real",
             "real_flags_only_via_detect_real_helpers",
         ],
         "attach_protocol": {
@@ -422,6 +466,7 @@ def export_research_track_record(
             "real_package_requirements": [
                 "--declare-real-package",
                 "--program-authorization-id <auth-ref>",
+                "replace all synthetic/template-marked input artifacts",
                 "wall_clock_minutes on entries for wall-clock gap",
                 "human_confirmed_valid + report_outcome_ref for valid-report gap",
                 "no secrets/tokens/cookies",
@@ -460,6 +505,8 @@ def build_demo_session_notes() -> list[dict[str, Any]]:
     return [
         {
             "entry_id": "demo-retain-1",
+            "source_kind": SYNTHETIC_SOURCE_KIND,
+            "fixture_kind": "synthetic_research_track_record_demo",
             "outcome": "retained_review_ready",
             "live_outcome": "human_confirmed_valid",
             "review_minutes": 14.0,
@@ -473,6 +520,8 @@ def build_demo_session_notes() -> list[dict[str, Any]]:
         },
         {
             "entry_id": "demo-fp-1",
+            "source_kind": SYNTHETIC_SOURCE_KIND,
+            "fixture_kind": "synthetic_research_track_record_demo",
             "outcome": "refuted_fp",
             "live_outcome": "human_confirmed_fp",
             "review_minutes": 9.0,
@@ -484,6 +533,58 @@ def build_demo_session_notes() -> list[dict[str, Any]]:
             "notes": "Synthetic demo FP kill.",
         },
     ]
+
+
+def _non_real_input_contexts(
+    *,
+    session_notes: list[dict[str, Any]],
+    residual_decisions: list[dict[str, Any]],
+    approvals: list[dict[str, Any] | Any] | None,
+    approvals_bundle: dict[str, Any] | None,
+    wall_clock_runner: dict[str, Any],
+) -> list[str]:
+    """Return structured provenance markers that cannot support a real claim."""
+    contexts: list[str] = []
+    sources: tuple[tuple[str, Any], ...] = (
+        ("session_notes", session_notes),
+        ("residual_decisions", residual_decisions),
+        ("approvals", approvals or []),
+        ("approvals_bundle", approvals_bundle or {}),
+        ("wall_clock_runner", wall_clock_runner),
+    )
+    for label, source in sources:
+        items = source if isinstance(source, list) else [source]
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                continue
+            marker = _non_real_source_marker(item)
+            if marker:
+                suffix = f"[{index}]" if isinstance(source, list) else ""
+                contexts.append(f"{label}{suffix}.{marker}")
+    return contexts
+
+
+def _non_real_source_marker(value: dict[str, Any]) -> str:
+    for key in ("source_kind", "fixture_kind", "input_kind", "origin_kind"):
+        marker = str(value.get(key) or "").strip().lower()
+        if not marker:
+            continue
+        if marker in _NON_REAL_SOURCE_MARKERS:
+            return f"{key}={marker}"
+        if key in {"fixture_kind", "input_kind", "origin_kind"} and any(
+            token in marker
+            for token in (
+                "synthetic",
+                "fixture",
+                "demo",
+                "template",
+                "example",
+                "scaffold",
+            )
+        ):
+            return f"{key}={marker}"
+    return ""
+
 
 def _normalize_wall_clock_runner(value: Any) -> dict[str, Any]:
     if value is None:
@@ -566,6 +667,9 @@ def _live_entry_from_note(
         entry["report_outcome_ref"] = f"draft-{entry['entry_id']}"
     if auth_ref:
         entry["program_authorization_id"] = auth_ref
+    for key in ("candidate_rank", "report_ready", "report_valid"):
+        if key in note:
+            entry[key] = note[key]
     return entry
 
 
@@ -645,6 +749,9 @@ def _live_entry_from_approval(
     }
     if not note.get("outcome") and not note.get("live_outcome"):
         note["live_outcome"] = _STATUS_TO_LIVE.get(status, "not_submitted")
+    for key in ("candidate_rank", "report_ready", "report_valid"):
+        if key in payload:
+            note[key] = payload[key]
     return _live_entry_from_note(
         note,
         index=index,

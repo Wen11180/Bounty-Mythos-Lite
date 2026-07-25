@@ -269,6 +269,68 @@ _PYTHON_OUTBOUND_HTTP_MODULES = frozenset({"requests", "httpx"})
 _PYTHON_OUTBOUND_HTTP_METHODS = frozenset(
     {"delete", "get", "head", "options", "patch", "post", "put", "request"}
 )
+_PYTHON_URLLIB_REQUEST_MODULE = "urllib.request"
+_PYTHON_URLLIB_URLOPEN = "urlopen"
+_PYTHON_URLLIB_EAGER_GENERATOR_CONSUMERS = frozenset(
+    {"dict", "frozenset", "list", "set", "sorted", "sum", "tuple"}
+)
+_PYTHON_URLLIB_PARTIAL_GENERATOR_CONSUMERS = frozenset({"next"})
+_PYTHON_URLLIB_GENERATOR_CONSUMERS = (
+    _PYTHON_URLLIB_EAGER_GENERATOR_CONSUMERS
+    | _PYTHON_URLLIB_PARTIAL_GENERATOR_CONSUMERS
+)
+_PYTHON_CONTEXTLIB_MODULE = "contextlib"
+_PYTHON_CONTEXTLIB_SUPPRESS_BINDING = "__contextlib_suppress__"
+_PYTHON_EXCEPTION_PARENT_TYPES = {
+    "ArithmeticError": "Exception",
+    "AssertionError": "Exception",
+    "AttributeError": "Exception",
+    "BufferError": "Exception",
+    "BlockingIOError": "OSError",
+    "BrokenPipeError": "ConnectionError",
+    "ChildProcessError": "OSError",
+    "ConnectionAbortedError": "ConnectionError",
+    "ConnectionRefusedError": "ConnectionError",
+    "ConnectionResetError": "ConnectionError",
+    "ConnectionError": "OSError",
+    "EOFError": "Exception",
+    "EnvironmentError": "OSError",
+    "FileExistsError": "OSError",
+    "FileNotFoundError": "OSError",
+    "FloatingPointError": "ArithmeticError",
+    "GeneratorExit": "BaseException",
+    "IndexError": "LookupError",
+    "ImportError": "Exception",
+    "InterruptedError": "OSError",
+    "IsADirectoryError": "OSError",
+    "KeyError": "LookupError",
+    "LookupError": "Exception",
+    "MemoryError": "Exception",
+    "ModuleNotFoundError": "ImportError",
+    "NameError": "Exception",
+    "NotADirectoryError": "OSError",
+    "NotImplementedError": "RuntimeError",
+    "OSError": "Exception",
+    "OverflowError": "ArithmeticError",
+    "PermissionError": "OSError",
+    "ProcessLookupError": "OSError",
+    "RecursionError": "RuntimeError",
+    "RuntimeError": "Exception",
+    "StopAsyncIteration": "Exception",
+    "StopIteration": "Exception",
+    "SyntaxError": "Exception",
+    "SystemExit": "BaseException",
+    "TimeoutError": "OSError",
+    "TypeError": "Exception",
+    "ValueError": "Exception",
+    "Warning": "Exception",
+    "ZeroDivisionError": "ArithmeticError",
+    "UnicodeDecodeError": "UnicodeError",
+    "UnicodeEncodeError": "UnicodeError",
+    "UnicodeError": "ValueError",
+    "UnicodeTranslateError": "UnicodeError",
+    "UnboundLocalError": "NameError",
+}
 # File-path sinks used for path-traversal-family gap root_cause selection.
 FILE_PATH_SINK_NAMES = {
     "get_blob",
@@ -456,6 +518,28 @@ INPUT_BOUND_SINK_ARGUMENT_INDEXES = {
 }
 HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete"}
 DRF_ACTION_HTTP_METHOD_NAMES = HTTP_METHOD_NAMES | {"head", "options", "trace"}
+GRAPHQL_OPERATION_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+GRAPHENE_FIELD_CONSTRUCTOR_NAMES = frozenset(
+    {
+        "Boolean",
+        "DateTime",
+        "Decimal",
+        "Field",
+        "Float",
+        "ID",
+        "Int",
+        "JSONString",
+        "List",
+        "NonNull",
+        "String",
+        "UUID",
+    }
+)
+ARIADNE_OPERATION_FACTORY_TYPES = {
+    "MutationType": "mutation",
+    "QueryType": "query",
+    "SubscriptionType": "subscription",
+}
 DRF_ROUTER_COLLECTION_ACTIONS = (
     ("list", "GET"),
     ("create", "POST"),
@@ -879,6 +963,18 @@ def map_authorized_code_files(payload: dict) -> CodebaseMapResult:
                         content=content,
                     )
                 )
+                facts.extend(
+                    _graphene_graphql_operation_facts(
+                        source_path=source_path,
+                        content=content,
+                    )
+                )
+                facts.extend(
+                    _ariadne_graphql_operation_facts(
+                        source_path=source_path,
+                        content=content,
+                    )
+                )
 
     facts.extend(django_route_facts)
     facts = _apply_static_route_prefixes(facts, route_prefixes)
@@ -918,16 +1014,7 @@ def _strawberry_graphql_operation_facts(
         tree = ast.parse(content)
     except SyntaxError:
         return []
-    if not any(
-        isinstance(statement, ast.Import)
-        and any(
-            alias.name == "strawberry" and alias.asname is None
-            for alias in statement.names
-        )
-        for statement in tree.body
-    ):
-        return []
-
+    module_aliases: set[str] = set()
     operation_types = {
         "Query": "query",
         "Mutation": "mutation",
@@ -937,30 +1024,41 @@ def _strawberry_graphql_operation_facts(
         tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]
     ] = []
     for statement in tree.body:
-        if not isinstance(statement, ast.ClassDef):
+        if _graphql_has_ambiguous_control_flow(statement):
+            module_aliases.clear()
             continue
-        operation_type = operation_types.get(statement.name)
-        if operation_type is None or not any(
-            _python_call_name(decorator) == "strawberry.type"
-            for decorator in statement.decorator_list
+        if _strawberry_register_import_aliases(
+            statement,
+            module_aliases=module_aliases,
         ):
             continue
-        for member in statement.body:
-            if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            operation_names = [
-                operation_name
-                for decorator in member.decorator_list
-                if (
-                    operation_name := _strawberry_field_operation_name(
-                        member,
-                        decorator,
-                    )
-                )
-                is not None
-            ]
-            if len(operation_names) == 1:
-                operations.append((operation_type, operation_names[0], member))
+        if isinstance(statement, ast.ClassDef):
+            operation_type = operation_types.get(statement.name)
+            if operation_type is not None and _is_strawberry_root_type(
+                statement,
+                module_aliases=module_aliases,
+            ):
+                for member in statement.body:
+                    if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    operation_names = [
+                        operation_name
+                        for decorator in member.decorator_list
+                        if (
+                            operation_name := _strawberry_operation_name(
+                                member,
+                                decorator,
+                                operation_type=operation_type,
+                                module_aliases=module_aliases,
+                            )
+                        )
+                        is not None
+                    ]
+                    if len(operation_names) == 1:
+                        operations.append(
+                            (operation_type, operation_names[0], member)
+                        )
+        module_aliases.difference_update(_graphql_bound_names(statement))
 
     binding_counts: dict[tuple[str, str], int] = {}
     for operation_type, operation_name, _member in operations:
@@ -971,7 +1069,7 @@ def _strawberry_graphql_operation_facts(
     for operation_type, operation_name, member in operations:
         if binding_counts[(operation_type, operation_name)] != 1:
             continue
-        handler = member.name.lower()
+        handler = member.name
         facts.append(
             CodebaseFactCandidate(
                 fact_type="graphql_operation",
@@ -994,12 +1092,54 @@ def _strawberry_graphql_operation_facts(
     return facts
 
 
-def _strawberry_field_operation_name(
+def _strawberry_register_import_aliases(
+    statement: ast.stmt,
+    *,
+    module_aliases: set[str],
+) -> bool:
+    if isinstance(statement, ast.Import):
+        module_aliases.difference_update(_graphql_bound_names(statement))
+        for alias in statement.names:
+            if alias.name == "strawberry":
+                module_aliases.add(alias.asname or alias.name)
+        return True
+    if not isinstance(statement, ast.ImportFrom):
+        return False
+    if any(alias.name == "*" for alias in statement.names):
+        module_aliases.clear()
+        return True
+    module_aliases.difference_update(_graphql_bound_names(statement))
+    return True
+
+
+def _is_strawberry_root_type(
+    statement: ast.ClassDef,
+    *,
+    module_aliases: set[str],
+) -> bool:
+    return any(
+        _python_call_name(decorator) == f"{module_alias}.type"
+        for decorator in statement.decorator_list
+        for module_alias in module_aliases
+    )
+
+
+def _strawberry_operation_name(
     member: ast.FunctionDef | ast.AsyncFunctionDef,
     decorator: ast.expr,
+    *,
+    operation_type: str,
+    module_aliases: set[str],
 ) -> str | None:
     target = decorator.func if isinstance(decorator, ast.Call) else decorator
-    if _python_call_name(target) != "strawberry.field":
+    decorator_name = _python_call_name(target)
+    if not any(
+        decorator_name in {
+            f"{module_alias}.field",
+            f"{module_alias}.{operation_type}",
+        }
+        for module_alias in module_aliases
+    ):
         return None
     if not isinstance(decorator, ast.Call):
         return member.name
@@ -1016,10 +1156,498 @@ def _strawberry_field_operation_name(
     if (
         isinstance(value, ast.Constant)
         and isinstance(value.value, str)
-        and value.value
+        and GRAPHQL_OPERATION_NAME_PATTERN.fullmatch(value.value) is not None
     ):
         return value.value
     return None
+
+
+def _graphene_graphql_operation_facts(
+    *,
+    source_path: str,
+    content: str,
+) -> list[CodebaseFactCandidate]:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    module_aliases: set[str] = set()
+    object_type_aliases: set[str] = set()
+    field_constructor_aliases: set[str] = set()
+    operation_types = {
+        "Query": "query",
+        "Mutation": "mutation",
+        "Subscription": "subscription",
+    }
+    operations: list[
+        tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]
+    ] = []
+    for statement in tree.body:
+        if _graphql_has_ambiguous_control_flow(statement):
+            module_aliases.clear()
+            object_type_aliases.clear()
+            field_constructor_aliases.clear()
+            continue
+        if _graphene_register_import_aliases(
+            statement,
+            module_aliases=module_aliases,
+            object_type_aliases=object_type_aliases,
+            field_constructor_aliases=field_constructor_aliases,
+        ):
+            continue
+        if isinstance(statement, ast.ClassDef):
+            operation_type = operation_types.get(statement.name)
+            if operation_type is not None and _is_graphene_object_type(
+                statement,
+                module_aliases=module_aliases,
+                object_type_aliases=object_type_aliases,
+            ):
+                resolver_by_name = {
+                    member.name: member
+                    for member in statement.body
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+                for field_name, operation_name in _graphene_root_field_names(
+                    statement,
+                    module_aliases=module_aliases,
+                    field_constructor_aliases=field_constructor_aliases,
+                ):
+                    resolver = resolver_by_name.get(f"resolve_{field_name}")
+                    if resolver is not None:
+                        operations.append((operation_type, operation_name, resolver))
+        _graphene_discard_bound_names(
+            _graphql_bound_names(statement),
+            module_aliases=module_aliases,
+            object_type_aliases=object_type_aliases,
+            field_constructor_aliases=field_constructor_aliases,
+        )
+
+    binding_counts: dict[tuple[str, str], int] = {}
+    for operation_type, operation_name, _resolver in operations:
+        binding = (operation_type, operation_name)
+        binding_counts[binding] = binding_counts.get(binding, 0) + 1
+
+    facts: list[CodebaseFactCandidate] = []
+    for operation_type, operation_name, resolver in operations:
+        if binding_counts[(operation_type, operation_name)] != 1:
+            continue
+        handler = resolver.name
+        facts.append(
+            CodebaseFactCandidate(
+                fact_type="graphql_operation",
+                source_path=source_path,
+                symbol_name=handler,
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "handler": handler,
+                    "line": resolver.lineno,
+                    "operation_type": operation_type,
+                    "operation_name": operation_name,
+                    "framework": "graphene",
+                    "mapping_mode": "static_code_snippet_analysis",
+                },
+            )
+        )
+    return facts
+
+
+def _graphene_register_import_aliases(
+    statement: ast.stmt,
+    *,
+    module_aliases: set[str],
+    object_type_aliases: set[str],
+    field_constructor_aliases: set[str],
+) -> bool:
+    if isinstance(statement, ast.Import):
+        _graphene_discard_bound_names(
+            _graphql_bound_names(statement),
+            module_aliases=module_aliases,
+            object_type_aliases=object_type_aliases,
+            field_constructor_aliases=field_constructor_aliases,
+        )
+        for alias in statement.names:
+            if alias.name == "graphene":
+                module_aliases.add(alias.asname or alias.name)
+        return True
+    if not isinstance(statement, ast.ImportFrom):
+        return False
+    if any(alias.name == "*" for alias in statement.names):
+        module_aliases.clear()
+        object_type_aliases.clear()
+        field_constructor_aliases.clear()
+        return True
+    _graphene_discard_bound_names(
+        _graphql_bound_names(statement),
+        module_aliases=module_aliases,
+        object_type_aliases=object_type_aliases,
+        field_constructor_aliases=field_constructor_aliases,
+    )
+    if statement.module != "graphene" or statement.level != 0:
+        return True
+    for alias in statement.names:
+        alias_name = alias.asname or alias.name
+        if alias.name == "ObjectType":
+            object_type_aliases.add(alias_name)
+        elif alias.name in GRAPHENE_FIELD_CONSTRUCTOR_NAMES:
+            field_constructor_aliases.add(alias_name)
+    return True
+
+
+def _graphene_discard_bound_names(
+    names: set[str],
+    *,
+    module_aliases: set[str],
+    object_type_aliases: set[str],
+    field_constructor_aliases: set[str],
+) -> None:
+    module_aliases.difference_update(names)
+    object_type_aliases.difference_update(names)
+    field_constructor_aliases.difference_update(names)
+
+
+def _is_graphene_object_type(
+    statement: ast.ClassDef,
+    *,
+    module_aliases: set[str],
+    object_type_aliases: set[str],
+) -> bool:
+    for base in statement.bases:
+        base_name = _python_call_name(base)
+        if base_name in object_type_aliases or any(
+            base_name == f"{module_alias}.ObjectType"
+            for module_alias in module_aliases
+        ):
+            return True
+    return False
+
+
+def _graphene_root_field_names(
+    statement: ast.ClassDef,
+    *,
+    module_aliases: set[str],
+    field_constructor_aliases: set[str],
+) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    for member in statement.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(member, ast.Assign) and len(member.targets) == 1:
+            target = member.targets[0]
+            value = member.value
+        elif isinstance(member, ast.AnnAssign):
+            target = member.target
+            value = member.value
+        if (
+            not isinstance(target, ast.Name)
+            or not isinstance(value, ast.Call)
+            or GRAPHQL_OPERATION_NAME_PATTERN.fullmatch(target.id) is None
+            or not _is_graphene_field_call(
+                value,
+                module_aliases=module_aliases,
+                field_constructor_aliases=field_constructor_aliases,
+            )
+        ):
+            continue
+        operation_name = _graphene_field_operation_name(target.id, value)
+        if operation_name is not None:
+            fields.append((target.id, operation_name))
+    return fields
+
+
+def _is_graphene_field_call(
+    value: ast.Call,
+    *,
+    module_aliases: set[str],
+    field_constructor_aliases: set[str],
+) -> bool:
+    call_name = _python_call_name(value.func)
+    if call_name in field_constructor_aliases:
+        return True
+    return any(
+        call_name == f"{module_alias}.{field_name}"
+        for module_alias in module_aliases
+        for field_name in GRAPHENE_FIELD_CONSTRUCTOR_NAMES
+    )
+
+
+def _graphene_field_operation_name(field_name: str, value: ast.Call) -> str | None:
+    name_values = [
+        keyword.value for keyword in value.keywords if keyword.arg == "name"
+    ]
+    if not name_values:
+        return field_name
+    if len(name_values) != 1:
+        return None
+    name_value = name_values[0]
+    if (
+        isinstance(name_value, ast.Constant)
+        and isinstance(name_value.value, str)
+        and GRAPHQL_OPERATION_NAME_PATTERN.fullmatch(name_value.value) is not None
+    ):
+        return name_value.value
+    return None
+
+
+def _ariadne_graphql_operation_facts(
+    *,
+    source_path: str,
+    content: str,
+) -> list[CodebaseFactCandidate]:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    module_aliases: set[str] = set()
+    factory_aliases: dict[str, str] = {}
+    operation_sources: dict[str, str] = {}
+    operations: list[
+        tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]
+    ] = []
+    for statement in tree.body:
+        if _graphql_has_ambiguous_control_flow(statement):
+            module_aliases.clear()
+            factory_aliases.clear()
+            operation_sources.clear()
+            continue
+        if _ariadne_register_import_aliases(
+            statement,
+            module_aliases=module_aliases,
+            factory_aliases=factory_aliases,
+            operation_sources=operation_sources,
+        ):
+            continue
+        assignment = _ariadne_operation_source_assignment(
+            statement,
+            module_aliases=module_aliases,
+            factory_aliases=factory_aliases,
+        )
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            operation_bindings = [
+                binding
+                for decorator in statement.decorator_list
+                if (
+                    binding := _ariadne_operation_binding(
+                        decorator,
+                        operation_sources=operation_sources,
+                    )
+                )
+                is not None
+            ]
+            if len(operation_bindings) == 1:
+                operation_type, operation_name = operation_bindings[0]
+                operations.append((operation_type, operation_name, statement))
+        _ariadne_discard_bound_names(
+            _graphql_bound_names(statement),
+            module_aliases=module_aliases,
+            factory_aliases=factory_aliases,
+            operation_sources=operation_sources,
+        )
+        if assignment is not None:
+            source_name, operation_type = assignment
+            operation_sources[source_name] = operation_type
+
+    binding_counts: dict[tuple[str, str], int] = {}
+    for operation_type, operation_name, _resolver in operations:
+        binding = (operation_type, operation_name)
+        binding_counts[binding] = binding_counts.get(binding, 0) + 1
+
+    facts: list[CodebaseFactCandidate] = []
+    for operation_type, operation_name, resolver in operations:
+        if binding_counts[(operation_type, operation_name)] != 1:
+            continue
+        handler = resolver.name
+        facts.append(
+            CodebaseFactCandidate(
+                fact_type="graphql_operation",
+                source_path=source_path,
+                symbol_name=handler,
+                route_method=None,
+                route_path=None,
+                authz_hint=None,
+                sensitivity_label="low",
+                payload={
+                    "handler": handler,
+                    "line": resolver.lineno,
+                    "operation_type": operation_type,
+                    "operation_name": operation_name,
+                    "framework": "ariadne",
+                    "mapping_mode": "static_code_snippet_analysis",
+                },
+            )
+        )
+    return facts
+
+
+def _graphql_has_ambiguous_control_flow(statement: ast.stmt) -> bool:
+    return isinstance(
+        statement,
+        (
+            ast.AsyncFor,
+            ast.AsyncWith,
+            ast.For,
+            ast.If,
+            ast.Match,
+            ast.Try,
+            ast.TryStar,
+            ast.While,
+            ast.With,
+        ),
+    )
+
+
+def _ariadne_register_import_aliases(
+    statement: ast.stmt,
+    *,
+    module_aliases: set[str],
+    factory_aliases: dict[str, str],
+    operation_sources: dict[str, str],
+) -> bool:
+    if isinstance(statement, ast.Import):
+        _ariadne_discard_bound_names(
+            _graphql_bound_names(statement),
+            module_aliases=module_aliases,
+            factory_aliases=factory_aliases,
+            operation_sources=operation_sources,
+        )
+        for alias in statement.names:
+            if alias.name == "ariadne":
+                module_aliases.add(alias.asname or alias.name)
+        return True
+    if not isinstance(statement, ast.ImportFrom):
+        return False
+    if any(alias.name == "*" for alias in statement.names):
+        module_aliases.clear()
+        factory_aliases.clear()
+        operation_sources.clear()
+        return True
+    _ariadne_discard_bound_names(
+        _graphql_bound_names(statement),
+        module_aliases=module_aliases,
+        factory_aliases=factory_aliases,
+        operation_sources=operation_sources,
+    )
+    if statement.module != "ariadne" or statement.level != 0:
+        return True
+    for alias in statement.names:
+        operation_type = ARIADNE_OPERATION_FACTORY_TYPES.get(alias.name)
+        if operation_type is not None:
+            factory_aliases[alias.asname or alias.name] = operation_type
+    return True
+
+
+def _ariadne_discard_bound_names(
+    names: set[str],
+    *,
+    module_aliases: set[str],
+    factory_aliases: dict[str, str],
+    operation_sources: dict[str, str],
+) -> None:
+    for name in names:
+        module_aliases.discard(name)
+        factory_aliases.pop(name, None)
+        operation_sources.pop(name, None)
+
+
+def _graphql_bound_names(statement: ast.stmt) -> set[str]:
+    if isinstance(statement, ast.Import):
+        return {
+            alias.asname or alias.name.partition(".")[0]
+            for alias in statement.names
+        }
+    if isinstance(statement, ast.ImportFrom):
+        return {
+            alias.asname or alias.name
+            for alias in statement.names
+            if alias.name != "*"
+        }
+    if isinstance(statement, ast.Assign):
+        return {
+            name
+            for target in statement.targets
+            for name in _graphql_assignment_target_names(target)
+        }
+    if isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
+        return _graphql_assignment_target_names(statement.target)
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {statement.name}
+    if isinstance(statement, ast.Delete):
+        return {
+            name
+            for target in statement.targets
+            for name in _graphql_assignment_target_names(target)
+        }
+    return set()
+
+
+def _graphql_assignment_target_names(target: ast.expr) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _graphql_assignment_target_names(target.value)
+    if isinstance(target, (ast.List, ast.Tuple)):
+        return {
+            name
+            for element in target.elts
+            for name in _graphql_assignment_target_names(element)
+        }
+    return set()
+
+
+def _ariadne_operation_source_assignment(
+    statement: ast.stmt,
+    *,
+    module_aliases: set[str],
+    factory_aliases: dict[str, str],
+) -> tuple[str, str] | None:
+    target: ast.expr | None = None
+    value: ast.expr | None = None
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target = statement.targets[0]
+        value = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        target = statement.target
+        value = statement.value
+    if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
+        return None
+    if value.args or value.keywords:
+        return None
+    factory_name = _python_call_name(value.func)
+    if factory_name in factory_aliases:
+        return target.id, factory_aliases[factory_name]
+    for module_alias in module_aliases:
+        for factory, operation_type in ARIADNE_OPERATION_FACTORY_TYPES.items():
+            if factory_name == f"{module_alias}.{factory}":
+                return target.id, operation_type
+    return None
+
+
+def _ariadne_operation_binding(
+    decorator: ast.expr,
+    *,
+    operation_sources: dict[str, str],
+) -> tuple[str, str] | None:
+    if (
+        not isinstance(decorator, ast.Call)
+        or len(decorator.args) != 1
+        or decorator.keywords
+        or not isinstance(decorator.func, ast.Attribute)
+        or decorator.func.attr != "field"
+        or not isinstance(decorator.func.value, ast.Name)
+        or not isinstance(decorator.args[0], ast.Constant)
+        or not isinstance(decorator.args[0].value, str)
+    ):
+        return None
+    operation_type = operation_sources.get(decorator.func.value.id)
+    operation_name = decorator.args[0].value
+    if (
+        operation_type is None
+        or GRAPHQL_OPERATION_NAME_PATTERN.fullmatch(operation_name) is None
+    ):
+        return None
+    return operation_type, operation_name
 
 
 def _fastapi_route_prefixes(files: list[object]) -> dict[tuple[str, str], list[str]]:
@@ -4746,6 +5374,9 @@ def _map_file(
     router_constructor_aliases: set[str] = set()
     import_aliases: dict[str, str] = {}
     python_outbound_http_aliases = _python_outbound_http_aliases(content)
+    python_urllib_outbound_http_resolver = (
+        _python_urllib_outbound_http_call_resolver(content)
+    )
     yaml_module_aliases = {"yaml"}
     yaml_load_aliases: set[str] = set()
     yaml_safe_loader_aliases: set[str] = set()
@@ -5711,23 +6342,58 @@ def _map_file(
                     set(),
                 ),
             )
-        for raw_call_name in _called_names(
+        known_outbound_http_aliases = {
+            **python_outbound_http_aliases,
+            **python_urllib_outbound_http_resolver.all_aliases,
+        }
+        python_urllib_calls = list(
+            python_urllib_outbound_http_resolver.calls_at_line(
+                line_number=line_number,
+            )
+        )
+        called_names = _called_names(
             line,
-            outbound_http_aliases=python_outbound_http_aliases,
+            outbound_http_aliases=known_outbound_http_aliases,
             yaml_module_aliases=yaml_module_aliases,
             yaml_load_aliases=yaml_load_aliases,
             yaml_safe_loader_aliases=yaml_safe_loader_aliases,
+        )
+        for (
+            raw_call_name,
+            expected_call_column,
+            consume_line_call_column,
+        ) in _python_call_entries(
+            called_names,
+            python_call_columns,
+            python_urllib_calls,
         ):
             if raw_call_name in jwt_call_leaves:
                 continue
-            call_column = _pop_python_call_column(
-                python_call_columns,
-                raw_call_name,
+            call_column = (
+                _pop_python_call_column(
+                    python_call_columns,
+                    raw_call_name,
+                )
+                if consume_line_call_column
+                else expected_call_column
             )
-            call_argument_input_refs, validated_output_ref = _pop_python_call_input_refs(
-                python_call_input_refs,
-                raw_call_name,
+            urllib_call = _pop_python_urllib_call(
+                python_urllib_calls,
+                raw_call_name=raw_call_name,
+                column=call_column,
             )
+            if urllib_call is not None:
+                raw_call_name = urllib_call.call_name
+                call_column = urllib_call.column
+            active_outbound_http_aliases = {
+                **python_outbound_http_aliases,
+                **(urllib_call.aliases if urllib_call is not None else {}),
+            }
+            (
+                call_argument_input_refs,
+                call_keyword_input_refs,
+                validated_output_ref,
+            ) = _pop_python_call_input_refs(python_call_input_refs, raw_call_name)
             call_claim_ref = _pop_python_call_claim_ref(
                 python_call_claim_refs,
                 raw_call_name,
@@ -5739,18 +6405,24 @@ def _map_file(
                 method_view_classes,
                 _self_called_names(line),
                 import_aliases,
-                python_outbound_http_aliases,
+                active_outbound_http_aliases,
                 local_call_aliases,
                 class_call_aliases,
             )
-            call_input_ref = _input_bound_static_call_input_ref(
-                call_name,
-                call_argument_input_refs,
-                input_index=_python_outbound_http_input_index(
-                    raw_call_name,
-                    python_outbound_http_aliases,
-                ),
+            call_input_ref = (
+                call_keyword_input_refs.get("url")
+                if raw_call_name in active_outbound_http_aliases
+                else None
             )
+            if call_input_ref is None:
+                call_input_ref = _input_bound_static_call_input_ref(
+                    call_name,
+                    call_argument_input_refs,
+                    input_index=_python_outbound_http_input_index(
+                        raw_call_name,
+                        active_outbound_http_aliases,
+                    ),
+                )
             if _is_authz_call(call_name):
                 authz_hint = _authz_hint(call_name)
                 facts.append(
@@ -8268,7 +8940,14 @@ def _graphql_authorization_gap_candidates(
             operation.source_path,
             handler,
         )
+        authz_service_calls = _reachable_service_handlers(
+            facts,
+            operation.source_path,
+            handler,
+            include_action_dependent_lifecycle=False,
+        )
         reachable_handlers = {entry_identity, *service_calls}
+        authz_reachable_handlers = {entry_identity, *authz_service_calls}
         sink_facts = [
             fact
             for fact in facts
@@ -8279,6 +8958,8 @@ def _graphql_authorization_gap_candidates(
         sink_symbols = sorted({fact.symbol_name for fact in sink_facts})
         if not sink_symbols:
             continue
+        if _route_access_is_denied(facts, entry_identity):
+            continue
         root_cause, security_invariant, authz_hint = _gap_root_for_sinks(
             sink_symbols
         )
@@ -8287,6 +8968,56 @@ def _graphql_authorization_gap_candidates(
             and operation_type not in {"mutation", "subscription"}
         ):
             root_cause, security_invariant, authz_hint = _object_ownership_gap_root()
+        if guard_hints := STATIC_GAP_GUARD_HINTS.get(root_cause):
+            input_bound_guard_hints = INPUT_BOUND_STATIC_GAP_GUARD_HINTS.get(
+                root_cause
+            )
+            has_prior_guard = (
+                _has_prior_input_bound_guard(
+                    facts,
+                    entry_handler=entry_identity,
+                    reachable_handlers=authz_reachable_handlers,
+                    sink_facts=sink_facts,
+                    guard_hints=input_bound_guard_hints,
+                )
+                if input_bound_guard_hints is not None
+                else _has_prior_static_guard(
+                    facts,
+                    entry_handler=entry_identity,
+                    reachable_handlers=authz_reachable_handlers,
+                    sink_facts=sink_facts,
+                    guard_hints=guard_hints,
+                )
+            )
+            if has_prior_guard:
+                continue
+        else:
+            has_authz = any(
+                fact.fact_type == "authz_check"
+                and _suppresses_object_authorization_gap(fact)
+                and _fact_handler_identity(fact, "handler") == entry_identity
+                and not has_reachable_sink_before_control(
+                    facts,
+                    control=fact,
+                    entry_handlers={entry_identity},
+                )
+                for fact in facts
+            )
+            if has_authz:
+                continue
+            has_service_authz = any(
+                fact.fact_type == "authz_check"
+                and _suppresses_object_authorization_gap(fact)
+                and _fact_handler_identity(fact, "handler") in authz_service_calls
+                and not has_reachable_sink_before_control(
+                    facts,
+                    control=fact,
+                    entry_handlers={entry_identity},
+                )
+                for fact in facts
+            )
+            if has_service_authz:
+                continue
         candidates.append(
             CodebaseFactCandidate(
                 fact_type="authorization_gap_candidate",
@@ -9196,8 +9927,9 @@ def _called_names(
     for index, token in enumerate(tokens[:-1]):
         next_token = tokens[index + 1]
         if token.type == tokenize.NAME and next_token.string == "(":
-            if token.string in outbound_http_aliases:
-                calls.append(token.string)
+            qualified_call_name = _python_dotted_call_name(tokens, index)
+            if qualified_call_name in outbound_http_aliases:
+                calls.append(qualified_call_name)
                 continue
             if token.string in yaml_load_aliases:
                 calls.append(
@@ -9211,20 +9943,10 @@ def _called_names(
                     else "yaml_load"
                 )
                 continue
-            if (
-                index >= 2
-                and tokens[index - 1].string == "."
-                and tokens[index - 2].type == tokenize.NAME
-            ):
-                qualifier = tokens[index - 2].string
-                qualified_outbound_name = f"{qualifier}.{token.string}"
-                if qualified_outbound_name in outbound_http_aliases:
-                    calls.append(qualified_outbound_name)
-                    continue
-                is_yaml_load = (
-                    token.string == "load" and qualifier in yaml_module_aliases
-                )
-                qualified_name = f"{qualifier}_{token.string}".lower()
+            if "." in qualified_call_name:
+                qualifier = qualified_call_name.rsplit(".", 1)[0]
+                is_yaml_load = token.string == "load" and qualifier in yaml_module_aliases
+                qualified_name = qualified_call_name.replace(".", "_").lower()
                 if (
                     qualified_name in UNSAFE_DESERIALIZATION_SINK_NAMES
                     or is_yaml_load
@@ -9249,8 +9971,21 @@ def _called_names(
     return calls
 
 
+def _python_dotted_call_name(tokens: list[tokenize.TokenInfo], index: int) -> str:
+    components = [tokens[index].string]
+    cursor = index - 1
+    while (
+        cursor >= 1
+        and tokens[cursor].string == "."
+        and tokens[cursor - 1].type == tokenize.NAME
+    ):
+        components.append(tokens[cursor - 1].string)
+        cursor -= 2
+    return ".".join(reversed(components))
+
+
 def _python_outbound_http_aliases(content: str) -> dict[str, str]:
-    """Resolve explicit requests/httpx module aliases without generic get/post guesses."""
+    """Resolve explicit HTTP SDK aliases without generic get/post guesses."""
     try:
         tree = ast.parse(content)
     except SyntaxError:
@@ -9261,12 +9996,1717 @@ def _python_outbound_http_aliases(content: str) -> dict[str, str]:
             continue
         for imported in statement.names:
             module = imported.name.lower()
-            if module not in _PYTHON_OUTBOUND_HTTP_MODULES:
-                continue
-            alias = imported.asname or module
-            for method in _PYTHON_OUTBOUND_HTTP_METHODS:
-                aliases[f"{alias}.{method}"] = "fetch"
+            if module in _PYTHON_OUTBOUND_HTTP_MODULES:
+                alias = imported.asname or module
+                for method in _PYTHON_OUTBOUND_HTTP_METHODS:
+                    aliases[f"{alias}.{method}"] = "fetch"
     return aliases
+
+
+@dataclass(frozen=True)
+class _PythonUrllibOutboundHttpCall:
+    call_name: str
+    column: int
+    aliases: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _PythonUrllibRaisedPath:
+    bindings: dict[str, frozenset[str]]
+    exception_type: str | None
+
+
+@dataclass(frozen=True)
+class _PythonUrllibOutboundHttpCallResolver:
+    calls_by_line: dict[int, tuple[_PythonUrllibOutboundHttpCall, ...]]
+    all_aliases: dict[str, str]
+
+    def calls_at_line(
+        self,
+        *,
+        line_number: int,
+    ) -> tuple[_PythonUrllibOutboundHttpCall, ...]:
+        return self.calls_by_line.get(line_number, ())
+
+
+def _pop_python_urllib_call(
+    calls: list[_PythonUrllibOutboundHttpCall],
+    *,
+    raw_call_name: str,
+    column: int | None,
+) -> _PythonUrllibOutboundHttpCall | None:
+    if column is not None:
+        for index, call in enumerate(calls):
+            if call.column == column:
+                return calls.pop(index)
+        return None
+    matching_indexes = [
+        index
+        for index, call in enumerate(calls)
+        if call.call_name.rsplit(".", 1)[-1]
+        == raw_call_name.rsplit(".", 1)[-1]
+    ]
+    if len(matching_indexes) != 1:
+        return None
+    return calls.pop(matching_indexes[0])
+
+
+def _python_call_entries(
+    called_names: list[str],
+    call_columns: dict[str, list[int]],
+    urllib_calls: list[_PythonUrllibOutboundHttpCall],
+) -> list[tuple[str, int | None, bool]]:
+    columns_by_name = {
+        call_name: list(columns)
+        for call_name, columns in call_columns.items()
+    }
+    matched_urllib_calls: set[tuple[str, int]] = set()
+    entries: list[tuple[str, int | None, bool, int]] = []
+    for index, call_name in enumerate(called_names):
+        leaf_name = call_name.rsplit(".", 1)[-1]
+        columns = columns_by_name.get(leaf_name, [])
+        column = columns.pop(0) if columns else None
+        if column is not None:
+            for urllib_call in urllib_calls:
+                if urllib_call.column == column:
+                    matched_urllib_calls.add(
+                        (urllib_call.call_name, urllib_call.column)
+                    )
+                    break
+            entries.append((call_name, column, True, index))
+            continue
+        matching_calls = [
+            urllib_call
+            for urllib_call in urllib_calls
+            if (
+                (urllib_call.call_name, urllib_call.column)
+                not in matched_urllib_calls
+                and urllib_call.call_name.rsplit(".", 1)[-1] == leaf_name
+            )
+        ]
+        if len(matching_calls) == 1:
+            urllib_call = matching_calls[0]
+            matched_urllib_calls.add((urllib_call.call_name, urllib_call.column))
+            entries.append((urllib_call.call_name, urllib_call.column, False, index))
+        else:
+            entries.append((call_name, None, False, index))
+    for urllib_call in urllib_calls:
+        if (urllib_call.call_name, urllib_call.column) in matched_urllib_calls:
+            continue
+        entries.append(
+            (
+                urllib_call.call_name,
+                urllib_call.column,
+                False,
+                len(entries),
+            )
+        )
+    entries.sort(
+        key=lambda entry: (
+            entry[1] if entry[1] is not None else float("inf"),
+            entry[3],
+        )
+    )
+    return [entry[:3] for entry in entries]
+
+
+def _python_urllib_outbound_http_call_resolver(
+    content: str,
+) -> _PythonUrllibOutboundHttpCallResolver:
+    """Resolve explicit urllib call sites with Python's lexical binding rules."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return _PythonUrllibOutboundHttpCallResolver({}, {})
+
+    aliases_by_call: dict[tuple[int, int], dict[str, str]] = {}
+    module_bindings: dict[str, frozenset[str]] = {}
+    _python_urllib_process_statements(
+        tree.body,
+        module_bindings,
+        aliases_by_call,
+    )
+
+    # Handlers run after module initialization, so their globals are resolved
+    # from the final module bindings rather than their declaration position.
+    final_module_bindings = dict(module_bindings)
+    _python_urllib_process_function_scopes(
+        tree,
+        final_module_bindings,
+        aliases_by_call,
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            _python_urllib_process_class(
+                node,
+                final_module_bindings,
+                aliases_by_call,
+            )
+
+    call_names_by_position = {
+        (node.lineno, node.col_offset): call_name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (call_name := _python_call_name(node.func)) is not None
+    }
+    calls_by_line: dict[int, list[_PythonUrllibOutboundHttpCall]] = {}
+    for (line_number, column), aliases in aliases_by_call.items():
+        call_name = call_names_by_position.get((line_number, column))
+        if call_name is None:
+            continue
+        calls_by_line.setdefault(line_number, []).append(
+            _PythonUrllibOutboundHttpCall(
+                call_name=call_name,
+                column=column,
+                aliases=aliases,
+            )
+        )
+    all_aliases = {
+        alias: "fetch"
+        for calls in calls_by_line.values()
+        for call in calls
+        for alias in call.aliases
+    }
+    return _PythonUrllibOutboundHttpCallResolver(
+        {
+            line_number: tuple(sorted(calls, key=lambda call: call.column))
+            for line_number, calls in calls_by_line.items()
+        },
+        all_aliases,
+    )
+
+
+def _python_urllib_process_function_scopes(
+    tree: ast.Module,
+    module_bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+) -> None:
+    function_nodes: list[
+        tuple[
+            ast.FunctionDef | ast.AsyncFunctionDef,
+            ast.FunctionDef | ast.AsyncFunctionDef | None,
+        ]
+    ] = []
+
+    class _FunctionScopeCollector(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.function_stack: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+
+        def visit_FunctionDef(self, nested: ast.FunctionDef) -> None:
+            self._visit_function(nested)
+
+        def visit_AsyncFunctionDef(self, nested: ast.AsyncFunctionDef) -> None:
+            self._visit_function(nested)
+
+        def _visit_function(
+            self,
+            nested: ast.FunctionDef | ast.AsyncFunctionDef,
+        ) -> None:
+            function_nodes.append(
+                (
+                    nested,
+                    self.function_stack[-1] if self.function_stack else None,
+                )
+            )
+            self.function_stack.append(nested)
+            self.generic_visit(nested)
+            self.function_stack.pop()
+
+    _FunctionScopeCollector().visit(tree)
+    final_states_by_function: dict[
+        int,
+        tuple[
+            dict[str, frozenset[str]],
+            dict[str, frozenset[str]],
+        ],
+    ] = {}
+    for node, parent in function_nodes:
+        enclosing_bindings, runtime_global_bindings = (
+            final_states_by_function[id(parent)]
+            if parent is not None
+            else (module_bindings, module_bindings)
+        )
+        final_states_by_function[id(node)] = _python_urllib_process_function(
+            node,
+            enclosing_bindings,
+            module_bindings,
+            runtime_global_bindings,
+            aliases_by_call,
+        )
+
+
+def _python_urllib_process_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    enclosing_bindings: dict[str, frozenset[str]],
+    module_bindings: dict[str, frozenset[str]],
+    runtime_global_bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+) -> tuple[
+    dict[str, frozenset[str]],
+    dict[str, frozenset[str]],
+]:
+    bound_names, global_names, nonlocal_names = _python_urllib_scope_bindings(
+        node.body
+    )
+    bound_names.update(
+        argument.arg
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        )
+    )
+    if node.args.vararg is not None:
+        bound_names.add(node.args.vararg.arg)
+    if node.args.kwarg is not None:
+        bound_names.add(node.args.kwarg.arg)
+
+    bindings = dict(enclosing_bindings)
+    updated_runtime_global_bindings = dict(runtime_global_bindings)
+    for name in bound_names - global_names - nonlocal_names:
+        _python_urllib_invalidate_name(name, bindings)
+    for name in global_names:
+        if name in updated_runtime_global_bindings:
+            bindings[name] = updated_runtime_global_bindings[name]
+        elif name in module_bindings:
+            bindings[name] = module_bindings[name]
+        else:
+            bindings.pop(name, None)
+    _python_urllib_process_statements(node.body, bindings, aliases_by_call)
+    for name in global_names:
+        if name in bindings:
+            updated_runtime_global_bindings[name] = bindings[name]
+        else:
+            updated_runtime_global_bindings[name] = frozenset()
+    return bindings, updated_runtime_global_bindings
+
+
+def _python_urllib_process_class(
+    node: ast.ClassDef,
+    module_bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+) -> None:
+    bound_names, _, _ = _python_urllib_scope_bindings(node.body)
+    bindings = dict(module_bindings)
+    for name in bound_names:
+        _python_urllib_invalidate_name(name, bindings)
+    _python_urllib_process_statements(node.body, bindings, aliases_by_call)
+
+
+def _python_urllib_scope_bindings(
+    statements: list[ast.stmt],
+) -> tuple[set[str], set[str], set[str]]:
+    class _BindingCollector(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.bound_names: set[str] = set()
+            self.global_names: set[str] = set()
+            self.nonlocal_names: set[str] = set()
+
+        def visit_Name(self, nested: ast.Name) -> None:
+            if isinstance(nested.ctx, (ast.Store, ast.Del)):
+                self.bound_names.add(nested.id)
+
+        def visit_Import(self, nested: ast.Import) -> None:
+            self.bound_names.update(
+                alias.asname or alias.name.split(".", 1)[0]
+                for alias in nested.names
+            )
+
+        def visit_ImportFrom(self, nested: ast.ImportFrom) -> None:
+            self.bound_names.update(
+                alias.asname or alias.name
+                for alias in nested.names
+                if alias.name != "*"
+            )
+
+        def visit_Global(self, nested: ast.Global) -> None:
+            self.global_names.update(nested.names)
+
+        def visit_Nonlocal(self, nested: ast.Nonlocal) -> None:
+            self.nonlocal_names.update(nested.names)
+
+        def visit_FunctionDef(self, nested: ast.FunctionDef) -> None:
+            self.bound_names.add(nested.name)
+
+        def visit_AsyncFunctionDef(self, nested: ast.AsyncFunctionDef) -> None:
+            self.bound_names.add(nested.name)
+
+        def visit_ClassDef(self, nested: ast.ClassDef) -> None:
+            self.bound_names.add(nested.name)
+
+        def visit_Lambda(self, nested: ast.Lambda) -> None:
+            return
+
+        def visit_ListComp(self, nested: ast.ListComp) -> None:
+            self._record_comprehension_named_expr_bindings(nested)
+
+        def visit_SetComp(self, nested: ast.SetComp) -> None:
+            self._record_comprehension_named_expr_bindings(nested)
+
+        def visit_DictComp(self, nested: ast.DictComp) -> None:
+            self._record_comprehension_named_expr_bindings(nested)
+
+        def visit_GeneratorExp(self, nested: ast.GeneratorExp) -> None:
+            self._record_comprehension_named_expr_bindings(nested)
+
+        def _record_comprehension_named_expr_bindings(
+            self,
+            nested: ast.ListComp
+            | ast.SetComp
+            | ast.DictComp
+            | ast.GeneratorExp,
+        ) -> None:
+            class _NamedExprCollector(ast.NodeVisitor):
+                def __init__(self) -> None:
+                    self.bound_names: set[str] = set()
+
+                def visit_NamedExpr(self, value: ast.NamedExpr) -> None:
+                    self.bound_names.update(
+                        _python_urllib_target_names(value.target)
+                    )
+                    self.generic_visit(value)
+
+                def visit_Lambda(self, value: ast.Lambda) -> None:
+                    return
+
+                def visit_FunctionDef(self, value: ast.FunctionDef) -> None:
+                    return
+
+                def visit_AsyncFunctionDef(
+                    self,
+                    value: ast.AsyncFunctionDef,
+                ) -> None:
+                    return
+
+                def visit_ClassDef(self, value: ast.ClassDef) -> None:
+                    return
+
+            collector = _NamedExprCollector()
+            collector.visit(nested)
+            self.bound_names.update(collector.bound_names)
+
+        def visit_ExceptHandler(self, nested: ast.ExceptHandler) -> None:
+            if nested.name:
+                self.bound_names.add(nested.name)
+            self.generic_visit(nested)
+
+        def visit_MatchAs(self, nested: ast.MatchAs) -> None:
+            if nested.name:
+                self.bound_names.add(nested.name)
+            self.generic_visit(nested)
+
+        def visit_MatchStar(self, nested: ast.MatchStar) -> None:
+            if nested.name:
+                self.bound_names.add(nested.name)
+
+        def visit_MatchMapping(self, nested: ast.MatchMapping) -> None:
+            if nested.rest:
+                self.bound_names.add(nested.rest)
+            self.generic_visit(nested)
+
+    collector = _BindingCollector()
+    for statement in statements:
+        collector.visit(statement)
+    return (
+        collector.bound_names,
+        collector.global_names,
+        collector.nonlocal_names,
+    )
+
+
+def _python_urllib_process_statements(
+    statements: list[ast.stmt],
+    bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+    *,
+    return_bindings: list[dict[str, frozenset[str]]] | None = None,
+    raise_bindings: list[_PythonUrllibRaisedPath] | None = None,
+) -> None:
+    for statement in statements:
+        _python_urllib_process_statement(
+            statement,
+            bindings,
+            aliases_by_call,
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        if isinstance(statement, ast.Raise):
+            if raise_bindings is not None:
+                raise_bindings.append(
+                    _PythonUrllibRaisedPath(
+                        bindings=dict(bindings),
+                        exception_type=_python_urllib_exception_type_name(
+                            statement.exc
+                        ),
+                    )
+                )
+            return
+        if isinstance(statement, ast.Assert) and raise_bindings is not None:
+            raise_bindings.append(
+                _PythonUrllibRaisedPath(
+                    bindings=dict(bindings),
+                    exception_type="AssertionError",
+                )
+            )
+        if _python_urllib_statement_returns(statement):
+            if return_bindings is not None:
+                return_bindings.append(dict(bindings))
+            return
+        if _python_urllib_statement_terminates(statement):
+            return
+
+
+def _python_urllib_process_statement(
+    statement: ast.stmt,
+    bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+    *,
+    return_bindings: list[dict[str, frozenset[str]]] | None = None,
+    raise_bindings: list[_PythonUrllibRaisedPath] | None = None,
+) -> None:
+    if isinstance(statement, ast.Import):
+        _python_urllib_apply_import(statement, bindings)
+        return
+    if isinstance(statement, ast.ImportFrom):
+        _python_urllib_apply_from_import(statement, bindings)
+        return
+    if isinstance(statement, ast.Assign):
+        _python_urllib_record_calls(statement.value, bindings, aliases_by_call)
+        _python_urllib_invalidate_targets(statement.targets, bindings)
+        return
+    if isinstance(statement, ast.AnnAssign):
+        if statement.value is not None:
+            _python_urllib_record_calls(statement.value, bindings, aliases_by_call)
+        _python_urllib_invalidate_target(statement.target, bindings)
+        return
+    if isinstance(statement, ast.AugAssign):
+        _python_urllib_record_calls(statement.target, bindings, aliases_by_call)
+        _python_urllib_record_calls(statement.value, bindings, aliases_by_call)
+        _python_urllib_invalidate_target(statement.target, bindings)
+        return
+    if isinstance(statement, ast.Delete):
+        _python_urllib_invalidate_targets(statement.targets, bindings)
+        return
+    if isinstance(statement, ast.Expr):
+        _python_urllib_record_calls(statement.value, bindings, aliases_by_call)
+        return
+    if isinstance(statement, ast.Return):
+        _python_urllib_record_calls(statement.value, bindings, aliases_by_call)
+        return
+    if isinstance(statement, ast.Raise):
+        _python_urllib_record_calls(statement.exc, bindings, aliases_by_call)
+        _python_urllib_record_calls(statement.cause, bindings, aliases_by_call)
+        return
+    if isinstance(statement, ast.Assert):
+        _python_urllib_record_calls(statement.test, bindings, aliases_by_call)
+        _python_urllib_record_calls(statement.msg, bindings, aliases_by_call)
+        return
+    if isinstance(statement, ast.If):
+        _python_urllib_record_calls(statement.test, bindings, aliases_by_call)
+        _python_urllib_process_conditional_blocks(
+            (statement.body, statement.orelse),
+            bindings,
+            aliases_by_call,
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        return
+    if isinstance(statement, (ast.For, ast.AsyncFor)):
+        _python_urllib_record_calls(
+            statement.iter,
+            bindings,
+            aliases_by_call,
+            consume_generator_body=True,
+        )
+        loop_bindings = dict(bindings)
+        _python_urllib_invalidate_target(statement.target, loop_bindings)
+        _python_urllib_process_statements(
+            statement.body,
+            loop_bindings,
+            aliases_by_call,
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        _python_urllib_process_conditional_blocks(
+            (statement.orelse,),
+            bindings,
+            aliases_by_call,
+            additional_bindings=(loop_bindings,),
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        return
+    if isinstance(statement, ast.While):
+        _python_urllib_record_calls(statement.test, bindings, aliases_by_call)
+        loop_bindings = dict(bindings)
+        _python_urllib_process_statements(
+            statement.body,
+            loop_bindings,
+            aliases_by_call,
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        _python_urllib_process_conditional_blocks(
+            (statement.orelse,),
+            bindings,
+            aliases_by_call,
+            additional_bindings=(loop_bindings,),
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        return
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        for item in statement.items:
+            _python_urllib_record_calls(
+                item.context_expr,
+                bindings,
+                aliases_by_call,
+            )
+        suppressed_types = _python_urllib_suppressed_exception_types(
+            statement,
+            bindings,
+        )
+        with_bindings = dict(bindings)
+        for item in statement.items:
+            if item.optional_vars is not None:
+                _python_urllib_invalidate_target(item.optional_vars, with_bindings)
+        with_raise_bindings: list[_PythonUrllibRaisedPath] = []
+        _python_urllib_process_statements(
+            statement.body,
+            with_bindings,
+            aliases_by_call,
+            return_bindings=return_bindings,
+            raise_bindings=with_raise_bindings,
+        )
+        if raise_bindings is not None:
+            raise_bindings.extend(
+                _python_urllib_unsuppressed_with_raises(
+                    suppressed_types,
+                    with_raise_bindings,
+                )
+            )
+        bindings.clear()
+        bindings.update(with_bindings)
+        return
+    if isinstance(statement, ast.Try):
+        _python_urllib_process_try(
+            statement,
+            bindings,
+            aliases_by_call,
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        return
+    if isinstance(statement, ast.Match):
+        _python_urllib_record_calls(statement.subject, bindings, aliases_by_call)
+        case_bindings: list[dict[str, frozenset[str]]] = []
+        has_irrefutable_case = False
+        for case in statement.cases:
+            branch_bindings = dict(bindings)
+            for name in _python_urllib_pattern_bound_names(case.pattern):
+                branch_bindings.pop(name, None)
+            _python_urllib_record_calls(
+                case.guard,
+                branch_bindings,
+                aliases_by_call,
+            )
+            _python_urllib_process_statements(
+                case.body,
+                branch_bindings,
+                aliases_by_call,
+                return_bindings=return_bindings,
+                raise_bindings=raise_bindings,
+            )
+            if not _python_urllib_block_terminates(case.body):
+                case_bindings.append(branch_bindings)
+            has_irrefutable_case = has_irrefutable_case or (
+                case.guard is None
+                and isinstance(case.pattern, ast.MatchAs)
+                and case.pattern.pattern is None
+            )
+        if not has_irrefutable_case:
+            case_bindings.append(dict(bindings))
+        _python_urllib_replace_bindings(bindings, tuple(case_bindings))
+        return
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        _python_urllib_record_function_definition_calls(
+            statement,
+            bindings,
+            aliases_by_call,
+        )
+        _python_urllib_invalidate_name(statement.name, bindings)
+        return
+    if isinstance(statement, ast.ClassDef):
+        _python_urllib_record_class_definition_calls(
+            statement,
+            bindings,
+            aliases_by_call,
+        )
+        _python_urllib_invalidate_name(statement.name, bindings)
+
+
+def _python_urllib_process_conditional_blocks(
+    blocks: tuple[list[ast.stmt], ...],
+    bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+    *,
+    additional_bindings: tuple[dict[str, frozenset[str]], ...] = (),
+    return_bindings: list[dict[str, frozenset[str]]] | None = None,
+    raise_bindings: list[_PythonUrllibRaisedPath] | None = None,
+) -> None:
+    branch_bindings = [*additional_bindings]
+    for block in blocks:
+        branch = dict(bindings)
+        _python_urllib_process_statements(
+            block,
+            branch,
+            aliases_by_call,
+            return_bindings=return_bindings,
+            raise_bindings=raise_bindings,
+        )
+        if not _python_urllib_block_terminates(block):
+            branch_bindings.append(branch)
+    _python_urllib_replace_bindings(bindings, tuple(branch_bindings))
+
+
+def _python_urllib_unsuppressed_with_raises(
+    suppressed_types: set[str],
+    raise_paths: list[_PythonUrllibRaisedPath],
+) -> list[_PythonUrllibRaisedPath]:
+    if not suppressed_types:
+        return raise_paths
+    return [
+        raise_path
+        for raise_path in raise_paths
+        if not _python_urllib_exception_type_is_suppressed(
+            raise_path.exception_type,
+            suppressed_types,
+        )
+    ]
+
+
+def _python_urllib_suppressed_exception_types(
+    statement: ast.With | ast.AsyncWith,
+    bindings: dict[str, frozenset[str]],
+) -> set[str]:
+    suppressed_types: set[str] = set()
+    for item in statement.items:
+        context_expr = item.context_expr
+        if (
+            not isinstance(context_expr, ast.Call)
+            or not _python_urllib_is_contextlib_suppress(
+                context_expr.func,
+                bindings,
+            )
+        ):
+            continue
+        if any(isinstance(argument, ast.Starred) for argument in context_expr.args):
+            return set()
+        for argument in context_expr.args:
+            exception_type = _python_urllib_exception_type_name(argument)
+            if exception_type is None:
+                return set()
+            suppressed_types.add(exception_type)
+    return suppressed_types
+
+
+def _python_urllib_is_contextlib_suppress(
+    value: ast.expr,
+    bindings: dict[str, frozenset[str]],
+) -> bool:
+    name = _python_call_name(value)
+    if name is None:
+        return False
+    root, *attributes = name.split(".")
+    if _PYTHON_CONTEXTLIB_SUPPRESS_BINDING not in bindings.get(root, frozenset()):
+        return False
+    return not attributes or attributes == ["suppress"]
+
+
+def _python_urllib_exception_type_name(value: ast.expr | None) -> str | None:
+    if value is None:
+        return None
+    target = value.func if isinstance(value, ast.Call) else value
+    name = _python_call_name(target)
+    return name.rsplit(".", 1)[-1] if name is not None else None
+
+
+def _python_urllib_exception_type_names(value: ast.expr | None) -> set[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, ast.Tuple):
+        names: set[str] = set()
+        for element in value.elts:
+            exception_type = _python_urllib_exception_type_name(element)
+            if exception_type is None:
+                return None
+            names.add(exception_type)
+        return names
+    exception_type = _python_urllib_exception_type_name(value)
+    return {exception_type} if exception_type is not None else None
+
+
+def _python_urllib_exception_type_is_suppressed(
+    raised_type: str | None,
+    suppressed_types: set[str],
+) -> bool:
+    if raised_type is None:
+        return False
+    if raised_type in suppressed_types or "BaseException" in suppressed_types:
+        return True
+    exception_types = {raised_type}
+    while (parent_type := _PYTHON_EXCEPTION_PARENT_TYPES.get(raised_type)) is not None:
+        exception_types.add(parent_type)
+        raised_type = parent_type
+    if exception_types.intersection(suppressed_types):
+        return True
+    return False
+
+
+def _python_urllib_handler_catches_exception(
+    handler_type: ast.expr | None,
+    raised_type: str | None,
+) -> bool:
+    if handler_type is None or raised_type is None:
+        return True
+    handled_types = _python_urllib_exception_type_names(handler_type)
+    if handled_types is None:
+        return True
+    return _python_urllib_exception_type_is_suppressed(
+        raised_type,
+        handled_types,
+    )
+
+
+def _python_urllib_process_try(
+    statement: ast.Try,
+    bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+    *,
+    return_bindings: list[dict[str, frozenset[str]]] | None = None,
+    raise_bindings: list[_PythonUrllibRaisedPath] | None = None,
+) -> None:
+    body_bindings = dict(bindings)
+    body_return_bindings: list[dict[str, frozenset[str]]] = []
+    body_raise_bindings: list[_PythonUrllibRaisedPath] = []
+    _python_urllib_process_statements(
+        statement.body,
+        body_bindings,
+        aliases_by_call,
+        return_bindings=body_return_bindings,
+        raise_bindings=body_raise_bindings,
+    )
+    outcomes: list[dict[str, frozenset[str]]] = []
+    return_paths_to_final: list[dict[str, frozenset[str]]] = [
+        *body_return_bindings
+    ]
+    paths_to_final: list[dict[str, frozenset[str]]] = [
+        *return_paths_to_final
+    ]
+    raise_paths_to_final: list[_PythonUrllibRaisedPath] = []
+    if not statement.handlers:
+        raise_paths_to_final.extend(body_raise_bindings)
+        paths_to_final.extend(
+            raise_path.bindings for raise_path in body_raise_bindings
+        )
+    body_terminates = _python_urllib_block_terminates(statement.body)
+    if statement.orelse and not body_terminates:
+        else_bindings = dict(body_bindings)
+        else_return_bindings: list[dict[str, frozenset[str]]] = []
+        else_raise_bindings: list[_PythonUrllibRaisedPath] = []
+        _python_urllib_process_statements(
+            statement.orelse,
+            else_bindings,
+            aliases_by_call,
+            return_bindings=else_return_bindings,
+            raise_bindings=else_raise_bindings,
+        )
+        paths_to_final.extend(else_return_bindings)
+        return_paths_to_final.extend(else_return_bindings)
+        raise_paths_to_final.extend(else_raise_bindings)
+        if not _python_urllib_block_terminates(statement.orelse):
+            paths_to_final.append(else_bindings)
+            outcomes.append(else_bindings)
+        elif not else_return_bindings and not else_raise_bindings:
+            paths_to_final.append(else_bindings)
+    elif body_terminates and not body_return_bindings and not body_raise_bindings:
+        paths_to_final.append(body_bindings)
+    elif not body_terminates:
+        paths_to_final.append(body_bindings)
+        outcomes.append(body_bindings)
+    def process_handler_path(
+        handler: ast.ExceptHandler,
+        handler_start: dict[str, frozenset[str]],
+    ) -> None:
+        handler_bindings = dict(handler_start)
+        _python_urllib_record_calls(
+            handler.type,
+            handler_bindings,
+            aliases_by_call,
+        )
+        if handler.name:
+            handler_bindings.pop(handler.name, None)
+        handler_return_bindings: list[dict[str, frozenset[str]]] = []
+        handler_raise_bindings: list[_PythonUrllibRaisedPath] = []
+        _python_urllib_process_statements(
+            handler.body,
+            handler_bindings,
+            aliases_by_call,
+            return_bindings=handler_return_bindings,
+            raise_bindings=handler_raise_bindings,
+        )
+        paths_to_final.extend(handler_return_bindings)
+        return_paths_to_final.extend(handler_return_bindings)
+        raise_paths_to_final.extend(handler_raise_bindings)
+        paths_to_final.extend(
+            raise_path.bindings for raise_path in handler_raise_bindings
+        )
+        if not _python_urllib_block_terminates(handler.body):
+            paths_to_final.append(handler_bindings)
+            outcomes.append(handler_bindings)
+        elif not handler_return_bindings and not handler_raise_bindings:
+            paths_to_final.append(handler_bindings)
+
+    if statement.handlers and body_raise_bindings:
+        for raise_path in body_raise_bindings:
+            if raise_path.exception_type is None:
+                for handler in statement.handlers:
+                    process_handler_path(handler, raise_path.bindings)
+                raise_paths_to_final.append(raise_path)
+                paths_to_final.append(raise_path.bindings)
+                continue
+            for handler in statement.handlers:
+                if _python_urllib_handler_catches_exception(
+                    handler.type,
+                    raise_path.exception_type,
+                ):
+                    process_handler_path(handler, raise_path.bindings)
+                    break
+            else:
+                raise_paths_to_final.append(raise_path)
+                paths_to_final.append(raise_path.bindings)
+    elif statement.handlers:
+        handler_start = _python_urllib_merged_bindings((bindings, body_bindings))
+        for handler in statement.handlers:
+            process_handler_path(handler, handler_start)
+    if statement.finalbody:
+        completed_return_bindings: list[dict[str, frozenset[str]]] = []
+        completed_raise_bindings: list[_PythonUrllibRaisedPath] = []
+        completed_outcome_bindings: list[dict[str, frozenset[str]]] = []
+        for path_bindings in return_paths_to_final:
+            final_bindings = dict(path_bindings)
+            final_return_bindings: list[dict[str, frozenset[str]]] = []
+            final_raise_bindings: list[_PythonUrllibRaisedPath] = []
+            _python_urllib_process_statements(
+                statement.finalbody,
+                final_bindings,
+                aliases_by_call,
+                return_bindings=final_return_bindings,
+                raise_bindings=final_raise_bindings,
+            )
+            completed_return_bindings.extend(final_return_bindings)
+            completed_raise_bindings.extend(final_raise_bindings)
+            if not _python_urllib_block_terminates(statement.finalbody):
+                completed_return_bindings.append(final_bindings)
+        for raise_path in raise_paths_to_final:
+            final_bindings = dict(raise_path.bindings)
+            final_return_bindings: list[dict[str, frozenset[str]]] = []
+            final_raise_bindings: list[_PythonUrllibRaisedPath] = []
+            _python_urllib_process_statements(
+                statement.finalbody,
+                final_bindings,
+                aliases_by_call,
+                return_bindings=final_return_bindings,
+                raise_bindings=final_raise_bindings,
+            )
+            completed_return_bindings.extend(final_return_bindings)
+            completed_raise_bindings.extend(final_raise_bindings)
+            if not _python_urllib_block_terminates(statement.finalbody):
+                completed_raise_bindings.append(
+                    _PythonUrllibRaisedPath(
+                        bindings=final_bindings,
+                        exception_type=raise_path.exception_type,
+                    )
+                )
+        for path_bindings in outcomes:
+            final_bindings = dict(path_bindings)
+            final_return_bindings: list[dict[str, frozenset[str]]] = []
+            final_raise_bindings: list[_PythonUrllibRaisedPath] = []
+            _python_urllib_process_statements(
+                statement.finalbody,
+                final_bindings,
+                aliases_by_call,
+                return_bindings=final_return_bindings,
+                raise_bindings=final_raise_bindings,
+            )
+            completed_return_bindings.extend(final_return_bindings)
+            completed_raise_bindings.extend(final_raise_bindings)
+            if not _python_urllib_block_terminates(statement.finalbody):
+                completed_outcome_bindings.append(final_bindings)
+        if return_bindings is not None:
+            return_bindings.extend(completed_return_bindings)
+        if raise_bindings is not None:
+            raise_bindings.extend(completed_raise_bindings)
+        for path_bindings in paths_to_final:
+            final_bindings = dict(path_bindings)
+            _python_urllib_process_statements(
+                statement.finalbody,
+                final_bindings,
+                aliases_by_call,
+            )
+        outcomes = completed_outcome_bindings
+    elif return_bindings is not None:
+        return_bindings.extend(return_paths_to_final)
+    if not statement.finalbody and raise_bindings is not None:
+        raise_bindings.extend(raise_paths_to_final)
+    _python_urllib_replace_bindings(bindings, tuple(outcomes))
+
+
+def _python_urllib_record_function_definition_calls(
+    statement: ast.FunctionDef | ast.AsyncFunctionDef,
+    bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+) -> None:
+    for value in (
+        *statement.decorator_list,
+        *statement.args.defaults,
+        *(default for default in statement.args.kw_defaults if default is not None),
+        statement.returns,
+    ):
+        _python_urllib_record_calls(value, bindings, aliases_by_call)
+
+
+def _python_urllib_record_class_definition_calls(
+    statement: ast.ClassDef,
+    bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+) -> None:
+    for value in (
+        *statement.decorator_list,
+        *statement.bases,
+        *(keyword.value for keyword in statement.keywords),
+    ):
+        _python_urllib_record_calls(value, bindings, aliases_by_call)
+
+
+def _python_urllib_record_calls(
+    node: ast.AST | None,
+    bindings: dict[str, frozenset[str]],
+    aliases_by_call: dict[tuple[int, int], dict[str, str]],
+    *,
+    consume_generator_body: bool = False,
+) -> None:
+    if node is None:
+        return
+
+    class _CallCollector(ast.NodeVisitor):
+        def __init__(self, active_bindings: dict[str, frozenset[str]]) -> None:
+            self.bindings = active_bindings
+            self.named_expr_bindings = active_bindings
+
+        def visit_Call(self, nested: ast.Call) -> None:
+            if isinstance(nested.func, ast.Lambda):
+                self._visit_lambda_call(nested)
+                return
+            call_name = _python_call_name(nested.func)
+            aliases = _python_urllib_aliases(self.bindings)
+            if (
+                call_name in _PYTHON_URLLIB_EAGER_GENERATOR_CONSUMERS
+                and call_name not in aliases
+                and call_name not in self.bindings
+            ):
+                self._visit_generator_consumer_call(
+                    nested,
+                    eagerly_consumes=True,
+                )
+                return
+            if (
+                call_name in _PYTHON_URLLIB_PARTIAL_GENERATOR_CONSUMERS
+                and call_name not in aliases
+                and call_name not in self.bindings
+            ):
+                self._visit_generator_consumer_call(
+                    nested,
+                    eagerly_consumes=False,
+                )
+                return
+            if call_name in aliases:
+                aliases_by_call.setdefault(
+                    (nested.lineno, nested.col_offset),
+                    {},
+                ).update(aliases)
+            self.visit(nested.func)
+            for argument in nested.args:
+                self.visit(argument)
+            for keyword in nested.keywords:
+                self.visit(keyword.value)
+
+        def _visit_generator_consumer_call(
+            self,
+            nested: ast.Call,
+            *,
+            eagerly_consumes: bool,
+        ) -> None:
+            self.visit(nested.func)
+            first_argument_pending = True
+            for argument in nested.args:
+                if isinstance(argument, ast.Starred):
+                    if isinstance(argument.value, ast.GeneratorExp):
+                        self._visit_eager_generator_expression(argument.value)
+                        first_argument_pending = False
+                        continue
+                    values = _python_urllib_literal_starred_values(argument.value)
+                    if values is None:
+                        self.visit(argument)
+                        first_argument_pending = False
+                        continue
+                else:
+                    values = [argument]
+                for value in values:
+                    if first_argument_pending and isinstance(value, ast.GeneratorExp):
+                        if eagerly_consumes:
+                            self._visit_eager_generator_expression(value)
+                        else:
+                            self._visit_consumed_generator_expression(value)
+                    else:
+                        self.visit(value)
+                    first_argument_pending = False
+            for keyword in nested.keywords:
+                self.visit(keyword.value)
+
+        def visit_YieldFrom(self, nested: ast.YieldFrom) -> None:
+            if isinstance(nested.value, ast.GeneratorExp):
+                self._visit_eager_generator_expression(nested.value)
+                return
+            self.visit(nested.value)
+
+        def visit_NamedExpr(self, nested: ast.NamedExpr) -> None:
+            self.visit(nested.value)
+            if self.named_expr_bindings is not self.bindings:
+                _python_urllib_invalidate_target(nested.target, self.bindings)
+            _python_urllib_invalidate_target(
+                nested.target,
+                self.named_expr_bindings,
+            )
+
+        def visit_FunctionDef(self, nested: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, nested: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, nested: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, nested: ast.Lambda) -> None:
+            for default in (
+                *nested.args.defaults,
+                *(
+                    default
+                    for default in nested.args.kw_defaults
+                    if default is not None
+                ),
+            ):
+                self.visit(default)
+            self._visit_scoped(
+                nested.body,
+                _python_urllib_lambda_parameter_names(nested),
+            )
+
+        def _visit_lambda_call(self, nested: ast.Call) -> None:
+            lambda_node = nested.func
+            assert isinstance(lambda_node, ast.Lambda)
+            default_bindings: dict[int, frozenset[str]] = {}
+            for default in (
+                *lambda_node.args.defaults,
+                *(
+                    default
+                    for default in lambda_node.args.kw_defaults
+                    if default is not None
+                ),
+            ):
+                self.visit(default)
+                paths = _python_urllib_value_bindings(default, self.bindings)
+                if paths:
+                    default_bindings[id(default)] = paths
+            argument_bindings: dict[int, frozenset[str]] = {}
+            for argument in nested.args:
+                self._visit_lambda_argument(argument, argument_bindings)
+            for keyword in nested.keywords:
+                self._visit_lambda_argument(keyword.value, argument_bindings)
+            parameter_names = _python_urllib_lambda_parameter_names(lambda_node)
+            scoped_bindings = {
+                root: paths
+                for root, paths in self.bindings.items()
+                if root not in parameter_names
+            }
+            for name in parameter_names & _PYTHON_URLLIB_GENERATOR_CONSUMERS:
+                scoped_bindings[name] = frozenset()
+            scoped_bindings.update(
+                _python_urllib_lambda_bindings(
+                    nested,
+                    default_bindings,
+                    argument_bindings,
+                )
+            )
+            _CallCollector(scoped_bindings).visit(lambda_node.body)
+
+        def _visit_lambda_argument(
+            self,
+            argument: ast.expr,
+            argument_bindings: dict[int, frozenset[str]],
+        ) -> None:
+            if isinstance(argument, ast.Starred):
+                values = _python_urllib_literal_starred_values(argument.value)
+                if values is not None:
+                    for value in values:
+                        self._visit_lambda_argument(value, argument_bindings)
+                    return
+            if isinstance(argument, ast.Dict):
+                items = _python_urllib_literal_dict_items(argument)
+                if items is not None:
+                    for value in items.values():
+                        argument_bindings[id(value)] = _python_urllib_value_bindings(
+                            value,
+                            self.bindings,
+                        )
+            argument_bindings[id(argument)] = _python_urllib_value_bindings(
+                argument,
+                self.bindings,
+            )
+            self.visit(argument)
+
+        def visit_ListComp(self, nested: ast.ListComp) -> None:
+            self._visit_comprehension(nested)
+
+        def visit_SetComp(self, nested: ast.SetComp) -> None:
+            self._visit_comprehension(nested)
+
+        def visit_DictComp(self, nested: ast.DictComp) -> None:
+            self._visit_comprehension(nested)
+
+        def visit_GeneratorExp(self, nested: ast.GeneratorExp) -> None:
+            self._visit_generator_expression(nested)
+
+        def _visit_comprehension(
+            self,
+            nested: ast.ListComp
+            | ast.SetComp
+            | ast.DictComp
+            | ast.GeneratorExp,
+        ) -> None:
+            first_generator, *remaining_generators = nested.generators
+            self.visit(first_generator.iter)
+            scoped_bindings = dict(self.bindings)
+            collector = _CallCollector(scoped_bindings)
+            collector.named_expr_bindings = self.bindings
+            self._visit_comprehension_body(
+                nested,
+                collector,
+                first_generator=first_generator,
+                remaining_generators=remaining_generators,
+            )
+
+        def _visit_generator_expression(self, nested: ast.GeneratorExp) -> None:
+            self.visit(nested.generators[0].iter)
+
+        def _visit_eager_generator_expression(
+            self,
+            nested: ast.GeneratorExp,
+        ) -> None:
+            self._visit_comprehension(nested)
+
+        def _visit_consumed_generator_expression(
+            self,
+            nested: ast.GeneratorExp,
+        ) -> None:
+            first_generator, *remaining_generators = nested.generators
+            self.visit(first_generator.iter)
+            scoped_bindings = dict(self.bindings)
+            collector = _CallCollector(scoped_bindings)
+            collector.named_expr_bindings = self.bindings
+            self._visit_comprehension_body(
+                nested,
+                collector,
+                first_generator=first_generator,
+                remaining_generators=remaining_generators,
+            )
+
+        def _visit_comprehension_body(
+            self,
+            nested: ast.ListComp
+            | ast.SetComp
+            | ast.DictComp
+            | ast.GeneratorExp,
+            collector,
+            *,
+            first_generator: ast.comprehension,
+            remaining_generators: list[ast.comprehension],
+        ) -> None:
+            for generator in (first_generator, *remaining_generators):
+                if generator is not first_generator:
+                    collector.visit(generator.iter)
+                _python_urllib_invalidate_target(
+                    generator.target,
+                    collector.bindings,
+                )
+                for condition in generator.ifs:
+                    collector.visit(condition)
+            if isinstance(nested, ast.DictComp):
+                collector.visit(nested.key)
+                collector.visit(nested.value)
+            else:
+                collector.visit(nested.elt)
+
+        def _visit_scoped(self, nested: ast.AST, shadowed_names: set[str]) -> None:
+            scoped_bindings = {
+                root: paths
+                for root, paths in self.bindings.items()
+                if root not in shadowed_names
+            }
+            for name in shadowed_names & _PYTHON_URLLIB_GENERATOR_CONSUMERS:
+                scoped_bindings[name] = frozenset()
+            _CallCollector(scoped_bindings).visit(nested)
+
+    collector = _CallCollector(bindings)
+    if consume_generator_body and isinstance(node, ast.GeneratorExp):
+        collector._visit_consumed_generator_expression(node)
+    else:
+        collector.visit(node)
+
+
+def _python_urllib_lambda_parameter_names(node: ast.Lambda) -> set[str]:
+    names = {
+        argument.arg
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        )
+    }
+    if node.args.vararg is not None:
+        names.add(node.args.vararg.arg)
+    if node.args.kwarg is not None:
+        names.add(node.args.kwarg.arg)
+    return names
+
+
+def _python_urllib_lambda_bindings(
+    call: ast.Call,
+    default_bindings: dict[int, frozenset[str]],
+    argument_bindings: dict[int, frozenset[str]],
+) -> dict[str, frozenset[str]]:
+    lambda_node = call.func
+    assert isinstance(lambda_node, ast.Lambda)
+    positional_parameters = [
+        *lambda_node.args.posonlyargs,
+        *lambda_node.args.args,
+    ]
+    argument_values, uncertain_names = _python_urllib_lambda_argument_values(call)
+    supplied_names = set(argument_values) | uncertain_names
+    bindings = {
+        name: argument_bindings[value_id]
+        for name, value in argument_values.items()
+        if name not in uncertain_names
+        and (value_id := id(value)) in argument_bindings
+        and argument_bindings[value_id]
+    }
+    positional_defaults = lambda_node.args.defaults
+    if positional_defaults:
+        for parameter, default in zip(
+            positional_parameters[-len(positional_defaults) :],
+            positional_defaults,
+            strict=True,
+        ):
+            paths = default_bindings.get(id(default))
+            if parameter.arg not in supplied_names and paths:
+                bindings[parameter.arg] = paths
+    for parameter, default in zip(
+        lambda_node.args.kwonlyargs,
+        lambda_node.args.kw_defaults,
+        strict=True,
+    ):
+        if default is None:
+            continue
+        paths = default_bindings.get(id(default))
+        if parameter.arg not in supplied_names and paths:
+            bindings[parameter.arg] = paths
+    return bindings
+
+
+def _python_urllib_lambda_argument_values(
+    call: ast.Call,
+) -> tuple[dict[str, ast.expr], set[str]]:
+    lambda_node = call.func
+    assert isinstance(lambda_node, ast.Lambda)
+    positional_parameters = [
+        *lambda_node.args.posonlyargs,
+        *lambda_node.args.args,
+    ]
+    keyword_parameter_names = {
+        parameter.arg
+        for parameter in (*lambda_node.args.args, *lambda_node.args.kwonlyargs)
+    }
+    argument_values: dict[str, ast.expr] = {}
+    uncertain_names: set[str] = set()
+    positional_index = 0
+    for argument in call.args:
+        if isinstance(argument, ast.Starred):
+            expanded_values = _python_urllib_literal_starred_values(argument.value)
+            if expanded_values is None:
+                uncertain_names.update(
+                    parameter.arg
+                    for parameter in positional_parameters[positional_index:]
+                )
+                positional_index = len(positional_parameters)
+                continue
+        else:
+            expanded_values = [argument]
+        for value in expanded_values:
+            if positional_index >= len(positional_parameters):
+                break
+            argument_values[positional_parameters[positional_index].arg] = value
+            positional_index += 1
+    for keyword in call.keywords:
+        if keyword.arg is not None:
+            if keyword.arg in keyword_parameter_names:
+                argument_values[keyword.arg] = keyword.value
+            continue
+        items = _python_urllib_literal_dict_items(keyword.value)
+        if items is None:
+            uncertain_names.update(keyword_parameter_names)
+            continue
+        argument_values.update(
+            {
+                name: value
+                for name, value in items.items()
+                if name in keyword_parameter_names
+            }
+        )
+    return argument_values, uncertain_names
+
+
+def _python_urllib_literal_starred_values(
+    value: ast.expr,
+) -> list[ast.expr] | None:
+    if not isinstance(value, (ast.List, ast.Tuple)):
+        return None
+    values: list[ast.expr] = []
+    for element in value.elts:
+        if isinstance(element, ast.Starred):
+            expanded_values = _python_urllib_literal_starred_values(element.value)
+            if expanded_values is None:
+                return None
+            values.extend(expanded_values)
+        else:
+            values.append(element)
+    return values
+
+
+def _python_urllib_literal_dict_items(
+    value: ast.expr,
+) -> dict[str, ast.expr] | None:
+    if not isinstance(value, ast.Dict):
+        return None
+    items: dict[str, ast.expr] = {}
+    for key, item_value in zip(value.keys, value.values, strict=True):
+        if key is None:
+            expanded_items = _python_urllib_literal_dict_items(item_value)
+            if expanded_items is None:
+                return None
+            items.update(expanded_items)
+        elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+            items[key.value] = item_value
+        else:
+            return None
+    return items
+
+
+def _python_urllib_value_bindings(
+    value: ast.expr,
+    bindings: dict[str, frozenset[str]],
+) -> frozenset[str]:
+    name = _python_call_name(value)
+    if name is None:
+        return frozenset()
+    root, *attributes = name.split(".")
+    paths = bindings.get(root, frozenset())
+    prefix = ".".join(attributes)
+    if not prefix:
+        return paths
+    return frozenset(
+        "" if path == prefix else path.removeprefix(f"{prefix}.")
+        for path in paths
+        if path == prefix or path.startswith(f"{prefix}.")
+    )
+
+
+def _python_urllib_target_names(target: ast.expr) -> set[str]:
+    return {
+        nested.id
+        for nested in ast.walk(target)
+        if isinstance(nested, ast.Name) and isinstance(nested.ctx, ast.Store)
+    }
+
+
+def _python_urllib_block_terminates(statements: list[ast.stmt]) -> bool:
+    return any(
+        _python_urllib_statement_terminates(statement)
+        for statement in statements
+    )
+
+
+def _python_urllib_statement_terminates(statement: ast.stmt) -> bool:
+    if isinstance(statement, (ast.Return, ast.Raise)):
+        return True
+    if isinstance(statement, ast.If):
+        return bool(statement.orelse) and all(
+            _python_urllib_block_terminates(block)
+            for block in (statement.body, statement.orelse)
+        )
+    if isinstance(statement, ast.Match):
+        has_irrefutable_case = any(
+            case.guard is None
+            and isinstance(case.pattern, ast.MatchAs)
+            and case.pattern.pattern is None
+            for case in statement.cases
+        )
+        return has_irrefutable_case and all(
+            _python_urllib_block_terminates(case.body)
+            for case in statement.cases
+        )
+    if isinstance(statement, ast.Try):
+        if _python_urllib_block_terminates(statement.finalbody):
+            return True
+        normal_path_terminates = _python_urllib_block_terminates(
+            statement.body
+        ) or (
+            bool(statement.orelse)
+            and _python_urllib_block_terminates(statement.orelse)
+        )
+        return normal_path_terminates and all(
+            _python_urllib_block_terminates(handler.body)
+            for handler in statement.handlers
+        )
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        return _python_urllib_block_returns(statement.body)
+    return False
+
+
+def _python_urllib_block_returns(statements: list[ast.stmt]) -> bool:
+    return any(
+        _python_urllib_statement_returns(statement)
+        for statement in statements
+    )
+
+
+def _python_urllib_statement_returns(statement: ast.stmt) -> bool:
+    if isinstance(statement, ast.Return):
+        return True
+    if isinstance(statement, ast.If):
+        return bool(statement.orelse) and all(
+            _python_urllib_block_returns(block)
+            for block in (statement.body, statement.orelse)
+        )
+    if isinstance(statement, ast.Match):
+        has_irrefutable_case = any(
+            case.guard is None
+            and isinstance(case.pattern, ast.MatchAs)
+            and case.pattern.pattern is None
+            for case in statement.cases
+        )
+        return has_irrefutable_case and all(
+            _python_urllib_block_returns(case.body)
+            for case in statement.cases
+        )
+    if isinstance(statement, ast.Try):
+        if _python_urllib_block_returns(statement.finalbody):
+            return True
+        normal_path_returns = _python_urllib_block_returns(
+            statement.body
+        ) or (
+            bool(statement.orelse)
+            and _python_urllib_block_returns(statement.orelse)
+        )
+        return normal_path_returns and all(
+            _python_urllib_block_returns(handler.body)
+            for handler in statement.handlers
+        )
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        return _python_urllib_block_returns(statement.body)
+    return False
+
+
+def _python_urllib_apply_import(
+    statement: ast.Import,
+    bindings: dict[str, frozenset[str]],
+) -> None:
+    for imported in statement.names:
+        module = imported.name.lower()
+        binding_name = imported.asname or imported.name.split(".", 1)[0]
+        if imported.asname is None and module.startswith("urllib."):
+            if module == _PYTHON_URLLIB_REQUEST_MODULE:
+                bindings[binding_name] = frozenset({"request.urlopen"})
+            continue
+        _python_urllib_invalidate_name(binding_name, bindings)
+        if module == _PYTHON_URLLIB_REQUEST_MODULE:
+            bindings[binding_name] = frozenset({_PYTHON_URLLIB_URLOPEN})
+        elif module == _PYTHON_CONTEXTLIB_MODULE:
+            bindings[binding_name] = frozenset(
+                {_PYTHON_CONTEXTLIB_SUPPRESS_BINDING}
+            )
+
+
+def _python_urllib_apply_from_import(
+    statement: ast.ImportFrom,
+    bindings: dict[str, frozenset[str]],
+) -> None:
+    module = (statement.module or "").lower()
+    for imported in statement.names:
+        if imported.name == "*":
+            bindings.clear()
+            continue
+        binding_name = imported.asname or imported.name
+        _python_urllib_invalidate_name(binding_name, bindings)
+        if (
+            statement.level == 0
+            and module == _PYTHON_URLLIB_REQUEST_MODULE
+            and imported.name.lower() == _PYTHON_URLLIB_URLOPEN
+        ):
+            bindings[binding_name] = frozenset({""})
+        elif (
+            statement.level == 0
+            and module == "urllib"
+            and imported.name.lower() == "request"
+        ):
+            bindings[binding_name] = frozenset({_PYTHON_URLLIB_URLOPEN})
+        elif (
+            statement.level == 0
+            and module == _PYTHON_CONTEXTLIB_MODULE
+            and imported.name.lower() == "suppress"
+        ):
+            bindings[binding_name] = frozenset(
+                {_PYTHON_CONTEXTLIB_SUPPRESS_BINDING}
+            )
+
+
+def _python_urllib_invalidate_targets(
+    targets: list[ast.expr],
+    bindings: dict[str, frozenset[str]],
+) -> None:
+    for target in targets:
+        _python_urllib_invalidate_target(target, bindings)
+
+
+def _python_urllib_invalidate_target(
+    target: ast.expr,
+    bindings: dict[str, frozenset[str]],
+) -> None:
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            _python_urllib_invalidate_target(element, bindings)
+        return
+    if isinstance(target, ast.Starred):
+        _python_urllib_invalidate_target(target.value, bindings)
+        return
+    if isinstance(target, ast.Name):
+        if isinstance(target.ctx, ast.Del):
+            bindings.pop(target.id, None)
+        else:
+            _python_urllib_invalidate_name(target.id, bindings)
+        return
+    root_and_path = _python_urllib_attribute_target(target)
+    if root_and_path is None:
+        return
+    root, path = root_and_path
+    existing_paths = bindings.get(root)
+    if existing_paths is None:
+        return
+    remaining_paths = frozenset(
+        existing_path
+        for existing_path in existing_paths
+        if not (
+            existing_path == path
+            or existing_path.startswith(f"{path}.")
+            or path.startswith(f"{existing_path}.")
+        )
+    )
+    if remaining_paths:
+        bindings[root] = remaining_paths
+    else:
+        bindings.pop(root, None)
+
+
+def _python_urllib_invalidate_name(
+    name: str,
+    bindings: dict[str, frozenset[str]],
+) -> None:
+    if name in _PYTHON_URLLIB_GENERATOR_CONSUMERS:
+        bindings[name] = frozenset()
+    else:
+        bindings.pop(name, None)
+
+
+def _python_urllib_attribute_target(
+    target: ast.expr,
+) -> tuple[str, str] | None:
+    if not isinstance(target, ast.Attribute):
+        return None
+    attributes = [target.attr]
+    value = target.value
+    while isinstance(value, ast.Attribute):
+        attributes.append(value.attr)
+        value = value.value
+    if not isinstance(value, ast.Name):
+        return None
+    return value.id, ".".join(reversed(attributes))
+
+
+def _python_urllib_aliases(
+    bindings: dict[str, frozenset[str]],
+) -> dict[str, str]:
+    return {
+        root if path == "" else f"{root}.{path}": "fetch"
+        for root, paths in bindings.items()
+        for path in paths
+        if path != _PYTHON_CONTEXTLIB_SUPPRESS_BINDING
+    }
+
+
+def _python_urllib_replace_bindings(
+    bindings: dict[str, frozenset[str]],
+    alternatives: tuple[dict[str, frozenset[str]], ...],
+) -> None:
+    bindings.clear()
+    bindings.update(_python_urllib_merged_bindings(alternatives))
+
+
+def _python_urllib_merged_bindings(
+    alternatives: tuple[dict[str, frozenset[str]], ...],
+) -> dict[str, frozenset[str]]:
+    if not alternatives:
+        return {}
+    shared_roots = set(alternatives[0])
+    for alternative in alternatives[1:]:
+        shared_roots.intersection_update(alternative)
+    merged: dict[str, frozenset[str]] = {}
+    for root in shared_roots:
+        paths = alternatives[0][root]
+        for alternative in alternatives[1:]:
+            paths = paths.intersection(alternative[root])
+        if paths:
+            merged[root] = paths
+    return merged
+
+
+def _python_urllib_pattern_bound_names(pattern: ast.pattern) -> set[str]:
+    names: set[str] = set()
+    for nested in ast.walk(pattern):
+        if isinstance(nested, (ast.MatchAs, ast.MatchStar)) and nested.name:
+            names.add(nested.name)
+        elif isinstance(nested, ast.MatchMapping) and nested.rest:
+            names.add(nested.rest)
+    return names
 
 
 def _python_outbound_http_input_index(
@@ -10613,12 +13053,15 @@ def _python_call_input_refs(
     *,
     ambiguous_references: set[str] | None = None,
     conditional_columns: set[int] | None = None,
-) -> dict[str, list[tuple[list[str | None], str | None]]]:
+) -> dict[str, list[tuple[list[str | None], dict[str, str | None], str | None]]]:
     tree = _python_line_tree(line)
     if tree is None:
         return {}
     indentation = len(line) - len(line.lstrip())
-    input_refs: dict[str, list[tuple[list[str | None], str | None]]] = {}
+    input_refs: dict[
+        str,
+        list[tuple[list[str | None], dict[str, str | None], str | None]],
+    ] = {}
     output_refs = _python_direct_call_output_refs(tree)
     calls = sorted(
         (node for node in ast.walk(tree) if isinstance(node, ast.Call)),
@@ -10637,20 +13080,31 @@ def _python_call_input_refs(
                     )
                     for argument in node.args
                 ],
+                {
+                    keyword.arg: _python_input_reference(
+                        keyword.value,
+                        ambiguous_references=ambiguous_references,
+                    )
+                    for keyword in node.keywords
+                    if keyword.arg is not None
+                },
                 output_refs.get(id(node)),
             )
             if indentation + node.col_offset not in (conditional_columns or set())
-            else ([], None)
+            else ([], {}, None)
         )
     return input_refs
 
 
 def _pop_python_call_input_refs(
-    input_refs: dict[str, list[tuple[list[str | None], str | None]]],
+    input_refs: dict[
+        str,
+        list[tuple[list[str | None], dict[str, str | None], str | None]],
+    ],
     call_name: str,
-) -> tuple[list[str | None], str | None]:
+) -> tuple[list[str | None], dict[str, str | None], str | None]:
     values = input_refs.get(call_name.rsplit(".", 1)[-1])
-    return values.pop(0) if values else ([], None)
+    return values.pop(0) if values else ([], {}, None)
 
 
 def _python_call_claim_refs(

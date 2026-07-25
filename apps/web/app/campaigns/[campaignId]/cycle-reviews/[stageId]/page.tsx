@@ -14,7 +14,7 @@ export default async function CampaignCycleReviewCompletionPage({ params }: Page
     "use server";
 
     const actor = formText(formData, "actor") || "lead_reviewer";
-    const reason = formText(formData, "reason") || "Campaign cycle reviewed for the next read-only cycle.";
+    const reason = formText(formData, "reason") || "已审核研究活动周期，可规划下一轮只读周期。";
 
     await completeCampaignCycleReview(
       campaignId,
@@ -34,21 +34,20 @@ export default async function CampaignCycleReviewCompletionPage({ params }: Page
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ShieldCheck size={17} aria-hidden="true" />
-          Campaign cycle review
+          研究活动周期审核
         </p>
         <h1 className="mt-3 max-w-4xl break-words text-3xl font-semibold leading-tight text-balance">
           {stageId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Manual completion gate for a campaign cycle. This page only records review completion so
-          the next read-only cycle can be planned.
+          研究活动周期的人工完成门。此页面仅记录审核完成，以便规划下一轮只读周期。
         </p>
       </header>
 
       <section className="grid gap-3 py-5 md:grid-cols-3">
-        <GateMetric label="Next read-only cycle" value="Review may continue" />
-        <GateMetric label="Validation execution" value="Gated" />
-        <GateMetric label="Report submission" value="Gated" />
+        <GateMetric label="下一轮只读周期" value="可继续审核" />
+        <GateMetric label="验证执行" value="受控" />
+        <GateMetric label="报告提交" value="受控" />
       </section>
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -57,7 +56,7 @@ export default async function CampaignCycleReviewCompletionPage({ params }: Page
           className="grid gap-4 border border-[var(--line)] bg-white p-5"
         >
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Actor</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">执行人</span>
             <input
               className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
               name="actor"
@@ -65,7 +64,7 @@ export default async function CampaignCycleReviewCompletionPage({ params }: Page
             />
           </label>
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Reason</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">原因</span>
             <textarea
               className="min-h-28 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
               name="reason"
@@ -75,17 +74,17 @@ export default async function CampaignCycleReviewCompletionPage({ params }: Page
             type="submit"
             className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
           >
-            Complete cycle review
+            完成周期审核
           </button>
         </form>
 
         <aside className="border border-[var(--line)] bg-white p-5">
-          <h2 className="text-lg font-semibold">Gate boundaries</h2>
+          <h2 className="text-lg font-semibold">审核门边界</h2>
           <dl className="mt-4 grid gap-3 text-sm">
-            <Field label="Cycle stage" value={stageId} />
-            <Field label="Campaign" value={campaignId} />
-            <Field label="Execution gate" value="Gated" />
-            <Field label="Submission gate" value="Gated" />
+            <Field label="周期阶段" value={stageId} />
+            <Field label="研究活动" value={campaignId} />
+            <Field label="执行门" value="受控" />
+            <Field label="提交门" value="受控" />
           </dl>
         </aside>
       </section>
@@ -100,7 +99,7 @@ function PageBack({ campaignId }: { campaignId: string }) {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Review Timeline
+      审核时间线
     </Link>
   );
 }

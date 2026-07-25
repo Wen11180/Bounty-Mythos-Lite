@@ -16,16 +16,16 @@ test("workbench display helpers suppress identity and token-shaped text", () => 
   ];
 
   assert.deepEqual(values, [
-    "[REDACTED]",
-    "[REDACTED]",
-    "[REDACTED]",
-    "[REDACTED]",
-    "[REDACTED]",
+    "[已脱敏]",
+    "[已脱敏]",
+    "[已脱敏]",
+    "[已脱敏]",
+    "[已脱敏]",
     "safe summary",
     "Owner",
-    "[REDACTED]",
+    "[已脱敏]",
     "Proof",
-    "[REDACTED]",
+    "[已脱敏]",
   ]);
   assert.doesNotMatch(
     JSON.stringify(values),

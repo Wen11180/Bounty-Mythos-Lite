@@ -77,44 +77,44 @@ export function toStudioBlackBoxRemoteStatus(
     || (status.state === "active" && (!status.expires_at || status.relogin_required))
   ) {
     return {
-      label: "Blocked invalid status",
-      detail: "Remote execution remains blocked because the status contract drifted.",
+      label: "状态契约无效，已阻断",
+      detail: "状态契约发生偏差，远程执行保持阻断。",
       warning: true,
     };
   }
   if (status.state === "active") {
     return {
-      label: "Active human lease",
-      detail: `Expires ${status.expires_at}. Report submission and human confirmation remain blocked.`,
+      label: "人工租约生效中",
+      detail: `到期时间：${status.expires_at}。报告提交与人工确认仍保持阻断。`,
       warning: false,
     };
   }
   if (status.state === "expired") {
     return {
-      label: "Expired - re-login required",
-      detail: "The prior browser sessions and execution lease are no longer reusable.",
+      label: "已过期，需要重新登录",
+      detail: "先前的浏览器会话和执行租约已不可复用。",
       warning: true,
     };
   }
   if (status.state === "stopped" || status.state === "relogin_required") {
     return {
-      label: "Stopped - re-login required",
+      label: "已停止，需要重新登录",
       detail: status.stop_reason
-        ? `Terminal stop: ${status.stop_reason}. Start again only with fresh human approval.`
-        : "Start again only with fresh human approval.",
+        ? `最终停止：${status.stop_reason}。只能使用新的人工批准重新开始。`
+        : "只能使用新的人工批准重新开始。",
       warning: true,
     };
   }
   if (status.state === "awaiting_lease") {
     return {
-      label: "Awaiting fresh human lease",
-      detail: "No remote execution is active. A dedicated approval and preflight are required.",
+      label: "等待新的人工租约",
+      detail: "当前没有远程执行。需要专项批准和预检。",
       warning: true,
     };
   }
   return {
-    label: "Disabled by default",
-    detail: "The remote human-lease profile is disabled and cannot dispatch requests.",
+    label: "默认禁用",
+    detail: "远程人工租约配置已禁用，不能派发请求。",
     warning: true,
   };
 }
@@ -1484,15 +1484,15 @@ export type StudioControlCenterView = {
   selectedCandidate: StudioCandidateCard | null;
 };
 
-export function toStudioConversationActorLabel(actor?: string): "Mythos Agent" | "研究员" {
-  return actor === "operator" ? "研究员" : "Mythos Agent";
+export function toStudioConversationActorLabel(actor?: string): "研究智能体" | "研究员" {
+  return actor === "operator" ? "研究员" : "研究智能体";
 }
 
 export function toStudioWorkspaceSummary(
   manifest: StudioWorkspaceManifest,
 ): StudioWorkspaceSummary {
   return {
-    name: safeText(manifest.name, "Untitled workspace"),
+    name: safeText(manifest.name, "未命名工作区"),
     artifactCount: manifest.artifacts?.length ?? 0,
     runCount: (manifest.runs?.length ?? 0) + (manifest.campaign_hunter_runs?.length ?? 0),
     scopeGuardLabel: scopeGuardLabel(manifest.safety?.scope_guard_status),
@@ -1507,7 +1507,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
   const candidateCount = mission?.candidate_count ?? mission?.top_candidates?.length ?? 0;
   return {
     advisoryContextLabel:
-      advisoryPresent.length > 0 ? advisoryPresent.join(", ") : "No advisory context",
+      advisoryPresent.length > 0 ? advisoryPresent.join(", ") : "暂无参考上下文",
     agentHandoffPack: {
       agentQueueRefs: mission?.agent_handoff_pack?.agent_queue_refs ?? [],
       blockedActions: mission?.agent_handoff_pack?.blocked_actions ?? [],
@@ -1518,13 +1518,13 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       executionAllowed: false,
       handoffItemCount: mission?.agent_handoff_pack?.handoff_item_count ?? 0,
       handoffItems: (mission?.agent_handoff_pack?.handoff_items ?? []).map((item) => ({
-        assignedAgent: safeText(item.assigned_agent, "Human Reviewer"),
+        assignedAgent: safeText(item.assigned_agent, "人工审查者"),
         candidateId: safeText(item.candidate_id, "candidate"),
         executionAllowed: false,
         gap: safeText(item.gap, "needs_review"),
         handoffId: safeText(item.handoff_id, "handoff:candidate"),
         inputRefs: item.input_refs ?? [],
-        nextAction: safeText(item.next_action, "Human review required."),
+        nextAction: safeText(item.next_action, "需要人工审核。"),
         reportSubmissionAllowed: false,
         requiredEvidence: item.required_evidence ?? [],
         reviewFocus: item.review_focus ?? [],
@@ -1536,7 +1536,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       })),
       nextReviewAgent: safeText(
         mission?.agent_handoff_pack?.next_review_agent,
-        "Human Reviewer",
+        "人工审查者",
       ),
       packId: safeText(
         mission?.agent_handoff_pack?.pack_id,
@@ -1555,10 +1555,10 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       validationAllowed: false,
     },
     agentQueue: (mission?.agent_queue ?? []).map((task) => ({
-      agent: safeText(task.agent, "Review agent"),
+      agent: safeText(task.agent, "审查智能体"),
       candidateQualityGaps: task.candidate_quality_gaps ?? [],
       inputRefs: task.input_refs ?? [],
-      nextAction: safeText(task.next_action, "Review required."),
+      nextAction: safeText(task.next_action, "需要审核。"),
       reviewFocus: task.review_focus ?? [],
       safetyGate: safeText(task.safety_gate, "human_review_required"),
       status: safeText(task.status, "needs_review"),
@@ -1566,12 +1566,12 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       taskId: safeText(task.task_id, "agent_task"),
     })),
     agentTaskTimeline: (mission?.agent_task_timeline ?? []).map((stage) => ({
-      agent: safeText(stage.agent, "Review agent"),
+      agent: safeText(stage.agent, "审查智能体"),
       attempt: stage.attempt ?? 1,
       gateDecision: safeText(stage.gate_decision, "human_review_required"),
-      inputSummary: safeText(stage.input_summary, "Input refs require review."),
-      nextHumanAction: safeText(stage.next_human_action, "Review required."),
-      outputSummary: safeText(stage.output_summary, "Output summary requires review."),
+      inputSummary: safeText(stage.input_summary, "输入引用需要审核。"),
+      nextHumanAction: safeText(stage.next_human_action, "需要审核。"),
+      outputSummary: safeText(stage.output_summary, "输出摘要需要审核。"),
       reportSubmissionAllowed: false,
       safetyGate: safeText(stage.safety_gate, "human_review_required"),
       stageId: safeText(stage.stage_id, "agent_queue:stage"),
@@ -1579,7 +1579,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       taskId: safeText(stage.task_id, "agent_task"),
       validationExecutionAllowed: false,
     })),
-    artifactCoverage: `${present.length}/${required.length} required artifacts`,
+    artifactCoverage: `${present.length}/${required.length} 项必需资料`,
     attackSurfaceModel: {
       advisorySignalCount: mission?.attack_surface_model?.advisory_signal_count ?? 0,
       apiRouteCount: mission?.attack_surface_model?.api_route_count ?? 0,
@@ -1590,7 +1590,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       ),
       nextAction: safeText(
         mission?.attack_surface_model?.next_action,
-        "Import API/HAR/local code artifacts before surface modeling.",
+        "攻击面建模前请导入 API、HAR 和本地代码资料。",
       ),
       reportSubmissionAllowed: false,
       routeCount: mission?.attack_surface_model?.route_count ?? 0,
@@ -1607,7 +1607,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
           safeText(kind, "artifact"),
         ),
         method: safeText(route.method, "METHOD"),
-        path: safeText(route.path, "Route needs review"),
+        path: safeText(route.path, "路由需要审核"),
       })),
       validationAllowed: false,
     },
@@ -1616,7 +1616,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       candidateId: safeText(item.candidate_id, "mission"),
       executionAllowed: false,
       gap: safeText(item.gap, "needs_review"),
-      nextAction: safeText(item.next_action, "Review candidate quality gap."),
+      nextAction: safeText(item.next_action, "审查候选质量缺口。"),
       reportSubmissionAllowed: false,
       requiredEvidence: item.required_evidence ?? [],
       reviewFocus: item.review_focus ?? [],
@@ -1637,7 +1637,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       ),
       nextReviewAgent: safeText(
         mission?.candidate_hunter_iteration?.next_review_agent,
-        "Human Reviewer",
+        "人工审查者",
       ),
       priorityOrder: mission?.candidate_hunter_iteration?.priority_order ?? [],
       reportSubmissionAllowed: false,
@@ -1680,25 +1680,25 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       },
       nextReviewAgent: safeText(
         mission?.candidate_hunter_plan?.next_review_agent,
-        "Human Reviewer",
+        "人工审查者",
       ),
       planId: safeText(
         mission?.candidate_hunter_plan?.plan_id,
         "candidate_hunter:autonomous_review_plan",
       ),
       planSteps: (mission?.candidate_hunter_plan?.plan_steps ?? []).map((step) => ({
-        assignedAgent: safeText(step.assigned_agent, "Human Reviewer"),
+        assignedAgent: safeText(step.assigned_agent, "人工审查者"),
         candidateId: safeText(step.candidate_id, "candidate"),
         executionAllowed: false,
         gap: safeText(step.gap, "needs_review"),
         inputRefs: step.input_refs ?? [],
-        nextAction: safeText(step.next_action, "Human review required."),
+        nextAction: safeText(step.next_action, "需要人工审核。"),
         reportSubmissionAllowed: false,
         requiredEvidence: step.required_evidence ?? [],
         reviewChecklist: (step.review_checklist ?? []).map((item) => ({
           executionAllowed: false,
           key: safeText(item.key, "review_item"),
-          label: safeText(item.label, "Review item."),
+          label: safeText(item.label, "审核项。"),
           reportSubmissionAllowed: false,
           required: item.required !== false,
           status: safeText(item.status, "needs_review"),
@@ -1727,18 +1727,18 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       activeStepCount: mission?.candidate_hunter_review_loop?.active_step_count ?? 0,
       activeSteps: (mission?.candidate_hunter_review_loop?.active_steps ?? []).map(
         (step) => ({
-          assignedAgent: safeText(step.assigned_agent, "Human Reviewer"),
+          assignedAgent: safeText(step.assigned_agent, "人工审查者"),
           candidateId: safeText(step.candidate_id, "candidate"),
           executionAllowed: false,
           gap: safeText(step.gap, "needs_review"),
           governanceRefs: step.governance_refs ?? [],
-          nextAction: safeText(step.next_action, "Human review required."),
+          nextAction: safeText(step.next_action, "需要人工审核。"),
           reportSubmissionAllowed: false,
           requiredEvidence: step.required_evidence ?? [],
           reviewChecklist: (step.review_checklist ?? []).map((item) => ({
             executionAllowed: false,
             key: safeText(item.key, "review_item"),
-            label: safeText(item.label, "Review item."),
+            label: safeText(item.label, "审核项。"),
             reportSubmissionAllowed: false,
             required: item.required !== false,
             status: safeText(item.status, "needs_review"),
@@ -1770,7 +1770,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       ),
       nextReviewAgent: safeText(
         mission?.candidate_hunter_review_loop?.next_review_agent,
-        "Human Reviewer",
+        "人工审查者",
       ),
       reportSubmissionAllowed: false,
       requiredEvidence: mission?.candidate_hunter_review_loop?.required_evidence ?? [],
@@ -1786,11 +1786,11 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
     candidateHunterExecutionLoop: {
       activeWorkItems: (mission?.candidate_hunter_execution_loop?.active_work_items ?? []).map(
         (item) => ({
-          assignedAgent: safeText(item.assigned_agent, "Human Reviewer"),
+          assignedAgent: safeText(item.assigned_agent, "人工审查者"),
           candidateId: safeText(item.candidate_id, "candidate"),
           executionAllowed: false,
           gap: safeText(item.gap, "needs_review"),
-          nextAction: safeText(item.next_action, "Human review required."),
+          nextAction: safeText(item.next_action, "需要人工审核。"),
           phaseId: safeText(item.phase_id, "refutation"),
           reportSubmissionAllowed: false,
           requiredEvidence: item.required_evidence ?? [],
@@ -1885,7 +1885,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         nextAction: safeText(
           mission?.candidate_hunter_execution_loop?.learning_feedback_target
             ?.next_action,
-          "Record human-reviewed outcomes before updating future ranking.",
+          "记录人工审核结果后，再更新后续排序。",
         ),
         reportSubmissionAllowed: false,
         safetyGate: "human_review_required",
@@ -1929,7 +1929,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       ).map((item) => ({
         candidateId: safeText(item.candidate_id, "candidate"),
         executionAllowed: false,
-        nextAction: safeText(item.next_action, "Human review required."),
+        nextAction: safeText(item.next_action, "需要人工审核。"),
         phaseId: safeText(item.phase_id, "refutation"),
         priorityScore: item.priority_score ?? 0,
         reason: safeText(item.reason, "needs_review"),
@@ -1942,7 +1942,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       phases: (mission?.candidate_hunter_execution_loop?.phases ?? []).map((phase) => ({
         executionAllowed: false,
         inputRefs: phase.input_refs ?? [],
-        label: safeText(phase.label, "Candidate hunter phase"),
+        label: safeText(phase.label, "候选挖掘阶段"),
         outputRefs: phase.output_refs ?? [],
         phaseId: safeText(phase.phase_id, "candidate_hunter_phase"),
         reportSubmissionAllowed: false,
@@ -1975,7 +1975,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       candidateId: safeText(packet.candidate_id, "candidate"),
       checklist: (packet.checklist ?? []).map((item) => ({
         key: safeText(item.key, "review_item"),
-        label: safeText(item.label, "Review item"),
+        label: safeText(item.label, "审核项"),
         status: safeText(item.status, "needs_review"),
       })),
       completedItems: packet.completed_items ?? [],
@@ -1987,7 +1987,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         "needs_review",
       ),
       missingItems: packet.missing_items ?? [],
-      nextHumanAction: safeText(packet.next_human_action, "Human review required."),
+      nextHumanAction: safeText(packet.next_human_action, "需要人工审核。"),
       qualityScore: packet.quality_score ?? 0,
       reportReviewPriority: safeText(
         packet.report_review_priority,
@@ -2000,7 +2000,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       status: safeText(packet.status, "needs_review"),
       validationAllowed: false,
     })),
-    candidateCountLabel: `${candidateCount} Top ${candidateCount === 1 ? "candidate" : "candidates"}`,
+    candidateCountLabel: `${candidateCount} 个高优先级候选`,
     gates: {
       humanReviewRequired: true,
       reportSubmissionAllowed: false,
@@ -2011,8 +2011,8 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
     },
     modeLabel:
       mission?.mode === "local_ai_vulnerability_research_workbench"
-        ? "Local AI vulnerability research workbench"
-        : "Local research workbench",
+        ? "本地 AI 漏洞研究工作台"
+        : "本地研究工作台",
     qualitySummary: {
       averageQualityScore: mission?.quality_summary?.average_quality_score ?? 0,
       blockers: mission?.quality_summary?.blockers ?? [],
@@ -2032,10 +2032,10 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         key,
         label: missionResearchLoopLabel(key),
         status: safeText(stage.status, "not_started"),
-        summary: safeText(stage.summary, "Review status unavailable."),
+        summary: safeText(stage.summary, "审核状态暂不可用。"),
       };
     }),
-    runId: safeText(mission?.run_id, "No run selected"),
+    runId: safeText(mission?.run_id, "未选择运行"),
     safeNextActions: (mission?.next_actions ?? []).map(missionActionLabel),
     scopeGuardLabel: scopeGuardLabel(mission?.scope_guard_status),
     studioTimelineSummary: {
@@ -2064,7 +2064,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         mission?.submission_blocked_report_summary?.report_review_queue ?? []
       ).map((item) => ({
         candidateId: safeText(item.candidate_id, "candidate"),
-        nextHumanAction: safeText(item.next_human_action, "Human review required."),
+        nextHumanAction: safeText(item.next_human_action, "需要人工审核。"),
         priority: safeText(item.priority, "resolve_review_gaps"),
         qualityScore: item.quality_score ?? 0,
         reportSubmissionAllowed: false,
@@ -2086,8 +2086,8 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
       validationExecutionAllowed: false,
     },
     topCandidates: (mission?.top_candidates ?? []).slice(0, 5).map((candidate, index) => ({
-      affectedCodePath: safeText(candidate.affected_code_path, "Code path needs review"),
-      affectedEndpoint: safeText(candidate.affected_endpoint, "Endpoint needs review"),
+      affectedCodePath: safeText(candidate.affected_code_path, "代码路径需要审核"),
+      affectedEndpoint: safeText(candidate.affected_endpoint, "端点需要审核"),
       deduplicationReviewStatus: safeText(
         candidate.deduplication_review_status,
         "needs_human_review",
@@ -2114,7 +2114,7 @@ export function toStudioMissionPanel(mission: StudioMissionSummary | null): Stud
         status: safeText(candidate.hallucination_guard?.status, "needs_review"),
       },
       hypothesisId: safeText(candidate.hypothesis_id, `H-${String(index + 1).padStart(3, "0")}`),
-      nextReportAction: safeText(candidate.next_report_action, "Review evidence before export."),
+      nextReportAction: safeText(candidate.next_report_action, "导出前请审查证据。"),
       policyReviewStatus: safeText(candidate.policy_review_status, "needs_human_review"),
       priorityScore: candidate.priority_score ?? 0,
       qualityReasons: candidate.quality_reasons ?? [],
@@ -2139,71 +2139,71 @@ export function toStudioMissionHandoffBrief(panel: StudioMissionPanel): string {
       ? panel.agentHandoffPack.handoffItems
           .map(
             (item) =>
-              `- ${item.handoffId}: ${item.assignedAgent} handles ${item.workItemId}; status ${item.status}; gap ${item.gap}; next ${item.nextAction}`,
+              `- ${item.handoffId}：${item.assignedAgent} 处理 ${item.workItemId}；状态 ${item.status}；缺口 ${item.gap}；下一步 ${item.nextAction}`,
           )
           .join("\n")
-      : "- No handoff items; keep human review on the current Top candidates.";
+      : "- 暂无交接项；请继续对当前高优先级候选进行人工审核。";
   const blockedActions =
     panel.agentHandoffPack.blockedActions.length > 0
       ? panel.agentHandoffPack.blockedActions.join(", ")
       : panel.blockedActions.join(", ");
   const nextCandidateAction = panel.candidateHunterExecutionLoop.nextCandidateActions[0];
   const executionLoopSummary = nextCandidateAction
-    ? `Candidate hunter execution loop: ${panel.candidateHunterExecutionLoop.status}; current phase ${panel.candidateHunterExecutionLoop.currentPhase}; next action ${nextCandidateAction.candidateId} -> ${nextCandidateAction.phaseId} (${nextCandidateAction.priorityScore})`
-    : `Candidate hunter execution loop: ${panel.candidateHunterExecutionLoop.status}; current phase ${panel.candidateHunterExecutionLoop.currentPhase}; next action none`;
+    ? `候选挖掘执行循环：${panel.candidateHunterExecutionLoop.status}；当前阶段 ${panel.candidateHunterExecutionLoop.currentPhase}；下一操作 ${nextCandidateAction.candidateId} -> ${nextCandidateAction.phaseId}（${nextCandidateAction.priorityScore}）`
+    : `候选挖掘执行循环：${panel.candidateHunterExecutionLoop.status}；当前阶段 ${panel.candidateHunterExecutionLoop.currentPhase}；暂无下一操作`;
   const nextCandidateActionLine = nextCandidateAction
-    ? `Next candidate action: ${nextCandidateAction.nextAction}`
-    : "Next candidate action: Review current Top candidates.";
+    ? `下一候选操作：${nextCandidateAction.nextAction}`
+    : "下一候选操作：审核当前高优先级候选。";
   const rankedTopCandidate = panel.candidateHunterExecutionLoop.rankedTopCandidates[0];
   const rankedTopCandidateLine = rankedTopCandidate
-    ? `Ranked Top 1-5: #${rankedTopCandidate.rank} ${rankedTopCandidate.candidateId} ${rankedTopCandidate.reason} (${rankedTopCandidate.priorityScore})`
-    : "Ranked Top 1-5: none";
+    ? `排名前 1-5：#${rankedTopCandidate.rank} ${rankedTopCandidate.candidateId} ${rankedTopCandidate.reason}（${rankedTopCandidate.priorityScore}）`
+    : "排名前 1-5：无";
   const rankedTopCandidateEvidenceLine = rankedTopCandidate
-    ? `Top candidate evidence: trace ${rankedTopCandidate.traceStatus}; ready ${rankedTopCandidate.evidenceReady ? "true" : "false"}; missing ${rankedTopCandidate.missingEvidence.join(", ") || "none"}; missing required artifacts ${rankedTopCandidate.missingRequiredArtifactKinds.join(", ") || "none"}`
-    : "Top candidate evidence: none";
+    ? `高优先级候选证据：轨迹 ${rankedTopCandidate.traceStatus}；就绪 ${rankedTopCandidate.evidenceReady ? "是" : "否"}；缺少 ${rankedTopCandidate.missingEvidence.join(", ") || "无"}；缺少必需资料 ${rankedTopCandidate.missingRequiredArtifactKinds.join(", ") || "无"}`
+    : "高优先级候选证据：无";
   const rankedTopCandidateNextActionLine = rankedTopCandidate
-    ? `Top candidate next action: ${rankedTopCandidate.nextAction}`
-    : "Top candidate next action: Review current Top candidates.";
+    ? `高优先级候选下一操作：${rankedTopCandidate.nextAction}`
+    : "高优先级候选下一操作：审核当前高优先级候选。";
   const learningTarget = panel.candidateHunterExecutionLoop.learningFeedbackTarget;
-  const learningFeedbackLine = `Learning feedback: ${learningTarget.status}; candidates ${learningTarget.candidateIds.join(", ") || "none"}; outcomes ${learningTarget.allowedOutcomes.join(", ") || "confirmed, refuted, needs_more_evidence, duplicate"}`;
-  const learningActionLine = `Learning action: ${learningTarget.nextAction}`;
+  const learningFeedbackLine = `学习反馈：${learningTarget.status}；候选 ${learningTarget.candidateIds.join(", ") || "无"}；结果 ${learningTarget.allowedOutcomes.join(", ") || "已确认、已反证、需要更多证据、重复"}`;
+  const learningActionLine = `学习操作：${learningTarget.nextAction}`;
   const learningReviewActionsLine =
     panel.candidateHunterExecutionLoop.learningReviewActions.length > 0
-      ? `Learning review actions: ${panel.candidateHunterExecutionLoop.learningReviewActions
+      ? `学习审核操作：${panel.candidateHunterExecutionLoop.learningReviewActions
           .map(
             (action) =>
-              `${action.candidateId} -> ${action.suggestedOutcome}; write allowed ${action.learningWriteAllowed ? "true" : "false"}`,
+              `${action.candidateId} -> ${action.suggestedOutcome}；允许写入 ${action.learningWriteAllowed ? "是" : "否"}`,
           )
           .join(", ")}`
-      : "Learning review actions: none";
+      : "学习审核操作：无";
   const refutationQueueItem = panel.candidateHunterExecutionLoop.refutationQueue[0];
   const refutationQueueLine = refutationQueueItem
-    ? `Refutation queue: ${refutationQueueItem.candidateId} ${refutationQueueItem.traceStatus} (${refutationQueueItem.priorityScore})`
-    : "Refutation queue: none";
+    ? `反证队列：${refutationQueueItem.candidateId} ${refutationQueueItem.traceStatus}（${refutationQueueItem.priorityScore}）`
+    : "反证队列：无";
   const deduplicationQueueItem = panel.candidateHunterExecutionLoop.deduplicationQueue[0];
   const deduplicationQueueLine = deduplicationQueueItem
-    ? `Deduplication queue: ${deduplicationQueueItem.candidateId} duplicate risk ${deduplicationQueueItem.duplicateRiskScore}/100`
-    : "Deduplication queue: none";
+    ? `去重队列：${deduplicationQueueItem.candidateId}，重复风险 ${deduplicationQueueItem.duplicateRiskScore}/100`
+    : "去重队列：无";
   const safeValidationQueueItem = panel.candidateHunterExecutionLoop.safeValidationQueue[0];
   const safeValidationQueueLine = safeValidationQueueItem
-    ? `Safe validation queue: ${safeValidationQueueItem.candidateId} ${safeValidationQueueItem.validationMode}`
-    : "Safe validation queue: none";
+    ? `安全验证队列：${safeValidationQueueItem.candidateId} ${safeValidationQueueItem.validationMode}`
+    : "安全验证队列：无";
   const reportDraftQueueItem = panel.candidateHunterExecutionLoop.reportDraftQueue[0];
   const reportDraftQueueLine = reportDraftQueueItem
-    ? `Report draft queue: ${reportDraftQueueItem.candidateId} ${reportDraftQueueItem.reportStatus}`
-    : "Report draft queue: none";
+    ? `报告草稿队列：${reportDraftQueueItem.candidateId} ${reportDraftQueueItem.reportStatus}`
+    : "报告草稿队列：无";
 
   return [
-    "Mythos / MDASH / XBOW style local AI vulnerability research handoff",
-    `Run: ${panel.runId}`,
-    `Artifacts: ${panel.artifactCoverage}`,
-    `Scope Guard: ${panel.scopeGuardLabel}`,
-    `Advisory context: ${panel.advisoryContextLabel}`,
-    `Hallucination governance: ${panel.candidateHunterPlan.hallucinationGovernance.claimPromotionRule}; knowledge ${panel.candidateHunterPlan.hallucinationGovernance.knowledgePolicy}; promotion allowed ${panel.candidateHunterPlan.hallucinationGovernance.candidatePromotionAllowed ? "true" : "false"}`,
-    `Quality: ${panel.qualitySummary.topCandidateQualityGate}; review-ready ${panel.qualitySummary.reviewReadyCount}/${panel.qualitySummary.candidateCount}; average ${panel.qualitySummary.averageQualityScore}`,
-    `Report: ${panel.submissionBlockedReportSummary.status}; ready candidates ${panel.submissionBlockedReportSummary.readyCandidateIds.join(", ") || "none"}; gate ${panel.submissionBlockedReportSummary.safetyGate}`,
-    `Candidate hunter plan: ${panel.candidateHunterPlan.status}; steps ${panel.candidateHunterPlan.stepCount}; next reviewer ${panel.candidateHunterPlan.nextReviewAgent}`,
-    `Candidate hunter review loop: ${panel.candidateHunterReviewLoop.status}; active steps ${panel.candidateHunterReviewLoop.activeStepCount}; next reviewer ${panel.candidateHunterReviewLoop.nextReviewAgent}`,
+    "本地人工智能漏洞研究交接（MDASH / XBOW 风格）",
+    `运行：${panel.runId}`,
+    `资料：${panel.artifactCoverage}`,
+    `范围守卫：${panel.scopeGuardLabel}`,
+    `参考上下文：${panel.advisoryContextLabel}`,
+    `幻觉治理：${panel.candidateHunterPlan.hallucinationGovernance.claimPromotionRule}；知识 ${panel.candidateHunterPlan.hallucinationGovernance.knowledgePolicy}；允许提升 ${panel.candidateHunterPlan.hallucinationGovernance.candidatePromotionAllowed ? "是" : "否"}`,
+    `质量：${panel.qualitySummary.topCandidateQualityGate}；可审核 ${panel.qualitySummary.reviewReadyCount}/${panel.qualitySummary.candidateCount}；平均 ${panel.qualitySummary.averageQualityScore}`,
+    `报告：${panel.submissionBlockedReportSummary.status}；就绪候选 ${panel.submissionBlockedReportSummary.readyCandidateIds.join(", ") || "无"}；审批门 ${panel.submissionBlockedReportSummary.safetyGate}`,
+    `候选挖掘计划：${panel.candidateHunterPlan.status}；步骤 ${panel.candidateHunterPlan.stepCount}；下一审查者 ${panel.candidateHunterPlan.nextReviewAgent}`,
+    `候选挖掘审查循环：${panel.candidateHunterReviewLoop.status}；活跃步骤 ${panel.candidateHunterReviewLoop.activeStepCount}；下一审查者 ${panel.candidateHunterReviewLoop.nextReviewAgent}`,
     executionLoopSummary,
     rankedTopCandidateLine,
     rankedTopCandidateEvidenceLine,
@@ -2216,13 +2216,13 @@ export function toStudioMissionHandoffBrief(panel: StudioMissionPanel): string {
     learningFeedbackLine,
     learningActionLine,
     learningReviewActionsLine,
-    `Next reviewer: ${panel.agentHandoffPack.nextReviewAgent}`,
-    `Handoff items: ${panel.agentHandoffPack.handoffItemCount}`,
+    `下一审查者：${panel.agentHandoffPack.nextReviewAgent}`,
+    `交接项：${panel.agentHandoffPack.handoffItemCount}`,
     handoffItems,
-    `Safety gate: ${panel.agentHandoffPack.safetyGate}`,
-    `Completion gate: ${panel.agentHandoffPack.completionGate}`,
-    `Blocked actions: ${blockedActions || "execute_live_validation, run_fuzzer, submit_report"}`,
-    "No validation, fuzzing, or report submission is authorized from this handoff.",
+    `安全审批门：${panel.agentHandoffPack.safetyGate}`,
+    `完成审批门：${panel.agentHandoffPack.completionGate}`,
+    `阻断操作：${blockedActions || "execute_live_validation, run_fuzzer, submit_report"}`,
+    "此交接不授予验证、模糊测试或报告提交权限。",
   ].join("\n");
 }
 
@@ -2236,16 +2236,16 @@ export function toStudioArtifactChecklist(
   );
 
   return [
-    artifactChecklistItem("scope", "Scope", true, presentKinds),
-    artifactChecklistItem("policy", "Policy", true, presentKinds),
-    artifactChecklistItem("code", "Authorized code", true, presentKinds),
+    artifactChecklistItem("scope", "范围", true, presentKinds),
+    artifactChecklistItem("policy", "策略", true, presentKinds),
+    artifactChecklistItem("code", "授权代码", true, presentKinds),
     artifactChecklistItem("api", "API", true, presentKinds),
     artifactChecklistItem("har", "HAR", true, presentKinds),
     artifactChecklistItem("sbom", "SBOM", false, presentKinds),
     artifactChecklistItem("sarif", "SARIF", false, presentKinds),
-    artifactChecklistItem("fuzzing", "Fuzzing plan", false, presentKinds),
-    artifactChecklistItem("strategy", "Strategy", false, presentKinds),
-    artifactChecklistItem("knowledge", "Knowledge", false, presentKinds),
+    artifactChecklistItem("fuzzing", "模糊测试计划", false, presentKinds),
+    artifactChecklistItem("strategy", "策略说明", false, presentKinds),
+    artifactChecklistItem("knowledge", "知识", false, presentKinds),
   ];
 }
 
@@ -2256,7 +2256,7 @@ export function toStudioResearchReadiness(
   if (!workspacePath.trim()) {
     return {
       canStart: false,
-      reason: "Create or open a workspace before research.",
+      reason: "研究前请创建或打开工作区。",
     };
   }
 
@@ -2268,13 +2268,13 @@ export function toStudioResearchReadiness(
   if (missingRequired.length > 0) {
     return {
       canStart: false,
-      reason: `Import ${missingRequired.join(" and ")} before research.`,
+      reason: `研究前请导入${missingRequired.join("、")}。`,
     };
   }
 
   return {
     canStart: true,
-    reason: "Policy, scope, API/HAR, and code are ready for A+B candidate research.",
+    reason: "策略、范围、API/HAR 和代码已就绪，可开展 A+B 候选研究。",
   };
 }
 
@@ -2302,7 +2302,7 @@ function falsificationSummaryFromCandidate(
   return {
     brokenInvariant: safeText(
       summary?.broken_invariant || candidate.broken_invariant,
-      "Security invariant needs review.",
+      "安全不变量需要审核。",
     ),
     decisionStatus: safeText(summary?.decision_status, "needs_review"),
     openDimensions: Array.isArray(summary?.open_dimensions)
@@ -2329,15 +2329,15 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
 
     return {
       id: safeText(candidate.hypothesis_id, `H-${String(index + 1).padStart(3, "0")}`),
-      title: safeText(candidate.vuln_type, "Candidate hypothesis"),
+      title: safeText(candidate.vuln_type, "候选假设"),
       severity: safeText(candidate.risk, "medium"),
       status: candidate.safe_verification === false
         ? "blocked"
         : endpoint && codePath
           ? "needs_evidence"
           : "needs_review",
-      affectedEndpoint: endpoint || "Endpoint needs review",
-      affectedCodePath: codePath || "Code path needs review",
+      affectedEndpoint: endpoint || "端点需要审核",
+      affectedCodePath: codePath || "代码路径需要审核",
       evidenceNeeds: candidate.evidence_needed ?? [],
       evidenceGaps: evidenceGapsFromCandidate(candidate),
       evidenceTraceSummary: evidenceTraceSummaryFromCandidate(candidate),
@@ -2348,16 +2348,16 @@ export function toStudioCandidateCards(candidates: StudioCandidateInput[]): Stud
       brokenInvariant: safeText(
         candidate.broken_invariant
           || candidate.falsification_summary?.broken_invariant,
-        "Security invariant needs review.",
+        "安全不变量需要审核。",
       ),
       whyStillAlive: whyStillAliveFromCandidate(candidate),
       falsificationSummary: falsificationSummaryFromCandidate(candidate),
       repairGuidance: safeText(
         candidate.repair_guidance,
-        safeText(candidate.suggested_fix, "Repair guidance needs review."),
+        safeText(candidate.suggested_fix, "修复建议需要审核。"),
       ),
-      regressionTest: safeText(candidate.regression_test, "Regression test needs review."),
-      reason: safeText(candidate.reason, "Review rationale unavailable."),
+      regressionTest: safeText(candidate.regression_test, "回归测试需要审核。"),
+      reason: safeText(candidate.reason, "审核理由暂不可用。"),
       reportReadiness: reportReadinessFromCandidate(candidate),
       safeValidationPlan: candidate.safe_validation_plan ?? [],
       safetyBlockers: candidate.safety_blockers ?? [],
@@ -2374,11 +2374,11 @@ export function toStudioControlCenterView(
   const localizedCandidates = candidates.map((candidate) => ({
     ...candidate,
     affectedCodePath:
-      candidate.affectedCodePath === "Code path needs review"
+      candidate.affectedCodePath === "代码路径需要审核"
         ? "待补充代码路径"
         : candidate.affectedCodePath,
     affectedEndpoint:
-      candidate.affectedEndpoint === "Endpoint needs review"
+      candidate.affectedEndpoint === "端点需要审核"
         ? "待补充受影响端点"
         : candidate.affectedEndpoint,
     evidenceTraceSummary: {
@@ -2431,8 +2431,8 @@ export function toStudioCampaignHunterCandidateCards(
       title: safeText(suggestion.playbook_id, "campaign_hunter_candidate"),
       severity: suggestion.priority_score >= 80 ? "high" : "medium",
       status: hasEvidenceGate ? "needs_evidence" : "needs_review",
-      affectedEndpoint: safeText(suggestion.surface_key, "Endpoint needs review"),
-      affectedCodePath: "Code path needs review",
+      affectedEndpoint: safeText(suggestion.surface_key, "端点需要审核"),
+      affectedCodePath: "代码路径需要审核",
       evidenceNeeds: requiredEvidence,
       evidenceGaps: qualityGateReasons,
       evidenceTraceSummary: {
@@ -2444,7 +2444,7 @@ export function toStudioCampaignHunterCandidateCards(
         missingRequiredArtifactKinds: requiredEvidence,
         nextAction: safeText(
           suggestion.next_allowed_action,
-          "Review candidate evidence and refutation questions before validation.",
+          "验证前请审查候选证据和反证问题。",
         ),
         presentRequiredArtifactKinds: [],
         reportSubmissionAllowed: false,
@@ -2458,14 +2458,14 @@ export function toStudioCampaignHunterCandidateCards(
         executionAllowed: false,
         reportSubmissionAllowed: false,
         reviewState: "needs_human_review",
-        rootCause: "Campaign hunter candidate requires local evidence review.",
-        securityInvariant: "Authorization-sensitive routes need traceable policy, API, HAR, and code evidence.",
+        rootCause: "项目候选挖掘候选需要本地证据审核。",
+        securityInvariant: "涉及授权的路由需要可追溯的策略、API、HAR 与代码证据。",
         sinkCount: 0,
         sinkSymbols: [],
         validationAllowed: false,
       },
       refutationQuestions: [
-        `${suggestion.refutation_question_count ?? 0} refutation questions require review.`,
+        `${suggestion.refutation_question_count ?? 0} 个反证问题需要审核。`,
       ],
       evidenceFocus: [
         ...requiredEvidence,
@@ -2476,29 +2476,29 @@ export function toStudioCampaignHunterCandidateCards(
         ...qualityGateReasons,
         ...satisfiedEvidence.map((item) => `satisfied_evidence:${item}`),
       ],
-      brokenInvariant: "Candidate invariant needs human review before promotion.",
+      brokenInvariant: "候选不变量在提升前需要人工审核。",
       whyStillAlive: [
-        "Campaign hunter suggestion has not completed falsification kill attempts.",
+        "项目候选挖掘建议尚未完成反证淘汰尝试。",
       ],
       falsificationSummary: {
-        brokenInvariant: "Candidate invariant needs human review before promotion.",
+        brokenInvariant: "候选不变量在提升前需要人工审核。",
         decisionStatus: "needs_evidence",
         openDimensions: ["control_presence", "public_by_design"],
         survivedKillScore: 0,
         whyDead: [],
         whyStillAlive: [
-          "Campaign hunter suggestion has not completed falsification kill attempts.",
+          "项目候选挖掘建议尚未完成反证淘汰尝试。",
         ],
       },
-      repairGuidance: "Confirm the code path and authorization invariant before drafting remediation.",
-      regressionTest: "Draft a local regression test only after evidence review confirms the candidate.",
-      reason: safeText(suggestion.title, "Campaign hunter candidate requires review."),
+      repairGuidance: "起草修复建议前请确认代码路径和授权不变量。",
+      regressionTest: "仅在证据审核确认候选后起草本地回归测试。",
+      reason: safeText(suggestion.title, "项目候选挖掘候选需要审核。"),
       reportReadiness: reportReadinessFromInput(
         suggestion.report_readiness,
-        "Resolve campaign hunter evidence gates before exporting a report preview.",
+        "导出报告预览前请处理项目候选挖掘证据门。",
       ),
       safeValidationPlan: [
-        `${suggestion.validation_step_count ?? 0} safe validation steps require human approval before execution.`,
+        `${suggestion.validation_step_count ?? 0} 个安全验证步骤需要在执行前获得人工批准。`,
       ],
       safetyBlockers: [
         safeText(suggestion.safety_gate, "review_only_no_execution"),
@@ -2528,10 +2528,10 @@ function semanticEvidenceFromCandidate(
     executionAllowed: false,
     reportSubmissionAllowed: false,
     reviewState: safeText(fact?.review_state, "needs_human_review"),
-    rootCause: safeText(fact?.root_cause, "Root cause needs review."),
+    rootCause: safeText(fact?.root_cause, "根因需要审核。"),
     securityInvariant: safeText(
       fact?.security_invariant,
-      "Security invariant needs review.",
+      "安全不变量需要审核。",
     ),
     sinkCount: fact?.sink_count ?? 0,
     sinkSymbols: fact?.sink_symbols ?? [],
@@ -2551,7 +2551,7 @@ function evidenceTraceSummaryFromInput(
     missingRequiredArtifactKinds: summary?.missing_required_artifact_kinds ?? [],
     nextAction: safeText(
       summary?.next_action,
-      "Review trace summary and refutation questions before any validation.",
+      "任何验证前请审查轨迹摘要和反证问题。",
     ),
     presentRequiredArtifactKinds: summary?.present_required_artifact_kinds ?? [],
     reportSubmissionAllowed: false,
@@ -2584,10 +2584,10 @@ function reportReadinessFromCandidate(
 ): StudioCandidateCard["reportReadiness"] {
   const evidenceGaps = evidenceGapsFromCandidate(candidate);
   const nextAllowedAction = evidenceGaps.length > 0
-    ? `Resolve candidate evidence gaps before exporting a report preview: ${evidenceGaps.join("; ")}.`
+    ? `导出报告预览前请处理候选证据缺口：${evidenceGaps.join("；")}。`
     : safeText(
         candidate.report_readiness?.next_allowed_action,
-        "Review evidence and safety blockers before exporting a report preview.",
+        "导出报告预览前请审查证据和安全阻断项。",
       );
 
   return {
@@ -2647,64 +2647,60 @@ function codePathFromCandidate(candidate: StudioCandidateInput): string {
 
 function scopeGuardLabel(value: string | undefined): string {
   if (value === "scope_imported") {
-    return "Scope imported";
+    return "已导入范围";
   }
   if (value === "allowed") {
-    return "Allowed";
+    return "已允许";
   }
   if (value === "blocked") {
-    return "Blocked";
+    return "已阻断";
   }
-  return "Missing scope";
+  return "缺少范围";
 }
 
 function missionActionLabel(value: string): string {
   if (value === "review_top_candidates") {
-    return "Review top candidates";
+    return "审查高优先级候选";
   }
   if (value === "create_benchmark_template") {
-    return "Create benchmark template";
+    return "创建基准模板";
   }
   if (value === "export_submission_blocked_report") {
-    return "Export submission-blocked report";
+    return "导出提交已阻断的报告";
   }
-  return value
-    .split("_")
-    .filter(Boolean)
-    .map((word, index) => (index === 0 ? word[0]?.toUpperCase() + word.slice(1) : word))
-    .join(" ");
+  return value.replace(/[_-]+/g, " ");
 }
 
 function missionResearchLoopLabel(value: string): string {
   if (value === "scope_guard") {
-    return "Scope Guard";
+    return "范围守卫";
   }
   if (value === "target_intake") {
-    return "Target intake";
+    return "目标接入";
   }
   if (value === "attack_surface_modeling") {
-    return "Attack-surface modeling";
+    return "攻击面建模";
   }
   if (value === "semantic_audit") {
-    return "Semantic audit";
+    return "语义审计";
   }
   if (value === "hypothesis_generation") {
-    return "Hypothesis generation";
+    return "假设生成";
   }
   if (value === "refutation_review") {
-    return "Refutation review";
+    return "反证审查";
   }
   if (value === "deduplication_review") {
-    return "Deduplication review";
+    return "去重审查";
   }
   if (value === "safe_validation_planning") {
-    return "Safe validation planning";
+    return "安全验证规划";
   }
   if (value === "evidence_review") {
-    return "Evidence review";
+    return "证据审查";
   }
   if (value === "submission_blocked_report") {
-    return "Submission-blocked report";
+    return "提交已阻断的报告";
   }
   return missionActionLabel(value);
 }
@@ -2775,7 +2771,7 @@ function toCandidateHunterLearningReviewActions(
           learningWriteAllowed: false,
           missingEvidence,
           missingRequiredArtifactKinds,
-          nextAction: `Review ${candidateId} and record a human outcome before updating future ranking.`,
+          nextAction: `审核 ${candidateId} 并记录人工结果后，再更新后续排序。`,
           reportSubmissionAllowed: false,
           safetyGate: "human_review_required",
           sourceLoopId: safeText(
@@ -2855,7 +2851,7 @@ function toCandidateHunterLearningReviewActions(
       learningWriteAllowed: false,
       missingEvidence,
       missingRequiredArtifactKinds,
-      nextAction: `Review ${candidateId} and record a human outcome before updating future ranking.`,
+      nextAction: `审核 ${candidateId} 并记录人工结果后，再更新后续排序。`,
       reportSubmissionAllowed: false,
       safetyGate: "human_review_required",
       sourceLoopId,
@@ -2881,7 +2877,7 @@ function toCandidateHunterRefutationQueue(
         executionAllowed: false,
         missingEvidence: item.missing_evidence ?? [],
         missingRequiredArtifactKinds: item.missing_required_artifact_kinds ?? [],
-        nextAction: safeText(item.next_action, `Refute ${candidateId} using local evidence.`),
+        nextAction: safeText(item.next_action, `使用本地证据反证 ${candidateId}。`),
         priorityScore: item.priority_score ?? 0,
         questions: safeReviewQuestions(item.questions),
         queueId: safeText(item.queue_id, `candidate_hunter:refutation:${candidateId}`),
@@ -2965,7 +2961,7 @@ function toCandidateHunterRankedTopCandidates(
           missingEvidence,
           missingRequiredArtifactKinds,
         }),
-        nextAction: safeText(item.next_action, "Review ranked Top candidate."),
+        nextAction: safeText(item.next_action, "审查排名靠前的候选。"),
         requiredEvidence: item.required_evidence ?? [],
         reportSubmissionAllowed: false,
         safetyGate: evidenceReady
@@ -3020,7 +3016,7 @@ function toCandidateHunterRankedTopCandidates(
           missingEvidence,
           missingRequiredArtifactKinds,
         }),
-        nextAction: safeText(item.next_action, "Review ranked Top candidate."),
+        nextAction: safeText(item.next_action, "审查排名靠前的候选。"),
         requiredEvidence: item.required_evidence ?? [],
         reportSubmissionAllowed: false,
         safetyGate: evidenceReady
@@ -3130,7 +3126,7 @@ function toCandidateHunterDeduplicationQueue(
         candidateId,
         duplicateRiskScore: item.duplicate_risk_score ?? 0,
         executionAllowed: false,
-        nextAction: safeText(item.next_action, `Deduplicate ${candidateId} before report readiness.`),
+        nextAction: safeText(item.next_action, `报告就绪前请对 ${candidateId} 去重。`),
         priorityScore: item.priority_score ?? 0,
         questions: safeReviewQuestions(item.questions),
         queueId: safeText(item.queue_id, `candidate_hunter:deduplication:${candidateId}`),
@@ -3162,7 +3158,7 @@ function toCandidateHunterSafeValidationQueue(
         affectedEndpoint: safeText(item.affected_endpoint, ""),
         candidateId,
         executionAllowed: false,
-        nextAction: `Review and approve the non-destructive validation plan for ${candidateId}; execution remains blocked.`,
+        nextAction: `审核并批准 ${candidateId} 的非破坏性验证计划；执行仍保持阻断。`,
         planSteps: safeValidationPlanSteps(item.plan_steps),
         priorityScore: item.priority_score ?? 0,
         queueId: safeText(item.queue_id, `candidate_hunter:safe_validation:${candidateId}`),
@@ -3200,7 +3196,7 @@ function toCandidateHunterReportDraftQueue(
         candidateId,
         evidenceFocus: item.evidence_focus ?? [],
         executionAllowed: false,
-        nextAction: `Draft a submission-blocked report for ${candidateId} and keep submission disabled pending human review.`,
+        nextAction: `为 ${candidateId} 起草提交已阻断的报告，等待人工审核期间保持禁止提交。`,
         priorityScore: item.priority_score ?? 0,
         queueId: safeText(item.queue_id, `candidate_hunter:report_draft:${candidateId}`),
         redactionChecks: item.redaction_checks ?? [],

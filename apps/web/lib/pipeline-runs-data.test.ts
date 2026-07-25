@@ -35,6 +35,7 @@ function run(overrides: Partial<PipelineRunSummary>): PipelineRunSummary {
       recommendation: "pursue",
       rejectionRiskScore: 20,
     },
+    evidenceSupportSummary: null,
     memory: null,
     refutationSummary: {
       parked: 0,
@@ -53,21 +54,21 @@ function run(overrides: Partial<PipelineRunSummary>): PipelineRunSummary {
 }
 
 test("mythos pipeline strip labels validation planning as a review gate", () => {
-  const policy = mythosPipelineStages.find((stage) => stage.label === "Policy");
-  const refutation = mythosPipelineStages.find((stage) => stage.label === "Refutation");
-  const reportDraft = mythosPipelineStages.find((stage) => stage.label === "Report Draft");
-  const validationPlan = mythosPipelineStages.find((stage) => stage.label === "Validation Plan");
+  const policy = mythosPipelineStages.find((stage) => stage.label === "策略");
+  const refutation = mythosPipelineStages.find((stage) => stage.label === "反证");
+  const reportDraft = mythosPipelineStages.find((stage) => stage.label === "报告草稿");
+  const validationPlan = mythosPipelineStages.find((stage) => stage.label === "验证计划");
 
-  assert.equal(policy?.status, "Policy reviewed");
-  assert.equal(policy?.risk, "Human review gate");
-  assert.equal(refutation?.status, "Needs evidence");
-  assert.equal(reportDraft?.status, "Review draft");
-  assert.equal(reportDraft?.risk, "Human review gate");
-  assert.equal(validationPlan?.risk, "Review gate required");
+  assert.equal(policy?.status, "策略已审核");
+  assert.equal(policy?.risk, "人工审核门");
+  assert.equal(refutation?.status, "需要证据");
+  assert.equal(reportDraft?.status, "审核草稿");
+  assert.equal(reportDraft?.risk, "人工审核门");
+  assert.equal(validationPlan?.risk, "需要审核门");
   assert.doesNotMatch(JSON.stringify(mythosPipelineStages), /"Candidate"/i);
   assert.doesNotMatch(JSON.stringify(mythosPipelineStages), /"Blocking"/i);
-  assert.notEqual(reportDraft?.risk, "Human review");
-  assert.doesNotMatch(JSON.stringify(mythosPipelineStages), /Human gate/i);
+  assert.notEqual(reportDraft?.risk, "人工审核");
+  assert.match(JSON.stringify(mythosPipelineStages), /人工审核门/);
   assert.doesNotMatch(JSON.stringify(mythosPipelineStages), /Rule Ready/i);
   assert.doesNotMatch(JSON.stringify(mythosPipelineStages), /Approval required/i);
 });
@@ -75,28 +76,28 @@ test("mythos pipeline strip labels validation planning as a review gate", () => 
 test("formatLabel describes validation blockers as review requirements", () => {
   const label = formatLabel("validation_gate_not_approved");
 
-  assert.equal(label, "Validation review required");
+  assert.equal(label, "验证需要人工审核");
   assert.doesNotMatch(label, /not approved/i);
 });
 
 test("formatLabel describes human approval blockers as review requirements", () => {
   const label = formatLabel("human_approval_required");
 
-  assert.equal(label, "Human review required");
+  assert.equal(label, "需要人工审核");
   assert.doesNotMatch(label, /approval/i);
 });
 
 test("formatLabel describes execution permission blockers as review gates", () => {
   const label = formatLabel("no_execution_permission");
 
-  assert.equal(label, "Execution review gated");
+  assert.equal(label, "执行需经人工审核");
   assert.doesNotMatch(label, /permission/i);
 });
 
 test("formatLabel describes authorization blockers as review gates", () => {
   const label = formatLabel("cannot_authorize_execution");
 
-  assert.equal(label, "Execution remains review-gated");
+  assert.equal(label, "执行仍需人工审核");
   assert.doesNotMatch(label, /authorize/i);
 });
 
@@ -126,11 +127,11 @@ test("toPipelineRunSummary maps run-list evidence support summary for radar use"
   const summary = toPipelineRunSummary(apiRun);
 
   assert.deepEqual(summary.evidenceSupportSummary, apiRun.evidence_support_summary);
-  const hypothesisStage = summary.stages.find((stage) => stage.label === "Hypothesis engine");
-  assert.match(hypothesisStage?.detail ?? "", /hypotheses generated from scoped artifacts/);
+  const hypothesisStage = summary.stages.find((stage) => stage.label === "假设引擎");
+  assert.match(hypothesisStage?.detail ?? "", /已从范围内资料生成/);
   assert.doesNotMatch(hypothesisStage?.detail ?? "", /allowed artifacts/);
-  const scopeStage = summary.stages.find((stage) => stage.label === "Scope Guard");
-  assert.match(scopeStage?.detail ?? "", /reviewed for low-risk planning/);
+  const scopeStage = summary.stages.find((stage) => stage.label === "范围守卫");
+  assert.match(scopeStage?.detail ?? "", /已完成低风险规划审核。/);
   assert.doesNotMatch(scopeStage?.detail ?? "", /cleared for low-risk planning/);
 });
 
@@ -204,13 +205,28 @@ test("toPipelineRunSummary suppresses identity and token-shaped display text", (
     },
     closed_loop_summary: {
       status: "brain_memory_ready",
+      manual_observation_count: 1,
+      reviewed_claim_count: 1,
+      finding_candidate_count: 0,
+      learning_signal_count: 1,
       lesson_count: 1,
       memory_lessons: [
         {
+          lesson_id: "lesson_1",
+          scope_type: "program",
+          scope_key: "program_example",
+          playbook_id: "bola_idor",
           recommendation: "boost",
           surface_pattern: "alice@example.com",
+          confidence: 76,
+          source_signal_count: 1,
+          source_signal_ids: ["signal_1"],
+          reasons: ["accepted_history"],
+          safety_notes: ["advisory_only"],
         },
       ],
+      blocked_reasons: [],
+      safety_notes: ["advisory_only"],
     },
   } satisfies PipelineRun;
 
@@ -265,15 +281,15 @@ test("pipeline validation gates describe review state without approval-as-permis
     waiting: waitingSummary,
   });
 
-  assert.equal(waitingSummary.validationGate.label, "Awaiting review gate");
-  assert.equal(waitingSummary.validationGate.approval, "Needs human review and evidence before report drafting.");
-  assert.equal(blockedSummary.validationGate.label, "Review gate blocked");
-  assert.equal(blockedSummary.hunter.nextAction, "Resolve Scope Guard or review blockers before validation.");
-  assert.equal(liveSummary.validationGate.label, "Low-risk validation reviewed");
-  assert.match(display, /Human review required before live target validation\./);
-  assert.match(display, /Review gate required/);
-  assert.match(display, /Awaiting human review/);
-  assert.match(display, /Two mutation checks are waiting for human review\./);
+  assert.equal(waitingSummary.validationGate.label, "等待审核门");
+  assert.equal(waitingSummary.validationGate.approval, "起草报告前需要人工审核和证据。");
+  assert.equal(blockedSummary.validationGate.label, "审核门已阻断");
+  assert.equal(blockedSummary.hunter.nextAction, "验证前请处理范围守卫或审核阻断项。");
+  assert.equal(liveSummary.validationGate.label, "低风险验证已审核");
+  assert.match(display, /对实时目标验证前需要人工审核。/);
+  assert.match(display, /需要审核门/);
+  assert.match(display, /等待人工审核/);
+  assert.match(display, /两项状态修改检查正在等待人工审核。/);
   assert.doesNotMatch(display, /Low-risk validation approved|Low-risk path approved/i);
   assert.doesNotMatch(
     display,
@@ -353,7 +369,7 @@ test("toPipelineRunSummary maps stage agent task boundaries", () => {
         safety_notes: ["human_review_required"],
         details: {
           agent_boundary: {
-            role: "Validation Planner Agent",
+            role: "验证规划智能体",
             allowed_actions: ["draft_non_destructive_manual_steps"],
             blocked_actions: ["execute_live_validation", "submit_report"],
             requires_human_review: true,
@@ -369,7 +385,7 @@ test("toPipelineRunSummary maps stage agent task boundaries", () => {
     allowedActions: ["draft_non_destructive_manual_steps"],
     blockedActions: ["execute_live_validation", "submit_report"],
     requiresHumanReview: true,
-    role: "Validation Planner Agent",
+    role: "验证规划智能体",
   });
 });
 
@@ -418,7 +434,7 @@ test("toPipelineRunSummary maps closed-loop memory readiness", () => {
   assert.deepEqual(summary.memory, {
     lessonCount: 1,
     status: "brain_memory_ready",
-    topLesson: "Boost memory on file_id:export",
+    topLesson: "file_id:export 上的提升记忆",
   });
 });
 
@@ -456,9 +472,9 @@ test("deriveIntelligenceRadar exposes top research value and safe next action", 
         rejectionRiskScore: 20,
       },
       validationGate: {
-        approval: "Human review still required.",
+        approval: "人工审核 still required.",
         evidenceCount: 2,
-        label: "Human gated",
+        label: "人工审核门d",
         status: "waiting_human",
       },
       memory: {
@@ -492,7 +508,7 @@ test("deriveIntelligenceRadar exposes top research value and safe next action", 
   assert.equal(radar.reusableLessonCount, 3);
   assert.equal(radar.reportableMomentum, 1);
   assert.equal(radar.unverifiedHypothesisCount, 0);
-  assert.equal(radar.topSignal?.reportDistance, "1 gate to report review");
+  assert.equal(radar.topSignal?.reportDistance, "距离报告审核还差 1 个审核门");
 });
 
 test("deriveIntelligenceRadar summarizes refutation review pressure", () => {
@@ -568,11 +584,11 @@ test("dashboard does not use legacy pipeline-run demo fallbacks", async () => {
 
   const demoRows = resolvePipelineRunRows([]);
 
-  assert.equal(demoRows.dataMode, "Demo data");
+  assert.equal(demoRows.dataMode, "演示数据");
   assert.equal(demoRows.runs, fallbackPipelineRuns);
   assert.equal(demoRows.runs.length > 0, true);
   assert.deepEqual(resolvePipelineRunRows([liveRun]), {
-    dataMode: "Live data",
+    dataMode: "实时数据",
     runs: [toPipelineRunSummary(liveRun)],
   });
 
@@ -582,7 +598,7 @@ test("dashboard does not use legacy pipeline-run demo fallbacks", async () => {
 
   assert.match(page, /getControlCenterOverview/);
   assert.match(page, /createOfflineControlCenterSnapshot/);
-  assert.doesNotMatch(page, /resolvePipelineRunRows|fallbackPipelineRuns|Demo data/);
+  assert.doesNotMatch(page, /resolvePipelineRunRows|fallbackPipelineRuns|演示数据/);
 });
 
 test("dashboard live request failure stays visibly offline instead of becoming demo data", async () => {
@@ -593,18 +609,18 @@ test("dashboard live request failure stays visibly offline instead of becoming d
   assert.match(page, /catch \(error\)/);
   assert.match(page, /createOfflineControlCenterSnapshot/);
   assert.doesNotMatch(page, /fallbackPrograms|fallbackFindings|fallbackReports|fallbackScopeGuardDecision/);
-  assert.doesNotMatch(page, /Demo data/);
+  assert.doesNotMatch(page, /演示数据/);
 });
 
-test("dashboard labels Scope Guard state as review state, not clearance", async () => {
+test("dashboard labels 范围守卫 state as review state, not clearance", async () => {
   const overview = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../components/control-center/control-center-overview.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(overview, /Scope Guard 优先/);
-  assert.match(overview, /Scope Guard 与安全门/);
+  assert.match(overview, /范围守卫优先/);
+  assert.match(overview, /范围守卫与安全门/);
   assert.match(overview, /等待人工批准/);
-  assert.doesNotMatch(overview, /Scope Guard clear|Scope Guard 放行/);
+  assert.doesNotMatch(overview, /范围守卫 clear|范围守卫 放行/);
 });
 
 test("dashboard navigation uses Mythos review workspace labels", async () => {
@@ -616,10 +632,10 @@ test("dashboard navigation uses Mythos review workspace labels", async () => {
   assert.match(overview, /label: "漏洞候选"/);
   assert.match(overview, /label: "验证批准"/);
   assert.match(overview, /label: "报告草稿"/);
-  assert.match(overview, /label: "Scope Guard"/);
+  assert.match(overview, /label: "范围守卫"/);
   assert.match(overview, /href: "\/source-audit"/);
   assert.match(overview, /if \(!campaign\) \{\s*return navigation;\s*\}/);
-  assert.match(overview, /Campaign 工作区导航已禁用/);
+  assert.match(overview, /项目工作区导航已禁用/);
   assert.doesNotMatch(overview, /href: "#"|href="#"/);
 });
 
@@ -638,8 +654,8 @@ test("source audit page starts only the local human-gated audit flow", async () 
   assert.match(page, /no_live_requests/);
   assert.match(page, /no_auto_submission/);
   assert.match(page, /human_review_required/);
-  assert.match(page, /Scope Guard/);
-  assert.match(page, /submission_blocked/);
+  assert.match(page, /范围守卫/);
+  assert.match(page, /报告提交已阻断/);
   assert.doesNotMatch(
     page,
     /executeValidation|approveValidation|submitReport|createFindingCandidate|recordManualObservation|recordClaimReviewDecision/,
@@ -653,15 +669,15 @@ test("run detail labels fallback research audits as demo data", async () => {
 
   assert.match(page, /runDataMode/);
   assert.match(page, /fallback-only/);
-  assert.match(page, /Demo data/);
-  assert.match(page, /Research Audit/);
-  assert.match(page, /sample Mythos research summary/);
-  assert.match(page, /Mythos Review Timeline/);
-  assert.match(page, />\s*Review validation\s*</);
+  assert.match(page, /演示数据/);
+  assert.match(page, /研究审计/);
+  assert.match(page, /研究摘要样例/);
+  assert.match(page, /研究审核时间线/);
+  assert.match(page, />\s*审核验证\s*</);
   assert.doesNotMatch(page, />\s*Validation\s*</);
-  assert.match(page, /<Metric label="Evidence refs"/);
+  assert.match(page, /<Metric label="证据引用"/);
   assert.doesNotMatch(page, /<Metric label="Evidence"/);
-  assert.match(page, /<Metric label="Review holds"/);
+  assert.match(page, /<Metric label="审核阻塞项"/);
   assert.doesNotMatch(page, /<Metric label="Blocked"/);
   assert.doesNotMatch(page, /Run Detail/);
   assert.doesNotMatch(page, /fallback record/);
@@ -674,12 +690,12 @@ test("run detail shows stage agent boundaries", async () => {
   );
 
   assert.match(page, /agentBoundary/);
-  assert.match(page, /Agent Review Boundary/);
+  assert.match(page, /智能体审核边界/);
   assert.doesNotMatch(page, /Agent Boundary/);
-  assert.match(page, /label="Human review gate"/);
-  assert.match(page, /Review only/);
-  assert.doesNotMatch(page, /Not required/);
-  assert.match(page, /Scoped review actions/);
+  assert.match(page, /label="人工审核门"/);
+  assert.match(page, /仅供审核/);
+  assert.doesNotMatch(page, /无需处理/);
+  assert.match(page, /范围内审核操作/);
   assert.match(page, /blockedActions/);
 });
 
@@ -689,10 +705,10 @@ test("run detail shows read-only exploit-chain reasoning summaries", async () =>
   );
 
   assert.match(page, /exploit_chain/);
-  assert.match(page, /Chain confidence/);
-  assert.match(page, /Primitive\(s\)/);
-  assert.match(page, /Precondition\(s\)/);
-  assert.match(page, /Refutation question\(s\)/);
+  assert.match(page, /利用链置信度/);
+  assert.match(page, /原语/);
+  assert.match(page, /前提条件/);
+  assert.match(page, /反证问题/);
   assert.doesNotMatch(page, /executeValidation|approveValidation|submitReport/);
 });
 
@@ -702,14 +718,14 @@ test("run detail exposes source audit hypothesis refutation review state", async
   );
 
   assert.match(page, /sourceAuditHypotheses/);
-  assert.match(page, /Source Audit Hypotheses/);
-  assert.match(page, /Refutation status/);
-  assert.match(page, /Priority score/);
+  assert.match(page, /源代码审计假设/);
+  assert.match(page, /反证状态/);
+  assert.match(page, /优先级评分/);
   assert.match(page, /ranking_reasons/);
-  assert.match(page, /Ranking reasons/);
+  assert.match(page, /排序原因/);
   assert.match(page, /false_positive_checks/);
-  assert.match(page, /False positive checks/);
-  assert.match(page, /Evidence needed/);
+  assert.match(page, /误报检查/);
+  assert.match(page, /所需证据/);
   assert.doesNotMatch(page, /executeValidation|approveValidation|submitReport/);
 });
 
@@ -718,7 +734,7 @@ test("run detail shows advisory reasoning memory context", async () => {
     fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Reasoning memory/);
+  assert.match(page, /推理记忆/);
   assert.match(page, /highest_reasoning_review_score/);
   assert.match(page, /advisory_memory_only/);
   assert.doesNotMatch(page, /execution_allowed|submission_allowed/);
@@ -729,9 +745,9 @@ test("run detail labels safety next steps as review actions", async () => {
     fs.readFile(new URL("../app/runs/[runId]/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /label="Next review action"/);
-  assert.match(page, /Review Requirements/);
-  assert.match(page, /<p className="font-semibold">Review requirements<\/p>/);
+  assert.match(page, /label="下一步审核操作"/);
+  assert.match(page, /审核要求/);
+  assert.match(page, /<p className="font-semibold">审核要求<\/p>/);
   assert.doesNotMatch(page, /label="Next" value=\{step\.next_allowed_action\}/);
   assert.doesNotMatch(page, /Blocked Reasons/);
   assert.doesNotMatch(page, /<p className="font-semibold">Blocked<\/p>/);
@@ -745,7 +761,7 @@ test("fallback run detail includes stage agent boundaries", async () => {
   assert.match(source, /agent_boundary/);
   assert.match(source, /execute_live_validation/);
   assert.match(source, /bypass_scope_guard/);
-  assert.match(source, /Create a candidate from a review-ready observed claim/);
+  assert.match(source, /从可审核的观察声明创建候选。/);
   assert.doesNotMatch(source, /eligible reviewed observed claim/);
 });
 
@@ -756,8 +772,8 @@ test("report preview labels fallback claim ledgers as demo data", async () => {
 
   assert.match(page, /reportDataMode/);
   assert.match(page, /fallback-only/);
-  assert.match(page, /Demo data/);
-  assert.match(page, />\s*Review validation\s*</);
+  assert.match(page, /演示数据/);
+  assert.match(page, />\s*审核验证\s*</);
   assert.doesNotMatch(page, />\s*Validation\s*</);
 });
 
@@ -767,25 +783,25 @@ test("report preview can promote reviewed claims to finding candidates", async (
   );
 
   assert.match(page, /hasPromotionCandidate/);
-  assert.match(page, /reportDataMode === "Live data"/);
+  assert.match(page, /canPromoteFindingCandidate = !isDemoData && hasPromotionCandidate/);
   assert.match(page, /promotionBlockingReadinessBlockers/);
   assert.match(page, /claim\.quality_score >= 80/);
   assert.match(page, /createFindingCandidate/);
   assert.match(page, /promoteFindingCandidateAction/);
-  assert.match(page, /Promote Finding Candidate/);
-  assert.match(page, /review-ready human-reviewed observed claim/);
+  assert.match(page, /晋级发现候选项/);
+  assert.match(page, /可审核、已人工审核的观察声明/);
   assert.doesNotMatch(page, /eligible human-reviewed observed claim/);
-  assert.match(page, /Research feedback gates can still block promotion/);
+  assert.match(page, /研究反馈门仍可阻断晋级/);
   assert.match(page, /promotionGateStatus/);
   assert.match(page, /blocked_by_research_feedback_gate/);
-  assert.match(page, /Research feedback gate blocked finding promotion/);
+  assert.match(page, /研究反馈门已阻断发现晋级。/);
   assert.match(page, /blockedStageCount/);
   assert.match(page, /provenanceRefCount/);
-  assert.match(page, /Review holds/);
-  assert.match(page, /Review requirements/);
+  assert.match(page, /审核阻塞项/);
+  assert.match(page, /审核要求/);
   assert.doesNotMatch(page, /label="Blocked stages"/);
   assert.doesNotMatch(page, />Blockers</);
-  assert.match(page, /Promotion waits for a live, human-reviewed observed claim/);
+  assert.match(page, /晋级须等待在线的、经人工审核的观察声明。/);
   assert.match(page, /submission_blocked/);
 });
 
@@ -795,14 +811,14 @@ test("report preview summarizes source audit refutation review state", async () 
   );
 
   assert.match(page, /sourceAuditHypotheses/);
-  assert.match(page, /Refutation Review/);
+  assert.match(page, /反证审核/);
   assert.match(page, /refutation_status/);
   assert.match(page, /priority_score/);
   assert.match(page, /ranking_reasons/);
-  assert.match(page, /Ranking reasons/);
+  assert.match(page, /排序原因/);
   assert.match(page, /false_positive_checks/);
-  assert.match(page, /False positive checks/);
-  assert.match(page, /Evidence needed/);
+  assert.match(page, /误报检查/);
+  assert.match(page, /所需证据/);
   assert.doesNotMatch(page, /approveValidation|executeValidation|submitReport/);
 });
 
@@ -822,8 +838,8 @@ test("report preview can record human claim review decisions", async () => {
   assert.match(page, /needs_evidence/);
   assert.match(page, /refuted/);
   assert.match(page, /not_reportable/);
-  assert.match(page, /Record Claim Review/);
-  assert.match(page, /Submission remains manual/);
+  assert.match(page, /记录声明审核/);
+  assert.match(page, /报告提交仍需人工操作。/);
   assert.doesNotMatch(page, /approveValidation|executeValidation|submitReport/);
 });
 
@@ -832,13 +848,13 @@ test("report preview labels blocked promotion query flags as review gates", asyn
     fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Finding promotion gate/);
-  assert.match(page, /Submission gate/);
+  assert.match(page, /发现晋级门/);
+  assert.match(page, /提交门/);
   assert.match(page, /formatReviewGateFlag/);
-  assert.match(page, /Review blocked/);
-  assert.match(page, /Review ready/);
-  assert.doesNotMatch(page, /Finding promotion allowed/);
-  assert.doesNotMatch(page, /Report submission allowed/);
+  assert.match(page, /审核已阻断/);
+  assert.match(page, /审核已就绪/);
+  assert.doesNotMatch(page, /发现晋级 allowed/);
+  assert.doesNotMatch(page, /Report 报告提交已允许/);
 });
 
 test("report preview keeps submission status behind a manual gate", async () => {
@@ -846,16 +862,16 @@ test("report preview keeps submission status behind a manual gate", async () => 
     fs.readFile(new URL("../app/reports/[runId]/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Manual submission gate/);
-  assert.match(page, /Research audit/);
-  assert.match(page, /Human review ready/);
-  assert.match(page, /Review captured/);
-  assert.match(page, /Submission blocked/);
-  assert.match(page, /No claim ledger entries ready for review/);
-  assert.match(page, /No review rationale ready/);
-  assert.match(page, /No report section claims ready/);
-  assert.match(page, /No safety notes ready/);
-  assert.match(page, /No evidence references ready/);
+  assert.match(page, /人工提交门/);
+  assert.match(page, /研究审计/);
+  assert.match(page, /人工审核已就绪/);
+  assert.match(page, /已记录审核/);
+  assert.match(page, /报告提交已阻断/);
+  assert.match(page, /暂无可审核的声明台账条目。/);
+  assert.match(page, /暂无审核依据。/);
+  assert.match(page, /暂无可用报告章节声明。/);
+  assert.match(page, /暂无安全说明。/);
+  assert.match(page, /暂无证据引用。/);
   assert.doesNotMatch(page, /No claim ledger entries recorded/);
   assert.doesNotMatch(page, /No review rationale recorded/);
   assert.doesNotMatch(page, /No claims recorded/);
@@ -880,8 +896,8 @@ test("report preview can record advisory learning outcomes", async () => {
   assert.match(page, /name="severity_delta"/);
   assert.match(page, /name="bounty_amount"/);
   assert.match(page, /name="notes"/);
-  assert.match(page, /advisory_memory_only/);
-  assert.match(page, /validation gate state/);
+  assert.match(page, /仅建议性记忆/);
+  assert.match(page, /验证门状态/);
   assert.doesNotMatch(page, /validation permission/);
 });
 
@@ -892,7 +908,7 @@ test("validation workspace labels fallback workspaces as demo data", async () =>
 
   assert.match(page, /workspaceDataMode/);
   assert.match(page, /fallback-only/);
-  assert.match(page, /Demo data/);
+  assert.match(page, /演示数据/);
 });
 
 test("validation workspace labels execution state as preflight, not permission", async () => {
@@ -900,16 +916,16 @@ test("validation workspace labels execution state as preflight, not permission",
     fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Preflight gate/);
-  assert.match(page, /Observation boundary/);
-  assert.match(page, /Preflight reviewed/);
-  assert.match(page, /Preflight blocked/);
-  assert.match(page, /Review only/);
-  assert.match(page, /Promotion gate/);
-  assert.match(page, /Review ready/);
-  assert.match(page, /Human review gate/);
-  assert.match(page, /Review captured/);
-  assert.match(page, /Review required/);
+  assert.match(page, /预检门/);
+  assert.match(page, /观察边界/);
+  assert.match(page, /预检已审核/);
+  assert.match(page, /预检已阻断/);
+  assert.match(page, /仅供审核/);
+  assert.match(page, /晋级门/);
+  assert.match(page, /审核已就绪/);
+  assert.match(page, /人工审核门/);
+  assert.match(page, /已记录审核/);
+  assert.match(page, /需要审核/);
   assert.doesNotMatch(page, /label="Promotion" value=\{task\.promotion_eligible \? "Eligible" : "Blocked"\}/);
   assert.doesNotMatch(page, /report_chain_blocked \? "Blocked" : "Open"/);
   assert.doesNotMatch(page, /Execution permission/);
@@ -927,13 +943,13 @@ test("validation workspace empty states read as review readiness, not records", 
     fs.readFile(new URL("../app/validation-workspace/[runId]/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Claim Review/);
-  assert.match(page, /Review Requirements/);
-  assert.match(page, /No validation steps ready/);
-  assert.match(page, /No claim review items ready/);
-  assert.match(page, /No manual observations ready for review/);
-  assert.match(page, /No active review requirements/);
-  assert.match(page, /No evidence hints ready/);
+  assert.match(page, /声明审核/);
+  assert.match(page, /审核要求/);
+  assert.match(page, /暂无验证步骤。/);
+  assert.match(page, /暂无声明审核项。/);
+  assert.match(page, /暂无可审核的人工观察。/);
+  assert.match(page, /当前没有待处理的审核要求。/);
+  assert.match(page, /暂无证据提示。/);
   assert.doesNotMatch(page, /Claim Tasks/);
   assert.doesNotMatch(page, /No validation steps recorded/);
   assert.doesNotMatch(page, /No claim tasks ready/);
@@ -970,7 +986,7 @@ test("validation workspace explains redacted-only evidence gaps", async () => {
   );
 
   assert.match(page, /manual_observation_missing_safe_evidence/);
-  assert.match(page, /Report-safe evidence required/);
+  assert.match(page, /需要可用于报告的安全证据/);
   assert.match(page, /request_response_diff/);
 });
 
@@ -981,12 +997,12 @@ test("artifact repository labels fallback artifacts as demo data", async () => {
 
   assert.match(page, /artifactDataMode/);
   assert.match(page, /fallback-only/);
-  assert.match(page, /Demo data/);
-  assert.match(page, /sample Mythos artifact summaries/);
-  assert.match(page, /Research Artifact Review/);
-  assert.match(page, /Artifact Review/);
-  assert.match(page, /No artifacts ready for review/);
-  assert.match(page, /Usage audit/);
+  assert.match(page, /演示数据/);
+  assert.match(page, /研究资料摘要样例/);
+  assert.match(page, /研究资料审核/);
+  assert.match(page, /资料审核/);
+  assert.match(page, /暂无可审核资料。/);
+  assert.match(page, /使用审计/);
   assert.doesNotMatch(page, /Authorized Research Materials/);
   assert.doesNotMatch(page, /No artifacts available/);
   assert.doesNotMatch(page, /Usage run/);
@@ -999,8 +1015,8 @@ test("artifact repository describes report-chain state as review readiness", asy
     fs.readFile(new URL("../app/artifacts/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Report chain review ready/);
-  assert.match(page, /Report chain review required/);
+  assert.match(page, /报告链审核已就绪/);
+  assert.match(page, /报告链需要审核/);
   assert.doesNotMatch(page, /report chain allowed/);
   assert.doesNotMatch(page, /report chain blocked/);
 });
@@ -1012,11 +1028,11 @@ test("artifact detail labels fallback artifacts as demo data", async () => {
 
   assert.match(page, /artifactDataMode/);
   assert.match(page, /fallback-only/);
-  assert.match(page, /Demo data/);
-  assert.match(page, /No payload summary ready/);
-  assert.match(page, /No provenance summary ready/);
-  assert.match(page, /No derived facts ready/);
-  assert.match(page, /No artifact usage ready/);
+  assert.match(page, /演示数据/);
+  assert.match(page, /暂无载荷摘要。/);
+  assert.match(page, /暂无溯源摘要。/);
+  assert.match(page, /暂无派生事实。/);
+  assert.match(page, /暂无资料使用记录。/);
   assert.doesNotMatch(page, /No payload summary recorded/);
   assert.doesNotMatch(page, /No provenance summary recorded/);
   assert.doesNotMatch(page, /No derived facts recorded/);
@@ -1028,9 +1044,9 @@ test("artifact detail describes report-chain state as review readiness", async (
     fs.readFile(new URL("../app/artifacts/[artifactId]/page.tsx", import.meta.url), "utf8"),
   );
 
-  assert.match(page, /Report-chain review readiness/);
-  assert.match(page, /Report chain review ready/);
-  assert.match(page, /Report chain review required/);
+  assert.match(page, /报告链审核就绪度/);
+  assert.match(page, /报告链审核已就绪/);
+  assert.match(page, /报告链需要审核/);
   assert.doesNotMatch(page, /Report-chain eligibility/);
   assert.doesNotMatch(page, /Eligible for report chain/);
   assert.doesNotMatch(page, /Blocked for report chain/);

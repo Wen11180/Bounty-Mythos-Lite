@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     studio_workspace_root: str = "./mythos-studio-workspaces"
     studio_web_origin: str = "http://127.0.0.1:3000"
     autonomous_research_capability: str = ""
+    autopilot_runner_capability: str = ""
     black_box_remote_profile_enabled: bool = False
     program_rule_ai_provider: str = ""
     program_rule_ai_model: str = ""

@@ -68,6 +68,7 @@ function assertPackagedRuntime(paths) {
 function createPackagedRuntime({ app, execFile, processObject = process, spawn, utilityProcess }) {
   let apiChild = null;
   let activeConfig = null;
+  let activeAutopilotRunnerCapability = null;
   let activePaths = null;
   let activeAutonomousResearchCapability = null;
   let childEnvironment = null;
@@ -94,7 +95,11 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
     return paths;
   }
 
-  function start(config, capability = activeAutonomousResearchCapability || randomBytes(32).toString("base64url")) {
+  function start(
+    config,
+    capability = activeAutonomousResearchCapability || randomBytes(32).toString("base64url"),
+    autopilotCapability = activeAutopilotRunnerCapability || randomBytes(32).toString("base64url"),
+  ) {
     if (shutdownRequested) {
       throw new Error("packaged_runtime_stopped");
     }
@@ -105,12 +110,19 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
     if (!/^[A-Za-z0-9_-]{43,128}$/u.test(capability)) {
       throw new Error("packaged_runtime_autonomous_capability_invalid");
     }
+    if (!/^[A-Za-z0-9_-]{43,128}$/u.test(autopilotCapability)) {
+      throw new Error("packaged_runtime_autopilot_capability_invalid");
+    }
     const paths = preflight();
     startupLiveness = createStartupLiveness();
 
     processObject.env.PLAYWRIGHT_BROWSERS_PATH = paths.playwrightBrowsers;
     processObject.env.MYTHOS_PLAYWRIGHT_CHROMIUM_EXECUTABLE = paths.browserExecutable;
-    const { AUTONOMOUS_RESEARCH_CAPABILITY: _ignoredCapability, ...baseEnvironment } = processObject.env;
+    const {
+      AUTONOMOUS_RESEARCH_CAPABILITY: _ignoredAutonomousCapability,
+      AUTOPILOT_RUNNER_CAPABILITY: _ignoredAutopilotCapability,
+      ...baseEnvironment
+    } = processObject.env;
     const webEnvironment = {
       ...baseEnvironment,
       API_BASE_URL: config.apiBaseUrl,
@@ -124,8 +136,10 @@ function createPackagedRuntime({ app, execFile, processObject = process, spawn, 
     childEnvironment = {
       ...webEnvironment,
       AUTONOMOUS_RESEARCH_CAPABILITY: capability,
+      AUTOPILOT_RUNNER_CAPABILITY: autopilotCapability,
     };
     activeAutonomousResearchCapability = capability;
+    activeAutopilotRunnerCapability = autopilotCapability;
 
     apiChild = spawn(
       paths.apiExecutable,

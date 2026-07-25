@@ -11,9 +11,9 @@ import type {
 export const fallbackPrograms: Program[] = [
   {
     id: "program_example",
-    name: "Example Program",
+    name: "示例项目",
     platform: "HackerOne / Bugcrowd / VDP",
-    bounty_range: "Medium $500 / High $3000 / Critical $10000",
+    bounty_range: "中危 $500 / 高危 $3000 / 严重 $10000",
     scope_status: "in_scope",
     automation: "limited",
     testing_accounts: "configured",
@@ -27,9 +27,9 @@ export const fallbackPrograms: Program[] = [
 export const fallbackFindings: Finding[] = [
   {
     id: "finding_2026_001",
-    program: "Example Program",
+    program: "示例项目",
     asset: "api.example.com",
-    title: "普通用户可访问其他用户私有文件 metadata",
+    title: "普通用户可访问其他用户私有文件元数据",
     vuln_type: "BOLA",
     severity_estimate: "high",
     confidence: 0.86,
@@ -45,10 +45,10 @@ export const fallbackFindings: Finding[] = [
   },
   {
     id: "finding_2026_002",
-    program: "Example Program",
+    program: "示例项目",
     asset: "app.example.com",
     title: "普通成员可能修改团队邀请设置",
-    vuln_type: "Broken access control",
+    vuln_type: "访问控制失效",
     severity_estimate: "medium",
     confidence: 0.71,
     scope_status: "needs_review",
@@ -67,9 +67,9 @@ export const fallbackReports: ReportDraft[] = [
   {
     id: "report_2026_001",
     finding_id: "finding_2026_001",
-    title: "普通用户可访问其他用户私有文件 metadata",
+    title: "普通用户可访问其他用户私有文件元数据",
     draft:
-      "标题：普通用户可访问其他用户私有文件 metadata\n漏洞类型：BOLA\n严重等级：High\n受影响资产：api.example.com\n安全不变量：用户不能访问其他用户的私有文件。\n误报排除：非自我影响，非 UI 问题，使用测试账号，未触碰真实用户数据。",
+      "标题：普通用户可访问其他用户私有文件元数据\n漏洞类型：BOLA\n严重等级：高\n受影响资产：api.example.com\n安全不变量：用户不能访问其他用户的私有文件。\n误报排除：非自我影响，非界面问题，使用测试账号，未触碰真实用户数据。",
   },
   {
     id: "report_2026_002",
@@ -101,7 +101,7 @@ export const fallbackScopeGuardDecision: ScopeGuardDecision = {
 
 export const fallbackMythosBrainProfile: ProgramIntelligenceProfile = {
   program_id: "program_example",
-  program_name: "Example Program",
+  program_name: "示例项目",
   program_score: 88,
   attack_surface_memory: {
     objects: ["file_id", "team_id"],
@@ -175,11 +175,11 @@ export const fallbackMythosBrainProfile: ProgramIntelligenceProfile = {
       playbook_id: "bola_idor",
       outcome: "accepted",
       surface_key: "file_id:export",
-      notes: "Accepted BOLA report improved file export priority.",
+      notes: "已接受的 BOLA 报告提高了文件导出优先级。",
       bounty_amount: 3000,
       severity_delta: "up",
       evidence_quality: "strong",
-      triager_feedback: "[REDACTED]",
+      triager_feedback: "[已脱敏]",
       target_relationships: ["org_id>team_id>file_id"],
       created_at: "2026-07-03T00:00:00.000Z",
     },

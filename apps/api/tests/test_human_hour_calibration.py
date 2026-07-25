@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from app.cli import main
 from app.intelligence_benchmark.human_hour_calibration import (
@@ -152,6 +153,34 @@ def test_synthetic_human_hour_package_does_not_claim_real_wall_clock():
     assert kind in {"synthetic", "lab_fixture", "synthetic_human_hour_fixture"}
     signals = detect_real_human_hour_signals(
         entries=entries, source_kind=kind, package_meta=meta
+    )
+    assert signals["has_real_human_hour_wall_clock_logs"] is False
+
+
+def test_human_hour_template_cannot_flip_real_wall_clock_flag():
+    from app.intelligence_benchmark.human_hour_calibration import (
+        detect_real_human_hour_signals,
+        load_review_log_package,
+        package_source_kind,
+    )
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "intelligence_benchmark"
+        / "fixtures"
+        / "templates"
+        / "authorized_human_hour_wall_clock.template.json"
+    )
+    entries, meta = load_review_log_package(template)
+    meta["source_kind"] = "authorized_redacted_real"
+    meta.pop("fixture_kind")
+    for entry in entries:
+        entry["source_kind"] = "authorized_redacted_real"
+    signals = detect_real_human_hour_signals(
+        entries=entries,
+        source_kind=package_source_kind(meta, entries),
+        package_meta=meta,
     )
     assert signals["has_real_human_hour_wall_clock_logs"] is False
 

@@ -142,8 +142,8 @@ export function reportExportFromStudioSession(
     run_id: latest.id,
     submission_blocked: true,
     title: latest.kind === "campaign_hunter"
-      ? "Submission-blocked campaign hunter draft"
-      : "Submission-blocked report draft",
+      ? "提交已阻断的项目候选挖掘草稿"
+      : "提交已阻断的报告草稿",
   };
 }
 

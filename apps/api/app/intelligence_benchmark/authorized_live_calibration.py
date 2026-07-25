@@ -108,6 +108,13 @@ def validate_live_log_entry(entry: dict[str, Any]) -> list[str]:
         value = entry.get(key)
         if value is not None and not isinstance(value, str):
             errors.append(f"{key}_not_string")
+    if "candidate_rank" in entry:
+        rank = entry.get("candidate_rank")
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+            errors.append("candidate_rank_invalid")
+    for key in ("report_ready", "report_valid"):
+        if key in entry and not isinstance(entry.get(key), bool):
+            errors.append(f"{key}_not_boolean")
     return errors
 
 
@@ -285,6 +292,9 @@ def load_live_outcome_package(
                 "schema_version",
                 "claim_scope",
                 "description",
+                "evaluation_top_k",
+                "attestation_status",
+                "independent_verification",
             )
             if k in payload
         }
@@ -367,6 +377,12 @@ def compute_live_calibration_metrics(
         source_kind=source_kind,
         package_meta=package_meta,
     )
+    outcome_metrics = _compute_outcome_metrics(
+        entries=entries,
+        package_meta=package_meta,
+        is_operator_attested=bool(real_signals["is_operator_attested"]),
+        data_complete=not row_errors and safe_ok == len(entries),
+    )
     track_record_summary = {
         "outcome_counts": dict(sorted(outcome_counts.items())),
         "language_families": sorted(language_families),
@@ -374,20 +390,27 @@ def compute_live_calibration_metrics(
         "wall_clock_minutes_total": round(wall_clock_total, 4) if wall_clock_n else 0.0,
         "source_kind": source_kind,
         "program_authorization_id": real_signals.get("program_authorization_id"),
+        "attestation_status": real_signals.get("attestation_status"),
+        "independent_verification": False,
+        "non_real_provenance_markers": real_signals.get(
+            "non_real_provenance_markers"
+        )
+        or [],
         "has_real_wall_clock_logs": bool(real_signals["has_real_wall_clock_logs"]),
         "has_real_live_valid_report_outcomes": bool(
             real_signals["has_real_live_valid_report_outcomes"]
         ),
         "wall_clock_real_entry_count": real_signals["wall_clock_real_entry_count"],
         "valid_report_real_entry_count": real_signals["valid_report_real_entry_count"],
+        "outcome_metrics": outcome_metrics,
         "note": (
-            "Real authorized redacted package detected."
-            if real_signals["has_real_wall_clock_logs"]
-            or real_signals["has_real_live_valid_report_outcomes"]
+            "Operator-attested authorized redacted package detected; independent verification is not provided."
+            if real_signals["is_operator_attested"]
             else (
-                "Synthetic/redacted authorized fixture only. "
+                "Synthetic/template/unverified package only. "
                 "Attach source_kind=authorized_redacted_real with program_authorization_id, "
-                "wall_clock_minutes, and report_outcome_ref to close live market gaps."
+                "non-synthetic inputs, wall_clock_minutes, and report_outcome_ref "
+                "to close live market gaps."
             )
         ),
     }
@@ -413,6 +436,31 @@ def compute_live_calibration_metrics(
 
 REAL_SOURCE_KINDS = frozenset({"authorized_redacted_real", "authorized_program_redacted"})
 SYNTHETIC_SOURCE_KINDS = frozenset({"synthetic", "lab_fixture", "synthetic_authorized_live_fixture"})
+NON_REAL_SOURCE_KINDS = SYNTHETIC_SOURCE_KINDS | frozenset(
+    {"template", "example", "scaffold"}
+)
+_NON_REAL_PROVENANCE_TOKENS = (
+    "synthetic",
+    "fixture",
+    "demo",
+    "template",
+    "example",
+    "scaffold",
+)
+_TEMPLATE_PLACEHOLDER_PREFIXES = ("replace_", "set_me", "auth-ref-")
+_TEMPLATE_PLACEHOLDER_FIELDS = (
+    "program_authorization_id",
+    "authorization_ref",
+    "entry_id",
+    "program_handle",
+    "package_label",
+    "report_outcome_ref",
+    "report_draft_id",
+    "valid_report_ref",
+)
+_TERMINAL_CANDIDATE_OUTCOMES = frozenset(
+    {"human_confirmed_valid", "human_confirmed_fp", "human_deduplicated"}
+)
 
 
 def package_source_kind(payload: dict[str, Any] | None, entries: list[dict[str, Any]]) -> str:
@@ -430,6 +478,38 @@ def package_source_kind(payload: dict[str, Any] | None, entries: list[dict[str, 
     return "synthetic"
 
 
+def _non_real_provenance_markers(*payloads: object) -> list[str]:
+    markers: set[str] = set()
+    for payload in payloads:
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("source_kind", "fixture_kind", "input_kind", "origin_kind"):
+                value = str(item.get(key) or "").strip().lower()
+                if not value:
+                    continue
+                if value in NON_REAL_SOURCE_KINDS or any(
+                    token in value for token in _NON_REAL_PROVENANCE_TOKENS
+                ):
+                    markers.add(f"{key}={value}")
+    return sorted(markers)
+
+
+def _template_placeholder_markers(*payloads: object) -> list[str]:
+    markers: set[str] = set()
+    for payload in payloads:
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in _TEMPLATE_PLACEHOLDER_FIELDS:
+                value = str(item.get(key) or "").strip().lower()
+                if value.startswith(_TEMPLATE_PLACEHOLDER_PREFIXES):
+                    markers.add(f"{key}={value}")
+    return sorted(markers)
+
+
 def detect_real_track_record_signals(
     *,
     entries: list[dict[str, Any]],
@@ -438,11 +518,18 @@ def detect_real_track_record_signals(
 ) -> dict[str, Any]:
     """Detect whether attached package is real authorized redacted data.
 
-    Synthetic fixtures never flip real flags. Real packages must declare
-    source_kind=authorized_redacted_real and include authorization refs.
+    Synthetic/template fixtures never flip real flags. A declared real package
+    is operator-attested unless a separate independent-verification system is
+    introduced.
     """
     meta = package_meta if isinstance(package_meta, dict) else {}
     is_real_kind = source_kind in REAL_SOURCE_KINDS
+    non_real_markers = sorted(
+        {
+            *_non_real_provenance_markers(meta, entries),
+            *_template_placeholder_markers(meta, entries),
+        }
+    )
     auth_ref = str(
         meta.get("program_authorization_id")
         or meta.get("authorization_ref")
@@ -474,14 +561,17 @@ def detect_real_track_record_signals(
         )
     ]
 
+    is_operator_attested = bool(
+        is_real_kind and auth_ref and not non_real_markers
+    )
     has_real_wall = bool(
-        is_real_kind
+        is_operator_attested
         and auth_ref
         and len(wall_entries) >= 1
         and all(e.get("authorized") is True and e.get("human_confirmed") is True for e in wall_entries)
     )
     has_real_valid = bool(
-        is_real_kind
+        is_operator_attested
         and auth_ref
         and len(valid_outcomes) >= 1
         and all(e.get("authorized") is True and e.get("human_confirmed") is True for e in valid_outcomes)
@@ -489,11 +579,145 @@ def detect_real_track_record_signals(
     return {
         "source_kind": source_kind,
         "program_authorization_id": auth_ref or None,
+        "attestation_status": (
+            "operator_attested"
+            if is_operator_attested
+            else ("synthetic_or_template" if non_real_markers else "unverified")
+        ),
+        "independent_verification": False,
+        "non_real_provenance_markers": non_real_markers,
+        "is_operator_attested": is_operator_attested,
         "has_real_wall_clock_logs": has_real_wall,
         "has_real_live_valid_report_outcomes": has_real_valid,
         "wall_clock_real_entry_count": len(wall_entries) if has_real_wall else 0,
         "valid_report_real_entry_count": len(valid_outcomes) if has_real_valid else 0,
     }
+
+
+def _compute_outcome_metrics(
+    *,
+    entries: list[dict[str, Any]],
+    package_meta: dict[str, Any] | None,
+    is_operator_attested: bool,
+    data_complete: bool,
+) -> dict[str, Any]:
+    """Compute outcome metrics only from complete, operator-attested input."""
+    metric_names = (
+        "precision_at_k",
+        "false_positive_rate",
+        "duplicate_rate",
+        "report_readiness_rate",
+        "valid_report_rate",
+    )
+    result: dict[str, Any] = {
+        "precision_at_k": None,
+        "precision_at_k_k": None,
+        "false_positive_rate": None,
+        "duplicate_rate": None,
+        "report_readiness_rate": None,
+        "valid_report_rate": None,
+        "terminal_outcome_count": 0,
+        "valid_candidate_count": 0,
+        "independent_verification": False,
+        "availability": {name: None for name in metric_names},
+    }
+    availability = result["availability"]
+    if not is_operator_attested:
+        for name in metric_names:
+            availability[name] = "operator_attested_real_package_required"
+        return result
+    if not data_complete:
+        for name in metric_names:
+            availability[name] = "schema_or_redaction_cleanliness_required"
+        return result
+
+    terminal = [
+        entry
+        for entry in entries
+        if str(entry.get("outcome") or "") in _TERMINAL_CANDIDATE_OUTCOMES
+    ]
+    result["terminal_outcome_count"] = len(terminal)
+    if terminal:
+        result["false_positive_rate"] = _rate(
+            sum(
+                str(entry.get("outcome") or "") == "human_confirmed_fp"
+                for entry in terminal
+            ),
+            len(terminal),
+        )
+        result["duplicate_rate"] = _rate(
+            sum(
+                str(entry.get("outcome") or "") == "human_deduplicated"
+                for entry in terminal
+            ),
+            len(terminal),
+        )
+        availability["false_positive_rate"] = "available"
+        availability["duplicate_rate"] = "available"
+    else:
+        availability["false_positive_rate"] = "terminal_candidate_outcomes_required"
+        availability["duplicate_rate"] = "terminal_candidate_outcomes_required"
+
+    meta = package_meta if isinstance(package_meta, dict) else {}
+    top_k = meta.get("evaluation_top_k")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+        availability["precision_at_k"] = "evaluation_top_k_required"
+    elif not terminal:
+        availability["precision_at_k"] = "terminal_candidate_outcomes_required"
+    else:
+        ranks = [entry.get("candidate_rank") for entry in terminal]
+        if any(
+            isinstance(rank, bool) or not isinstance(rank, int) or rank < 1
+            for rank in ranks
+        ):
+            availability["precision_at_k"] = "candidate_rank_required_for_all_terminal_outcomes"
+        elif len(set(ranks)) != len(ranks):
+            availability["precision_at_k"] = "candidate_rank_must_be_unique"
+        elif not all(rank in ranks for rank in range(1, top_k + 1)):
+            availability["precision_at_k"] = "candidate_ranks_must_cover_one_through_k"
+        else:
+            top_entries = [entry for entry in terminal if entry["candidate_rank"] <= top_k]
+            result["precision_at_k"] = _rate(
+                sum(
+                    str(entry.get("outcome") or "") == "human_confirmed_valid"
+                    for entry in top_entries
+                ),
+                top_k,
+            )
+            result["precision_at_k_k"] = top_k
+            availability["precision_at_k"] = "available"
+
+    valid_candidates = [
+        entry
+        for entry in entries
+        if str(entry.get("outcome") or "") == "human_confirmed_valid"
+    ]
+    result["valid_candidate_count"] = len(valid_candidates)
+    if not valid_candidates:
+        availability["report_readiness_rate"] = "human_confirmed_valid_outcomes_required"
+        availability["valid_report_rate"] = "human_confirmed_valid_outcomes_required"
+    elif any(not isinstance(entry.get("report_ready"), bool) for entry in valid_candidates):
+        availability["report_readiness_rate"] = "report_ready_required_for_all_valid_outcomes"
+        availability["valid_report_rate"] = "report_ready_and_report_valid_required_for_all_valid_outcomes"
+    elif any(not isinstance(entry.get("report_valid"), bool) for entry in valid_candidates):
+        availability["report_readiness_rate"] = "available"
+        result["report_readiness_rate"] = _rate(
+            sum(entry["report_ready"] for entry in valid_candidates),
+            len(valid_candidates),
+        )
+        availability["valid_report_rate"] = "report_valid_required_for_all_valid_outcomes"
+    else:
+        result["report_readiness_rate"] = _rate(
+            sum(entry["report_ready"] for entry in valid_candidates),
+            len(valid_candidates),
+        )
+        result["valid_report_rate"] = _rate(
+            sum(entry["report_valid"] for entry in valid_candidates),
+            len(valid_candidates),
+        )
+        availability["report_readiness_rate"] = "available"
+        availability["valid_report_rate"] = "available"
+    return result
 
 
 def run_authorized_live_calibration_gate(

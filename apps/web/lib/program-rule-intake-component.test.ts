@@ -46,9 +46,9 @@ test("program-rule intake uses only operator APIs and a no-argument desktop kick
 test("program-rule review keeps fetch, review, and effective states distinct", async () => {
   const source = await readFile(componentUrl, "utf8");
 
-  assert.match(source, /label="Fetch state"/u);
-  assert.match(source, /label="Review state"/u);
-  assert.match(source, /label="Effective state"/u);
+  assert.match(source, /label="获取状态"/u);
+  assert.match(source, /label="审核状态"/u);
+  assert.match(source, /label="生效状态"/u);
   assert.match(source, /expected_review_digest/u);
   assert.match(source, /isProgramRuleReviewBindingValid/u);
   assert.match(source, /setDiff\(null\)[\s\S]+getProgramRuleSnapshotDiff/u);

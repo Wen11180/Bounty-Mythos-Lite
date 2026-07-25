@@ -5371,10 +5371,8 @@ class Query:
     mapped = map_authorized_code_files(
         {"authorized_code_files": [{"path": source_path, "content": content}]}
     )
-    gap = next(
-        fact
-        for fact in mapped.facts
-        if fact.fact_type == "authorization_gap_candidate"
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in mapped.facts
     )
     observations = build_candidate_hunter_observations(
         pipeline_run_id="run-001",
@@ -5386,11 +5384,11 @@ class Query:
                 "priority_score": 80,
                 "source_facts": [
                     {
-                        "fact_type": gap.fact_type,
+                        "fact_type": "authorization_gap_candidate",
                         "artifact_kind": "code",
-                        "source_path": gap.source_path,
-                        "symbol_name": gap.symbol_name,
-                        "root_cause": gap.payload["root_cause"],
+                        "source_path": source_path,
+                        "symbol_name": "record",
+                        "root_cause": "missing_object_ownership_check",
                     }
                 ],
             }

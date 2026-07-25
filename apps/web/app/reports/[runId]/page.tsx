@@ -31,17 +31,17 @@ type PageProps = {
 const sectionMeta = [
   {
     key: "observed_facts",
-    label: "Observed Facts",
+    label: "观察到的事实",
     icon: ListChecks,
   },
   {
     key: "model_reasoning",
-    label: "Model Reasoning",
+    label: "模型推理",
     icon: Target,
   },
   {
     key: "unverified_claims",
-    label: "Unverified Claims",
+    label: "未验证声明",
     icon: ShieldCheck,
   },
 ] as const;
@@ -64,14 +64,15 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
       <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
         <PageBack />
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
-          <h1 className="text-2xl font-semibold text-balance">Report preview unavailable</h1>
+          <h1 className="text-2xl font-semibold text-balance">报告预览暂不可用</h1>
           <p className="mt-2 text-pretty text-[var(--muted)]">{safeDisplay(runId)}</p>
         </section>
       </main>
     );
   }
 
-  const reportDataMode = run?.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
+  const isDemoData = run?.policy_text_hash === "fallback-only";
+  const reportDataMode = isDemoData ? "演示数据" : "在线数据";
   const currentRunId = preview.run_id;
   const promotionGateStatus = firstParam(query.promotion_status);
   const promotionGateReason = firstParam(query.promotion_reason);
@@ -92,10 +93,10 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
       claim.readiness_level === "human_reviewed_gated" &&
       claim.quality_score >= 80 &&
       claim.evidence_refs.length > 0 &&
-      claim.review_evidence_refs.some((ref) => ref !== "[REDACTED]") &&
+      claim.review_evidence_refs.some((ref) => ref !== "[REDACTED]" && ref !== "[已脱敏]") &&
       claim.readiness_blockers.every((blocker) => !promotionBlockingReadinessBlockers.has(blocker)),
   );
-  const canPromoteFindingCandidate = reportDataMode === "Live data" && hasPromotionCandidate;
+  const canPromoteFindingCandidate = !isDemoData && hasPromotionCandidate;
   const blockedStageDisplayCount = blockedStageCount ?? String(preview.claim_ledger.filter(
     (claim) => claim.readiness_blockers.length > 0,
   ).length);
@@ -207,58 +208,58 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
               {safeDisplay(preview.title)}
             </h1>
             <p className="mt-2 text-pretty text-[var(--muted)]">
-              {safeDisplay(run?.asset, "Unknown asset")}
+              {safeDisplay(run?.asset, "未知资产")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <ActionLink href={`/runs/${encodeURIComponent(preview.run_id)}`} icon={Target}>
-              Research audit
+              研究审计
             </ActionLink>
             <ActionLink href={`/validation-workspace/${encodeURIComponent(preview.run_id)}`} icon={ClipboardCheck}>
-              Review validation
+              审核验证
             </ActionLink>
           </div>
         </div>
       </header>
-      {reportDataMode === "Demo data" ? (
+      {isDemoData ? (
         <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
-          Demo data is shown because this claim ledger comes from a fallback report preview.
+          当前显示演示数据，因为此声明台账来自后备报告预览。
         </p>
       ) : null}
       {showPromotionGateNotice ? (
         <section className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm">
           <p className="font-semibold text-[var(--warning)]">
-            Research feedback gate blocked finding promotion.
+            研究反馈门已阻断发现晋级。
           </p>
           <p className="mt-2 text-[var(--muted)]">
-            Finding candidate was not created. Submission remains manual.
+            未创建发现候选项。报告提交仍需人工操作。
           </p>
           <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-            <Field label="Reason" value={promotionGateReason} />
-            <Field label="Review holds" value={blockedStageCount} />
-            <Field label="Provenance refs" value={provenanceRefCount} />
-            <Field label="Finding promotion gate" value={findingPromotionGate} />
-            <Field label="Submission gate" value={reportSubmissionGate} />
+            <Field label="原因" value={promotionGateReason} />
+            <Field label="审核阻塞项" value={blockedStageCount} />
+            <Field label="溯源引用" value={provenanceRefCount} />
+            <Field label="发现晋级门" value={findingPromotionGate} />
+            <Field label="提交门" value={reportSubmissionGate} />
           </dl>
         </section>
       ) : null}
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Severity" value={formatLabel(preview.severity)} />
-        <Metric label="Scope" value={formatLabel(preview.scope_status)} />
-        <Metric label="Human review" value={preview.human_review_required ? "Required" : "Not required"} />
+        <Metric label="严重性" value={formatLabel(preview.severity)} />
+        <Metric label="范围" value={formatLabel(preview.scope_status)} />
+        <Metric label="人工审核" value={preview.human_review_required ? "需要处理" : "无需处理"} />
         <Metric
-          label="Manual submission gate"
-          value={preview.submission_blocked ? "Submission blocked" : "Human review ready"}
+          label="人工提交门"
+          value={preview.submission_blocked ? "报告提交已阻断" : "人工审核已就绪"}
         />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="grid gap-5">
           <article className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={FileText} title="Claim Ledger" />
+            <SectionHeader icon={FileText} title="声明台账" />
             {preview.claim_ledger.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No claim ledger entries ready for review.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">暂无可审核的声明台账条目。</p>
             ) : (
               <div className="divide-y divide-[var(--line)]">
                 {preview.claim_ledger.map((claim) => (
@@ -278,42 +279,42 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                       </p>
                       <dl className="mt-4 grid gap-3 sm:grid-cols-2">
                         <Field
-                          label="Evidence"
-                          value={claim.evidence_refs.length === 0 ? "Missing" : claim.evidence_refs.join(", ")}
+                          label="证据"
+                          value={claim.evidence_refs.length === 0 ? "缺失" : claim.evidence_refs.join("、")}
                         />
                         <Field
-                          label="Provenance"
-                          value={claim.provenance_refs.length === 0 ? "Missing" : claim.provenance_refs.join(", ")}
+                          label="溯源"
+                          value={claim.provenance_refs.length === 0 ? "缺失" : claim.provenance_refs.join("、")}
                         />
-                        <Field label="Redaction" value={claim.redaction_status} />
+                        <Field label="脱敏" value={formatLabel(claim.redaction_status)} />
                         <Field
-                          label="Review"
-                          value={claim.human_review_required ? "Human required" : "Review captured"}
+                          label="审核"
+                          value={claim.human_review_required ? "需要人工审核" : "已记录审核"}
                         />
-                        <Field label="Review status" value={claim.review_status} />
-                        <Field label="Reviewer" value={claim.reviewer ?? "Unassigned"} />
-                        <Field label="Reviewed at" value={claim.reviewed_at ?? "Unreviewed"} />
-                        <Field label="Quality" value={`${claim.quality_score}/100`} />
-                        <Field label="Readiness" value={claim.readiness_level} />
+                        <Field label="审核状态" value={formatLabel(claim.review_status)} />
+                        <Field label="审核人" value={claim.reviewer ?? "未分配"} />
+                        <Field label="审核时间" value={claim.reviewed_at ?? "未审核"} />
+                        <Field label="质量" value={`${claim.quality_score}/100`} />
+                        <Field label="就绪度" value={formatLabel(claim.readiness_level)} />
                         <Field
-                          label="Review evidence"
+                          label="审核证据"
                           value={
                             claim.review_evidence_refs.length === 0
-                              ? "Missing"
-                              : claim.review_evidence_refs.join(", ")
+                              ? "缺失"
+                              : claim.review_evidence_refs.join("、")
                           }
                         />
                       </dl>
                       <div className="mt-4">
-                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Review rationale</p>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">审核依据</p>
                         <p className="mt-1 break-words text-[var(--muted)]">
-                          {safeDisplay(claim.review_rationale, "No review rationale ready.")}
+                          {safeDisplay(claim.review_rationale, "暂无审核依据。")}
                         </p>
                       </div>
                       <div className="mt-4">
-                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Quality reasons</p>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">质量原因</p>
                         {claim.quality_reasons.length === 0 ? (
-                          <p className="mt-1 font-semibold">None</p>
+                          <p className="mt-1 font-semibold">无</p>
                         ) : (
                           <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs font-semibold uppercase text-[var(--muted)]">
                             {claim.quality_reasons.map((reason) => (
@@ -323,9 +324,9 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                         )}
                       </div>
                       <div className="mt-4">
-                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Review requirements</p>
+                        <p className="text-xs font-semibold uppercase text-[var(--muted)]">审核要求</p>
                         {claim.readiness_blockers.length === 0 ? (
-                          <p className="mt-1 font-semibold">None</p>
+                          <p className="mt-1 font-semibold">无</p>
                         ) : (
                           <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs font-semibold uppercase text-[var(--accent-strong)]">
                             {claim.readiness_blockers.map((blocker) => (
@@ -340,23 +341,23 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                       >
                         <input name="claim_id" type="hidden" value={safeDisplay(claim.claim_id)} />
                         <p className="text-sm font-semibold text-[var(--muted)]">
-                          Submission remains manual. This records only the human claim review gate.
+                          报告提交仍需人工操作。此处仅记录人工声明审核门。
                         </p>
                         <label className="grid gap-1">
-                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Decision</span>
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">决策</span>
                           <select
                             className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3"
                             name="decision"
                             defaultValue="needs_evidence"
                           >
-                            <option value="confirmed_observed_fact">Confirmed observed fact</option>
-                            <option value="needs_evidence">Needs evidence</option>
-                            <option value="refuted">Refuted</option>
-                            <option value="not_reportable">Not reportable</option>
+                            <option value="confirmed_observed_fact">已确认的观察事实</option>
+                            <option value="needs_evidence">需要证据</option>
+                            <option value="refuted">已反驳</option>
+                            <option value="not_reportable">不可报告</option>
                           </select>
                         </label>
                         <label className="grid gap-1">
-                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Reviewer</span>
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">审核人</span>
                           <input
                             className="min-h-10 rounded-md border border-[var(--line)] px-3"
                             name="reviewer"
@@ -364,31 +365,31 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                           />
                         </label>
                         <label className="grid gap-1">
-                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Rationale</span>
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">依据</span>
                           <textarea
                             className="min-h-20 rounded-md border border-[var(--line)] px-3 py-2"
                             name="rationale"
-                            defaultValue="Reviewed against sanitized local evidence."
+                            defaultValue="已根据已清理的本地证据审核。"
                           />
                         </label>
                         <label className="grid gap-1">
-                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence refs</span>
+                          <span className="text-xs font-semibold uppercase text-[var(--muted)]">证据引用</span>
                           <input
                             className="min-h-10 rounded-md border border-[var(--line)] px-3"
                             name="evidence_refs"
-                            placeholder="request_response_diff"
+                            placeholder="请求_响应差异"
                           />
                         </label>
                         <button
                           type="submit"
                           className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
                         >
-                          Record Claim Review
+                          记录声明审核
                         </button>
                       </form>
                     </div>
                     <div className="grid content-start gap-2">
-                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">Status</p>
+                      <p className="text-xs font-semibold uppercase text-[var(--muted)]">状态</p>
                       <p className="break-words font-semibold">{formatLabel(claim.status)}</p>
                     </div>
                   </div>
@@ -408,7 +409,7 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                   {safeDisplay(claimLabel)}
                 </div>
                 {lines.length === 0 ? (
-                  <p className="p-5 text-sm text-[var(--muted)]">No report section claims ready.</p>
+                  <p className="p-5 text-sm text-[var(--muted)]">暂无可用报告章节声明。</p>
                 ) : (
                   <ol className="divide-y divide-[var(--line)] text-sm">
                     {lines.map((line, index) => (
@@ -427,7 +428,7 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
         <aside className="grid content-start gap-5">
           {sourceAuditHypotheses.length > 0 ? (
             <section className="border border-[var(--line)] bg-white">
-              <SectionHeader icon={ClipboardCheck} title="Refutation Review" />
+              <SectionHeader icon={ClipboardCheck} title="反证审核" />
               <div className="divide-y divide-[var(--line)]">
                 {sourceAuditHypotheses.map((hypothesis, index) => {
                   const evidenceNeeded = safeStringList(hypothesis.evidence_needed);
@@ -437,18 +438,18 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                   return (
                     <article key={`refutation-review-${index}`} className="grid gap-3 p-5 text-sm">
                       <p className="break-words font-semibold">
-                        {safeDisplay(hypothesis.hypothesis, `Hypothesis ${index + 1}`)}
+                        {safeDisplay(hypothesis.hypothesis, `假设 ${index + 1}`)}
                       </p>
                       <dl className="grid gap-3">
                         <Field
-                          label="Refutation status"
-                          value={hypothesis.refutation_status ?? "unverified"}
+                          label="反证状态"
+                          value={formatLabel(hypothesis.refutation_status ?? "unverified")}
                         />
-                        <Field label="Priority score" value={hypothesis.priority_score ?? 0} />
-                        <Field label="Validation" value={hypothesis.validation_mode} />
-                        <Field label="Evidence needed" value={evidenceNeeded.length} />
-                        <Field label="False positive checks" value={falsePositiveChecks.length} />
-                        <Field label="Ranking reasons" value={rankingReasons.length} />
+                        <Field label="优先级评分" value={hypothesis.priority_score ?? 0} />
+                        <Field label="验证" value={formatLabel(hypothesis.validation_mode)} />
+                        <Field label="所需证据" value={evidenceNeeded.length} />
+                        <Field label="误报检查" value={falsePositiveChecks.length} />
+                        <Field label="排序原因" value={rankingReasons.length} />
                       </dl>
                       {evidenceNeeded.length > 0 ? (
                         <ul className="grid gap-1 text-[var(--muted)]">
@@ -479,9 +480,9 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
           ) : null}
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ShieldCheck} title="Safety Notes" />
+            <SectionHeader icon={ShieldCheck} title="安全说明" />
             {preview.safety_notes.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No safety notes ready.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">暂无安全说明。</p>
             ) : (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {preview.safety_notes.map((note) => (
@@ -492,9 +493,9 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ListChecks} title="Evidence Refs" />
+            <SectionHeader icon={ListChecks} title="证据引用" />
             {preview.evidence_refs.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No evidence references ready.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">暂无证据引用。</p>
             ) : (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {preview.evidence_refs.map((ref) => (
@@ -505,79 +506,78 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={FileText} title="Manual submission gate" />
+            <SectionHeader icon={FileText} title="人工提交门" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Human review" value={preview.human_review_required ? "Required" : "Not required"} />
+              <Field label="人工审核" value={preview.human_review_required ? "需要处理" : "无需处理"} />
               <Field
-                label="Submission status"
-                value={preview.submission_blocked ? "Submission blocked" : "Human review ready"}
+                label="提交状态"
+                value={preview.submission_blocked ? "报告提交已阻断" : "人工审核已就绪"}
               />
-              <Field label="Research feedback gate" value={promotionGateDisplayStatus} />
-              <Field label="Review holds" value={blockedStageDisplayCount} />
-              <Field label="Provenance refs" value={provenanceRefDisplayCount} />
-              <Field label="Research audit" value={preview.run_id} />
+              <Field label="研究反馈门" value={formatLabel(promotionGateDisplayStatus)} />
+              <Field label="审核阻塞项" value={blockedStageDisplayCount} />
+              <Field label="溯源引用" value={provenanceRefDisplayCount} />
+              <Field label="研究审计" value={preview.run_id} />
             </dl>
             {canPromoteFindingCandidate ? (
               <form action={promoteFindingCandidateAction} className="border-t border-[var(--line)] p-5">
                 <p className="mb-3 text-sm text-[var(--muted)]">
-                  Promote the review-ready human-reviewed observed claim into Finding DB. Research feedback gates can still
-                  block promotion. Submission remains manual.
+                  将可审核、已人工审核的观察声明晋级为发现候选项。研究反馈门仍可阻断晋级；报告提交仍需人工操作。
                 </p>
                 <button
                   type="submit"
                   className="min-h-10 rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
                 >
-                  Promote Finding Candidate
+                  晋级发现候选项
                 </button>
               </form>
             ) : (
               <div className="border-t border-[var(--line)] p-5 text-sm font-semibold text-[var(--muted)]">
                 <p>
-                  Promotion waits for a live, human-reviewed observed claim. Research feedback gates can still block promotion.
+                  晋级须等待在线的、经人工审核的观察声明。研究反馈门仍可阻断晋级。
                 </p>
                 <p className="mt-2 text-[var(--warning)]">
-                  Research feedback gate blocked finding promotion.
+                  研究反馈门已阻断发现晋级。
                 </p>
               </div>
             )}
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ClipboardCheck} title="Learning Outcome" />
+            <SectionHeader icon={ClipboardCheck} title="学习结果" />
             <form action={recordLearningOutcomeAction} className="grid gap-4 p-5 text-sm">
               <p className="font-semibold text-[var(--muted)]">
-                advisory_memory_only. Records triage learning for future prioritization without changing validation gate state.
+                仅建议性记忆。记录分诊学习信号以支持后续优先级排序，不改变验证门状态。
               </p>
               <label className="grid gap-1">
-                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Outcome</span>
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">结果</span>
                 <select name="outcome" className="min-h-10 border border-[var(--line)] bg-white px-3">
-                  <option value="accepted">Accepted</option>
-                  <option value="duplicate">Duplicate</option>
-                  <option value="informative">Informative</option>
-                  <option value="na">N/A</option>
-                  <option value="rejected">Rejected</option>
+                  <option value="accepted">已接受</option>
+                  <option value="duplicate">重复</option>
+                  <option value="informative">信息性</option>
+                  <option value="na">不适用</option>
+                  <option value="rejected">已拒绝</option>
                 </select>
               </label>
               <label className="grid gap-1">
-                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence quality</span>
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">证据质量</span>
                 <select name="evidence_quality" className="min-h-10 border border-[var(--line)] bg-white px-3">
-                  <option value="">Unspecified</option>
-                  <option value="strong">Strong</option>
-                  <option value="adequate">Adequate</option>
-                  <option value="weak">Weak</option>
+                  <option value="">未指定</option>
+                  <option value="strong">强</option>
+                  <option value="adequate">充分</option>
+                  <option value="weak">弱</option>
                 </select>
               </label>
               <label className="grid gap-1">
-                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Severity delta</span>
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">严重性变化</span>
                 <select name="severity_delta" className="min-h-10 border border-[var(--line)] bg-white px-3">
-                  <option value="">Unspecified</option>
-                  <option value="up">Up</option>
-                  <option value="same">Same</option>
-                  <option value="down">Down</option>
+                  <option value="">未指定</option>
+                  <option value="up">上调</option>
+                  <option value="same">不变</option>
+                  <option value="down">下调</option>
                 </select>
               </label>
               <label className="grid gap-1">
-                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Bounty amount</span>
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">赏金金额</span>
                 <input
                   name="bounty_amount"
                   type="number"
@@ -586,18 +586,18 @@ export default async function ReportPreviewPage({ params, searchParams }: PagePr
                 />
               </label>
               <label className="grid gap-1">
-                <span className="text-xs font-semibold uppercase text-[var(--muted)]">Notes</span>
+                <span className="text-xs font-semibold uppercase text-[var(--muted)]">备注</span>
                 <textarea
                   name="notes"
                   className="min-h-24 border border-[var(--line)] bg-white p-3"
-                  defaultValue="Outcome recorded from human report review."
+                  defaultValue="已根据人工报告审核记录结果。"
                 />
               </label>
               <button
                 type="submit"
                 className="min-h-10 rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
               >
-                Record Learning Outcome
+                记录学习结果
               </button>
             </form>
           </section>
@@ -633,14 +633,14 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 
 function formatReviewGateFlag(value: string | undefined): string {
   if (value === "true") {
-    return "Review ready";
+    return "审核已就绪";
   }
 
   if (value === "false") {
-    return "Review blocked";
+    return "审核已阻断";
   }
 
-  return value ?? "Unknown";
+  return value ? formatLabel(value) : "未知";
 }
 
 function PageBack() {
@@ -650,7 +650,7 @@ function PageBack() {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Dashboard
+      控制台
     </Link>
   );
 }

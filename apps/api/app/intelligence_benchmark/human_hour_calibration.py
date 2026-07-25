@@ -499,6 +499,25 @@ REAL_SOURCE_KINDS = frozenset(
 SYNTHETIC_SOURCE_KINDS = frozenset(
     {"synthetic", "lab_fixture", "synthetic_human_hour_fixture"}
 )
+NON_REAL_SOURCE_KINDS = SYNTHETIC_SOURCE_KINDS | frozenset(
+    {"template", "example", "scaffold"}
+)
+_NON_REAL_PROVENANCE_TOKENS = (
+    "synthetic",
+    "fixture",
+    "demo",
+    "template",
+    "example",
+    "scaffold",
+)
+_TEMPLATE_PLACEHOLDER_PREFIXES = ("replace_", "set_me", "auth-ref-")
+_TEMPLATE_PLACEHOLDER_FIELDS = (
+    "program_authorization_id",
+    "authorization_ref",
+    "entry_id",
+    "package_label",
+    "program_label",
+)
 
 
 def package_source_kind(
@@ -520,6 +539,38 @@ def package_source_kind(
     return "synthetic"
 
 
+def _non_real_provenance_markers(*payloads: object) -> list[str]:
+    markers: set[str] = set()
+    for payload in payloads:
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("source_kind", "fixture_kind", "input_kind", "origin_kind"):
+                value = str(item.get(key) or "").strip().lower()
+                if not value:
+                    continue
+                if value in NON_REAL_SOURCE_KINDS or any(
+                    token in value for token in _NON_REAL_PROVENANCE_TOKENS
+                ):
+                    markers.add(f"{key}={value}")
+    return sorted(markers)
+
+
+def _template_placeholder_markers(*payloads: object) -> list[str]:
+    markers: set[str] = set()
+    for payload in payloads:
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in _TEMPLATE_PLACEHOLDER_FIELDS:
+                value = str(item.get(key) or "").strip().lower()
+                if value.startswith(_TEMPLATE_PLACEHOLDER_PREFIXES):
+                    markers.add(f"{key}={value}")
+    return sorted(markers)
+
+
 def detect_real_human_hour_signals(
     *,
     entries: list[dict[str, Any]],
@@ -528,10 +579,16 @@ def detect_real_human_hour_signals(
 ) -> dict[str, Any]:
     """Detect real authorized wall-clock human-hour evidence.
 
-    Synthetic fixtures never flip real flags.
+    Synthetic/template fixtures never flip real flags.
     """
     meta = package_meta if isinstance(package_meta, dict) else {}
     is_real_kind = source_kind in REAL_SOURCE_KINDS
+    non_real_markers = sorted(
+        {
+            *_non_real_provenance_markers(meta, entries),
+            *_template_placeholder_markers(meta, entries),
+        }
+    )
     auth_ref = str(
         meta.get("program_authorization_id")
         or meta.get("authorization_ref")
@@ -559,8 +616,11 @@ def detect_real_human_hour_signals(
             continue
         wall_entries.append(entry)
 
+    is_operator_attested = bool(
+        is_real_kind and auth_ref and not non_real_markers
+    )
     has_real_wall = bool(
-        is_real_kind
+        is_operator_attested
         and auth_ref
         and len(wall_entries) >= 1
         and all(
@@ -572,6 +632,14 @@ def detect_real_human_hour_signals(
     return {
         "source_kind": source_kind,
         "program_authorization_id": auth_ref or None,
+        "attestation_status": (
+            "operator_attested"
+            if is_operator_attested
+            else ("synthetic_or_template" if non_real_markers else "unverified")
+        ),
+        "independent_verification": False,
+        "non_real_provenance_markers": non_real_markers,
+        "is_operator_attested": is_operator_attested,
         "has_real_human_hour_wall_clock_logs": has_real_wall,
         "wall_clock_real_entry_count": len(wall_entries) if has_real_wall else 0,
     }

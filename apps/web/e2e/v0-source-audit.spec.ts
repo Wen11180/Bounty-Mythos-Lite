@@ -290,39 +290,36 @@ test.afterAll(async () => {
 test("V0 rendered source-audit flow stays human gated", async ({ page }) => {
   await page.goto("/source-audit");
 
-  await expect(page.getByRole("heading", { name: "Source Audit" })).toBeVisible();
-  await expect(page.getByText("submission_blocked")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "源代码审计" })).toBeVisible();
+  await expect(page.getByText("报告提交已阻断")).toBeVisible();
 
-  await page.getByLabel("Repository path").fill("C:/authorized/local/repo");
-  await page.getByLabel("Scope policy path").fill("C:/authorized/scope.yaml");
-  await page.getByLabel("Policy text").fill("allowed_repos only; no live validation");
-  await page.getByRole("button", { name: "Start Source Audit" }).click();
+  await page.getByLabel("仓库路径").fill("C:/authorized/local/repo");
+  await page.getByLabel("范围策略路径").fill("C:/authorized/scope.yaml");
+  await page.getByLabel("策略文本").fill("allowed_repos only; no live validation");
+  await page.getByRole("button", { name: "启动源代码审计" }).click();
 
   await expect(page).toHaveURL(new RegExp(`/runs/${fallbackRunId}$`));
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Validation Gate" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Review validation" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Report" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "验证审核门" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "审核验证" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "报告" })).toBeVisible();
 
-  await expect(page.getByRole("button", { name: /execute validation/i })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /submit report/i })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /approve validation/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /执行验证|提交报告|批准验证/u })).toHaveCount(0);
 
-  await page.getByRole("link", { name: "Report" }).click();
+  await page.getByRole("link", { name: "报告" }).click();
   await expect(page).toHaveURL(new RegExp(`/reports/${fallbackRunId}$`));
-  await expect(page.getByRole("heading", { name: "Manual submission gate" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "人工提交门" })).toBeVisible();
   await expect(
-    page.getByText("Manual submission gate", { exact: true }).locator("..").getByText("Submission blocked"),
+    page.getByText("人工提交门", { exact: true }).locator("..").getByText("报告提交已阻断"),
   ).toBeVisible({ timeout: 10000 });
-  await expect(page.getByRole("button", { name: /submit report/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /提交报告/u })).toHaveCount(0);
 
-  await page.getByRole("link", { name: "Review validation" }).click();
+  await page.getByRole("link", { name: "审核验证" }).click();
   await expect(page).toHaveURL(new RegExp(`/validation-workspace/${fallbackRunId}$`));
-  await expect(page.getByRole("heading", { name: "Validation Workspace" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Preflight Gate" })).toBeVisible();
-  await expect(page.getByText("Preflight blocked")).toBeVisible();
-  await expect(page.getByRole("button", { name: /execute validation/i })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /approve validation/i })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "验证工作区" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "预检门" })).toBeVisible();
+  await expect(page.getByText("预检已阻断")).toBeVisible();
+  await expect(page.getByRole("button", { name: /执行验证|批准验证/u })).toHaveCount(0);
 });
 
 test("Studio completes one explicit bounded trial over real loopback HTTP", async ({ page }) => {
@@ -480,26 +477,26 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
   );
 
   await page.goto("/studio");
-  const summary = page.getByText("Enable explicit local black-box lab");
+  const summary = page.getByText("启用显式本地黑盒实验室");
   await expect(summary).toBeVisible();
   await summary.click();
-  await page.getByLabel("Active loopback origin").fill(labOrigin);
+  await page.getByLabel("当前回环来源").fill(labOrigin);
 
-  await page.getByRole("button", { name: "Preview bounded lease" }).click();
-  await page.getByRole("button", { name: "Create two sessions" }).click();
-  await page.getByLabel("Session A ready").check();
-  await page.getByLabel("Session B ready").check();
-  await page.getByRole("button", { name: "Preview bounded lease" }).click();
-  await page.getByRole("button", { name: "Start recording" }).click();
+  await page.getByRole("button", { name: "预览受限租约" }).click();
+  await page.getByRole("button", { name: "创建两个会话" }).click();
+  await page.getByLabel("会话 A 已就绪").check();
+  await page.getByLabel("会话 B 已就绪").check();
+  await page.getByRole("button", { name: "预览受限租约" }).click();
+  await page.getByRole("button", { name: "开始录制" }).click();
   await page.evaluate(async () => {
     await window.__recordMythosLabRequest();
   });
-  await page.getByRole("button", { name: "Stop recording" }).click();
+  await page.getByRole("button", { name: "停止录制" }).click();
 
   await expect(page.getByText(/session_a \/ read_widget_a \/ \/widgets\/\{object\}/)).toBeVisible();
-  await page.getByRole("button", { name: "Review normalized traces" }).click();
-  await page.getByLabel("Durable validation run ID").fill("validation-e2e");
-  await page.getByRole("button", { name: "Review and approve complete plan" }).evaluate(
+  await page.getByRole("button", { name: "审查标准化轨迹" }).click();
+  await page.getByLabel("持久化验证运行 ID").fill("validation-e2e");
+  await page.getByRole("button", { name: "审查并批准完整计划" }).evaluate(
     (button) => {
       (button as HTMLButtonElement).click();
       (button as HTMLButtonElement).click();
@@ -508,18 +505,18 @@ test("Studio completes one explicit bounded trial over real loopback HTTP", asyn
   await expect(
     page
       .getByTestId("studio-conversation")
-      .getByText("One bounded local differential trial completed; result remains review-only."),
+      .getByText("已完成一次受限本地差异试验；结果仍仅供审核。"),
   ).toBeVisible();
   await expect(
     page.getByText(
-      "Report preview refreshed from the bounded local-lab result; human review remains required.",
+      "已根据受限本地实验结果刷新报告预览；仍需人工审核。",
     ),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Stop local lab" }).click();
+  await page.getByRole("button", { name: "停止本地实验室" }).click();
   await expect(
     page
       .getByTestId("studio-conversation")
-      .getByText("Local lab stopped; ephemeral session and review state cleared."),
+      .getByText("本地实验室已停止；临时会话和审核状态已清除。"),
   ).toBeVisible();
 
   expect(labHttpRequests).toEqual(["/widgets/object-a", "/widgets/object-a"]);
@@ -552,8 +549,8 @@ test("Studio rejects changed approval and exact-preflight dispatch facts without
     });
   });
   await prepareSyntheticLocalLabPlan(page);
-  await page.getByRole("button", { name: "Review and approve complete plan" }).click();
-  await expect(page.getByText(/Complete local lab plan failed/)).toBeVisible();
+  await page.getByRole("button", { name: "审查并批准完整计划" }).click();
+  await expect(page.getByText(/完成本地实验室计划失败/u)).toBeVisible();
   expect(await browserTrialCalls(page)).toBe(0);
 
   await page.unroute("**/mythos/studio/black-box-lab/runs/approve");
@@ -564,8 +561,8 @@ test("Studio rejects changed approval and exact-preflight dispatch facts without
       status: 200,
     });
   });
-  await page.getByRole("button", { name: "Review and approve complete plan" }).click();
-  await expect(page.getByText(/Complete local lab plan failed/)).toHaveCount(2);
+  await page.getByRole("button", { name: "审查并批准完整计划" }).click();
+  await expect(page.getByText(/完成本地实验室计划失败/u)).toHaveCount(2);
   expect(await browserTrialCalls(page)).toBe(0);
 });
 
@@ -580,9 +577,9 @@ test("Studio rejects expired approval before exact preflight and trial", async (
   });
   await prepareSyntheticLocalLabPlan(page);
 
-  await page.getByRole("button", { name: "Review and approve complete plan" }).click();
+  await page.getByRole("button", { name: "审查并批准完整计划" }).click();
 
-  await expect(page.getByText(/Complete local lab plan failed/)).toBeVisible();
+  await expect(page.getByText(/完成本地实验室计划失败/u)).toBeVisible();
   expect(await browserTrialCalls(page)).toBe(0);
 });
 
@@ -600,10 +597,10 @@ for (const mutation of ["origin", "readiness", "plan"] as const) {
       });
     });
     await prepareSyntheticLocalLabPlan(page);
-    await page.getByRole("button", { name: "Review and approve complete plan" }).click();
+    await page.getByRole("button", { name: "审查并批准完整计划" }).click();
     await mutatePendingLocalPlan(page, mutation);
 
-    await expect(page.getByText(/Complete local lab plan failed/)).toBeVisible();
+    await expect(page.getByText(/完成本地实验室计划失败/u)).toBeVisible();
     expect(await browserTrialCalls(page)).toBe(0);
   });
 }
@@ -625,7 +622,7 @@ test("Studio reload during delayed exact preflight never dispatches a trial", as
     }).catch(() => undefined);
   });
   await prepareSyntheticLocalLabPlan(page);
-  await page.getByRole("button", { name: "Review and approve complete plan" }).click();
+  await page.getByRole("button", { name: "审查并批准完整计划" }).click();
   await preflightEntered;
 
   await page.reload();
@@ -645,11 +642,11 @@ test("Studio bridge stop does not promote trial completion or report readiness",
   });
   await prepareSyntheticLocalLabPlan(page);
 
-  await page.getByRole("button", { name: "Review and approve complete plan" }).click();
+  await page.getByRole("button", { name: "审查并批准完整计划" }).click();
 
-  await expect(page.getByText("Local trial stopped: operator_stop.")).toBeVisible();
+  await expect(page.getByText(/本地试验已停止/u)).toBeVisible();
   await expect(
-    page.getByText("One bounded local differential trial completed; result remains review-only."),
+    page.getByText("已完成一次受限本地差异试验；结果仍仅供审核。"),
   ).toHaveCount(0);
   expect(await browserTrialCalls(page)).toBe(1);
   expect(
@@ -734,17 +731,17 @@ async function installSyntheticLocalLabBridge(
 
 async function prepareSyntheticLocalLabPlan(page: Page) {
   await page.goto("/studio");
-  await page.getByText("Enable explicit local black-box lab").click();
-  await page.getByLabel("Active loopback origin").fill(`http://127.0.0.1:${labPort}`);
-  await page.getByRole("button", { name: "Preview bounded lease" }).click();
-  await page.getByRole("button", { name: "Create two sessions" }).click();
-  await page.getByLabel("Session A ready").check();
-  await page.getByLabel("Session B ready").check();
-  await page.getByRole("button", { name: "Preview bounded lease" }).click();
-  await page.getByRole("button", { name: "Start recording" }).click();
-  await page.getByRole("button", { name: "Stop recording" }).click();
-  await page.getByRole("button", { name: "Review normalized traces" }).click();
-  await page.getByLabel("Durable validation run ID").fill("validation-e2e");
+  await page.getByText("启用显式本地黑盒实验室").click();
+  await page.getByLabel("当前回环来源").fill(`http://127.0.0.1:${labPort}`);
+  await page.getByRole("button", { name: "预览受限租约" }).click();
+  await page.getByRole("button", { name: "创建两个会话" }).click();
+  await page.getByLabel("会话 A 已就绪").check();
+  await page.getByLabel("会话 B 已就绪").check();
+  await page.getByRole("button", { name: "预览受限租约" }).click();
+  await page.getByRole("button", { name: "开始录制" }).click();
+  await page.getByRole("button", { name: "停止录制" }).click();
+  await page.getByRole("button", { name: "审查标准化轨迹" }).click();
+  await page.getByLabel("持久化验证运行 ID").fill("validation-e2e");
 }
 
 async function mutatePendingLocalPlan(
@@ -752,10 +749,10 @@ async function mutatePendingLocalPlan(
   mutation: "origin" | "readiness" | "plan",
 ) {
   const locator = mutation === "origin"
-    ? page.getByLabel("Active loopback origin")
+    ? page.getByLabel("当前回环来源")
     : mutation === "readiness"
-      ? page.getByLabel("Session B ready")
-      : page.getByLabel("Durable validation run ID");
+      ? page.getByLabel("会话 B 已就绪")
+      : page.getByLabel("持久化验证运行 ID");
   await locator.evaluate((element, kind) => {
     if (kind === "readiness") {
       const input = element as HTMLInputElement;

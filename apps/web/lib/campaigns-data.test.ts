@@ -137,7 +137,7 @@ const controlCenter = {
       plan_digest: "plan_digest_1",
       safety_gate_state: "manual_evidence_recorded",
       status: "evidence_recorded",
-      summary: "Manual validation result recorded: observed",
+      summary: "人工验证结果 recorded: observed",
       target_ref: "campaign:campaign_1",
       task_id: "task_1",
       validation_mode: "two_account_authorization_check",
@@ -169,7 +169,7 @@ const controlCenter = {
       candidate_status: null,
       execution_allowed: false,
       human_approval_required: true,
-      next_allowed_action: "Review hypothesis board and plan non-destructive evidence work.",
+      next_allowed_action: "审核假设看板并规划非破坏性证据工作。",
       playbook_id: "bola_idor",
       priority_score: 69,
       queue_key: "reasoning_memory:bola_idor",
@@ -185,7 +185,7 @@ const controlCenter = {
 
 const brainProfile = {
   program_id: "program_example",
-  program_name: "Example Program",
+  program_name: "示例项目",
   program_score: 84,
   attack_surface_memory: {
     objects: ["workspace", "invoice"],
@@ -557,13 +557,13 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
 
   assert.equal(summary.campaignId, "campaign_1");
   assert.equal(summary.executionAllowed, false);
-  assert.equal(summary.safeNextAction, "Review gate requests");
+  assert.equal(summary.safeNextAction, "审核门请求");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/validation-queue");
-  assert.deepEqual(summary.blockedReasons, ["Review required"]);
+  assert.deepEqual(summary.blockedReasons, ["需要审核"]);
   assert.doesNotMatch(JSON.stringify(summary), /Review approval requests|Approval required/i);
   assert.equal(
     summary.budgetLabel,
-    "30m / 5000 tokens / 2/10 tools used, 8 remaining / 1/1 validations used, 0 remaining",
+    "30 分钟 / 5000 个令牌 / 2/10 次工具调用，剩余 8 / 1/1 次验证，剩余 0",
   );
   assert.equal(summary.taskCount, 1);
   assert.equal(summary.agentRunCount, 1);
@@ -574,7 +574,7 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
       candidateStatus: null,
       executionAllowed: false,
       humanApprovalRequired: true,
-      nextAllowedAction: "Review hypothesis board and plan non-destructive evidence work.",
+      nextAllowedAction: "审核假设看板并规划非破坏性证据工作。",
       playbookId: "bola_idor",
       priorityScore: 69,
       rawPriorityScore: null,
@@ -590,7 +590,7 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
         traceableSourceFactCount: 0,
       },
       reportReadiness: {
-        nextAllowedAction: "Review evidence gates before report drafting.",
+        nextAllowedAction: "起草报告前请审核证据门。",
         reportSubmissionAllowed: false,
         requiredEvidenceCount: 0,
         safeValidationStepCount: 0,
@@ -602,8 +602,8 @@ test("toCampaignControlSummary keeps campaign control center read-only and redac
       refutationQuestionCount: 0,
       requiredEvidence: [],
       satisfiedEvidence: [],
-      safetyGate: "Advisory memory only",
-      source: "Mythos brain reasoning memory",
+      safetyGate: "仅作建议性记忆",
+      source: "研究大脑推理记忆",
       surfaceKey: "file_id:export",
       title: "Review bola_idor reasoning memory",
       topCandidateRank: null,
@@ -643,7 +643,7 @@ test("toCampaignControlSummary exposes autonomous hunt queue safety counts only"
         candidate_status: "awaiting_human_approval",
         execution_allowed: true,
         human_approval_required: true,
-        next_allowed_action: "Review validation plan before any execution.",
+        next_allowed_action: "执行前请审核验证计划。",
         playbook_id: "bola_idor",
         priority_score: 91,
         raw_priority_score: 116,
@@ -674,7 +674,7 @@ test("toCampaignControlSummary exposes autonomous hunt queue safety counts only"
         safety_gate: "awaiting_human_approval",
         source: "mythos_pipeline_autonomous_hunt_queue",
         surface_key: null,
-        title: "Review autonomous hunt candidate candidate_1",
+        title: "审核自动挖掘候选 candidate_1",
         top_candidate_rank: 1,
         validation_step_count: 2,
       },
@@ -684,21 +684,21 @@ test("toCampaignControlSummary exposes autonomous hunt queue safety counts only"
   assert.deepEqual(summary.researchQueueSuggestions, [
     {
       blockedActionCount: 4,
-      candidateStatus: "Awaiting human approval",
+      candidateStatus: "等待人工审核",
       executionAllowed: false,
       humanApprovalRequired: true,
-      nextAllowedAction: "Review validation plan before any execution.",
+      nextAllowedAction: "执行前请审核验证计划。",
       playbookId: "bola_idor",
       priorityScore: 91,
       rawPriorityScore: 100,
-      qualityGateReasons: ["Required evidence missing", "[redacted]"],
-      evidenceNeeded: ["Approved test object id matrix"],
+      qualityGateReasons: ["缺少必需证据", "[已脱敏]"],
+      evidenceNeeded: ["已批准测试对象 ID 矩阵"],
       evidenceTraceSummary: {
-        artifactKinds: ["Api", "[redacted]"],
+        artifactKinds: ["API", "[已脱敏]"],
         reportSubmissionAllowed: false,
         routeFactCount: 2,
         sourceFactCount: 3,
-        sourceFactTypes: ["Route handler", "[redacted]"],
+        sourceFactTypes: ["路由处理器", "[已脱敏]"],
         traceStatus: "traceable",
         traceableSourceFactCount: 3,
       },
@@ -713,12 +713,12 @@ test("toCampaignControlSummary exposes autonomous hunt queue safety counts only"
       },
       queueKey: "autonomous_hunt:run_1:hunt_queue_candidate_1",
       refutationQuestionCount: 3,
-      requiredEvidence: ["Independent refutation or static rule", "Policy"],
-      satisfiedEvidence: ["Local code or har correlation"],
-      safetyGate: "Awaiting human approval",
-      source: "Mythos pipeline autonomous hunt queue",
+      requiredEvidence: ["独立反证或静态规则", "策略"],
+      satisfiedEvidence: ["本地代码或 HAR 关联"],
+      safetyGate: "等待人工审核",
+      source: "研究流程自动挖掘队列",
       surfaceKey: null,
-      title: "Review autonomous hunt candidate candidate_1",
+      title: "审核自动挖掘候选 candidate_1",
       topCandidateRank: 1,
       validationStepCount: 2,
     },
@@ -738,7 +738,7 @@ test("toCampaignControlSummary routes validation review actions to validation au
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Review validation audit");
+  assert.equal(summary.safeNextAction, "审核验证审计");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/validation-runs");
 });
 
@@ -751,7 +751,7 @@ test("toCampaignControlSummary routes preflight-passed validation to manual obse
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Review manual validation observation");
+  assert.equal(summary.safeNextAction, "审核人工验证观察");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/validation-runs");
   assert.doesNotMatch(summary.safeNextAction, /execute|submit|dispatch|record/i);
 });
@@ -781,7 +781,6 @@ test("recordCampaignValidationRunManualResult posts only validation-run manual r
         reviewer: "operator",
         summary: "Redacted manual observation only.",
       },
-      fallback,
     );
 
     assert.equal(result.id, "validation_run_1");
@@ -810,7 +809,7 @@ test("toCampaignControlSummary routes target model review to attack surface map"
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Review attack surface map");
+  assert.equal(summary.safeNextAction, "审核攻击面映射");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/attack-surface-map");
   assert.equal(summary.executionAllowed, false);
 });
@@ -824,7 +823,7 @@ test("toCampaignControlSummary routes ready research tasks to review-only task l
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Review research tasks");
+  assert.equal(summary.safeNextAction, "审核研究任务");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/tasks");
   assert.doesNotMatch(summary.safeNextAction, /dispatch|execute|run/i);
 });
@@ -867,7 +866,7 @@ test("toCampaignControlSummary routes manual evidence actions to evidence review
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Review evidence or report drafts");
+  assert.equal(summary.safeNextAction, "审核证据或报告草稿");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/evidence-review");
 });
 
@@ -881,7 +880,7 @@ test("toCampaignControlSummary routes promotion block review to evidence review"
       blocked_attempt_count: 1,
       finding_promotion_allowed: false,
       latest_reason: "blocked_by_research_feedback_gate",
-      next_allowed_action: "Review blocked promotion evidence before retrying candidate promotion.",
+      next_allowed_action: "再次晋级漏洞候选前，请审核被阻断的晋级证据。",
       provenance_ref_count: 6,
       report_submission_allowed: false,
     },
@@ -903,15 +902,15 @@ test("toCampaignControlSummary routes promotion block review to evidence review"
     ],
   });
 
-  assert.equal(summary.safeNextAction, "Review blocked promotion evidence");
+  assert.equal(summary.safeNextAction, "审核被阻断的晋级证据");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/evidence-review");
-  assert.deepEqual(summary.blockedReasons, ["Blocked by research feedback gate"]);
+  assert.deepEqual(summary.blockedReasons, ["被研究反馈审核门阻断"]);
   assert.equal(summary.executionAllowed, false);
   assert.equal(summary.promotionReviewBlockedCount, 1);
-  assert.equal(summary.promotionReviewLatestReason, "Blocked by research feedback gate");
+  assert.equal(summary.promotionReviewLatestReason, "被研究反馈审核门阻断");
   assert.equal(
     summary.promotionReviewNextAllowedAction,
-    "Review blocked promotion evidence before retrying candidate promotion.",
+    "再次晋级漏洞候选前，请审核被阻断的晋级证据。",
   );
   assert.equal(summary.promotionReviewProvenanceRefCount, 6);
   assert.equal(summary.promotionReviewRequiredEvidenceBlockedCount, 0);
@@ -938,7 +937,7 @@ test("toCampaignControlSummary routes reviewed validation feedback to finding pr
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Promote finding candidate");
+  assert.equal(summary.safeNextAction, "晋级漏洞候选");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/report-drafts");
   assert.equal(summary.executionAllowed, false);
   assert.equal(summary.promotionReviewFindingPromotionAllowed, true);
@@ -961,7 +960,7 @@ test("toCampaignControlSummary routes learning outcome actions to report drafts"
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Review learning outcome");
+  assert.equal(summary.safeNextAction, "审核学习结果");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/report-drafts");
 });
 
@@ -974,7 +973,7 @@ test("toCampaignControlSummary routes learning review actions to brain", () => {
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Review learning outcome");
+  assert.equal(summary.safeNextAction, "审核学习结果");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/brain");
 });
 
@@ -1016,7 +1015,7 @@ test("toCampaignControlSummary routes cycle review completion actions to timelin
     ],
   });
 
-  assert.equal(summary.safeNextAction, "Review campaign cycle");
+  assert.equal(summary.safeNextAction, "审核活动周期");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1/timeline");
   assert.equal(summary.cycleReviewAwaitingCount, 1);
   assert.equal(summary.cycleReviewCompletedCount, 1);
@@ -1032,9 +1031,9 @@ test("toCampaignControlSummary routes blocker resolution to campaign detail", ()
     pipeline_stages: [],
   });
 
-  assert.equal(summary.safeNextAction, "Resolve blockers");
+  assert.equal(summary.safeNextAction, "处理阻断项");
   assert.equal(summary.safeNextHref, "/campaigns/campaign_1");
-  assert.deepEqual(summary.blockedReasons, ["Budget exhausted"]);
+  assert.deepEqual(summary.blockedReasons, ["预算已耗尽"]);
 });
 
 test("toCampaignControlSummary keeps next action labels on a review-only allowlist", () => {
@@ -1074,19 +1073,19 @@ test("toCampaignAgentRunSummaries keeps refs counted but not displayed", () => {
 
   assert.deepEqual(summaries, [
     {
-      agentType: "Orchestrator agent",
+      agentType: "编排智能体",
       finishedAt: null,
       id: "run_1",
       inputRefCount: 2,
       outputRefCount: 1,
-      safetyGateState: "Scope Guard reviewed",
+      safetyGateState: "范围守卫已审核",
       startedAt: "2026-07-05T00:00:00Z",
-      status: "Dispatched",
-      stopReason: "Review required",
+      status: "已分派",
+      stopReason: "需要审核",
       taskId: "task_1",
     },
   ]);
-  assert.doesNotMatch(JSON.stringify(summaries), /Scope Guard clear/);
+  assert.doesNotMatch(JSON.stringify(summaries), /范围守卫 clear/);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|token=secret/i);
   assert.doesNotMatch(JSON.stringify(summaries), /Approval review requested|Approval required/i);
 });
@@ -1103,14 +1102,14 @@ test("toCampaignTaskSummaries keeps task queue display redacted", () => {
 
   assert.deepEqual(summaries, [
     {
-      agentType: "Orchestrator agent",
+      agentType: "编排智能体",
       createdAt: "2026-07-05T00:00:00Z",
       id: "task_1",
       inputRefCount: 2,
       outputRefCount: 1,
-      status: "Queued",
-      taskType: "Campaign observation",
-      title: "Untitled task",
+      status: "排队中",
+      taskType: "活动观察",
+      title: "未命名任务",
     },
   ]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session-secret|cookie=session|X-API-Key/i);
@@ -1118,10 +1117,11 @@ test("toCampaignTaskSummaries keeps task queue display redacted", () => {
 
 test("toCampaignResearchTaskReviewSummary keeps research workspace advisory and redacted", () => {
   const summary = toCampaignResearchTaskReviewSummary({
+    autonomous_candidate_context: null,
     campaign_id: "campaign_1",
     dispatch_allowed: true,
     execution_allowed: true,
-    next_allowed_action: "Review hypothesis board and plan non-destructive evidence work.",
+    next_allowed_action: "审核假设看板并规划非破坏性证据工作。",
     latest_refutation_decision: {
       approval_id: "approval_1",
       campaign_id: "campaign_1",
@@ -1129,7 +1129,7 @@ test("toCampaignResearchTaskReviewSummary keeps research workspace advisory and 
       decision_id: "refutation_decision_1",
       dispatch_allowed: true,
       execution_allowed: true,
-      next_allowed_action: "Collect redacted evidence or refine the hypothesis before validation.",
+      next_allowed_action: "验证前请收集脱敏证据或完善假设。",
       plan_id: "research_plan_1",
       rationale: "Needs proof before validation; Authorization: Bearer secret-token",
       refutation_answers: ["Current artifact summaries do not prove missing checks."],
@@ -1162,7 +1162,7 @@ test("toCampaignResearchTaskReviewSummary keeps research workspace advisory and 
       execution_allowed: true,
       feedback_stage_id: "stage_feedback_1",
       finding_confirmation_allowed: true,
-      next_allowed_action: "Review validation evidence before finding promotion.",
+      next_allowed_action: "晋级漏洞候选前，请审核验证证据。",
       outcome: "observed",
       plan_id: "research_plan_1",
       report_submission_allowed: true,
@@ -1190,7 +1190,7 @@ test("toCampaignResearchTaskReviewSummary keeps research workspace advisory and 
     },
     non_destructive_plan: [
       "Review existing hypothesis board entries for Authorization: Bearer secret-token",
-      "Collect only redacted artifact summaries and provenance counts.",
+      "仅收集已脱敏资料摘要和溯源计数。",
     ],
     playbook_id: "bola_idor",
     priority_score: 140,
@@ -1219,27 +1219,27 @@ test("toCampaignResearchTaskReviewSummary keeps research workspace advisory and 
       dispatchAllowed: false,
       evidencePlan: ["Collect redacted summaries only."],
       executionAllowed: false,
-      hypothesis: "[redacted]",
-      nextAllowedAction: "Review hypothesis board and request review before validation.",
+      hypothesis: "[已脱敏]",
+      nextAllowedAction: "验证前请审核假设看板并请求审核。",
       planId: "research_plan_1",
       refutationQuestions: ["Can redacted provenance disprove this"],
       reportSubmissionAllowed: false,
-      requiredHumanGates: ["Scope guard review"],
-      safetyGate: "Advisory plan only",
-      status: "Drafted",
+      requiredHumanGates: ["范围守卫审核"],
+      safetyGate: "仅作建议性计划",
+      status: "已起草",
       taskId: "task_1",
       validationAllowed: false,
     },
     latestRefutationDecision: {
       approvalId: "approval_1",
       campaignId: "campaign_1",
-      decision: "Needs evidence",
+      decision: "需要补充证据",
       decisionId: "refutation_decision_1",
       dispatchAllowed: false,
       executionAllowed: false,
-      nextAllowedAction: "Collect redacted evidence or refine the hypothesis before validation.",
+      nextAllowedAction: "验证前请收集脱敏证据或完善假设。",
       planId: "research_plan_1",
-      rationale: "[redacted]",
+      rationale: "[已脱敏]",
       refutationAnswers: ["Current artifact summaries do not prove missing checks."],
       reportSubmissionAllowed: false,
       taskId: "task_1",
@@ -1247,19 +1247,19 @@ test("toCampaignResearchTaskReviewSummary keeps research workspace advisory and 
       validationRunId: "validation_run_1",
     },
     suggestedRefutationDecision: {
-      decision: "Needs validation review",
+      decision: "需要验证审核",
       dispatchAllowed: false,
       executionAllowed: false,
       humanReviewRequired: true,
-      nextAllowedAction: "Prepare a human-reviewed validation plan without executing it.",
+      nextAllowedAction: "准备经人工审核的验证计划，不执行验证。",
       planId: "auto_research_plan_1",
-      rationale: "[redacted]",
+      rationale: "[已脱敏]",
       refutationAnswerCount: 0,
       refutationQuestionCount: 2,
       reportSubmissionAllowed: false,
       targetRef: "campaign:campaign_1",
       validationAllowed: false,
-      validationMode: "Two account review check",
+      validationMode: "双账号授权检查",
     },
     latestValidationFeedback: {
       approvalId: "approval_1",
@@ -1270,36 +1270,36 @@ test("toCampaignResearchTaskReviewSummary keeps research workspace advisory and 
       executionAllowed: false,
       feedbackStageId: "stage_feedback_1",
       findingConfirmationAllowed: false,
-      nextAllowedAction: "Review validation evidence before finding promotion.",
-      outcome: "Observed",
+      nextAllowedAction: "晋级漏洞候选前，请审核验证证据。",
+      outcome: "已观察",
       planId: "research_plan_1",
       reportSubmissionAllowed: false,
-      safetyGate: "Advisory validation feedback only",
-      status: "Evidence recorded",
+      safetyGate: "仅作建议性验证反馈",
+      status: "证据已记录",
       taskId: "task_1",
       validationAllowed: false,
       validationRunId: "validation_run_1",
     },
-    nextAllowedAction: "Review hypothesis board and plan non-destructive evidence work.",
+    nextAllowedAction: "审核假设看板并规划非破坏性证据工作。",
     nonDestructivePlan: [
-      "Review existing hypothesis board entries for Authorization=[redacted]",
-      "Collect only redacted artifact summaries and provenance counts.",
+      "Review existing hypothesis board entries for Authorization=[已脱敏]",
+      "仅收集已脱敏资料摘要和溯源计数。",
     ],
     playbookId: "bola_idor",
     priorityScore: 100,
     queueKey: "reasoning_memory:bola_idor",
     reportSubmissionAllowed: false,
     requiredHumanGates: [
-      "Scope guard review",
-      "Redaction review",
-      "Review required before validation",
+      "范围守卫审核",
+      "脱敏审核",
+      "验证前需要人工审核",
     ],
-    safetyGate: "Advisory memory only",
-    source: "Mythos brain reasoning memory",
-    status: "Queued review",
+    safetyGate: "仅作建议性记忆",
+    source: "研究大脑推理记忆",
+    status: "已排入审核队列",
     surfaceKey: "file_id:export",
     taskId: "task_1",
-    title: "Review bola_idor reasoning memory with session=[redacted]",
+    title: "Review bola_idor reasoning memory with session=[已脱敏]",
   });
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|Authorization: Bearer/i);
   assert.doesNotMatch(
@@ -1316,8 +1316,8 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
     latest_refutation_decision: null,
     latest_validation_feedback: null,
     latest_review_plan: null,
-    next_allowed_action: "Review validation plan before any execution.",
-    non_destructive_plan: ["Prepare a human-reviewed validation plan without executing it."],
+    next_allowed_action: "执行前请审核验证计划。",
+    non_destructive_plan: ["准备经人工审核的验证计划，不执行验证。"],
     playbook_id: "bola_idor",
     priority_score: 88,
     queue_key: "autonomous_hunt:pipeline_run_1:hunt_queue_hypothesis_1",
@@ -1328,7 +1328,7 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
     status: "queued_review",
     surface_key: null,
     task_id: "task_1",
-    title: "Review autonomous hunt candidate hypothesis_1",
+    title: "审核自动挖掘候选 hypothesis_1",
     autonomous_candidate_context: {
       blocked_actions: [
         "execute_live_validation",
@@ -1365,7 +1365,7 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
         traceable_source_fact_count: 2,
       },
       report_readiness: {
-        next_allowed_action: "Prepare a submission-blocked draft for human redaction review.",
+        next_allowed_action: "Prepare a submission-blocked draft for human 脱敏审查.",
         report_submission_allowed: true,
         required_evidence_count: 0,
         safe_validation_step_count: 2,
@@ -1376,7 +1376,7 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
       refutation_questions: [
         "Can same-handler authorization evidence refute the missing access-control check candidate?",
         "Can existing redacted artifacts disprove this?",
-        "Does Scope Guard allow validation?",
+        "Does 范围守卫 allow validation?",
       ],
       refutation_status: "needs_evidence",
       required_evidence: [
@@ -1404,25 +1404,25 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
 
   assert.deepEqual(summary.autonomousCandidateContext, {
     blockedActions: [
-      "Execute live validation",
-      "Blocked action",
-      "Submit report",
+      "执行实时验证",
+      "已阻断操作",
+      "提交报告",
     ],
     candidateId: "hypothesis_1",
-    candidateStatus: "Awaiting human review",
+    candidateStatus: "等待人工审核",
     dispatchAllowed: false,
-    evidenceNeeded: ["Approved test object id matrix", "[redacted]"],
+    evidenceNeeded: ["已批准测试对象 ID 矩阵", "[已脱敏]"],
     evidenceTraceSummary: {
-      artifactKinds: ["Api", "[redacted]"],
+      artifactKinds: ["API", "[已脱敏]"],
       reportSubmissionAllowed: false,
       routeFactCount: 1,
       sourceFactCount: 2,
-      sourceFactTypes: ["Access control gap candidate", "[redacted]"],
+      sourceFactTypes: ["访问控制缺口候选", "[已脱敏]"],
       traceStatus: "traceable",
       traceableSourceFactCount: 2,
     },
     reportReadiness: {
-      nextAllowedAction: "Prepare a submission-blocked draft for human redaction review.",
+      nextAllowedAction: "Prepare a submission-blocked draft for human 脱敏审查.",
       reportSubmissionAllowed: false,
       requiredEvidenceCount: 0,
       safeValidationStepCount: 2,
@@ -1430,38 +1430,38 @@ test("toCampaignResearchTaskReviewSummary maps autonomous candidate context as a
       submissionBlocked: true,
       traceStatus: "traceable",
     },
-    evidenceFocus: ["Same handler authz evidence", "[redacted]"],
+    evidenceFocus: ["同处理器访问控制证据", "[已脱敏]"],
     executionAllowed: false,
     humanApprovalRequired: true,
-    hypothesis: "[redacted]",
+    hypothesis: "[已脱敏]",
     pipelineRunId: "pipeline_run_1",
     rawPriorityScore: 100,
-    qualityGateReasons: ["Required evidence missing", "[redacted]"],
+    qualityGateReasons: ["缺少必需证据", "[已脱敏]"],
     refutationQuestions: [
       "Can same-handler authorization evidence refute the missing access-control check candidate",
       "Can existing redacted artifacts disprove this",
-      "Does Scope Guard allow validation",
+      "Does 范围守卫 allow validation",
     ],
-    refutationStatus: "Needs evidence",
+    refutationStatus: "需要补充证据",
     requiredEvidence: [
-      "Independent refutation or static rule",
-      "Policy",
-      "[redacted]",
+      "独立反证或静态规则",
+      "策略",
+      "[已脱敏]",
     ],
-    satisfiedEvidence: ["Local code or har correlation"],
+    satisfiedEvidence: ["本地代码或 HAR 关联"],
     reportSubmissionAllowed: false,
-    safetyNotes: ["Scope guard required", "Human review required"],
-    sourceFactTypes: ["Access-control gap candidate", "Sensitive sink"],
+    safetyNotes: ["需要范围守卫审核", "需要人工审核"],
+    sourceFactTypes: ["访问控制缺口候选", "敏感汇点"],
     triageSignals: [
-      "Access control gap candidate",
-      "Sensitive sink present",
-      "Human review required",
+      "访问控制缺口候选",
+      "存在敏感汇点",
+      "需要人工审核",
     ],
     validationAllowed: false,
-    validationPlanStatus: "Requires review",
+    validationPlanStatus: "需要审核",
     validationSteps: [
       "Use two authorized test accounts only.",
-      "Validation step redacted",
+      "验证步骤已脱敏",
     ],
   });
   assert.equal(summary.executionAllowed, false);
@@ -1497,36 +1497,36 @@ test("toCampaignValidationQueueSummaries redacts approval details for display", 
 
   assert.deepEqual(summaries, [
     {
-      approvalType: "Validation batch",
+      approvalType: "验证批次",
       asset: "api.example.com/path",
       createdAt: "2026-07-05T00:00:00Z",
       expiresAt: null,
       id: "approval_1",
       planDigest: "plan_digest_1",
-      reason: "Needs review; Authorization=[redacted]",
-      requestedAction: "Two account review check",
+      reason: "需要审核; Authorization=[已脱敏]",
+      requestedAction: "双账号授权检查",
       runId: null,
-      safetyGateState: "Awaiting review gate",
-      status: "Pending",
+      safetyGateState: "等待审核门",
+      status: "待处理",
       taskId: "task_1",
-      validationMode: "Two account review check",
-      nextAction: "Review the gate record, then run Scope Guard preflight before validation.",
+      validationMode: "双账号授权检查",
+      nextAction: "审核门记录后，再执行范围守卫预检。",
     },
     {
-      approvalType: "Review gate",
+      approvalType: "审核门",
       asset: "api.example.com",
       createdAt: "2026-07-05T00:00:00Z",
       expiresAt: null,
       id: "approval_2",
       planDigest: null,
-      reason: "Review required",
+      reason: "需要审核",
       requestedAction: null,
       runId: null,
-      safetyGateState: "Awaiting review gate",
-      status: "Pending",
+      safetyGateState: "等待审核门",
+      status: "待处理",
       taskId: null,
       validationMode: null,
-      nextAction: "Review the gate record, then run Scope Guard preflight before validation.",
+      nextAction: "审核门记录后，再执行范围守卫预检。",
     },
   ]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|cookie=session/i);
@@ -1562,19 +1562,19 @@ test("toCampaignValidationRunSummaries keeps validation run audit state redacted
       createdAt: "2026-07-05T00:00:00Z",
       evidenceRefCount: 0,
       executionStarted: false,
-      executionState: "Awaiting review gate",
+      executionState: "等待审核门",
       finishedAt: null,
       id: "validation_run_1",
-      attentionState: "Review gate missing",
+      attentionState: "缺少审核门",
       planDigest: "plan_digest_1",
       preflightPassed: false,
-      safetyGateState: "Awaiting review gate",
-      status: "Awaiting review gate",
-      summary: "Needs review; Authorization=[redacted]",
+      safetyGateState: "等待审核门",
+      status: "等待审核门",
+      summary: "需要审核; Authorization=[已脱敏]",
       targetRef: "candidate:idor",
       taskId: "task_1",
-      validationMode: "Two account review check",
-      nextAction: "Review the validation gate before preflight.",
+      validationMode: "双账号授权检查",
+      nextAction: "预检前请审核验证门。",
     },
   ]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|token=secret|authorization: bearer/i);
@@ -1603,9 +1603,9 @@ test("toCampaignValidationRunSummaries marks approved validation as preflight-re
   ]);
 
   assert.equal(summaries[0].allowedToExecute, false);
-  assert.equal(summaries[0].executionState, "Preflight required");
-  assert.equal(summaries[0].attentionState, "Preflight required");
-  assert.equal(summaries[0].nextAction, "Run Scope Guard preflight before validation.");
+  assert.equal(summaries[0].executionState, "需要预检");
+  assert.equal(summaries[0].attentionState, "需要预检");
+  assert.equal(summaries[0].nextAction, "验证前请执行范围守卫预检。");
 });
 
 test("toCampaignValidationRunSummaries treats passed preflight as review state, not execution permission", () => {
@@ -1624,7 +1624,7 @@ test("toCampaignValidationRunSummaries treats passed preflight as review state, 
       preflight_passed: true,
       safety_gate_state: "scope_guard_preflight_passed",
       status: "preflight_passed",
-      summary: "Scope Guard preflight passed.",
+      summary: "范围守卫 preflight passed.",
       target_ref: "campaign:campaign_1",
       task_id: "task_1",
       validation_mode: "two_account_authorization_check",
@@ -1634,11 +1634,11 @@ test("toCampaignValidationRunSummaries treats passed preflight as review state, 
   assert.equal(summaries[0].allowedToExecute, true);
   assert.equal(summaries[0].preflightPassed, true);
   assert.equal(summaries[0].executionStarted, false);
-  assert.equal(summaries[0].executionState, "Preflight passed");
-  assert.equal(summaries[0].attentionState, "Preflight passed");
+  assert.equal(summaries[0].executionState, "预检已通过");
+  assert.equal(summaries[0].attentionState, "预检已通过");
   assert.equal(
     summaries[0].nextAction,
-    "Review manual validation observation before any evidence promotion.",
+    "在晋级任何证据前审核人工验证观察。",
   );
   assert.doesNotMatch(summaries[0].nextAction, /record|execute|run|submit|dispatch/i);
 });
@@ -1659,7 +1659,7 @@ test("toCampaignValidationRunSummaries labels started and blocked validation as 
       preflight_passed: true,
       safety_gate_state: "scope_guard_preflight_passed",
       status: "running",
-      summary: "Validation started.",
+      summary: "验证已启动.",
       target_ref: "campaign:campaign_1",
       task_id: "task_1",
       validation_mode: "two_account_authorization_check",
@@ -1676,15 +1676,15 @@ test("toCampaignValidationRunSummaries labels started and blocked validation as 
       plan_digest: "plan_digest_1",
       safety_gate_state: "scope_guard_blocked",
       status: "blocked",
-      summary: "Preflight blocked.",
+      summary: "预检已阻断.",
       target_ref: "campaign:campaign_1",
       task_id: "task_1",
       validation_mode: "two_account_authorization_check",
     },
   ]);
 
-  assert.equal(summaries[0].executionState, "Validation started");
-  assert.equal(summaries[1].executionState, "Preflight blocked");
+  assert.equal(summaries[0].executionState, "验证已启动");
+  assert.equal(summaries[1].executionState, "预检已阻断");
   assert.doesNotMatch(JSON.stringify(summaries), /Execution started|Execution blocked/);
 });
 
@@ -1696,26 +1696,26 @@ test("toCampaignArtifactSummaries exposes campaign artifact safety without raw m
       asset: "api.example.com/path",
       createdAt: "2026-07-05T00:00:00Z",
       id: "artifact_safe",
-      ingestionStatus: "Normalized",
-      kind: "Openapi",
+      ingestionStatus: "已规范化",
+      kind: "OpenAPI",
       reportChainAllowed: true,
       safetyBlockerCount: 0,
-      sensitivityLabel: "Low",
-      sourceType: "Dry run inline",
+      sensitivityLabel: "低",
+      sourceType: "内联演练运行",
       usageCount: 1,
-      usageStages: [{ count: 1, label: "Target model" }],
-      usageTypes: [{ count: 1, label: "Pipeline run" }],
+      usageStages: [{ count: 1, label: "目标模型" }],
+      usageTypes: [{ count: 1, label: "流程运行" }],
     },
     {
       asset: "api.example.com",
       createdAt: "2026-07-05T00:01:00Z",
       id: "artifact_blocked",
-      ingestionStatus: "Normalized",
-      kind: "Har",
+      ingestionStatus: "已规范化",
+      kind: "HAR",
       reportChainAllowed: false,
       safetyBlockerCount: 2,
-      sensitivityLabel: "Sensitive",
-      sourceType: "Manual upload",
+      sensitivityLabel: "敏感",
+      sourceType: "人工上传",
       usageCount: 0,
       usageStages: [],
       usageTypes: [],
@@ -1735,18 +1735,18 @@ test("toCampaignTimelineSummaries keeps stage refs counted but not displayed", (
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Campaign tick",
+      auditLabel: "活动轮次",
       id: "stage_1",
       inputRefCount: 2,
       isCycleReview: false,
       isLearningOutcome: false,
       isManualValidationResult: false,
       outputRefCount: 1,
-      safetyGateState: "Blocked",
-      stageKey: "Campaign tick",
+      safetyGateState: "已阻断",
+      stageKey: "活动轮次",
       stageOrder: 0,
-      status: "Blocked",
-      stopReason: "Review required",
+      status: "已阻断",
+      stopReason: "需要审核",
       taskId: "task_1",
     },
   ]);
@@ -1764,7 +1764,7 @@ test("toCampaignTimelineSummaries exposes safe timing and error summaries", () =
   ]);
 
   assert.equal(summaries[0]?.durationSeconds, 42);
-  assert.equal(summaries[0]?.errorSummary, "[redacted]");
+  assert.equal(summaries[0]?.errorSummary, "[已脱敏]");
   assert.doesNotMatch(JSON.stringify(summaries), /timeline-secret|api_key/i);
 });
 
@@ -1808,31 +1808,31 @@ test("toCampaignTimelineSummaries highlights manual validation result stages wit
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Manual validation result",
+      auditLabel: "人工验证结果",
       id: "stage_manual_result",
       inputRefCount: 1,
       isCycleReview: false,
       isLearningOutcome: false,
       isManualValidationResult: true,
       manualValidationReview: {
-        evidenceQuality: "Adequate",
+        evidenceQuality: "充分",
         promotionReviewReady: false,
         qualityReasons: [
-          "Manual result recorded",
-          "Has report safe evidence",
-          "Promotion blocked by redaction review",
+          "人工结果已记录",
+          "包含报告安全证据",
+          "因脱敏审核阻断晋级",
         ],
         qualityScore: 45,
-        redactionStatus: "Redacted",
+        redactionStatus: "已脱敏",
         safeEvidenceRefCount: 1,
-        sourceType: "Manual safe observation",
+        sourceType: "人工安全观察",
         unsafeEvidenceRefCount: 1,
       },
       outputRefCount: 2,
-      safetyGateState: "Manual evidence recorded",
-      stageKey: "Validation manual result",
+      safetyGateState: "人工证据已记录",
+      stageKey: "人工验证结果",
       stageOrder: 3,
-      status: "Evidence recorded",
+      status: "证据已记录",
       stopReason: null,
       taskId: "task_1",
     },
@@ -1864,7 +1864,7 @@ test("toCampaignTimelineSummaries highlights research validation feedback stages
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Research validation feedback",
+      auditLabel: "研究验证反馈",
       id: "stage_research_feedback",
       inputRefCount: 3,
       isCycleReview: false,
@@ -1872,10 +1872,10 @@ test("toCampaignTimelineSummaries highlights research validation feedback stages
       isManualValidationResult: false,
       isResearchValidationFeedback: true,
       outputRefCount: 1,
-      safetyGateState: "Advisory validation feedback only",
-      stageKey: "Research task validation feedback",
+      safetyGateState: "仅作建议性验证反馈",
+      stageKey: "研究任务验证反馈",
       stageOrder: 9,
-      status: "Evidence recorded",
+      status: "证据已记录",
       stopReason: null,
       taskId: "task_1",
     },
@@ -1903,7 +1903,7 @@ test("toCampaignTimelineSummaries highlights finding promotion blocked audit sta
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Finding promotion blocked",
+      auditLabel: "漏洞候选晋级已阻断",
       id: "stage_promotion_blocked",
       inputRefCount: 1,
       isCycleReview: false,
@@ -1911,11 +1911,11 @@ test("toCampaignTimelineSummaries highlights finding promotion blocked audit sta
       isLearningOutcome: false,
       isManualValidationResult: false,
       outputRefCount: 0,
-      safetyGateState: "Manual review required",
-      stageKey: "Finding promotion blocked",
+      safetyGateState: "需要人工审核",
+      stageKey: "漏洞候选晋级已阻断",
       stageOrder: 10,
-      status: "Blocked",
-      stopReason: "Blocked by research feedback gate",
+      status: "已阻断",
+      stopReason: "被研究反馈审核门阻断",
       taskId: null,
     },
   ]);
@@ -1942,7 +1942,7 @@ test("toCampaignTimelineSummaries highlights finding candidate creation audit st
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Finding promotion review",
+      auditLabel: "漏洞候选晋级审核",
       id: "stage_promotion_created",
       inputRefCount: 2,
       isCycleReview: false,
@@ -1950,10 +1950,10 @@ test("toCampaignTimelineSummaries highlights finding candidate creation audit st
       isLearningOutcome: false,
       isManualValidationResult: false,
       outputRefCount: 1,
-      safetyGateState: "Manual review required",
-      stageKey: "Finding promotion",
+      safetyGateState: "需要人工审核",
+      stageKey: "漏洞候选晋级",
       stageOrder: 11,
-      status: "Candidate created",
+      status: "候选已创建",
       stopReason: null,
       taskId: null,
     },
@@ -1996,24 +1996,24 @@ test("toCampaignTimelineSummaries exposes finding promotion provenance counts", 
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Finding promotion review",
+      auditLabel: "漏洞候选晋级审核",
       id: "stage_promotion_created",
       inputRefCount: 2,
       isCycleReview: false,
       isFindingPromotion: true,
       isLearningOutcome: false,
       isManualValidationResult: false,
-      hunterOperatingAction: "Promote to finding candidate",
-      llmAuditMode: "Audit only",
+      hunterOperatingAction: "晋级为漏洞候选",
+      llmAuditMode: "仅审核",
       llmAuditPromptHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       llmAuditPromptTextStored: false,
       outputRefCount: 1,
       promotionProvenanceRefCount: 2,
       reviewEvidenceRefCount: 2,
-      safetyGateState: "Manual review required",
-      stageKey: "Finding promotion",
+      safetyGateState: "需要人工审核",
+      stageKey: "漏洞候选晋级",
       stageOrder: 11,
-      status: "Candidate created",
+      status: "候选已创建",
       stopReason: null,
       taskId: null,
     },
@@ -2056,8 +2056,8 @@ test("toCampaignTimelineSummaries highlights validation feedback review gates wi
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Validation feedback review",
-      decision: "Allow finding promotion",
+      auditLabel: "验证反馈审核",
+      decision: "允许晋级漏洞候选",
       executionAllowed: false,
       findingConfirmationAllowed: true,
       id: "stage_validation_feedback_review",
@@ -2068,10 +2068,10 @@ test("toCampaignTimelineSummaries highlights validation feedback review gates wi
       isValidationFeedbackReview: true,
       outputRefCount: 1,
       reportSubmissionAllowed: false,
-      safetyGateState: "Manual review required",
-      stageKey: "Research task validation feedback review",
+      safetyGateState: "需要人工审核",
+      stageKey: "研究任务验证反馈审核",
       stageOrder: 12,
-      status: "Completed",
+      status: "已完成",
       stopReason: null,
       taskId: "task_1",
       validationAllowed: false,
@@ -2118,9 +2118,9 @@ test("toCampaignTimelineSummaries highlights research queue materialization safe
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Research review queued",
+      auditLabel: "研究审核已排队",
       blockedActionCount: 4,
-      candidateStatus: "Awaiting human approval",
+      candidateStatus: "等待人工审核",
       humanApprovalRequired: true,
       id: "stage_research_queue_materialized",
       inputRefCount: 4,
@@ -2131,14 +2131,14 @@ test("toCampaignTimelineSummaries highlights research queue materialization safe
       outputRefCount: 1,
       refutationQuestionCount: 3,
       requiredEvidence: [
-        "Independent refutation or static rule",
-        "Policy",
-        "[redacted]",
+        "独立反证或静态规则",
+        "策略",
+        "[已脱敏]",
       ],
-      safetyGateState: "Manual review required",
-      stageKey: "Research queue materialized",
+      safetyGateState: "需要人工审核",
+      stageKey: "研究队列已生成",
       stageOrder: 12,
-      status: "Queued review",
+      status: "已排入审核队列",
       stopReason: null,
       taskId: "task_1",
       validationStepCount: 2,
@@ -2185,7 +2185,7 @@ test("toCampaignTimelineSummaries highlights research plan audit counts without 
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Research plan drafted",
+      auditLabel: "研究计划已起草",
       blockedActionCount: 4,
       evidenceFocusCount: 2,
       evidenceStepCount: 2,
@@ -2201,15 +2201,15 @@ test("toCampaignTimelineSummaries highlights research plan audit counts without 
       priorityReasonCount: 3,
       refutationQuestionCount: 3,
       requiredEvidence: [
-        "Independent refutation or static rule",
-        "Policy",
-        "[redacted]",
+        "独立反证或静态规则",
+        "策略",
+        "[已脱敏]",
       ],
       sourceFactTypeCount: 1,
-      safetyGateState: "Advisory plan only",
-      stageKey: "Research task review plan",
+      safetyGateState: "仅作建议性计划",
+      stageKey: "研究任务审核计划",
       stageOrder: 13,
-      status: "Drafted",
+      status: "已起草",
       stopReason: null,
       taskId: "task_1",
       triageSignalCount: 1,
@@ -2257,9 +2257,9 @@ test("toCampaignTimelineSummaries highlights refutation decision gates without r
   assert.deepEqual(summaries, [
     {
       approvalCreated: true,
-      auditLabel: "Refutation decision",
+      auditLabel: "反证决策",
       blockedActionCount: 4,
-      decision: "Needs validation review",
+      decision: "需要验证审核",
       evidenceFocusCount: 2,
       hasAuthorizationGapCandidate: true,
       humanApprovalRequired: true,
@@ -2273,10 +2273,10 @@ test("toCampaignTimelineSummaries highlights refutation decision gates without r
       priorityReasonCount: 3,
       refutationAnswerCount: 1,
       sourceFactTypeCount: 1,
-      safetyGateState: "Advisory refutation only",
-      stageKey: "Research task refutation decision",
+      safetyGateState: "仅作建议性反证",
+      stageKey: "研究任务反证决策",
       stageOrder: 14,
-      status: "Needs validation review",
+      status: "需要验证审核",
       stopReason: null,
       taskId: "task_1",
       triageSignalCount: 1,
@@ -2306,17 +2306,17 @@ test("toCampaignTimelineSummaries highlights advisory learning outcome stages wi
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Advisory Brain learning",
+      auditLabel: "建议性大脑学习",
       id: "stage_learning_result",
       inputRefCount: 1,
       isCycleReview: false,
       isLearningOutcome: true,
       isManualValidationResult: false,
       outputRefCount: 2,
-      safetyGateState: "Advisory memory only",
-      stageKey: "Learning outcome recorded",
+      safetyGateState: "仅作建议性记忆",
+      stageKey: "学习结果已记录",
       stageOrder: 4,
-      status: "Recorded",
+      status: "已记录",
       stopReason: null,
       taskId: "task_1",
     },
@@ -2344,29 +2344,29 @@ test("toCampaignTimelineSummaries highlights cycle review gates without refs", (
 
   assert.deepEqual(summaries, [
     {
-      auditLabel: "Campaign cycle review",
+      auditLabel: "活动周期审核",
       id: "stage_cycle_review",
       inputRefCount: 1,
       isCycleReview: true,
       isLearningOutcome: false,
       isManualValidationResult: false,
       outputRefCount: 2,
-      safetyGateState: "Allowed",
-      stageKey: "Campaign cycle review",
+      safetyGateState: "已允许",
+      stageKey: "活动周期审核",
       stageOrder: 5,
-      status: "Awaiting review",
-      stopReason: "Campaign cycle review required",
+      status: "等待审核",
+      stopReason: "需要审核活动周期",
       taskId: null,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
 });
 
-test("toCampaignBrainSummary keeps Mythos Brain advisory and redacted", () => {
+test("toCampaignBrainSummary keeps 研究大脑 advisory and redacted", () => {
   const summary = toCampaignBrainSummary(brainProfile);
 
   assert.equal(summary.programId, "program_example");
-  assert.equal(summary.programName, "Example Program");
+  assert.equal(summary.programName, "示例项目");
   assert.equal(summary.programScore, 84);
   assert.equal(summary.objectCount, 2);
   assert.equal(summary.roleCount, 2);
@@ -2389,14 +2389,14 @@ test("toCampaignBrainSummary keeps Mythos Brain advisory and redacted", () => {
       },
     ],
     safetyNotes: [
-      "Advisory memory only",
-      "No execution permission",
-      "Does not confirm vulnerability",
+      "仅作建议性记忆",
+      "执行需经人工审核",
+      "不确认漏洞",
     ],
   });
   assert.equal(summary.topSurfaces[0].path, "/workspaces/{id}/owners");
-  assert.equal(summary.recentSignals[0].notes, "Triager accepted; cookie=[redacted]");
-  assert.equal(summary.appliedLessons[0].reasons[1], "[redacted]");
+  assert.equal(summary.recentSignals[0].notes, "Triager accepted; cookie=[已脱敏]");
+  assert.equal(summary.appliedLessons[0].reasons[1], "[已脱敏]");
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|session=secret|token=secret/i);
 });
 
@@ -2485,7 +2485,7 @@ test("toCampaignLearningReviewSummary explains campaign learning review without 
     linkedRunCount: 1,
     recentSignalCount: 1,
     reviewReady: true,
-    safeNextAction: "Review learning outcome",
+    safeNextAction: "审核学习结果",
     skippedLessonCount: 1,
     strongEvidenceSignalCount: 1,
   });
@@ -2578,10 +2578,10 @@ test("toCampaignCodebaseMapView summarizes code facts without raw scanner leakag
   assert.equal(view.authorizationGapCandidateCount, 1);
   assert.equal(view.candidateCount, 2);
   assert.equal(view.facts[0].sourcePath, "apps/api/users.py");
-  assert.equal(view.facts[1].authzHint, "Access-control hint");
-  assert.equal(view.facts[2].authzHint, "Missing handler access-control check");
-  assert.equal(view.facts[2].factType, "Access-control gap candidate");
-  assert.equal(view.scannerRuns[0].summary, "Static candidates only; Authorization=[redacted]");
+  assert.equal(view.facts[1].authzHint, "访问控制提示");
+  assert.equal(view.facts[2].authzHint, "缺少处理器访问控制检查");
+  assert.equal(view.facts[2].factType, "访问控制缺口候选");
+  assert.equal(view.scannerRuns[0].summary, "Static candidates only; Authorization=[已脱敏]");
   assert.doesNotMatch(JSON.stringify(view), /secret-token|token=secret|authorization: bearer/i);
   assert.doesNotMatch(JSON.stringify(view), /confirmed finding|vulnerability/i);
   assert.doesNotMatch(JSON.stringify(view), /Authz hint/);
@@ -2593,16 +2593,16 @@ test("toCampaignEvidenceReviewSummaries keeps claim evidence review redacted and
   assert.equal(summaries.length, 2);
   assert.equal(summaries[0].runId, "run_1");
   assert.equal(summaries[0].claimId, "claim_1");
-  assert.equal(summaries[0].claimText, "Observed access-control drift; token=[redacted]");
+  assert.equal(summaries[0].claimText, "Observed access-control drift; token=[已脱敏]");
   assert.equal(summaries[0].evidenceRefCount, 2);
   assert.equal(summaries[0].provenanceRefCount, 1);
   assert.equal(summaries[0].reviewEvidenceRefCount, 1);
   assert.equal(summaries[0].reportChainEligible, true);
-  assert.equal(summaries[0].reviewRationale, "Human reviewed with cookie=[redacted]");
-  assert.equal(summaries[0].reviewStatus, "Human reviewed observed fact");
-  assert.equal(summaries[0].status, "Report review gated");
+  assert.equal(summaries[0].reviewRationale, "已人工审核 with cookie=[已脱敏]");
+  assert.equal(summaries[0].reviewStatus, "已确认的观察事实");
+  assert.equal(summaries[0].status, "报告审核受控");
   assert.equal(summaries[1].reportChainEligible, false);
-  assert.deepEqual(summaries[1].readinessBlockers, ["Missing evidence refs"]);
+  assert.deepEqual(summaries[1].readinessBlockers, ["缺少证据引用"]);
   assert.doesNotMatch(JSON.stringify(summaries), /secret-token|session=secret|authorization: bearer/i);
   assert.doesNotMatch(
     [
@@ -2619,6 +2619,7 @@ test("toCampaignEvidenceReviewSummaries keeps claim evidence review redacted and
 test("toCampaignResearchFeedbackEvidenceSummaries keeps validation feedback promotion-gated", () => {
   const summaries = toCampaignResearchFeedbackEvidenceSummaries([
     {
+      autonomous_candidate_context: null,
       campaign_id: "campaign_1",
       dispatch_allowed: true,
       execution_allowed: true,
@@ -2633,7 +2634,7 @@ test("toCampaignResearchFeedbackEvidenceSummaries keeps validation feedback prom
         execution_allowed: true,
         feedback_stage_id: "stage_feedback_1",
         finding_confirmation_allowed: true,
-        next_allowed_action: "Review validation evidence before finding promotion.",
+        next_allowed_action: "晋级漏洞候选前，请审核验证证据。",
         outcome: "observed",
         plan_id: "research_plan_1",
         promotion_gate: {
@@ -2659,7 +2660,7 @@ test("toCampaignResearchFeedbackEvidenceSummaries keeps validation feedback prom
         validation_allowed: true,
         validation_run_id: "validation_run_1",
       },
-      next_allowed_action: "Review hypothesis board and plan non-destructive evidence work.",
+      next_allowed_action: "审核假设看板并规划非破坏性证据工作。",
       non_destructive_plan: [],
       playbook_id: "bola_idor",
       priority_score: 80,
@@ -2671,7 +2672,7 @@ test("toCampaignResearchFeedbackEvidenceSummaries keeps validation feedback prom
       status: "queued_review",
       surface_key: "file_id:export",
       task_id: "task_1",
-      title: "Research feedback with Authorization: Bearer secret-token",
+      title: "研究反馈 with Authorization: Bearer secret-token",
     },
   ]);
 
@@ -2681,15 +2682,15 @@ test("toCampaignResearchFeedbackEvidenceSummaries keeps validation feedback prom
       evidenceRefCount: 2,
       feedbackStageId: "stage_feedback_1",
       findingPromotionAllowed: false,
-      nextAllowedAction: "Review validation evidence before finding promotion.",
-      outcome: "Observed",
+      nextAllowedAction: "晋级漏洞候选前，请审核验证证据。",
+      outcome: "已观察",
       planId: "research_plan_1",
-      promotionGate: "Manual review required",
-      promotionGateReason: "Research validation feedback is advisory",
+      promotionGate: "需要人工审核",
+      promotionGateReason: "研究验证反馈仅作建议性参考",
       promotionProvenanceRefCount: 6,
-      reviewTitle: "Research feedback with Authorization=[redacted]",
-      safetyGate: "Advisory validation feedback only",
-      status: "Evidence recorded",
+      reviewTitle: "研究反馈 with Authorization=[已脱敏]",
+      safetyGate: "仅作建议性验证反馈",
+      status: "证据已记录",
       taskId: "task_1",
       validationRunId: "validation_run_1",
     },
@@ -2700,6 +2701,7 @@ test("toCampaignResearchFeedbackEvidenceSummaries keeps validation feedback prom
 test("toCampaignPromotionBlockReviewSummaries turns blocked feedback into review queue items", () => {
   const feedback = toCampaignResearchFeedbackEvidenceSummaries([
     {
+      autonomous_candidate_context: null,
       campaign_id: "campaign_1",
       dispatch_allowed: true,
       execution_allowed: true,
@@ -2714,7 +2716,7 @@ test("toCampaignPromotionBlockReviewSummaries turns blocked feedback into review
         execution_allowed: true,
         feedback_stage_id: "stage_feedback_1",
         finding_confirmation_allowed: true,
-        next_allowed_action: "Review validation evidence before finding promotion.",
+        next_allowed_action: "晋级漏洞候选前，请审核验证证据。",
         outcome: "observed",
         plan_id: "research_plan_1",
         promotion_gate: {
@@ -2733,7 +2735,7 @@ test("toCampaignPromotionBlockReviewSummaries turns blocked feedback into review
         validation_allowed: true,
         validation_run_id: "validation_run_1",
       },
-      next_allowed_action: "Review hypothesis board and plan non-destructive evidence work.",
+      next_allowed_action: "审核假设看板并规划非破坏性证据工作。",
       non_destructive_plan: [],
       playbook_id: "bola_idor",
       priority_score: 80,
@@ -2745,7 +2747,7 @@ test("toCampaignPromotionBlockReviewSummaries turns blocked feedback into review
       status: "queued_review",
       surface_key: "file_id:export",
       task_id: "task_1",
-      title: "Research feedback with Authorization: Bearer secret-token",
+      title: "研究反馈 with Authorization: Bearer secret-token",
     },
   ]);
 
@@ -2756,11 +2758,11 @@ test("toCampaignPromotionBlockReviewSummaries turns blocked feedback into review
       approvalId: "approval_1",
       evidenceRefCount: 2,
       feedbackStageId: "stage_feedback_1",
-      nextAllowedAction: "Review validation evidence before finding promotion.",
+      nextAllowedAction: "晋级漏洞候选前，请审核验证证据。",
       planId: "research_plan_1",
-      promotionGateReason: "Blocked by research feedback gate",
+      promotionGateReason: "被研究反馈审核门阻断",
       promotionProvenanceRefCount: 1,
-      reviewTitle: "Research feedback with Authorization=[redacted]",
+      reviewTitle: "研究反馈 with Authorization=[已脱敏]",
       taskId: "task_1",
       validationRunId: "validation_run_1",
     },
@@ -2842,47 +2844,47 @@ test("toCampaignValidationEvidenceReviewSummaries turns manual results into cand
 
   assert.deepEqual(summaries, [
     {
-      candidateEvidenceState: "Candidate evidence review required",
+      candidateEvidenceState: "候选证据需要审核",
       evidenceRefCount: 2,
-      nextReviewAction: "Review redaction, provenance, and claim coverage before report-chain use.",
+      nextReviewAction: "报告链使用前请审核脱敏、溯源与声明覆盖情况。",
       planDigest: "digest_1",
-      preflightState: "Manual result recorded",
-      reportChainState: "Report chain review required",
+      preflightState: "人工结果已记录",
+      reportChainState: "报告链需要审核",
       reviewGate: "approval_1",
       reviewItem: "task_1",
       manualValidationReview: {
-        evidenceQuality: "Adequate",
-        promotionReviewState: "Promotion review gated",
+        evidenceQuality: "充分",
+        promotionReviewState: "漏洞候选晋级审核受控",
         qualityReasons: [
-          "Manual result recorded",
-          "Has report safe evidence",
-          "Promotion blocked by redaction review",
+          "人工结果已记录",
+          "包含报告安全证据",
+          "因脱敏审核阻断晋级",
         ],
         qualityScore: 45,
-        redactionStatus: "Redacted",
+        redactionStatus: "已脱敏",
         safeEvidenceRefCount: 1,
-        sourceType: "Manual safe observation",
+        sourceType: "人工安全观察",
         unsafeEvidenceRefCount: 1,
       },
-      status: "Evidence recorded",
-      summary: "Manual observation recorded; cookie [redacted]",
+      status: "证据已记录",
+      summary: "Manual observation recorded; Cookie [已脱敏]",
       targetRef: "api.example.com/files",
-      validationMode: "Two account review check",
+      validationMode: "双账号授权检查",
       validationRunId: "validation_1",
     },
     {
-      candidateEvidenceState: "Evidence gap review required",
+      candidateEvidenceState: "证据缺口需要审核",
       evidenceRefCount: 0,
-      nextReviewAction: "Collect redacted evidence refs before report-chain use.",
+      nextReviewAction: "报告链使用前请收集脱敏证据引用。",
       planDigest: "digest_2",
-      preflightState: "Manual result recorded",
-      reportChainState: "Report chain blocked",
+      preflightState: "人工结果已记录",
+      reportChainState: "报告链已阻断",
       reviewGate: "approval_2",
       reviewItem: "task_2",
-      status: "Needs evidence",
-      summary: "Evidence redacted; Authorization [redacted]",
+      status: "需要补充证据",
+      summary: "Evidence redacted; 授权信息 [已脱敏]",
       targetRef: "api.example.com",
-      validationMode: "Manual review",
+      validationMode: "人工审核",
       validationRunId: "validation_2",
     },
   ]);
@@ -2893,51 +2895,51 @@ test("toCampaignValidationEvidenceReviewSummaries turns manual results into cand
 test("toCampaignValidationEvidenceQualitySummary counts review quality without raw evidence", () => {
   const summary = toCampaignValidationEvidenceQualitySummary([
     {
-      candidateEvidenceState: "Candidate evidence review required",
+      candidateEvidenceState: "候选证据需要审核",
       evidenceRefCount: 2,
       manualValidationReview: {
-        evidenceQuality: "Strong",
-        promotionReviewState: "Promotion review requires human decision",
-        qualityReasons: ["Clean redaction review"],
+        evidenceQuality: "强",
+        promotionReviewState: "漏洞候选晋级审核需要人工决策",
+        qualityReasons: ["Clean 脱敏审查"],
         qualityScore: 80,
-        redactionStatus: "Clean",
+        redactionStatus: "已清理",
         safeEvidenceRefCount: 3,
-        sourceType: "Manual safe observation",
+        sourceType: "人工安全观察",
         unsafeEvidenceRefCount: 0,
       },
-      nextReviewAction: "Review redaction, provenance, and claim coverage before report-chain use.",
+      nextReviewAction: "报告链使用前请审核脱敏、溯源与声明覆盖情况。",
       planDigest: "digest_1",
-      preflightState: "Manual result recorded",
-      reportChainState: "Report chain review required",
+      preflightState: "人工结果已记录",
+      reportChainState: "报告链需要审核",
       reviewGate: "approval_1",
       reviewItem: "task_1",
-      status: "Evidence recorded",
-      summary: "Manual result recorded.",
+      status: "证据已记录",
+      summary: "人工结果已记录.",
       targetRef: "api.example.com",
       validationMode: "Fixture replay",
       validationRunId: "validation_1",
     },
     {
-      candidateEvidenceState: "Candidate evidence review required",
+      candidateEvidenceState: "候选证据需要审核",
       evidenceRefCount: 1,
       manualValidationReview: {
-        evidenceQuality: "Adequate",
-        promotionReviewState: "Promotion review gated",
-        qualityReasons: ["Promotion blocked by redaction review"],
+        evidenceQuality: "充分",
+        promotionReviewState: "漏洞候选晋级审核受控",
+        qualityReasons: ["漏洞候选晋级已阻断 by 脱敏审查"],
         qualityScore: 45,
-        redactionStatus: "Redacted",
+        redactionStatus: "已脱敏",
         safeEvidenceRefCount: 1,
-        sourceType: "Manual safe observation",
+        sourceType: "人工安全观察",
         unsafeEvidenceRefCount: 1,
       },
-      nextReviewAction: "Review redaction, provenance, and claim coverage before report-chain use.",
+      nextReviewAction: "报告链使用前请审核脱敏、溯源与声明覆盖情况。",
       planDigest: "digest_2",
-      preflightState: "Manual result recorded",
-      reportChainState: "Report chain review required",
+      preflightState: "人工结果已记录",
+      reportChainState: "报告链需要审核",
       reviewGate: "approval_2",
       reviewItem: "task_2",
-      status: "Evidence recorded",
-      summary: "Manual result recorded.",
+      status: "证据已记录",
+      summary: "人工结果已记录.",
       targetRef: "api.example.com",
       validationMode: "Test account review",
       validationRunId: "validation_2",
@@ -2972,14 +2974,14 @@ test("toCampaignReportDraftSummaries keeps report draft status redacted and gate
       humanReviewRequired: true,
       readyClaimCount: 1,
       runId: "run_1",
-      safetyNotes: ["Human review required", "cookie=[redacted]"],
-      scopeStatus: "In scope",
-      severity: "High",
+      safetyNotes: ["需要人工审核", "cookie=[已脱敏]"],
+      scopeStatus: "范围内",
+      severity: "高",
       submissionBlocked: true,
-      title: "Private object access with Authorization=[redacted]",
+      title: "Private object access with Authorization=[已脱敏]",
       topClaims: [
-        "Observed access-control drift; token=[redacted]",
-        "Model-only claim; session=[redacted]",
+        "Observed access-control drift; token=[已脱敏]",
+        "Model-only claim; session=[已脱敏]",
       ],
     },
   ]);
@@ -3038,6 +3040,7 @@ test("toCampaignReportDraftEvidenceSummary exposes manual validation state witho
 test("toCampaignFindingCandidateGateSummary exposes manual promotion readiness without raw evidence", () => {
   const researchFeedback = toCampaignResearchFeedbackEvidenceSummaries([
     {
+      autonomous_candidate_context: null,
       campaign_id: "campaign_1",
       dispatch_allowed: true,
       execution_allowed: true,
@@ -3051,7 +3054,7 @@ test("toCampaignFindingCandidateGateSummary exposes manual promotion readiness w
         evidence_ref_count: 2,
         execution_allowed: true,
         finding_confirmation_allowed: true,
-        next_allowed_action: "Review validation evidence before finding promotion.",
+        next_allowed_action: "晋级漏洞候选前，请审核验证证据。",
         outcome: "observed",
         plan_id: "research_plan_1",
         report_submission_allowed: true,
@@ -3061,7 +3064,7 @@ test("toCampaignFindingCandidateGateSummary exposes manual promotion readiness w
         validation_allowed: true,
         validation_run_id: "validation_run_1",
       },
-      next_allowed_action: "Review hypothesis board and plan non-destructive evidence work.",
+      next_allowed_action: "审核假设看板并规划非破坏性证据工作。",
       non_destructive_plan: [],
       playbook_id: "bola_idor",
       priority_score: 80,
@@ -3073,7 +3076,7 @@ test("toCampaignFindingCandidateGateSummary exposes manual promotion readiness w
       status: "queued_review",
       surface_key: "file_id:export",
       task_id: "task_1",
-      title: "Research feedback with Authorization: Bearer secret-token",
+      title: "研究反馈 with Authorization: Bearer secret-token",
     },
   ]);
   const summary = toCampaignFindingCandidateGateSummary(
@@ -3134,10 +3137,10 @@ test("toCampaignFindingCandidateGateSummary exposes manual promotion readiness w
     blockedClaimCount: 2,
     eligibleClaimCount: 1,
     manualPromotionOnly: true,
-    nextAllowedAction: "Review blocked promotion evidence before retrying candidate promotion.",
+    nextAllowedAction: "再次晋级漏洞候选前，请审核被阻断的晋级证据。",
     promotionAuditBlockedCount: 1,
     promotionAuditCreatedCount: 1,
-    promotionAuditLatestReason: "Blocked by research feedback gate",
+    promotionAuditLatestReason: "被研究反馈审核门阻断",
     promotionAuditProvenanceRefCount: 2,
     promotionAuditReviewEvidenceRefCount: 2,
     requiredEvidenceBlockedCount: 0,
@@ -3174,7 +3177,7 @@ test("toCampaignFindingCandidateGateSummary exposes ready report preview run ids
   assert.equal(summary.status, "ready_for_manual_promotion");
   assert.equal(
     summary.nextAllowedAction,
-    "Reviewed claims require a manual promotion decision after human review.",
+    "已审核声明需要在人工审核后由人工决定是否晋级。",
   );
   assert.doesNotMatch(summary.nextAllowedAction, /eligible|ready|confirmed|submission|execute/i);
   assert.deepEqual(summary.readyRunIds, ["run_ready_1"]);
@@ -3229,7 +3232,7 @@ test("toCampaignFindingCandidateGateSummary blocks readiness on unresolved requi
   assert.equal(summary.status, "blocked_by_required_evidence");
   assert.equal(
     summary.nextAllowedAction,
-    "Resolve required evidence gaps before candidate promotion.",
+    "晋级漏洞候选前，请处理必需证据缺口。",
   );
   assert.deepEqual(summary.readyRunIds, []);
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|authorization: bearer/i);
@@ -3238,6 +3241,7 @@ test("toCampaignFindingCandidateGateSummary blocks readiness on unresolved requi
 test("toCampaignFindingCandidateGateSummary blocks readiness on advisory validation feedback before promotion attempts", () => {
   const researchFeedback = toCampaignResearchFeedbackEvidenceSummaries([
     {
+      autonomous_candidate_context: null,
       campaign_id: "campaign_1",
       dispatch_allowed: true,
       execution_allowed: true,
@@ -3251,7 +3255,7 @@ test("toCampaignFindingCandidateGateSummary blocks readiness on advisory validat
         evidence_ref_count: 2,
         execution_allowed: true,
         finding_confirmation_allowed: true,
-        next_allowed_action: "Review validation evidence before finding promotion.",
+        next_allowed_action: "晋级漏洞候选前，请审核验证证据。",
         outcome: "observed",
         plan_id: "research_plan_1",
         promotion_gate: {
@@ -3274,7 +3278,7 @@ test("toCampaignFindingCandidateGateSummary blocks readiness on advisory validat
         validation_allowed: true,
         validation_run_id: "validation_run_1",
       },
-      next_allowed_action: "Review hypothesis board and plan non-destructive evidence work.",
+      next_allowed_action: "审核假设看板并规划非破坏性证据工作。",
       non_destructive_plan: [],
       playbook_id: "bola_idor",
       priority_score: 80,
@@ -3286,7 +3290,7 @@ test("toCampaignFindingCandidateGateSummary blocks readiness on advisory validat
       status: "queued_review",
       surface_key: "file_id:export",
       task_id: "task_1",
-      title: "Research feedback with Authorization: Bearer secret-token",
+      title: "研究反馈 with Authorization: Bearer secret-token",
     },
   ]);
 
@@ -3304,7 +3308,7 @@ test("toCampaignFindingCandidateGateSummary blocks readiness on advisory validat
   assert.equal(summary.status, "blocked_by_research_feedback");
   assert.equal(
     summary.nextAllowedAction,
-    "Review validation feedback before candidate promotion.",
+    "晋级漏洞候选前，请审核验证反馈。",
   );
   assert.doesNotMatch(JSON.stringify(summary), /secret-token|authorization: bearer/i);
 });
@@ -3396,19 +3400,40 @@ test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates",
       {
         blockedActionCount: 3,
         candidateStatus: "Awaiting human approval",
+        evidenceTraceSummary: {
+          artifactKinds: ["API"],
+          reportSubmissionAllowed: false,
+          routeFactCount: 1,
+          sourceFactCount: 1,
+          sourceFactTypes: ["authorization"],
+          traceableSourceFactCount: 0,
+          traceStatus: "needs_evidence",
+        },
         executionAllowed: false,
         humanApprovalRequired: true,
-        nextAllowedAction: "Review validation plan before any execution.",
+        nextAllowedAction: "执行前请审核验证计划。",
         playbookId: "bola_idor",
         priorityScore: 91,
+        rawPriorityScore: 91,
+        qualityGateReasons: ["required_evidence_missing"],
+        reportReadiness: {
+          nextAllowedAction: "Review trace gaps before drafting.",
+          reportSubmissionAllowed: false,
+          requiredEvidenceCount: 1,
+          safeValidationStepCount: 2,
+          status: "blocked_by_required_evidence",
+          submissionBlocked: true,
+          traceStatus: "needs_evidence",
+        },
         queueKey: "autonomous_hunt:run_1:hunt_queue_candidate_high",
         refutationQuestionCount: 2,
         evidenceNeeded: ["approved test object id matrix"],
         requiredEvidence: ["independent refutation or static rule", "Policy"],
-        safetyGate: "Awaiting human approval",
-        source: "Mythos pipeline autonomous hunt queue",
+        satisfiedEvidence: [],
+        safetyGate: "等待人工审核",
+        source: "研究流程自动挖掘队列",
         surfaceKey: null,
-        title: "Review autonomous hunt candidate candidate_high; Authorization: Bearer secret-token",
+        title: "审核自动挖掘候选 candidate_high; Authorization: Bearer secret-token",
         topCandidateRank: 1,
         validationStepCount: 2,
       },
@@ -3417,37 +3442,37 @@ test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates",
 
   assert.equal(summaries.length, 3);
   assert.equal(summaries[0].candidateId, "candidate_high");
-  assert.equal(summaries[0].source, "Pipeline run");
+  assert.equal(summaries[0].source, "流程运行");
   assert.equal(summaries[0].hunterPriorityScore, 92);
   assert.equal(summaries[0].reviewPriorityScore, 100);
   assert.equal(summaries[0].impactScore, 88);
   assert.equal(summaries[0].duplicateRiskScore, 18);
   assert.equal(summaries[0].policyRiskScore, 12);
-  assert.equal(summaries[0].hypothesis, "Hypothesis redacted");
+  assert.equal(summaries[0].hypothesis, "假设已脱敏");
   assert.equal(summaries[0].evidenceNeededCount, 1);
   assert.equal(summaries[0].evidenceFocusCount, 3);
   assert.deepEqual(summaries[0].triageSignals, [
-    "Access control gap candidate",
-    "Sensitive sink present",
-    "Human review required",
+    "访问控制缺口候选",
+    "存在敏感汇点",
+    "需要人工审核",
   ]);
   assert.deepEqual(summaries[0].evidenceFocus, [
-    "Same handler authz evidence",
-    "Missing check refutation trace",
-    "[redacted]",
+    "同处理器访问控制证据",
+    "缺少检查反证轨迹",
+    "[已脱敏]",
   ]);
   assert.deepEqual(summaries[0].sourceFactTypes, [
-    "Access-control gap candidate",
-    "Sensitive sink",
+    "访问控制缺口候选",
+    "敏感汇点",
   ]);
   assert.deepEqual(summaries[0].priorityReasons, [
-    "Access-control gap candidate",
-    "Same-handler access-control evidence needed",
-    "Sensitive sink present",
+    "访问控制缺口候选",
+    "需要同处理器访问控制证据",
+    "存在敏感汇点",
   ]);
-  assert.equal(summaries[0].refutationStatus, "Plausible");
+  assert.equal(summaries[0].refutationStatus, "具有合理性");
   assert.equal(summaries[0].researchQueueHandoff?.queueKey, "autonomous_hunt:run_1:hunt_queue_candidate_high");
-  assert.equal(summaries[0].researchQueueHandoff?.title, "Review autonomous hunt candidate candidate_high; Authorization=[redacted]");
+  assert.equal(summaries[0].researchQueueHandoff?.title, "审核自动挖掘候选 candidate_high; Authorization=[已脱敏]");
   assert.equal(summaries[0].researchQueueHandoff?.humanApprovalRequired, true);
   assert.equal(summaries[0].researchQueueHandoff?.executionAllowed, false);
   assert.equal(summaries[0].researchQueueHandoff?.reviewHref, "/campaigns/campaign_1/tasks");
@@ -3463,26 +3488,26 @@ test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates",
   assert.equal(summaries[0].researchQueueHandoff?.validationStepCount, 2);
   assert.equal(summaries[0].researchQueueHandoff?.refutationQuestionCount, 2);
   assert.equal(summaries[0].chainConfidence, 74);
-  assert.equal(summaries[0].chainImpact, "Cross tenant read with cookie=[redacted]");
+  assert.equal(summaries[0].chainImpact, "Cross tenant read with cookie=[已脱敏]");
   assert.equal(summaries[0].primitiveCount, 2);
   assert.equal(summaries[0].preconditionCount, 2);
   assert.equal(summaries[0].refutationQuestionCount, 3);
-  assert.deepEqual(summaries[0].primitives, ["object id swap", "Primitive"]);
-  assert.deepEqual(summaries[0].preconditions, ["attacker has workspace member role", "token=[redacted]"]);
+  assert.deepEqual(summaries[0].primitives, ["object id swap", "原语"]);
+  assert.deepEqual(summaries[0].preconditions, ["attacker has workspace member role", "token=[已脱敏]"]);
   assert.deepEqual(summaries[0].refutationQuestions, [
     "Can same-handler authorization evidence refute the missing access-control check candidate",
     "Does ownership check bind workspace_id",
-    "Refutation question",
+    "反证问题",
   ]);
-  assert.equal(summaries[0].reasons[0], "Authorization gap candidate");
+  assert.equal(summaries[0].reasons[0], "访问控制缺口候选");
   assert.equal(summaries[1].candidateId, "research_plan_1");
-  assert.equal(summaries[1].source, "Research review plan");
+  assert.equal(summaries[1].source, "研究审核计划");
   assert.equal(summaries[1].researchQueueHandoff, null);
-  assert.equal(summaries[1].hypothesis, "Review export IDOR with Authorization=[redacted]");
+  assert.equal(summaries[1].hypothesis, "Review export IDOR with Authorization=[已脱敏]");
   assert.equal(summaries[1].reviewPriorityScore, 55);
   assert.equal(summaries[1].refutationQuestionCount, 1);
   assert.deepEqual(summaries[1].refutationQuestions, ["Can ownership checks refute export access"]);
-  assert.equal(summaries[1].nextAction, "Review hypothesis board and request review before validation.");
+  assert.equal(summaries[1].nextAction, "验证前请审核假设看板并请求审核。");
   assert.doesNotMatch(
     JSON.stringify(summaries[1]),
     /request approval before validation|Approval required before validation/i,
@@ -3492,7 +3517,7 @@ test("toCampaignHypothesisBoardSummaries ranks and redacts campaign candidates",
   assert.equal(summaries[2].reviewPriorityScore, 41);
   assert.doesNotMatch(
     JSON.stringify(summaries[2].priorityReasons),
-    /Access-control gap candidate|Same-handler access-control evidence needed/i,
+    /访问控制缺口候选|需要同处理器访问控制证据/i,
   );
   assert.doesNotMatch(
     JSON.stringify(summaries),
@@ -3540,13 +3565,13 @@ test("toCampaignHypothesisBoardSummaries maps restricted authz rationale labels 
   const [summary] = toCampaignHypothesisBoardSummaries([runDetailWithRestrictedRationaleLabels]);
 
   assert.deepEqual(summary.priorityReasons, [
-    "Access-control gap candidate",
-    "Same-handler access-control evidence needed",
-    "Sensitive sink present",
+    "访问控制缺口候选",
+    "需要同处理器访问控制证据",
+    "存在敏感汇点",
   ]);
   assert.deepEqual(summary.evidenceFocus, [
-    "Same handler access-control evidence",
-    "[redacted]",
+    "同处理器访问控制证据",
+    "[已脱敏]",
   ]);
   assert.doesNotMatch(
     JSON.stringify(summary.priorityReasons),
@@ -3577,7 +3602,7 @@ test("campaign control page exposes a safe launchpad without validation or submi
   );
 
   assert.match(page, /getCampaigns/);
-  assert.match(page, /Authorized Campaign Launchpad/);
+  assert.match(page, /已授权研究活动启动台/);
   assert.match(page, /launchCampaignAction/);
   assert.match(page, /launchAuthorizedCampaign/);
   assert.match(page, /name="policy_text"/);
@@ -3591,13 +3616,13 @@ test("campaign control page exposes a safe launchpad without validation or submi
   assert.match(page, /name="authorized_api_artifact_payload"/);
   assert.match(page, /authorizedApiArtifactsFromForm/);
   assert.match(page, /jsonObjectValue/);
-  assert.match(page, /Authorized tools/);
+  assert.match(page, /已授权工具/);
   assert.doesNotMatch(page, /Allowed tools/);
   assert.match(page, /name="autonomy_level"/);
-  assert.match(page, /Scope Guard/);
-  assert.match(page, /human review/i);
+  assert.match(page, /范围守卫/);
+  assert.match(page, /人工审核门/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaign\.id\)\}/);
-  assert.match(page, />Budget</);
+  assert.match(page, />预算</);
   assert.match(page, /campaignBudgetLabel\(campaign\.budget/);
   assert.doesNotMatch(page, /getCampaignControlCenter/);
   assert.doesNotMatch(page, /resumeCampaign|pauseCampaign|executeValidation|approveValidation|submitReport/);
@@ -3626,7 +3651,7 @@ test("campaigns page uses redacted display helpers for campaign list values", as
 
   assert.match(page, /safeDisplay/);
   assert.match(page, /formatLabel/);
-  assert.match(page, /review gates, budgets/);
+  assert.match(page, /审核门、预算/);
   assert.doesNotMatch(page, /blockers, approvals, budgets/);
   assert.match(page, /safeDisplay\(campaign\.name/);
   assert.match(page, /safeDisplay\(campaign\.default_asset/);
@@ -3646,8 +3671,8 @@ test("campaign detail page reads the audited control center and queues review it
   assert.match(page, /revalidatePath/);
   assert.match(page, /queueResearchReviewAction/);
   assert.match(page, /"use server"/);
-  assert.match(page, /Campaign control unavailable/);
-  assert.match(page, /No audited control summary was returned for this campaign/);
+  assert.match(page, /研究活动控制信息暂不可用/);
+  assert.match(page, /此研究活动未返回已审计的控制摘要。/);
   assert.doesNotMatch(page, /No audited control-center record/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/tasks/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/agent-runs/);
@@ -3661,21 +3686,21 @@ test("campaign detail page reads the audited control center and queues review it
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/timeline/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/brain/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/artifacts/);
-  assert.match(page, /label="Agent Audit"/);
-  assert.match(page, /label="Review Gate"/);
+  assert.match(page, /label="智能体审计"/);
+  assert.match(page, /label="审核门"/);
   assert.doesNotMatch(page, /label="Approval Review"/);
-  assert.match(page, /label="Validation Audit"/);
-  assert.match(page, /label="Report Readiness"/);
-  assert.match(page, /label="Mythos Brain"/);
-  assert.match(page, /label="Code Review Map"/);
-  assert.match(page, /label="Artifact Review"/);
-  assert.match(page, /label="Research Review"/);
-  assert.match(page, /label="Review Timeline"/);
+  assert.match(page, /label="验证审计"/);
+  assert.match(page, /label="报告就绪度"/);
+  assert.match(page, /label="研究大脑"/);
+  assert.match(page, /label="代码审计地图"/);
+  assert.match(page, /label="资料审核"/);
+  assert.match(page, /label="研究审核"/);
+  assert.match(page, /label="审核时间线"/);
   assert.doesNotMatch(page, /<AuditLink[^\r\n]*label="Tasks"/);
   assert.doesNotMatch(page, /label="Agent Runs"/);
   assert.doesNotMatch(page, /label="Validation Queue"/);
   assert.doesNotMatch(page, /label="Validation Runs"/);
-  assert.doesNotMatch(page, /label="Report Drafts"/);
+  assert.doesNotMatch(page, /label="报告草稿s"/);
   assert.doesNotMatch(page, /label="Brain"/);
   assert.doesNotMatch(page, /label="Artifacts"/);
   assert.doesNotMatch(page, /label="Artifact Repository"/);
@@ -3684,33 +3709,33 @@ test("campaign detail page reads the audited control center and queues review it
   assert.doesNotMatch(page, /label="Timeline"/);
   assert.match(page, /executionAllowed/);
   assert.match(page, /safeNextAction/);
-  assert.match(page, /Promotion review/);
+  assert.match(page, /晋级审核/);
   assert.match(page, /promotionReviewBlockedCount/);
   assert.match(page, /promotionReviewNextAllowedAction/);
   assert.match(page, /promotionReviewProvenanceRefCount/);
   assert.match(page, /promotionReviewRequiredEvidenceBlockedCount/);
-  assert.match(page, /Review requirements/);
+  assert.match(page, /审核要求/);
   assert.match(page, /summary\.blockedReasons\.map/);
   assert.doesNotMatch(page, /Blocked Reasons/);
   assert.doesNotMatch(page, /Action blockers/);
   assert.match(page, /validationEvidenceCount/);
   assert.match(page, /validationEvidenceGapCount/);
-  assert.match(page, /Control readiness/);
-  assert.match(page, /Scope Guard reviewed/);
-  assert.doesNotMatch(page, /Scope Guard clear/);
-  assert.match(page, /Research Memory Review/);
+  assert.match(page, /控制就绪度/);
+  assert.match(page, /范围守卫已审核/);
+  assert.doesNotMatch(page, /范围守卫 clear/);
+  assert.match(page, /研究记忆审核/);
   assert.doesNotMatch(page, />Research Queue</);
   assert.match(page, /researchQueueSuggestions/);
-  assert.match(page, /Queue review item/);
+  assert.match(page, /加入审核队列/);
   assert.match(page, /name="queue_key"/);
   assert.match(page, /value=\{suggestion\.queueKey\}/);
   assert.match(page, /requester: "operator"/);
-  assert.match(page, /Queue review item from control center/);
+  assert.match(page, /从控制中心加入审核项。/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/tasks/);
   assert.match(page, /nextAllowedAction/);
-  assert.match(page, /Review gate/);
-  assert.match(page, /Action gate/);
-  assert.match(page, /Review only/);
+  assert.match(page, /审核门/);
+  assert.match(page, /操作门/);
+  assert.match(page, /仅供审核/);
   assert.match(page, /candidateStatus/);
   assert.match(page, /humanApprovalRequired/);
   assert.match(page, /refutationQuestionCount/);
@@ -3718,13 +3743,13 @@ test("campaign detail page reads the audited control center and queues review it
   assert.match(page, /blockedActionCount/);
   assert.match(page, /rawPriorityScore/);
   assert.match(page, /requiredEvidence/);
-  assert.match(page, /Required evidence/);
+  assert.match(page, /所需证据/);
   assert.match(page, /qualityGateReasons/);
-  assert.match(page, /Quality Gate Reasons/);
-  assert.match(page, /Human review required/);
-  assert.match(page, /label="Validation audits"/);
-  assert.match(page, /label="Review items"/);
-  assert.match(page, /label="Agent audits"/);
+  assert.match(page, /质量门原因/);
+  assert.match(page, /需要人工审核/);
+  assert.match(page, /label="验证审计"/);
+  assert.match(page, /label="审核项"/);
+  assert.match(page, /label="智能体审计"/);
   assert.doesNotMatch(page, /Execution permission/);
   assert.doesNotMatch(page, /No execution permission/);
   assert.doesNotMatch(page, /do not grant execution/i);
@@ -3733,27 +3758,27 @@ test("campaign detail page reads the audited control center and queues review it
   assert.doesNotMatch(page, /label="Agent runs"/);
   assert.doesNotMatch(page, /label="Execution" value="Blocked"/);
   assert.doesNotMatch(page, />Safety gate</);
-  assert.match(page, /label="Review gate"/);
+  assert.match(page, /label="审核门"/);
   assert.doesNotMatch(page, /label="Approval queue"/);
   assert.doesNotMatch(page, /label="Approval review"/);
-  assert.match(page, /label="Pending review gates"/);
+  assert.match(page, /label="待审核门"/);
   assert.doesNotMatch(page, /label="Pending approvals"/);
-  assert.match(page, /Validation audit/);
-  assert.match(page, /Evidence review/);
-  assert.match(page, /Artifact review/);
+  assert.match(page, /验证审计/);
+  assert.match(page, /证据审核/);
+  assert.match(page, /资料审核/);
   assert.doesNotMatch(page, /Artifact repository/);
-  assert.match(page, /Report readiness/);
-  assert.match(page, /Learning review/);
-  assert.match(page, /Cycle review/);
-  assert.match(page, /label="Review holds"/);
+  assert.match(page, /报告就绪度/);
+  assert.match(page, /研究记忆审核/);
+  assert.match(page, /周期审核/);
+  assert.match(page, /label="审核阻塞项"/);
   assert.doesNotMatch(page, /label="Blocked stages"/);
-  assert.match(page, /Cycle reviews/);
+  assert.match(page, /周期审核/);
   assert.match(page, /cycleReviewAwaitingCount/);
   assert.match(page, /cycleReviewCompletedCount/);
-  assert.match(page, /Human review gate/);
-  assert.match(page, /Runtime gate/);
-  assert.match(page, /Scope Guard/);
-  assert.match(page, /No active review requirements/);
+  assert.match(page, /人工审核门/);
+  assert.match(page, /运行时审核门/);
+  assert.match(page, /范围守卫/);
+  assert.match(page, /当前没有待处理的审核要求。/);
   assert.doesNotMatch(page, /No active action blockers/);
   assert.doesNotMatch(page, /No active blocker recorded/);
   assert.doesNotMatch(page, /Operator mode/);
@@ -3773,27 +3798,27 @@ test("campaign artifacts page filters authorized materials and stays read-only",
   assert.match(page, /programId: controlCenter\.campaign\.program_id/);
   assert.match(page, /asset: controlCenter\.campaign\.default_asset/);
   assert.match(page, /toCampaignArtifactSummaries/);
-  assert.match(page, /Artifact Review/);
-  assert.match(page, /Campaign artifact summaries filtered to this campaign/);
+  assert.match(page, /资料审核/);
+  assert.match(page, /仅显示此研究活动的资料摘要/);
   assert.doesNotMatch(page, /Authorized material summaries/);
   assert.doesNotMatch(page, /Artifact Repository/);
   assert.doesNotMatch(page, /Campaign Artifacts/);
-  assert.match(page, /No reviewed artifacts ready/);
+  assert.match(page, /暂无已审核资料。/);
   assert.doesNotMatch(page, /No authorized artifacts ready/);
   assert.doesNotMatch(page, /No campaign artifacts recorded/);
   assert.match(page, /reportChainAllowedCount/);
   assert.match(page, /reportChainBlockedCount/);
-  assert.match(page, /Report-chain review ready/);
-  assert.match(page, /Report-chain review required/);
-  assert.match(page, /Report chain review ready/);
-  assert.match(page, /Report chain review required/);
+  assert.match(page, /报告链审核就绪/);
+  assert.match(page, /报告链需审核/);
+  assert.match(page, /报告链审核已就绪/);
+  assert.match(page, /报告链需要审核/);
   assert.doesNotMatch(page, /Report-chain eligible/);
   assert.doesNotMatch(page, /Report-chain blocked/);
   assert.doesNotMatch(page, /Eligible for report chain/);
   assert.doesNotMatch(page, /Blocked for report chain/);
   assert.doesNotMatch(page, /Report-chain allowed/);
   assert.doesNotMatch(page, /\? "Allowed"/);
-  assert.match(page, /Usage provenance/);
+  assert.match(page, /使用溯源/);
   assert.match(page, /usageStages/);
   assert.match(page, /usageTypes/);
   assert.doesNotMatch(page, /raw payload|raw evidence|payload_summary|derived_facts/);
@@ -3810,47 +3835,47 @@ test("campaign validation runs page reads harness records and stays read-only", 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignValidationRuns\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignValidationRunSummaries/);
-  assert.match(page, /Validation Audit/);
+  assert.match(page, /验证审计/);
   assert.doesNotMatch(page, />Validation Runs</);
   assert.doesNotMatch(page, /Validation runs/);
-  assert.match(page, /Validation audits/);
-  assert.match(page, /Preflight summary/);
-  assert.match(page, /Human review gates are not validation start gates/);
-  assert.match(page, /Attention/);
-  assert.match(page, /Next action/);
+  assert.match(page, /验证审计/);
+  assert.match(page, /预检摘要/);
+  assert.match(page, /人工审核门不是验证启动门。/);
+  assert.match(page, /关注状态/);
+  assert.match(page, /下一步操作/);
   assert.match(page, /attentionState/);
   assert.match(page, /nextAction/);
   assert.doesNotMatch(page, /validation start permission/);
   assert.doesNotMatch(page, /Approval is not validation start permission/);
   assert.doesNotMatch(page, /Approval is not execution permission/);
   assert.match(page, /executionState/);
-  assert.match(page, /Preflight passed/);
-  assert.match(page, /Preflight reviewed/);
+  assert.match(page, /预检已审核/);
+  assert.match(page, /预检已审核/);
   assert.doesNotMatch(page, /Preflight ready/);
   assert.doesNotMatch(page, /Preflight clear/);
-  assert.match(page, /Preflight blocked/);
-  assert.match(page, /Preflight decision/);
-  assert.match(page, /<span>Evidence refs<\/span>/);
+  assert.match(page, /预检已阻断/);
+  assert.match(page, /预检决策/);
+  assert.match(page, /<span>证据引用<\/span>/);
   assert.doesNotMatch(page, /<span>Evidence<\/span>/);
-  assert.match(page, /Awaiting review gate/);
-  assert.match(page, /Review gate required/);
-  assert.match(page, /No review gate required/);
-  assert.match(page, /label="Review gate"/);
+  assert.match(page, /等待审核门/);
+  assert.match(page, /需要审核门/);
+  assert.match(page, /无需审核门/);
+  assert.match(page, /label="审核门"/);
   assert.doesNotMatch(page, /Awaiting approval/);
   assert.doesNotMatch(page, /Approval required/);
   assert.doesNotMatch(page, /No approval required/);
   assert.doesNotMatch(page, /label="Approval"/);
   assert.doesNotMatch(page, /No approval/);
-  assert.match(page, /label="Validation audit"/);
-  assert.match(page, /label="Review item"/);
+  assert.match(page, /label="验证审计"/);
+  assert.match(page, /label="审核项"/);
   assert.match(page, /\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-runs\/\$\{encodeURIComponent\(run\.id\)\}/);
-  assert.match(page, /Review manual observation/);
-  assert.match(page, /No validation audits ready/);
+  assert.match(page, /审核人工观察/);
+  assert.match(page, /暂无可查看的验证审计。/);
   assert.doesNotMatch(page, /No validation run records/);
   assert.doesNotMatch(page, /label="Run"/);
   assert.doesNotMatch(page, /label="Task"/);
   assert.doesNotMatch(page, />Safety gate</);
-  assert.match(page, /Validation started:/);
+  assert.match(page, /已启动验证：/);
   assert.doesNotMatch(page, /Execution started/);
   assert.doesNotMatch(page, /Allowed by preflight/);
   assert.doesNotMatch(page, /runValidation|executeValidation|approveValidation|submitReport/);
@@ -3869,19 +3894,19 @@ test("campaign validation run manual result page records only reviewed observati
   assert.match(page, /params: Promise<\{ campaignId: string; validationRunId: string \}>/);
   assert.match(page, /getCampaignValidationRuns\(campaignId, \[\]\)/);
   assert.match(page, /recordCampaignValidationRunManualResult/);
-  assert.match(page, /Manual validation observation review/);
-  assert.match(page, /Candidate evidence only/);
-  assert.match(page, /Evidence promotion/);
-  assert.match(page, /Report submission/);
-  assert.match(page, /Review manual observation/);
+  assert.match(page, /人工验证观察审核/);
+  assert.match(page, /仅候选证据/);
+  assert.match(page, /证据晋级/);
+  assert.match(page, /报告提交/);
+  assert.match(page, /审核人工观察/);
   assert.match(page, /outcome: formOutcome\(formData\)/);
   assert.match(page, /evidence_refs: formLines\(formData, "evidence_refs"\)/);
   assert.match(page, /action=\{recordManualResultAction\}/);
   assert.match(page, /revalidatePath\(`\/campaigns\/\$\{encodeURIComponent\(campaignId\)\}\/validation-runs`\)/);
   assert.doesNotMatch(page, /fallbackManualResultRun/);
   assert.doesNotMatch(page, /allowed_to_execute/);
-  assert.match(page, /label="Execution gate" value="Gated"/);
-  assert.match(page, /label="Report submission gate" value="Gated"/);
+  assert.match(page, /label="执行门" value="受控"/);
+  assert.match(page, /label="报告提交门" value="受控"/);
   assert.doesNotMatch(page, /validation-workspace/);
   assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|executeValidation|submitReport|approveValidation/);
 });
@@ -3898,22 +3923,22 @@ test("campaign hypothesis board page reads run candidates and stays read-only", 
   assert.match(page, /toCampaignControlSummary\(controlCenter\)/);
   assert.match(page, /researchQueueHandoff/);
   assert.match(page, /candidate\.researchQueueHandoff\.reviewHref/);
-  assert.match(page, /Review queue handoff/);
-  assert.match(page, /Required evidence/);
+  assert.match(page, /审核队列交接/);
+  assert.match(page, /所需证据/);
   assert.match(page, /candidate\.researchQueueHandoff\.requiredEvidence/);
-  assert.match(page, /Source/);
+  assert.match(page, /来源/);
   assert.match(page, /candidate\.source/);
-  assert.match(page, /Research audits/);
-  assert.match(page, /label="Research audit"/);
-  assert.match(page, /Chains mapped/);
-  assert.match(page, /Review priority/);
-  assert.match(page, /Priority rationale/);
+  assert.match(page, /研究审计/);
+  assert.match(page, /label="研究审计"/);
+  assert.match(page, /已映射利用链/);
+  assert.match(page, /审核优先级/);
+  assert.match(page, /优先级依据/);
   assert.match(page, /priorityReasons/);
   assert.match(page, /candidate\.priorityReasons/);
-  assert.match(page, /Chain confidence/);
-  assert.match(page, /primitive\(s\)/);
-  assert.match(page, /refutation question\(s\)/);
-  assert.match(page, /No hypotheses ready for review/);
+  assert.match(page, /利用链置信度/);
+  assert.match(page, /利用链影响/);
+  assert.match(page, /反证问题/);
+  assert.match(page, /暂无可审核的假设。/);
   assert.doesNotMatch(page, /No campaign-linked hypothesis candidates recorded/);
   assert.doesNotMatch(page, /<Metric label="Runs"/);
   assert.doesNotMatch(page, /label="Run"/);
@@ -3931,16 +3956,16 @@ test("campaign attack surface map page reads target models and stays read-only",
   assert.match(page, /getCampaignControlCenter\(campaignId, null\)/);
   assert.match(page, /getPipelineRun\(runId, null\)/);
   assert.match(page, /toCampaignAttackSurfaceMapView/);
-  assert.match(page, /No endpoints mapped yet/);
-  assert.match(page, /No sensitive actions mapped yet/);
-  assert.match(page, /No relationships mapped yet/);
-  assert.match(page, /No objects mapped yet/);
-  assert.match(page, /No roles mapped yet/);
-  assert.match(page, /Audited sources/);
-  assert.match(page, /audited review sources/);
+  assert.match(page, /尚未映射端点。/);
+  assert.match(page, /尚未映射敏感操作。/);
+  assert.match(page, /尚未映射关系。/);
+  assert.match(page, /尚未映射对象。/);
+  assert.match(page, /尚未映射角色。/);
+  assert.match(page, /已审计来源/);
+  assert.match(page, /已审计研究来源/);
   assert.doesNotMatch(page, /authorized audit sources/);
-  assert.match(page, /Review boundary/);
-  assert.match(page, /Audit facts only; execution gates stay outside this view/);
+  assert.match(page, /审核边界/);
+  assert.match(page, /仅显示审计事实；执行审核门不在此视图中操作/);
   assert.doesNotMatch(page, /Not available from this read-only view/);
   assert.doesNotMatch(page, /Execution permission/);
   assert.doesNotMatch(page, /label="Runs"/);
@@ -3964,26 +3989,26 @@ test("campaign brain page reads program brain and stays advisory-only", async ()
   assert.match(page, /getMythosBrainProgram/);
   assert.match(page, /toCampaignBrainSummary/);
   assert.match(page, /toCampaignLearningReviewSummary/);
-  assert.match(page, /Learning Review/);
-  assert.match(page, /Reasoning Memory/);
+  assert.match(page, /学习信号审核/);
+  assert.match(page, /推理记忆/);
   assert.match(page, /reasoningMemory/);
   assert.match(page, /advisoryOnly/);
-  assert.match(page, /Advisory research memory for ranking and explanation\. It stays advisory only\./);
-  assert.match(page, /Review readiness/);
-  assert.match(page, /Review ready/);
-  assert.match(page, /Review queued/);
+  assert.match(page, /用于排序与解释的建议性研究记忆，仅作建议使用。/);
+  assert.match(page, /审核就绪度/);
+  assert.match(page, /可审核/);
+  assert.match(page, /已加入审核队列/);
   assert.doesNotMatch(page, /label="Ready"/);
-  assert.match(page, /Linked audits/);
-  assert.match(page, /Review boundary/);
-  assert.match(page, /Brain advisory memory/);
-  assert.match(page, /Advisory memory only/);
-  assert.match(page, /Review gate active/);
+  assert.match(page, /关联审计/);
+  assert.match(page, /审核边界/);
+  assert.match(page, /研究大脑建议性记忆/);
+  assert.match(page, /仅建议性记忆/);
+  assert.match(page, /审核门生效中/);
   assert.doesNotMatch(page, /value=\{learningReview\.reviewReady \? "Yes" : "No"\}/);
   assert.doesNotMatch(page, /value=\{advisoryOnly \? "Yes" : "No"\}/);
   assert.doesNotMatch(page, /Permission source/);
   assert.doesNotMatch(page, /Linked runs/);
   assert.doesNotMatch(page, /cannot authorize execution/);
-  assert.doesNotMatch(page, /Scope Guard only/);
+  assert.doesNotMatch(page, /范围守卫 only/);
   assert.doesNotMatch(page, /Brain advisory only/);
   assert.doesNotMatch(page, /Execution allowed/);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport|approveValidation/);
@@ -3998,27 +4023,27 @@ test("campaign codebase map page reads fact-layer records and stays read-only", 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignCodebaseMap\(campaignId, emptyCampaignCodebaseMap\)/);
   assert.match(page, /toCampaignCodebaseMapView/);
-  assert.match(page, /Code Review Map/);
+  assert.match(page, /代码审计地图/);
   assert.doesNotMatch(page, /Codebase Map/);
-  assert.match(page, /Access-control checks/);
-  assert.match(page, /Authorization gap candidates/);
-  assert.match(page, /No access-control hint/);
+  assert.match(page, /访问控制检查/);
+  assert.match(page, /授权缺口候选项/);
+  assert.match(page, /暂无访问控制提示/);
   assert.doesNotMatch(page, /Authz checks/);
   assert.doesNotMatch(page, /No authz hint/);
   assert.doesNotMatch(page, /Confirmed finding|Vulnerability/);
-  assert.match(page, /No mapped repositories ready/);
-  assert.match(page, /No code facts ready/);
-  assert.match(page, /No scanner audits ready/);
-  assert.match(page, /Scanner audits/);
+  assert.match(page, /暂无已映射仓库。/);
+  assert.match(page, /暂无代码事实。/);
+  assert.match(page, /暂无扫描器审计。/);
+  assert.match(page, /扫描器审计/);
   assert.doesNotMatch(page, /Scanner Runs/);
   assert.doesNotMatch(page, /Scanner runs/);
   assert.doesNotMatch(page, /No codebase map records/);
   assert.doesNotMatch(page, /No code facts recorded/);
   assert.doesNotMatch(page, /No scanner runs recorded/);
-  assert.match(page, /Scanner boundary/);
-  assert.match(page, /Scanner controls stay outside this audit view/);
+  assert.match(page, /扫描器边界/);
+  assert.match(page, /扫描器控制项不在此审计视图中提供/);
   assert.doesNotMatch(page, /Not available from this read-only view/);
-  assert.match(page, /Review gate/);
+  assert.match(page, /审核门/);
   assert.doesNotMatch(page, /Scanner permission/);
   assert.doesNotMatch(page, /Scanner execution/);
   assert.doesNotMatch(page, />Safety gate</);
@@ -4042,45 +4067,45 @@ test("campaign evidence review page reads report previews and validation runs wh
   assert.match(page, /toCampaignFindingCandidateGateSummary/);
   assert.match(page, /toCampaignResearchFeedbackEvidenceSummaries/);
   assert.match(page, /toCampaignValidationEvidenceReviewSummaries/);
-  assert.match(page, /Blocked Promotion Review/);
-  assert.match(page, /Promotion Block Review Queue/);
+  assert.match(page, /已阻断晋级审核/);
+  assert.match(page, /晋级阻塞审核队列/);
   assert.match(page, /promotionBlockReviews/);
   assert.match(page, /\/tasks\/\$\{encodeURIComponent\(item\.taskId\)\}/);
   assert.match(page, /feedbackStageId/);
-  assert.match(page, /label="Feedback stage"/);
+  assert.match(page, /label="反馈阶段"/);
   assert.match(page, /\/feedback-reviews\/\$\{encodeURIComponent\(item\.feedbackStageId\)\}/);
   assert.match(page, /\/feedback-reviews\/\$\{encodeURIComponent\(feedback\.feedbackStageId\)\}/);
-  assert.match(page, /Review promotion gate/);
+  assert.match(page, /审核晋级门/);
   assert.match(page, /promotionProvenanceRefCount/);
-  assert.match(page, /Promotion attempts blocked/);
+  assert.match(page, /已阻断晋级尝试/);
   assert.match(page, /promotionAuditLatestReason/);
   assert.match(page, /promotionAuditCreatedCount/);
   assert.match(page, /promotionAuditProvenanceRefCount/);
   assert.match(page, /promotionAuditReviewEvidenceRefCount/);
   assert.match(page, /nextAllowedAction/);
-  assert.match(page, /label="Next review action"/);
-  assert.doesNotMatch(page, /label="Next action" value=\{findingCandidateGate\.nextAllowedAction\}/);
-  assert.match(page, /<span>Evidence refs<\/span>/);
+  assert.match(page, /label="下一步审核操作"/);
+  assert.doesNotMatch(page, /label="下一步操作" value=\{findingCandidateGate\.nextAllowedAction\}/);
+  assert.match(page, /<span>证据引用<\/span>/);
   assert.doesNotMatch(page, /<span>Evidence<\/span>/);
-  assert.match(page, /label="Review item"/);
+  assert.match(page, /label="审核项"/);
   assert.doesNotMatch(page, /label="Task" value=\{item\.taskId\}/);
-  assert.match(page, /label="Review gate"/);
+  assert.match(page, /label="审核门"/);
   assert.match(page, /reviewGate/);
   assert.match(page, /candidateEvidenceState/);
   assert.match(page, /reportChainState/);
   assert.doesNotMatch(page, /label="Approval"/);
   assert.doesNotMatch(page, /Approval required/);
   assert.doesNotMatch(page, /No approval/);
-  assert.match(page, /Research audits/);
-  assert.match(page, /label="Research audit"/);
-  assert.match(page, /label="Validation audit"/);
+  assert.match(page, /研究审计/);
+  assert.match(page, /label="研究审计"/);
+  assert.match(page, /label="验证审计"/);
   assert.doesNotMatch(page, /label="Task" value=\{run\.taskId/);
   assert.doesNotMatch(page, /label="Task" value=\{feedback\.taskId\}/);
   assert.match(page, /reviewItem/);
-  assert.match(page, /Report chain evidence present/);
-  assert.match(page, /Report chain review required/);
+  assert.match(page, /已具备报告链证据/);
+  assert.match(page, /报告链需要审核/);
   assert.doesNotMatch(page, /claim\.reportChainEligible \? "Eligible" : "Blocked"/);
-  assert.match(page, /Validation Evidence/);
+  assert.match(page, /验证证据/);
   assert.match(page, /candidateEvidenceState/);
   assert.match(page, /reportChainState/);
   assert.match(page, /nextReviewAction/);
@@ -4088,33 +4113,33 @@ test("campaign evidence review page reads report previews and validation runs wh
   assert.match(page, /toCampaignValidationEvidenceReviewSummaries\(validationRuns, pipelineStages\)/);
   assert.match(page, /toCampaignValidationEvidenceQualitySummary\(validationEvidence\)/);
   assert.match(page, /validationEvidenceQuality/);
-  assert.match(page, /Clean reviews/);
-  assert.match(page, /Redacted reviews/);
-  assert.match(page, /Unsafe refs/);
-  assert.match(page, /Strong evidence/);
-  assert.match(page, /Promotion gated/);
+  assert.match(page, /已清理审核/);
+  assert.match(page, /已脱敏审核/);
+  assert.match(page, /不安全引用/);
+  assert.match(page, /强证据/);
+  assert.match(page, /晋级受控/);
   assert.match(page, /manualValidationReview/);
-  assert.match(page, /Quality review/);
+  assert.match(page, /质量审核/);
   assert.match(page, /qualityScore/);
   assert.match(page, /redactionStatus/);
   assert.match(page, /promotionReviewState/);
-  assert.match(page, /Research Feedback Evidence/);
-  assert.match(page, /Manual review required/);
-  assert.match(page, /Promotion review blocked/);
+  assert.match(page, /研究反馈证据/);
+  assert.match(page, /需要人工审核/);
+  assert.match(page, /晋级审核已阻断/);
   assert.doesNotMatch(page, /Promotion ready/);
-  assert.match(page, /No report claims queued for evidence review/);
-  assert.match(page, /No validation evidence queued for review/);
-  assert.match(page, /No research validation feedback queued for review/);
+  assert.match(page, /暂无加入证据审核队列的报告声明。/);
+  assert.match(page, /暂无加入审核队列的验证证据。/);
+  assert.match(page, /暂无加入审核队列的研究验证反馈。/);
   assert.doesNotMatch(page, /No campaign-linked report preview claims recorded/);
   assert.doesNotMatch(page, /No manual validation evidence recorded/);
   assert.doesNotMatch(page, /<Metric label="Runs"/);
   assert.doesNotMatch(page, /label="Run"/);
-  assert.match(page, /Report chain/);
+  assert.match(page, /报告链/);
   assert.doesNotMatch(page, /Preflight active/);
   assert.doesNotMatch(page, />Safety gate</);
   assert.doesNotMatch(page, /Execution allowed/);
   assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|executeValidation|submitReport/);
-  assert.doesNotMatch(page, /Report chain review ready|Promotion review ready|No report claims ready|No validation evidence ready|No research validation feedback ready|Review-ready claims/);
+  assert.doesNotMatch(page, /报告链审核已就绪|晋级审核已就绪|No report claims ready|No validation evidence ready|No research validation feedback ready|Review-ready claims/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 
@@ -4129,16 +4154,16 @@ test("campaign validation feedback review page records only the finding promotio
   assert.match(page, /params: Promise<\{ campaignId: string; stageId: string \}>/);
   assert.match(page, /reviewValidationFeedbackForFindingPromotion/);
   assert.match(page, /decision: "allow_finding_promotion"/);
-  assert.match(page, /Finding candidate promotion review/);
-  assert.match(page, /review-ready for finding candidate promotion review/);
-  assert.match(page, /Promotion review ready/);
+  assert.match(page, /发现候选项晋级审核/);
+  assert.match(page, /可进行发现候选项晋级审核/);
+  assert.match(page, /晋级审核已就绪/);
   assert.doesNotMatch(page, /Review may allow/);
   assert.doesNotMatch(page, /eligible for finding candidate promotion review/);
-  assert.match(page, /Validation execution/);
-  assert.match(page, /Report submission/);
-  assert.match(page, /label="Execution gate"/);
-  assert.match(page, /label="Validation gate"/);
-  assert.match(page, /label="Report submission gate"/);
+  assert.match(page, /验证执行/);
+  assert.match(page, /报告提交/);
+  assert.match(page, /label="执行门"/);
+  assert.match(page, /label="验证门"/);
+  assert.match(page, /label="报告提交门"/);
   assert.doesNotMatch(page, /label="execution_allowed"/);
   assert.doesNotMatch(page, /label="validation_allowed"/);
   assert.doesNotMatch(page, /label="report_submission_allowed"/);
@@ -4160,12 +4185,12 @@ test("campaign cycle review completion page records only the cycle review gate",
 
   assert.match(page, /params: Promise<\{ campaignId: string; stageId: string \}>/);
   assert.match(page, /completeCampaignCycleReview/);
-  assert.match(page, /Campaign cycle review/);
-  assert.match(page, /Next read-only cycle/);
-  assert.match(page, /Validation execution/);
-  assert.match(page, /Report submission/);
-  assert.match(page, /label="Execution gate"/);
-  assert.match(page, /label="Submission gate"/);
+  assert.match(page, /活动周期审核/);
+  assert.match(page, /下一轮只读周期/);
+  assert.match(page, /验证执行/);
+  assert.match(page, /报告提交/);
+  assert.match(page, /label="执行门"/);
+  assert.match(page, /label="提交门"/);
   assert.doesNotMatch(page, /label="execution_allowed"/);
   assert.doesNotMatch(page, /label="submission_allowed"/);
   assert.doesNotMatch(page, /execution_allowed/);
@@ -4189,25 +4214,25 @@ test("campaign report drafts page reads report previews and manual validation st
   assert.match(page, /getCampaignResearchTaskReview\(campaignId, task\.id, null\)/);
   assert.match(page, /toCampaignFindingCandidateGateSummary/);
   assert.match(page, /toCampaignResearchFeedbackEvidenceSummaries/);
-  assert.match(page, /Report Readiness/);
-  assert.doesNotMatch(page, />Report Drafts</);
-  assert.match(page, /Validation audits/);
-  assert.match(page, /label="Research audit"/);
-  assert.match(page, /Finding candidate gate/);
-  assert.match(page, /Reviewed claims/);
-  assert.match(page, /Finding candidate reviews queued/);
+  assert.match(page, /报告就绪度/);
+  assert.doesNotMatch(page, />报告草稿s</);
+  assert.match(page, /验证审计/);
+  assert.match(page, /label="研究审计"/);
+  assert.match(page, /发现候选项审核门/);
+  assert.match(page, /已审核声明/);
+  assert.match(page, /已加入队列的发现候选项审核/);
   assert.doesNotMatch(page, /label="Ready"/);
   assert.doesNotMatch(page, /Ready claims/);
   assert.doesNotMatch(page, /Ready finding candidate reviews/);
   assert.doesNotMatch(page, /Review-ready claims/);
   assert.doesNotMatch(page, /Review-ready finding candidate reviews/);
   assert.doesNotMatch(page, /label="Eligible"/);
-  assert.match(page, /Research feedback/);
-  assert.match(page, /Claims needing review/);
-  assert.match(page, /Promotion review holds/);
-  assert.match(page, /Required evidence holds/);
+  assert.match(page, /研究反馈/);
+  assert.match(page, /需要审核的声明/);
+  assert.match(page, /晋级审核阻塞项/);
+  assert.match(page, /所需证据阻塞项/);
   assert.match(page, /requiredEvidenceBlockedCount/);
-  assert.match(page, /Promotion audit holds/);
+  assert.match(page, /晋级审计阻塞项/);
   assert.match(page, /promotionAuditBlockedCount/);
   assert.match(page, /promotionAuditCreatedCount/);
   assert.match(page, /promotionAuditProvenanceRefCount/);
@@ -4215,26 +4240,26 @@ test("campaign report drafts page reads report previews and manual validation st
   assert.match(page, /promotionAuditLatestReason/);
   assert.match(page, /readyRunIds/);
   assert.match(page, /\/reports\/\$\{encodeURIComponent\(runId\)\}/);
-  assert.match(page, /Review finding candidate/);
-  assert.match(page, /Manual review required/);
-  assert.match(page, /Review required/);
-  assert.match(page, /label="Review holds"/);
+  assert.match(page, /审核发现候选项/);
+  assert.match(page, /需要人工审核/);
+  assert.match(page, /需要审核/);
+  assert.match(page, /label="审核阻塞项"/);
   assert.doesNotMatch(page, /Blocked claims/);
-  assert.doesNotMatch(page, /Promotion blocked/);
-  assert.doesNotMatch(page, /Promotion attempts blocked/);
+  assert.doesNotMatch(page, /漏洞候选晋级已阻断/);
+  assert.doesNotMatch(page, /已阻断晋级尝试/);
   assert.doesNotMatch(page, /label="Blocked"/);
   assert.match(page, /toCampaignReportDraftEvidenceSummary/);
   assert.match(page, /toCampaignReportDraftSummaries/);
-  assert.match(page, /Manual submission gate/);
-  assert.match(page, /<span>Evidence refs<\/span>/);
+  assert.match(page, /人工提交门/);
+  assert.match(page, /<span>证据引用<\/span>/);
   assert.doesNotMatch(page, /<span>Evidence<\/span>/);
-  assert.match(page, /Human review requires manual decision/);
-  assert.match(page, /Submission blocked/);
-  assert.match(page, /No report drafts queued for review/);
+  assert.match(page, /人工审核需要人工决策/);
+  assert.match(page, /报告提交已阻断/);
+  assert.match(page, /暂无加入审核队列的报告草稿。/);
   assert.doesNotMatch(page, /No campaign-linked report drafts recorded/);
   assert.doesNotMatch(page, /label="Runs"/);
   assert.doesNotMatch(page, /label="Run"/);
-  assert.doesNotMatch(page, /Review ready/);
+  assert.doesNotMatch(page, /审核已就绪/);
   assert.doesNotMatch(page, /recordManualObservation|recordClaimReviewDecision|createFindingCandidate|recordMythosBrainOutcome|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
@@ -4247,19 +4272,19 @@ test("campaign tasks page reads task records and stays read-only", async () => {
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignTasks\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignTaskSummaries/);
-  assert.match(page, /Research Review/);
+  assert.match(page, /研究审核/);
   assert.doesNotMatch(page, /Research Tasks/);
   assert.doesNotMatch(page, /Campaign Tasks/);
   assert.match(page, /\/tasks\/\$\{encodeURIComponent\(task\.id\)\}/);
-  assert.match(page, /Review-only research work items/);
-  assert.match(page, /No research review items ready/);
+  assert.match(page, /仅供审核的研究工作项/);
+  assert.match(page, /暂无可审核的研究工作项/);
   assert.doesNotMatch(page, /No campaign task records/);
   assert.doesNotMatch(page, /No research tasks ready/);
-  assert.match(page, /Research review items will appear here/);
+  assert.match(page, /研究工作台准备好仅供审核的工作后，研究审核项会显示在这里。/);
   assert.doesNotMatch(page, /Research tasks will appear here/);
   assert.doesNotMatch(page, /Tasks will appear here/);
-  assert.match(page, />\s*Review item\s*</);
-  assert.match(page, /label="Review item"/);
+  assert.match(page, />\s*审核项\s*</);
+  assert.match(page, /label="审核项"/);
   assert.doesNotMatch(page, />\s*Task\s*</);
   assert.doesNotMatch(page, /label="Task"/);
   assert.doesNotMatch(page, /Queued autonomous work items/);
@@ -4267,7 +4292,7 @@ test("campaign tasks page reads task records and stays read-only", async () => {
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
 });
 
-test("campaign research task review page drafts review plans without execution", async () => {
+test("campaign research task review page drafts 审查计划s without execution", async () => {
   const page = await import("node:fs/promises").then((fs) =>
     fs.readFile(
       new URL("../app/campaigns/[campaignId]/tasks/[taskId]/page.tsx", import.meta.url),
@@ -4284,59 +4309,59 @@ test("campaign research task review page drafts review plans without execution",
   assert.match(page, /"use server"/);
   assert.match(page, /revalidatePath/);
   assert.match(page, /toCampaignResearchTaskReviewSummary/);
-  assert.match(page, /Latest Review Plan/);
-  assert.match(page, /Latest Refutation Decision/);
-  assert.match(page, /Suggested Refutation Decision/);
+  assert.match(page, /最近审核计划/);
+  assert.match(page, /最近反证决策/);
+  assert.match(page, /建议反证决策/);
   assert.match(page, /suggestedRefutationDecision/);
   assert.match(page, /refutationQuestionCount/);
   assert.match(page, /refutationAnswerCount/);
   assert.match(page, /validationMode/);
   assert.match(page, /targetRef/);
-  assert.match(page, /label="Validation mode"/);
-  assert.match(page, /label="Next review action"/);
-  assert.doesNotMatch(page, /label="Next action"/);
-  assert.match(page, /Validation review pending/);
+  assert.match(page, /label="验证模式"/);
+  assert.match(page, /label="下一步审核操作"/);
+  assert.doesNotMatch(page, /label="下一步操作"/);
+  assert.match(page, /等待验证审核/);
   assert.doesNotMatch(page, /Not allowed yet/);
-  assert.match(page, /label="Target"/);
-  assert.match(page, /Latest Validation Feedback/);
-  assert.match(page, /Autonomous Candidate Review/);
+  assert.match(page, /label="目标"/);
+  assert.match(page, /最近验证反馈/);
+  assert.match(page, /自主候选项审核/);
   assert.match(page, /autonomousCandidateContext/);
   assert.match(page, /candidateId/);
   assert.match(page, /refutationQuestions/);
   assert.match(page, /triageSignals/);
   assert.match(page, /evidenceFocus/);
   assert.match(page, /sourceFactTypes/);
-  assert.match(page, /Candidate Triage Signals/);
-  assert.match(page, /Candidate Evidence Focus/);
-  assert.match(page, /Candidate Required Evidence/);
+  assert.match(page, /候选项分诊信号/);
+  assert.match(page, /候选项证据重点/);
+  assert.match(page, /候选项所需证据/);
   assert.match(page, /requiredEvidence/);
-  assert.match(page, /Candidate Quality Gate Reasons/);
+  assert.match(page, /候选项质量门原因/);
   assert.match(page, /qualityGateReasons/);
   assert.match(page, /rawPriorityScore/);
-  assert.match(page, /Candidate Source Facts/);
+  assert.match(page, /候选项源代码事实/);
   assert.match(page, /validationSteps/);
   assert.match(page, /blockedActions/);
-  assert.match(page, /Human review required/);
+  assert.match(page, /需要人工审核/);
   assert.doesNotMatch(page, /Human approval required/);
   assert.match(page, /latestValidationFeedback/);
   assert.match(page, /findingConfirmationAllowed/);
   assert.match(page, /\/feedback-reviews\/\$\{encodeURIComponent\(summary\.latestValidationFeedback\.feedbackStageId\)\}/);
-  assert.match(page, /Review promotion gate/);
+  assert.match(page, /审核晋级门/);
   assert.match(page, /latestRefutationDecision/);
   assert.match(page, /approvalId/);
   assert.match(page, /validationRunId/);
-  assert.match(page, /Review gate/);
-  assert.match(page, /label="Human review"/);
-  assert.match(page, /label="Review gate record"/);
-  assert.match(page, /No review gate/);
+  assert.match(page, /审核门/);
+  assert.match(page, /label="人工审核"/);
+  assert.match(page, /label="审核门记录"/);
+  assert.match(page, /无审核门/);
   assert.doesNotMatch(page, /label="Human approval"/);
   assert.doesNotMatch(page, /label="Approval"/);
   assert.doesNotMatch(page, /No approval request/);
-  assert.match(page, /Non-Destructive Plan/);
-  assert.match(page, /Draft Review Plan/);
-  assert.match(page, /Draft review plan/);
-  assert.match(page, /Record Needs Evidence/);
-  assert.match(page, /Record needs evidence/);
+  assert.match(page, /非破坏性计划/);
+  assert.match(page, /起草审核计划/);
+  assert.match(page, /起草审核计划/);
+  assert.match(page, /记录需要证据/);
+  assert.match(page, /记录需要证据/);
   assert.match(page, /latestReviewPlan\.planId/);
   assert.match(page, /decision: "needs_evidence"/);
   assert.match(page, /candidate_context_summary/);
@@ -4344,32 +4369,32 @@ test("campaign research task review page drafts review plans without execution",
   assert.match(page, /evidence_focus_count/);
   assert.match(page, /source_fact_type_count/);
   assert.match(page, /has_authorization_gap_candidate/);
-  assert.match(page, /rationale: "Needs more redacted evidence before validation."/);
+  assert.match(page, /rationale: "验证前需要更多已脱敏证据。"/);
   assert.match(page, /refutation_answers/);
   assert.match(page, /action=\{recordNeedsEvidenceDecisionAction\}/);
   assert.match(page, /reviewHypothesis/);
   assert.match(page, /reviewRefutationQuestions/);
   assert.match(page, /reviewEvidencePlan/);
   assert.match(page, /reviewer: "operator"/);
-  assert.match(page, /rationale: "Drafted from redacted research review context."/);
+  assert.match(page, /rationale: "根据已脱敏研究审核上下文起草。"/);
   assert.match(page, /action=\{createReviewPlanAction\}/);
-  assert.match(page, /Action gate/);
-  assert.match(page, /Review only/);
+  assert.match(page, /操作门/);
+  assert.match(page, /仅供审核/);
   assert.doesNotMatch(page, /label="Execution"/);
   assert.doesNotMatch(page, /Execution blocked/);
-  assert.match(page, /Validation audit/);
-  assert.match(page, /No validation audit/);
+  assert.match(page, /验证审计/);
+  assert.match(page, /暂无验证审计/);
   assert.doesNotMatch(page, /Validation run/);
   assert.doesNotMatch(page, /No validation run/);
-  assert.match(page, /label="Review gate"/);
-  assert.match(page, /label="Review item"/);
+  assert.match(page, /label="审核门"/);
+  assert.match(page, /label="审核项"/);
   assert.doesNotMatch(page, /Task review gate/);
   assert.doesNotMatch(page, /label="Task"/);
-  assert.match(page, /Reasoning memory key/);
+  assert.match(page, /推理记忆键/);
   assert.doesNotMatch(page, /Research memory key/);
-  assert.match(page, />\s*Research Review\s*</);
+  assert.match(page, />\s*研究审核\s*</);
   assert.doesNotMatch(page, />\s*Research Tasks\s*</);
-  assert.match(page, /Required Human Gates/);
+  assert.match(page, /必需人工审核门/);
   assert.doesNotMatch(page, /label="Queue"/);
   assert.doesNotMatch(page, />\s*Tasks\s*</);
   assert.doesNotMatch(page, />Safety gate</);
@@ -4385,19 +4410,19 @@ test("campaign agent runs page reads audit records and stays read-only", async (
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignAgentRuns\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignAgentRunSummaries/);
-  assert.match(page, /Agent Audit/);
-  assert.match(page, /Agent audits/);
-  assert.match(page, /review gates/);
-  assert.match(page, /No agent audits ready/);
+  assert.match(page, /智能体审计/);
+  assert.match(page, /智能体审计/);
+  assert.match(page, /审核门/);
+  assert.match(page, /暂无可查看的智能体审计。/);
   assert.doesNotMatch(page, /Agent runs/);
   assert.doesNotMatch(page, /Agent run audit/);
   assert.doesNotMatch(page, /No agent runs recorded/);
-  assert.match(page, /<span>Input refs<\/span>/);
-  assert.match(page, /<span>Output refs<\/span>/);
+  assert.match(page, /<span>输入引用<\/span>/);
+  assert.match(page, /<span>输出引用<\/span>/);
   assert.doesNotMatch(page, /<span>Inputs<\/span>/);
   assert.doesNotMatch(page, /<span>Outputs<\/span>/);
   assert.doesNotMatch(page, /safety gates/);
-  assert.match(page, /Scope Guard decision/);
+  assert.match(page, /范围守卫决策/);
   assert.doesNotMatch(page, />Safety gate</);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);
   assert.doesNotMatch(page, /<form|method="post"|action=\{/);
@@ -4411,24 +4436,24 @@ test("campaign validation queue page reads approval records and stays read-only"
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignApprovals\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignValidationQueueSummaries/);
-  assert.match(page, /Review Gate Queue/);
-  assert.match(page, /Next action/);
+  assert.match(page, /审核门队列/);
+  assert.match(page, /下一步操作/);
   assert.match(page, /nextAction/);
   assert.doesNotMatch(page, /Approval Review/);
   assert.doesNotMatch(page, />Validation Queue</);
-  assert.match(page, /Review gate requests/);
-  assert.match(page, /No review gate requests ready/);
-  assert.match(page, /Review gate requests will appear here/);
+  assert.match(page, /审核门请求/);
+  assert.match(page, /暂无可处理的审核门请求/);
+  assert.match(page, /研究活动进入人工审核门后，请求会显示在这里。/);
   assert.doesNotMatch(page, /Approval review records/);
   assert.doesNotMatch(page, /No approval review records/);
   assert.doesNotMatch(page, /Approval records will appear/);
-  assert.match(page, /Preflight still required/);
-  assert.match(page, /Review gate/);
-  assert.match(page, /Review gate state/);
-  assert.match(page, /label="Review gate"/);
+  assert.match(page, /任何验证启动前仍需完成预检。/);
+  assert.match(page, /审核门/);
+  assert.match(page, /审核门状态/);
+  assert.match(page, /label="审核门"/);
   assert.doesNotMatch(page, /label="Approval"/);
-  assert.match(page, /label="Review item"/);
-  assert.match(page, /label="Research audit"/);
+  assert.match(page, /label="审核项"/);
+  assert.match(page, /label="研究审计"/);
   assert.doesNotMatch(page, /label="Task"/);
   assert.doesNotMatch(page, /label="Run"/);
   assert.doesNotMatch(page, />Safety gate</);
@@ -4445,40 +4470,40 @@ test("campaign timeline page reads pipeline stage records and stays read-only", 
   assert.match(page, /params: Promise<\{ campaignId: string \}>/);
   assert.match(page, /getCampaignPipelineStages\(campaignId, \[\]\)/);
   assert.match(page, /toCampaignTimelineSummaries/);
-  assert.match(page, /Review Timeline/);
+  assert.match(page, /审核时间线/);
   assert.doesNotMatch(page, /Pipeline timeline/);
-  assert.match(page, /<span>Input refs<\/span>/);
-  assert.match(page, /<span>Output refs<\/span>/);
-  assert.match(page, /<span>Duration<\/span>/);
-  assert.match(page, /<span>Error<\/span>/);
+  assert.match(page, /<span>输入引用<\/span>/);
+  assert.match(page, /<span>输出引用<\/span>/);
+  assert.match(page, /<span>耗时<\/span>/);
+  assert.match(page, /<span>错误<\/span>/);
   assert.match(page, /formatDuration/);
   assert.match(page, /stage\.durationSeconds/);
   assert.match(page, /stage\.errorSummary/);
-  assert.match(page, /Not recorded/);
+  assert.match(page, /未记录/);
   assert.doesNotMatch(page, /<span>Inputs<\/span>/);
   assert.doesNotMatch(page, /<span>Outputs<\/span>/);
   assert.match(page, /manualValidationResultCount/);
   assert.match(page, /manualValidationReview/);
-  assert.match(page, /Quality review/);
+  assert.match(page, /质量审核/);
   assert.match(page, /qualityScore/);
   assert.match(page, /redactionStatus/);
   assert.match(page, /promotionReviewReady/);
   assert.match(page, /researchValidationFeedbackCount/);
   assert.match(page, /isResearchValidationFeedback/);
-  assert.match(page, /Research feedback/);
+  assert.match(page, /研究反馈/);
   assert.match(page, /validationFeedbackReviewCount/);
   assert.match(page, /isValidationFeedbackReview/);
-  assert.match(page, /Feedback reviews/);
-  assert.match(page, /Review gate: \{stage\.approvalCreated \? "recorded" : "pending"\}/);
-  assert.doesNotMatch(page, /Review gate: \{stage\.approvalCreated \? "created" : "not created"\}/);
+  assert.match(page, /反馈审核/);
+  assert.match(page, /审核门：\{stage\.approvalCreated \? "已记录" : "待处理"\}/);
+  assert.doesNotMatch(page, /审核门: \{stage\.approvalCreated \? "created" : "not created"\}/);
   assert.doesNotMatch(page, /Approval: \{stage\.approvalCreated/);
-  assert.match(page, /Finding confirmation gate:/);
-  assert.match(page, /Report\s+submission gate:/);
-  assert.match(page, /Validation gate:/);
-  assert.match(page, /Execution gate:/);
-  assert.match(page, /stage\.reportSubmissionAllowed \? "reviewed" : "gated"/);
-  assert.match(page, /stage\.validationAllowed \? "reviewed" : "gated"/);
-  assert.match(page, /stage\.executionAllowed \? "reviewed" : "gated"/);
+  assert.match(page, /发现确认门：/);
+  assert.match(page, /报告提交门：/);
+  assert.match(page, /验证门：/);
+  assert.match(page, /执行门：/);
+  assert.match(page, /stage\.reportSubmissionAllowed \? "已审核" : "受控"/);
+  assert.match(page, /stage\.validationAllowed \? "已审核" : "受控"/);
+  assert.match(page, /stage\.executionAllowed \? "已审核" : "受控"/);
   assert.doesNotMatch(page, /submission: \{stage\.reportSubmissionAllowed \? "open" : "gated"\}/);
   assert.doesNotMatch(page, /Validation: \{stage\.validationAllowed \? "open" : "gated"\}/);
   assert.doesNotMatch(page, /Execution:\{"\\s*"\}\s*\{stage\.executionAllowed \? "open" : "gated"\}/);
@@ -4493,31 +4518,31 @@ test("campaign timeline page reads pipeline stage records and stays read-only", 
   assert.match(page, /validationStepCount/);
   assert.match(page, /blockedActionCount/);
   assert.match(page, /requiredEvidence/);
-  assert.match(page, /Required evidence/);
+  assert.match(page, /所需证据/);
   assert.match(page, /evidenceFocusCount/);
   assert.match(page, /sourceFactTypeCount/);
   assert.match(page, /triageSignalCount/);
   assert.match(page, /priorityReasonCount/);
-  assert.match(page, /Priority reasons/);
+  assert.match(page, /优先级原因/);
   assert.match(page, /hasAuthorizationGapCandidate/);
-  assert.match(page, /Candidate context/);
-  assert.match(page, /Access-control gap candidate/);
+  assert.match(page, /候选项上下文/);
+  assert.match(page, /访问控制缺口候选/);
   assert.match(page, /candidateStatus/);
-  assert.match(page, /Research review queued/);
-  assert.match(page, /Promotion reviews/);
-  assert.match(page, /LLM audit/);
-  assert.match(page, /Prompt hash only/);
+  assert.match(page, /研究审核已入队/);
+  assert.match(page, /晋级审核/);
+  assert.match(page, /LLM 审计/);
+  assert.match(page, /仅提示词哈希/);
   assert.match(page, /hunterOperatingAction/);
   assert.match(page, /llmAuditPromptHash/);
   assert.doesNotMatch(page, /prompt_text|raw prompt|promptText|evidence_refs|raw evidence/);
-  assert.match(page, /Promotion blocks/);
+  assert.match(page, /晋级阻塞项/);
   assert.match(page, /learningOutcomeCount/);
   assert.match(page, /cycleReviewCount/);
   assert.match(page, /\/cycle-reviews\/\$\{encodeURIComponent\(stage\.id\)\}/);
-  assert.match(page, /Complete cycle review/);
-  assert.match(page, /Review gates/);
-  assert.match(page, /Review gate/);
-  assert.match(page, /No review timeline ready/);
+  assert.match(page, /完成周期审核/);
+  assert.match(page, /审核门/);
+  assert.match(page, /审核门/);
+  assert.match(page, /暂无可查看的审核时间线。/);
   assert.doesNotMatch(page, /No pipeline stages recorded/);
   assert.doesNotMatch(page, />Safety gate</);
   assert.doesNotMatch(page, /startCampaign|resumeCampaign|pauseCampaign|executeValidation|submitReport/);

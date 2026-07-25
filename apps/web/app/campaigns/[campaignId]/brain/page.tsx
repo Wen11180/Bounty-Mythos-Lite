@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getCampaignControlCenter, getMythosBrainProgram } from "@/lib/api";
 import { fallbackMythosBrainProfile } from "@/lib/fallback-data";
 import { toCampaignBrainSummary, toCampaignLearningReviewSummary } from "@/lib/campaigns-data";
+import { formatLabel } from "@/lib/workbench-detail-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string }>;
@@ -20,10 +21,10 @@ export default async function CampaignBrainPage({ params }: PageProps) {
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
           <p className="flex items-center gap-2 text-sm font-semibold text-[var(--warning)]">
             <AlertTriangle size={17} aria-hidden="true" />
-            Brain profile unavailable
+            研究大脑档案暂不可用
           </p>
           <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-            This campaign is not linked to a program-level Mythos Brain profile.
+            此研究活动尚未关联项目级研究大脑档案。
           </p>
         </section>
       </main>
@@ -47,7 +48,7 @@ export default async function CampaignBrainPage({ params }: PageProps) {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <Bot size={17} aria-hidden="true" />
-          Mythos Brain
+          研究大脑
         </p>
         <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px] lg:items-end">
           <div>
@@ -55,29 +56,29 @@ export default async function CampaignBrainPage({ params }: PageProps) {
               {summary.programName}
             </h1>
             <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-              Advisory research memory for ranking and explanation. It stays advisory only.
+              用于排序与解释的建议性研究记忆，仅作建议使用。
             </p>
           </div>
           <div className="border border-[var(--line)] bg-white p-4">
-            <p className="text-xs font-semibold uppercase text-[var(--muted)]">Program score</p>
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">项目评分</p>
             <p className="mt-2 text-3xl font-semibold tabular-nums">{summary.programScore}</p>
           </div>
         </div>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
-        <Metric label="Objects" value={summary.objectCount} />
-        <Metric label="Roles" value={summary.roleCount} />
-        <Metric label="Sensitive actions" value={summary.sensitiveActionCount} />
-        <Metric label="Signals" value={summary.signalCount} />
-        <Metric label="Applied lessons" value={summary.appliedLessonCount} />
-        <Metric label="Skipped lessons" value={summary.skippedLessonCount} />
+        <Metric label="对象" value={summary.objectCount} />
+        <Metric label="角色" value={summary.roleCount} />
+        <Metric label="敏感操作" value={summary.sensitiveActionCount} />
+        <Metric label="信号" value={summary.signalCount} />
+        <Metric label="已应用经验" value={summary.appliedLessonCount} />
+        <Metric label="已跳过经验" value={summary.skippedLessonCount} />
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="grid gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="High-Value Surfaces" />
+            <SectionHeader title="高价值攻击面" />
             <div className="divide-y divide-[var(--line)]">
               {summary.topSurfaces.map((surface) => (
                 <article key={surface.surfaceKey} className="grid gap-2 p-5 text-sm">
@@ -92,13 +93,13 @@ export default async function CampaignBrainPage({ params }: PageProps) {
                 </article>
               ))}
               {summary.topSurfaces.length === 0 ? (
-                <p className="p-5 text-sm text-[var(--muted)]">No learned surfaces yet.</p>
+                <p className="p-5 text-sm text-[var(--muted)]">尚无学习到的攻击面。</p>
               ) : null}
             </div>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Applied Lessons" />
+            <SectionHeader title="已应用经验" />
             <div className="divide-y divide-[var(--line)]">
               {summary.appliedLessons.map((lesson) => (
                 <article key={lesson.id} className="grid gap-2 p-5 text-sm">
@@ -112,7 +113,7 @@ export default async function CampaignBrainPage({ params }: PageProps) {
                     </p>
                   </div>
                   <p className="text-xs font-semibold uppercase text-[var(--muted)]">
-                    Confidence {lesson.confidence}
+                    置信度 {lesson.confidence}
                   </p>
                   {lesson.reasons.length > 0 ? (
                     <ul className="flex flex-wrap gap-1.5">
@@ -129,7 +130,7 @@ export default async function CampaignBrainPage({ params }: PageProps) {
                 </article>
               ))}
               {summary.appliedLessons.length === 0 ? (
-                <p className="p-5 text-sm text-[var(--muted)]">No applied lessons yet.</p>
+                <p className="p-5 text-sm text-[var(--muted)]">尚无已应用经验。</p>
               ) : null}
             </div>
           </section>
@@ -137,53 +138,53 @@ export default async function CampaignBrainPage({ params }: PageProps) {
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Learning Review" />
+            <SectionHeader title="学习信号审核" />
             <dl className="grid gap-3 p-5 text-sm">
               <Field
-                label="Review readiness"
-                value={learningReview.reviewReady ? "Review ready" : "Review queued"}
+                label="审核就绪度"
+                value={learningReview.reviewReady ? "可审核" : "已加入审核队列"}
               />
-              <Field label="Safe next action" value={learningReview.safeNextAction} />
-              <Field label="Linked audits" value={String(learningReview.linkedRunCount)} />
-              <Field label="Recent signals" value={String(learningReview.recentSignalCount)} />
-              <Field label="Strong evidence" value={String(learningReview.strongEvidenceSignalCount)} />
-              <Field label="Applied lessons" value={String(learningReview.appliedLessonCount)} />
-              <Field label="Skipped lessons" value={String(learningReview.skippedLessonCount)} />
+              <Field label="安全下一步" value={learningReview.safeNextAction} />
+              <Field label="关联审计" value={String(learningReview.linkedRunCount)} />
+              <Field label="近期信号" value={String(learningReview.recentSignalCount)} />
+              <Field label="强证据" value={String(learningReview.strongEvidenceSignalCount)} />
+              <Field label="已应用经验" value={String(learningReview.appliedLessonCount)} />
+              <Field label="已跳过经验" value={String(learningReview.skippedLessonCount)} />
             </dl>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Safety Boundary" />
+            <SectionHeader title="安全边界" />
             <dl className="grid gap-3 p-5 text-sm">
               <Field
-                label="Advisory only"
-                value={advisoryOnly ? "Advisory memory only" : "Review gate active"}
+                label="仅建议性"
+                value={advisoryOnly ? "仅建议性记忆" : "审核门生效中"}
               />
               <Field
-                label="Review boundary"
-                value={summary.executionAllowed ? "Scope Guard reviewed" : "Brain advisory memory"}
+                label="审核边界"
+                value={summary.executionAllowed ? "范围守卫已审核" : "研究大脑建议性记忆"}
               />
-              <Field label="Program" value={summary.programId} />
+              <Field label="项目" value={summary.programId} />
             </dl>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Reasoning Memory" />
+            <SectionHeader title="推理记忆" />
             <div className="grid gap-4 p-5 text-sm">
               <dl className="grid grid-cols-2 gap-3">
                 <Field
-                  label="Highest score"
+                  label="最高评分"
                   value={String(summary.reasoningMemory.highestReasoningReviewScore)}
                 />
                 <Field
-                  label="Contexts"
+                  label="上下文"
                   value={String(summary.reasoningMemory.learningSignalContextCount)}
                 />
                 <Field
-                  label="Candidates"
+                  label="候选项"
                   value={String(summary.reasoningMemory.candidateContextCount)}
                 />
-                <Field label="Gate" value="Advisory memory only" />
+                <Field label="审核门" value="仅建议性记忆" />
               </dl>
               {summary.reasoningMemory.topPlaybooks.length > 0 ? (
                 <ul className="grid gap-2 border-t border-[var(--line)] pt-3">
@@ -191,8 +192,7 @@ export default async function CampaignBrainPage({ params }: PageProps) {
                     <li key={playbook.playbookId} className="grid gap-1">
                       <p className="break-words font-semibold">{playbook.playbookId}</p>
                       <p className="text-xs text-[var(--muted)]">
-                        Score {playbook.highestReasoningReviewScore} from{" "}
-                        {playbook.learningSignalContextCount} signal context(s)
+                        评分 {playbook.highestReasoningReviewScore}，来自 {playbook.learningSignalContextCount} 个信号上下文
                       </p>
                     </li>
                   ))}
@@ -214,21 +214,21 @@ export default async function CampaignBrainPage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Recent Signals" />
+            <SectionHeader title="近期信号" />
             <div className="divide-y divide-[var(--line)]">
               {summary.recentSignals.map((signal) => (
                 <article key={signal.id} className="grid gap-2 p-5 text-sm">
-                  <p className="break-words font-semibold">{signal.outcome}</p>
+                  <p className="break-words font-semibold">{formatLabel(signal.outcome)}</p>
                   <p className="break-words text-[var(--muted)]">{signal.notes}</p>
                   <dl className="grid gap-2 text-xs text-[var(--muted)]">
-                    <Field label="Playbook" value={signal.playbookId} />
-                    <Field label="Surface" value={signal.surfaceKey ?? "No surface"} />
-                    <Field label="Evidence" value={signal.evidenceQuality ?? "Unspecified"} />
+                    <Field label="策略手册" value={signal.playbookId} />
+                    <Field label="攻击面" value={signal.surfaceKey ?? "暂无攻击面"} />
+                    <Field label="证据" value={signal.evidenceQuality ? formatLabel(signal.evidenceQuality) : "未指定"} />
                   </dl>
                 </article>
               ))}
               {summary.recentSignals.length === 0 ? (
-                <p className="p-5 text-sm text-[var(--muted)]">No learning signals yet.</p>
+                <p className="p-5 text-sm text-[var(--muted)]">尚无学习信号。</p>
               ) : null}
             </div>
           </section>
@@ -245,7 +245,7 @@ function PageBack({ campaignId }: { campaignId: string }) {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Campaign
+      研究活动
     </Link>
   );
 }

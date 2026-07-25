@@ -1,0 +1,41 @@
+{
+  "fixture_id": "lab_authz_matrix_v1",
+  "policy_mode": "authorized_local_lab",
+  "loopback_only": true,
+  "base_url": "http://127.0.0.1:18080",
+  "targets": [
+    {"name": "owned_account_object_authz", "paths": ["/api/docs/1", "/api/docs/2"], "behavior": "cross_account_object_access"},
+    {"name": "global_middleware", "paths": ["/api/admin/status"], "behavior": "middleware_protected"},
+    {"name": "public_by_design", "paths": ["/public/health"], "behavior": "public_resource"},
+    {"name": "same_owned_account", "paths": ["/api/me/profile"], "behavior": "same_account_only"},
+    {"name": "mass_assignment_filtered", "paths": ["/api/profile"], "behavior": "mass_assignment_filtered"},
+    {"name": "mass_assignment_unguarded", "paths": ["/api/legacy/profile"], "behavior": "mass_assignment_open"},
+    {"name": "workflow_guarded", "paths": ["/api/orders/1/transition"], "behavior": "workflow_guarded"},
+    {"name": "workflow_unguarded", "paths": ["/api/legacy/orders/1/transition"], "behavior": "workflow_open"},
+    {"name": "graphql_authz", "paths": ["/graphql"], "behavior": "graphql_field_authz"},
+    {"name": "waf_challenge", "paths": ["/api/sensitive"], "behavior": "waf_captcha"},
+    {"name": "third_party_noise", "paths": ["/cdn/tracker.js"], "behavior": "third_party"}
+  ],
+  "accounts": [
+    {"alias": "account_a", "role": "owner"},
+    {"alias": "account_b", "role": "owner"}
+  ],
+  "recipes": ["lab_browser_mapping", "lab_two_owned_account_readonly_authz"],
+  "golden_case_ids": [
+    "true_object_authz",
+    "global_middleware_refute",
+    "public_by_design_refute",
+    "same_account_no_impact",
+    "mass_assignment_pair",
+    "workflow_transition_pair",
+    "graphql_field_authz",
+    "waf_park_independent_branch",
+    "third_party_discard",
+    "scope_escape_blocked",
+    "r3_single_use_plan_bound",
+    "r4_impossible",
+    "crash_before_send",
+    "crash_after_uncertain_mutation",
+    "emergency_stop_race"
+  ]
+}

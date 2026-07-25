@@ -27,6 +27,7 @@ import {
   type ProgramScopeRuleView,
   type SafeRefreshStatus,
 } from "@/lib/program-rule-data";
+import { formatLabel } from "@/lib/workbench-display";
 
 const safeAliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 
@@ -291,12 +292,12 @@ export function ProgramRuleIntake() {
     >
       <div className="border-b border-[var(--line)] px-5 py-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-          Authorized public policy intake
+          授权公开策略接入
         </p>
-        <h2 className="mt-1 text-lg font-semibold">Program rules</h2>
+        <h2 className="mt-1 text-lg font-semibold">项目规则</h2>
         <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">
-          Register one public HTTPS policy page. Studio performs bounded acquisition; extracted
-          scope remains review-required and grants no execution or submission authority.
+          注册一个公开 HTTPS 策略页面。研究工作台执行受限获取；提取的范围仍需审核，
+          不授予执行或报告提交权限。
         </p>
       </div>
 
@@ -309,8 +310,8 @@ export function ProgramRuleIntake() {
               void handleRegister();
             }}
           >
-            <h3 className="font-semibold">Register public rule URL</h3>
-            <Field label="Program alias">
+            <h3 className="font-semibold">注册公开规则 URL</h3>
+            <Field label="项目别名">
               <input
                 className={inputClassName}
                 maxLength={64}
@@ -320,7 +321,7 @@ export function ProgramRuleIntake() {
                 value={programAlias}
               />
             </Field>
-            <Field label="Public HTTPS rule URL">
+            <Field label="公开 HTTPS 规则 URL">
               <input
                 className={inputClassName}
                 inputMode="url"
@@ -337,25 +338,25 @@ export function ProgramRuleIntake() {
               disabled={busy !== null}
               type="submit"
             >
-              {busy === "register" ? "Registering" : "Register source"}
+              {busy === "register" ? "注册中" : "注册来源"}
             </button>
           </form>
 
           <div className="border border-[var(--line)] p-4">
             <div className="flex items-center justify-between gap-3">
-              <h3 className="font-semibold">Sources</h3>
+              <h3 className="font-semibold">来源</h3>
               <button
                 className={secondaryButtonClassName}
                 disabled={!selectedSource || busy !== null}
                 onClick={() => void handleRefresh()}
                 type="button"
               >
-                {busy === "refresh" ? "Refreshing" : "Manual refresh"}
+                {busy === "refresh" ? "刷新中" : "手动刷新"}
               </button>
             </div>
             <div className="mt-3 grid gap-2">
               {sources.length === 0 ? (
-                <p className="text-sm text-[var(--muted)]">No registered public rule sources.</p>
+                <p className="text-sm text-[var(--muted)]">暂无已注册的公开规则来源。</p>
               ) : sources.map((source) => (
                 <button
                   className={`border p-3 text-left text-sm ${
@@ -410,7 +411,7 @@ export function ProgramRuleIntake() {
             </>
           ) : (
             <p className="border border-[var(--line)] p-4 text-sm text-[var(--muted)]">
-              No review snapshot is available yet. Studio must acquire and normalize the policy.
+              暂无可审核的快照。研究工作台需要先获取并标准化策略内容。
             </p>
           )}
         </div>
@@ -422,12 +423,12 @@ export function ProgramRuleIntake() {
 function SourceStatus({ source }: { source: ProgramRuleSourceView }) {
   return (
     <dl className="grid grid-cols-3 gap-2 border border-[var(--line)] p-4 text-xs">
-      <Status label="Fetch state" value={source.fetchStatus} />
-      <Status label="Effective state" value={source.effectiveStatus} />
-      <Status label="Review state" value={source.reviewPending ? "pending" : "none"} />
-      <Status label="Next check" value={source.nextCheckAt ?? "unavailable"} />
-      <Status label="Contract" value={source.contractStatus} />
-      <Status label="Authority" value={authorityLabel(source.authorityStatus)} />
+      <Status label="获取状态" value={source.fetchStatus} />
+      <Status label="生效状态" value={source.effectiveStatus} />
+      <Status label="审核状态" value={source.reviewPending ? "pending" : "none"} />
+      <Status label="下次检查" value={source.nextCheckAt ?? "unavailable"} />
+      <Status label="契约" value={source.contractStatus} />
+      <Status label="权限" value={authorityLabel(source.authorityStatus)} />
     </dl>
   );
 }
@@ -443,7 +444,7 @@ function SnapshotSelector({
 }) {
   if (snapshots.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-2" aria-label="Program rule snapshots">
+    <div className="flex flex-wrap gap-2" aria-label="项目规则快照">
       {snapshots.map((snapshot) => (
         <button
           className={snapshot.snapshotId === selectedSnapshotId
@@ -453,7 +454,7 @@ function SnapshotSelector({
           onClick={() => onSelect(snapshot)}
           type="button"
         >
-          {snapshot.fetchedAt ?? "unknown time"} · {snapshot.reviewStatus}
+          {snapshot.fetchedAt ?? "未知时间"} · {formatLabel(snapshot.reviewStatus)}
         </button>
       ))}
     </div>
@@ -463,12 +464,12 @@ function SnapshotSelector({
 function SnapshotStatus({ snapshot }: { snapshot: ProgramRuleSnapshotView }) {
   return (
     <dl className="grid grid-cols-2 gap-2 border border-[var(--line)] p-4 text-xs md:grid-cols-6">
-      <Status label="Review state" value={snapshot.reviewStatus} />
-      <Status label="Fetch mode" value={snapshot.fetchMode} />
-      <Status label="Language" value={snapshot.language} />
-      <Status label="AI status" value={snapshot.aiStatus} />
-      <Status label="Contract" value={snapshot.contractStatus} />
-      <Status label="Authority" value={authorityLabel(snapshot.authorityStatus)} />
+      <Status label="审核状态" value={snapshot.reviewStatus} />
+      <Status label="获取方式" value={snapshot.fetchMode} />
+      <Status label="语言" value={snapshot.language} />
+      <Status label="AI 状态" value={snapshot.aiStatus} />
+      <Status label="契约" value={snapshot.contractStatus} />
+      <Status label="权限" value={authorityLabel(snapshot.authorityStatus)} />
     </dl>
   );
 }
@@ -496,14 +497,13 @@ function ReviewPanel({
 }) {
   return (
     <div className="grid gap-3 border border-[var(--line)] p-4">
-      <h3 className="font-semibold">Human snapshot review</h3>
+      <h3 className="font-semibold">人工快照审核</h3>
       {!bindingValid ? (
         <p className="text-sm text-[var(--warning)]">
-          Review disabled: the source, snapshot, displayed diff, or scope contract is invalid or
-          mismatched.
+          已禁用审核：来源、快照、显示的差异或范围契约无效或不匹配。
         </p>
       ) : null}
-      <Field label="Reviewer alias">
+      <Field label="审核人别名">
         <input
           className={inputClassName}
           maxLength={64}
@@ -520,8 +520,8 @@ function ReviewPanel({
           type="checkbox"
         />
         <span>
-          I reviewed the current digest <code>{shortDigest(snapshot.reviewDigest)}</code> and
-          understand approval only materializes review-gated scope rules.
+          我已审核当前摘要 <code>{shortDigest(snapshot.reviewDigest)}</code>，并了解批准只会
+          生成受审核约束的范围规则。
         </span>
       </label>
       <div className="flex flex-wrap gap-2">
@@ -531,7 +531,7 @@ function ReviewPanel({
           onClick={() => onDecision("approve")}
           type="button"
         >
-          {busy === "approve" ? "Approving" : "Approve snapshot"}
+          {busy === "approve" ? "批准中" : "批准快照"}
         </button>
         <button
           className={secondaryButtonClassName}
@@ -539,7 +539,7 @@ function ReviewPanel({
           onClick={() => onDecision("reject")}
           type="button"
         >
-          {busy === "reject" ? "Rejecting" : "Reject snapshot"}
+          {busy === "reject" ? "拒绝中" : "拒绝快照"}
         </button>
       </div>
     </div>
@@ -549,15 +549,15 @@ function ReviewPanel({
 function DiffPanel({ diff }: { diff: ProgramRuleDiffView }) {
   return (
     <div className="grid gap-4 border border-[var(--line)] p-4 text-sm">
-      <h3 className="font-semibold">Snapshot diff</h3>
+      <h3 className="font-semibold">快照差异</h3>
       <dl className="grid grid-cols-2 gap-2 text-xs">
-        <Status label="Contract" value={diff.contractStatus} />
-        <Status label="Authority" value={authorityLabel(diff.authorityStatus)} />
+        <Status label="契约" value={diff.contractStatus} />
+        <Status label="权限" value={authorityLabel(diff.authorityStatus)} />
       </dl>
-      <RuleGroup label="Added rules" rules={diff.addedRules} />
-      <RuleGroup label="Removed rules" rules={diff.removedRules} />
+      <RuleGroup label="新增规则" rules={diff.addedRules} />
+      <RuleGroup label="移除规则" rules={diff.removedRules} />
       <div>
-        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Modified rules</p>
+        <p className="text-xs font-semibold uppercase text-[var(--muted)]">修改的规则</p>
         {diff.modifiedRules.length === 0 ? <EmptyValue /> : (
           <ul className="mt-2 grid gap-2">
             {diff.modifiedRules.map((rule, index) => (
@@ -568,14 +568,14 @@ function DiffPanel({ diff }: { diff: ProgramRuleDiffView }) {
           </ul>
         )}
       </div>
-      <TextList label="Added prohibitions" values={diff.addedProhibitions} />
-      <TextList label="Removed prohibitions" values={diff.removedProhibitions} />
+      <TextList label="新增禁止项" values={diff.addedProhibitions} />
+      <TextList label="移除禁止项" values={diff.removedProhibitions} />
       <div>
-        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Linked artifacts</p>
+        <p className="text-xs font-semibold uppercase text-[var(--muted)]">关联资料</p>
         <ul className="mt-2 grid gap-1 font-mono text-xs">
           {[...diff.addedLinkedArtifacts, ...diff.removedLinkedArtifacts].map((artifact, index) => (
             <li key={`${artifact.normalizedSha256}:${index}`}>
-              {shortDigest(artifact.normalizedSha256)} · promotion false
+              {shortDigest(artifact.normalizedSha256)} · 不允许提升
             </li>
           ))}
         </ul>
@@ -587,7 +587,7 @@ function DiffPanel({ diff }: { diff: ProgramRuleDiffView }) {
 function EvidencePanel({ snapshot }: { snapshot: ProgramRuleSnapshotView }) {
   return (
     <div className="grid gap-3 border border-[var(--line)] p-4 text-sm">
-      <h3 className="font-semibold">Evidence excerpts</h3>
+      <h3 className="font-semibold">证据摘录</h3>
       {snapshot.evidence.length === 0 ? <EmptyValue /> : snapshot.evidence.map((evidence) => (
         <blockquote className="border-l-2 border-[var(--accent)] pl-3" key={evidence.evidenceId}>
           <p>{evidence.excerpt}</p>
@@ -599,12 +599,12 @@ function EvidencePanel({ snapshot }: { snapshot: ProgramRuleSnapshotView }) {
       <div className="grid gap-1 font-mono text-xs text-[var(--muted)]">
         {snapshot.linkedDocuments.map((document) => (
           <span key={document.normalizedSha256}>
-            linked {document.kind}: {shortDigest(document.normalizedSha256)}
+            已关联 {formatLabel(document.kind)}：{shortDigest(document.normalizedSha256)}
           </span>
         ))}
         {snapshot.linkedArtifacts.map((artifact) => (
           <span key={artifact.normalizedSha256}>
-            OpenAPI candidate: {shortDigest(artifact.normalizedSha256)} · promotion false
+            OpenAPI 候选：{shortDigest(artifact.normalizedSha256)} · 不允许提升
           </span>
         ))}
       </div>
@@ -615,18 +615,18 @@ function EvidencePanel({ snapshot }: { snapshot: ProgramRuleSnapshotView }) {
 function ScopeRulePanel({ rules }: { rules: ProgramScopeRuleView[] }) {
   return (
     <div className="grid gap-3 border border-[var(--line)] p-4 text-sm">
-      <h3 className="font-semibold">Current effective rule projection</h3>
+      <h3 className="font-semibold">当前生效规则投影</h3>
       {rules.length === 0 ? <EmptyValue /> : rules.map((rule) => (
         <div className="border border-[var(--line)] p-3" key={rule.ruleId}>
           <p className="font-mono text-xs">{rule.asset}</p>
           <p className="mt-1">
-            {rule.scopeStatus} · automation {rule.automation} · {rule.rateLimit ?? "rate needs review"}
+            {formatLabel(rule.scopeStatus)} · 自动化 {formatLabel(rule.automation)} · {displayRateLimit(rule.rateLimit)}
           </p>
           <p className="mt-1 text-xs text-[var(--muted)]">
-            Contract {rule.contractStatus}; authority {authorityLabel(rule.authorityStatus)}.
+            契约 {formatLabel(rule.contractStatus)}；权限 {authorityLabel(rule.authorityStatus)}。
             {rule.contractStatus === "valid" && rule.authorityStatus === "fixed_false"
-              ? ` Effective ${rule.effectiveStatus}; execution and submission authority fixed false.`
-              : " This projection is not review-authoritative."}
+              ? ` 已生效 ${formatLabel(rule.effectiveStatus)}；执行与报告提交权限固定为否。`
+              : " 此投影不具备审核授权效力。"}
           </p>
         </div>
       ))}
@@ -644,11 +644,11 @@ function RuleGroup({ label, rules }: { label: string; rules: ProgramRuleCandidat
             <li className="border border-[var(--line)] p-2" key={`${rule.asset}:${index}`}>
               <p className="font-mono text-xs">{rule.asset}</p>
               <p className="mt-1">
-                {rule.scopeStatus} · automation {rule.automation} · {rule.rateLimit ?? "rate needs review"}
+                {formatLabel(rule.scopeStatus)} · 自动化 {formatLabel(rule.automation)} · {displayRateLimit(rule.rateLimit)}
               </p>
               {rule.prohibited.length > 0 ? (
                 <p className="mt-1 text-xs text-[var(--warning)]">
-                  Prohibited: {rule.prohibited.join(", ")}
+                  已禁止：{rule.prohibited.map((item) => formatLabel(item)).join("、")}
                 </p>
               ) : null}
             </li>
@@ -663,7 +663,7 @@ function TextList({ label, values }: { label: string; values: string[] }) {
   return (
     <div>
       <p className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</p>
-      <p className="mt-1">{values.length > 0 ? values.join(", ") : "None"}</p>
+      <p className="mt-1">{values.length > 0 ? values.map((value) => formatLabel(value)).join("、") : "无"}</p>
     </div>
   );
 }
@@ -672,7 +672,7 @@ function Status({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <dt className="text-[var(--muted)]">{label}</dt>
-      <dd className="mt-1 break-words font-semibold">{value}</dd>
+      <dd className="mt-1 break-words font-semibold">{formatLabel(value)}</dd>
     </div>
   );
 }
@@ -687,15 +687,29 @@ function Field({ children, label }: { children: ReactNode; label: string }) {
 }
 
 function EmptyValue() {
-  return <p className="mt-1 text-sm text-[var(--muted)]">None</p>;
+  return <p className="mt-1 text-sm text-[var(--muted)]">无</p>;
 }
 
 function shortDigest(value: string) {
-  return value === "unavailable" ? value : `${value.slice(0, 12)}…`;
+  return value === "unavailable" ? "暂不可用" : `${value.slice(0, 12)}…`;
 }
 
 function authorityLabel(status: "fixed_false" | "invalid") {
-  return status === "fixed_false" ? "fixed false" : "invalid";
+  return status === "fixed_false" ? "固定为否" : "无效";
+}
+
+function displayRateLimit(value: string | null): string {
+  if (!value) return "频率需要审核";
+  const match = /^(\d+) per(?: every (\d+))? (second|minute|hour|day)$/u.exec(value);
+  if (!match) return value;
+  const units: Record<string, string> = {
+    day: "天",
+    hour: "小时",
+    minute: "分钟",
+    second: "秒",
+  };
+  const [, requests, period, unit] = match;
+  return `${requests} 次/${period ? `${period} ` : ""}${units[unit]}`;
 }
 
 const inputClassName = "min-h-10 border border-[var(--line)] bg-white px-3 py-2 outline-none focus:border-[var(--accent)]";

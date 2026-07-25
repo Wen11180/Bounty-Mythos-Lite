@@ -10,9 +10,9 @@ import {
   fallbackPipelineRuns,
   type PipelineRunSummary,
   type PipelineRunStageSummary,
-} from "./pipeline-runs-data";
-export { formatLabel, safeDisplay, safeRecordEntries, safeStringList } from "./workbench-display";
-import { safeDisplay } from "./workbench-display";
+} from "./pipeline-runs-data.ts";
+export { formatLabel, safeDisplay, safeRecordEntries, safeStringList } from "./workbench-display.ts";
+import { safeDisplay } from "./workbench-display.ts";
 
 const FALLBACK_DATE = "2026-07-03T00:00:00.000Z";
 
@@ -81,59 +81,59 @@ export function fallbackRunDetail(runId: string): PipelineRunDetail | null {
         steps: [
           {
             key: "manual_observation",
-            label: "Manual Observation",
+            label: "人工观察",
             status: "waiting",
-            reason: "No sanitized manual observation recorded yet.",
+            reason: "尚未记录脱敏人工观察。",
             safety_gate: "test_accounts_only",
-            next_allowed_action: "Record a sanitized manual observation.",
+            next_allowed_action: "记录一条脱敏人工观察。",
           },
           {
             key: "claim_review",
-            label: "Claim Review",
+            label: "声明审核",
             status: "waiting",
-            reason: "No human claim review decision recorded yet.",
+            reason: "尚未记录人工声明审核决策。",
             safety_gate: "human_review_required",
-            next_allowed_action: "Review the observed claim with redacted evidence.",
+            next_allowed_action: "使用脱敏证据审核观察到的声明。",
           },
           {
             key: "finding_candidate",
-            label: "Finding Candidate",
+            label: "漏洞候选",
             status: "waiting",
-            reason: "No finding candidate created yet.",
+            reason: "尚未创建漏洞候选。",
             safety_gate: "candidate_not_validated",
-            next_allowed_action: "Create a candidate from a review-ready observed claim.",
+            next_allowed_action: "从可审核的观察声明创建候选。",
           },
           {
             key: "learning_signal",
-            label: "Learning Signal",
+            label: "学习信号",
             status: "waiting",
-            reason: "No advisory learning signal linked yet.",
+            reason: "尚未关联建议性学习信号。",
             safety_gate: "advisory_memory_only",
-            next_allowed_action: "Record an accepted, duplicate, informative, N/A, or rejected outcome.",
+            next_allowed_action: "记录已接受、重复、有参考价值、不适用或已拒绝的结果。",
           },
           {
             key: "brain_memory",
-            label: "Brain Memory",
+            label: "大脑记忆",
             status: "waiting",
-            reason: "Program brain is waiting for a learning signal.",
+            reason: "项目大脑正在等待学习信号。",
             safety_gate: "no_execution_permission",
-            next_allowed_action: "Keep the candidate gated until outcome memory exists.",
+            next_allowed_action: "在结果记忆形成前保持候选受控。",
           },
         ],
       },
       report_draft: {
-        title: summary.reportTitle ?? "Fallback report preview",
+        title: summary.reportTitle ?? "演示报告预览",
         severity: "medium",
         scope_status: validationGate.status,
         safety_notes: ["human_review_required", "test_accounts_only", "non_destructive_validation_only"],
         steps: validationWorkspace.steps?.map((step) => safeDisplay(step.instruction)),
-        expected_result: "The protected security boundary should hold.",
-        actual_result: "To be filled after safe validation evidence is reviewed.",
+        expected_result: "受保护的安全边界应保持有效。",
+        actual_result: "将在审核安全验证证据后补充。",
         human_review_required: true,
       },
       evidence_bundle: {
         finding_id: summary.runId,
-        summary: `${summary.evidenceCount} fallback evidence item(s) attached.`,
+        summary: `已关联 ${summary.evidenceCount} 项演示证据。`,
         items: [],
         safety_notes: ["test_accounts_only", "no_real_user_data"],
       },
@@ -203,7 +203,7 @@ export function fallbackReportPreview(runId: string): ReportPreview | null {
 
   return {
     run_id: summary.runId,
-    title: summary.reportTitle ?? "Fallback report preview",
+    title: summary.reportTitle ?? "演示报告预览",
     severity: "medium",
     scope_status: summary.validationGate.status,
     human_review_required: true,
@@ -215,12 +215,12 @@ export function fallbackReportPreview(runId: string): ReportPreview | null {
     },
     sections: {
       observed_facts: [
-        `Pipeline run ${summary.runId} targets ${summary.asset}.`,
-        `${summary.evidenceCount} sanitized evidence item(s) are attached.`,
+        `流程运行 ${summary.runId} 的目标为 ${summary.asset}。`,
+        `已关联 ${summary.evidenceCount} 项脱敏证据。`,
       ],
       model_reasoning: summary.stages.map((stage) => stage.detail),
       unverified_claims: [
-        "Validation evidence still requires human review before submission.",
+        "提交前，验证证据仍需要人工审核。",
         summary.validationGate.approval,
       ],
     },
@@ -228,7 +228,7 @@ export function fallbackReportPreview(runId: string): ReportPreview | null {
       {
         claim_id: "claim_observed_fact_1",
         claim_type: "observed_fact",
-        text: `Pipeline run ${summary.runId} targets ${summary.asset}.`,
+        text: `流程运行 ${summary.runId} 的目标为 ${summary.asset}。`,
         status: "needs_human_review",
         quality_score: evidenceRefs.length > 0 ? 100 : 65,
         quality_reasons: [
@@ -248,14 +248,14 @@ export function fallbackReportPreview(runId: string): ReportPreview | null {
         readiness_blockers: ["human_review_required", ...validationBlockers, ...evidenceBlockers],
         review_status: "confirmed_observed_fact",
         reviewer: "lead_reviewer",
-        review_rationale: "Safe fixture observation reviewed; submission remains blocked.",
+        review_rationale: "已审核安全样本观察；报告提交仍保持阻断。",
         reviewed_at: FALLBACK_DATE,
         review_evidence_refs: evidenceRefs,
       },
       {
         claim_id: "claim_model_reasoning_1",
         claim_type: "model_reasoning",
-        text: summary.stages[0]?.detail ?? "Candidate reasoning requires validation.",
+        text: summary.stages[0]?.detail ?? "候选推理需要验证。",
         status: "model_reasoning_only",
         quality_score: 10,
         quality_reasons: [
@@ -279,14 +279,14 @@ export function fallbackReportPreview(runId: string): ReportPreview | null {
         ],
         review_status: "not_reportable",
         reviewer: "lead_reviewer",
-        review_rationale: "Model reasoning is useful triage context, not a report fact.",
+        review_rationale: "模型推理可作为分诊上下文，不是报告事实。",
         reviewed_at: FALLBACK_DATE,
         review_evidence_refs: [],
       },
       {
         claim_id: "claim_unverified_claim_1",
         claim_type: "unverified_claim",
-        text: "Validation evidence still requires human review before submission.",
+        text: "提交前，验证证据仍需要人工审核。",
         status: "blocked",
         quality_score: 20,
         quality_reasons: [
@@ -310,7 +310,7 @@ export function fallbackReportPreview(runId: string): ReportPreview | null {
         ],
         review_status: "needs_evidence",
         reviewer: null,
-        review_rationale: "Needs redacted evidence and provenance before report use.",
+        review_rationale: "用于报告前需要脱敏证据和溯源信息。",
         reviewed_at: null,
         review_evidence_refs: [],
       },
@@ -338,19 +338,19 @@ function fallbackStageBoundary(stage: PipelineRunStageSummary) {
   const label = stage.label.toLowerCase();
 
   return {
-    role: label.includes("artifact")
-      ? "Artifact Agent"
-      : label.includes("scope")
-        ? "Scope Guard Agent"
-        : label.includes("hypothesis")
-          ? "Hypothesis Agent"
-          : label.includes("validation")
-            ? "Validation Planner Agent"
-            : label.includes("evidence")
-              ? "Evidence Agent"
-              : "Bounded Agent",
+    role: label.includes("资料")
+      ? "资料智能体"
+      : label.includes("范围")
+        ? "范围守卫智能体"
+        : label.includes("假设")
+          ? "假设智能体"
+          : label.includes("验证")
+            ? "验证规划智能体"
+            : label.includes("证据")
+              ? "证据智能体"
+              : "受限智能体",
     allowed_actions: [
-      label.includes("validation")
+      label.includes("验证")
         ? "draft_non_destructive_manual_steps"
         : "summarize_authorized_records",
     ],

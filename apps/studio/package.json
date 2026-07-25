@@ -2,7 +2,7 @@
   "name": "@bounty-mythos/studio",
   "version": "0.1.0",
   "description": "Local, review-gated security research control center.",
-  "author": "Bounty Mythos-Lite Contributors",
+  "author": "赏金神话·轻量版贡献者",
   "private": true,
   "productName": "BountyMythosLite",
   "main": "main.cjs",
@@ -10,7 +10,7 @@
     "make": "node package-runtime.cjs && electron-forge make",
     "package": "node package-runtime.cjs && electron-forge package",
     "start": "electron .",
-    "test": "node --test *.test.cjs"
+    "test": "node --test --test-concurrency=1 *.test.cjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "7.11.2",

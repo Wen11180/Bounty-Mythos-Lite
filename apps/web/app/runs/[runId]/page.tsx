@@ -29,7 +29,7 @@ export default async function RunDetailPage({ params }: PageProps) {
       <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
         <PageBack />
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
-          <h1 className="text-2xl font-semibold text-balance">Research audit not found</h1>
+          <h1 className="text-2xl font-semibold text-balance">未找到研究审计</h1>
           <p className="mt-2 text-pretty text-[var(--muted)]">{safeDisplay(runId)}</p>
         </section>
       </main>
@@ -38,7 +38,8 @@ export default async function RunDetailPage({ params }: PageProps) {
 
   const summary = toPipelineRunSummary(run);
   const payload = run.payload;
-  const runDataMode = run.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
+  const isDemoData = run.policy_text_hash === "fallback-only";
+  const runDataMode = isDemoData ? "演示数据" : "在线数据";
   const artifactId = summary.artifact.artifactId;
   const validationWorkspace = payload?.validation_workspace;
   const reportDraft = payload?.report_draft;
@@ -70,7 +71,7 @@ export default async function RunDetailPage({ params }: PageProps) {
         <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="max-w-4xl text-3xl font-semibold leading-tight text-balance">
-              {safeDisplay(summary.reportTitle, "Research Audit")}
+              {safeDisplay(summary.reportTitle, "研究审计")}
             </h1>
             <p className="mt-2 text-pretty text-[var(--muted)]">
               {safeDisplay(summary.asset)}
@@ -79,38 +80,38 @@ export default async function RunDetailPage({ params }: PageProps) {
           <div className="flex flex-wrap gap-2">
             {artifactId ? (
               <ActionLink href={`/artifacts/${encodeURIComponent(artifactId)}`} icon={Database}>
-                Artifact
+                资料
               </ActionLink>
             ) : null}
             <ActionLink href={`/validation-workspace/${encodeURIComponent(run.id)}`} icon={ClipboardCheck}>
-              Review validation
+              审核验证
             </ActionLink>
             <ActionLink href={`/reports/${encodeURIComponent(run.id)}`} icon={FileText}>
-              Report
+              报告
             </ActionLink>
           </div>
         </div>
       </header>
-      {runDataMode === "Demo data" ? (
+      {isDemoData ? (
         <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
-          Demo data is shown because this research audit uses a sample Mythos research summary.
+          当前显示演示数据，因为此研究审计使用了研究摘要样例。
         </p>
       ) : null}
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
-        <Metric label="Hypotheses" value={summary.hypothesisCount} />
-        <Metric label="Review holds" value={summary.blockedCount} />
-        <Metric label="Evidence refs" value={summary.evidenceCount} />
-        <Metric label="Scope" value={formatLabel(run.scope_status)} />
-        <Metric label="Gate" value={formatLabel(summary.validationGate.status)} />
-        <Metric label="Loop" value={formatLabel(closedLoop?.status ?? "not_started")} />
+        <Metric label="假设" value={summary.hypothesisCount} />
+        <Metric label="审核阻塞项" value={summary.blockedCount} />
+        <Metric label="证据引用" value={summary.evidenceCount} />
+        <Metric label="范围" value={formatLabel(run.scope_status)} />
+        <Metric label="审核门" value={formatLabel(summary.validationGate.status)} />
+        <Metric label="循环" value={formatLabel(closedLoop?.status ?? "not_started")} />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="grid gap-5">
           {sourceAuditHypotheses.length > 0 ? (
             <section className="border border-[var(--line)] bg-white">
-              <SectionHeader icon={Target} title="Source Audit Hypotheses" />
+              <SectionHeader icon={Target} title="源代码审计假设" />
               <div className="divide-y divide-[var(--line)]">
                 {sourceAuditHypotheses.map((hypothesis, index) => {
                   const evidenceNeeded = safeStringList(hypothesis.evidence_needed);
@@ -121,23 +122,23 @@ export default async function RunDetailPage({ params }: PageProps) {
                     <article key={`source-audit-hypothesis-${index}`} className="grid gap-4 p-5 text-sm">
                       <div className="grid gap-2">
                         <p className="break-words text-pretty font-semibold">
-                          {safeDisplay(hypothesis.hypothesis, `Hypothesis ${index + 1}`)}
+                          {safeDisplay(hypothesis.hypothesis, `假设 ${index + 1}`)}
                         </p>
                         <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                          <Field label="Type" value={hypothesis.vuln_type} />
-                          <Field label="Risk" value={hypothesis.risk_level} />
-                          <Field label="Priority score" value={hypothesis.priority_score ?? 0} />
-                          <Field label="Validation" value={hypothesis.validation_mode} />
+                          <Field label="类型" value={formatLabel(hypothesis.vuln_type)} />
+                          <Field label="风险" value={formatLabel(hypothesis.risk_level)} />
+                          <Field label="优先级评分" value={hypothesis.priority_score ?? 0} />
+                          <Field label="验证" value={formatLabel(hypothesis.validation_mode)} />
                           <Field
-                            label="Refutation status"
-                            value={hypothesis.refutation_status ?? "unverified"}
+                            label="反证状态"
+                            value={formatLabel(hypothesis.refutation_status ?? "unverified")}
                           />
                         </dl>
                       </div>
                       <div className="grid gap-3 lg:grid-cols-2">
-                        <ReviewList title="Evidence needed" items={evidenceNeeded} />
-                        <ReviewList title="False positive checks" items={falsePositiveChecks} />
-                        <ReviewList title="Ranking reasons" items={rankingReasons} />
+                        <ReviewList title="所需证据" items={evidenceNeeded} />
+                        <ReviewList title="误报检查" items={falsePositiveChecks} />
+                        <ReviewList title="排序原因" items={rankingReasons} />
                       </div>
                     </article>
                   );
@@ -148,7 +149,7 @@ export default async function RunDetailPage({ params }: PageProps) {
 
           {candidateAssessments.length > 0 ? (
             <section className="border border-[var(--line)] bg-white">
-              <SectionHeader icon={Target} title="Candidate Lifecycle" />
+              <SectionHeader icon={Target} title="候选项生命周期" />
               <div className="divide-y divide-[var(--line)]">
                 {candidateAssessments.map((candidate, index) => {
                   const reasons = safeStringList(candidate.refutation?.reasons);
@@ -170,29 +171,29 @@ export default async function RunDetailPage({ params }: PageProps) {
                       </div>
                       <div className="min-w-0">
                         <p className="break-words text-pretty font-semibold">
-                          {safeDisplay(candidate.hypothesis?.hypothesis, "Untitled hypothesis")}
+                          {safeDisplay(candidate.hypothesis?.hypothesis, "未命名假设")}
                         </p>
                         <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                          <Field label="Validation" value={candidate.hypothesis?.validation_mode} />
-                          <Field label="Refutation" value={candidate.refutation?.status} />
-                          <Field label="Plan" value={candidate.validation_plan?.status} />
+                          <Field label="验证" value={formatLabel(candidate.hypothesis?.validation_mode)} />
+                          <Field label="反证" value={formatLabel(candidate.refutation?.status)} />
+                          <Field label="计划" value={formatLabel(candidate.validation_plan?.status)} />
                           <Field
-                            label="Evidence hints"
+                            label="证据提示"
                             value={candidate.evidence_hints?.length ?? 0}
                           />
                           <Field
-                            label="Chain confidence"
-                            value={chainConfidence === null ? "Unavailable" : `${chainConfidence}%`}
+                            label="利用链置信度"
+                            value={chainConfidence === null ? "暂不可用" : `${chainConfidence}%`}
                           />
-                          <Field label="Primitive(s)" value={primitives.length} />
-                          <Field label="Precondition(s)" value={preconditions.length} />
-                          <Field label="Refutation question(s)" value={refutationQuestions.length} />
+                          <Field label="原语" value={primitives.length} />
+                          <Field label="前提条件" value={preconditions.length} />
+                          <Field label="反证问题" value={refutationQuestions.length} />
                         </dl>
                         {candidate.exploit_chain ? (
                           <div className="mt-4 grid gap-2 border-t border-[var(--line)] pt-3 text-xs text-[var(--muted)]">
-                            <p className="font-semibold uppercase">Exploit-chain reasoning</p>
+                            <p className="font-semibold uppercase">利用链推理</p>
                             <p className="break-words">
-                              {safeDisplay(candidate.exploit_chain.impact, "Impact summary unavailable")}
+                              {safeDisplay(candidate.exploit_chain.impact, "影响摘要暂不可用")}
                             </p>
                             <ul className="flex flex-wrap gap-1.5">
                               {safeStringList(candidate.exploit_chain.safety_notes).map((note) => (
@@ -221,7 +222,7 @@ export default async function RunDetailPage({ params }: PageProps) {
                       </div>
                       <div className="grid content-start gap-2 xl:border-l xl:border-[var(--line)] xl:pl-5">
                         <p className="font-semibold">
-                          {safeDisplay(candidate.hunter_assessment?.playbook_label, "No playbook")}
+                          {safeDisplay(candidate.hunter_assessment?.playbook_label, "暂无策略手册")}
                         </p>
                         <p className="text-2xl font-semibold tabular-nums">
                           {candidate.hunter_assessment?.hunter_priority_score ?? 0}
@@ -238,7 +239,7 @@ export default async function RunDetailPage({ params }: PageProps) {
           ) : null}
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Target} title="Mythos Review Timeline" />
+            <SectionHeader icon={Target} title="研究审核时间线" />
             <ol className="divide-y divide-[var(--line)]">
               {summary.stages.map((stage) => (
                 <li
@@ -266,19 +267,19 @@ export default async function RunDetailPage({ params }: PageProps) {
                     {stage.agentBoundary ? (
                       <div className="grid gap-2 border-t border-[var(--line)] pt-2 text-xs">
                         <p className="font-semibold uppercase text-[var(--muted)]">
-                          Agent Review Boundary
+                          智能体审核边界
                         </p>
                         <dl className="grid gap-2 sm:grid-cols-2">
-                          <Field label="Role" value={stage.agentBoundary.role} />
+                          <Field label="角色" value={formatLabel(stage.agentBoundary.role)} />
                           <Field
-                            label="Human review gate"
-                            value={stage.agentBoundary.requiresHumanReview ? "Required" : "Review only"}
+                            label="人工审核门"
+                            value={stage.agentBoundary.requiresHumanReview ? "需要处理" : "仅供审核"}
                           />
                         </dl>
                         {stage.agentBoundary.allowedActions.length > 0 ? (
                           <div className="grid gap-1">
                             <p className="font-semibold uppercase text-[var(--muted)]">
-                              Scoped review actions
+                              范围内审核操作
                             </p>
                             <ul className="flex flex-wrap gap-1.5">
                               {stage.agentBoundary.allowedActions.map((action) => (
@@ -294,7 +295,7 @@ export default async function RunDetailPage({ params }: PageProps) {
                         ) : null}
                         {stage.agentBoundary.blockedActions.length > 0 ? (
                           <div className="grid gap-1">
-                            <p className="font-semibold uppercase text-[var(--muted)]">Blocked actions</p>
+                            <p className="font-semibold uppercase text-[var(--muted)]">已阻断操作</p>
                             <ul className="flex flex-wrap gap-1.5">
                               {stage.agentBoundary.blockedActions.map((action) => (
                                 <li
@@ -317,11 +318,11 @@ export default async function RunDetailPage({ params }: PageProps) {
                             className="grid gap-1 text-xs text-[var(--muted)]"
                           >
                             <p className="break-words font-semibold text-[var(--foreground)]">
-                              {formatLabel(trace.action)} lesson: {formatLabel(trace.recommendation)}
+                              {formatLabel(trace.action)}经验：{formatLabel(trace.recommendation)}
                             </p>
                             <p className="break-words">
-                              {safeDisplay(trace.playbook)} on {safeDisplay(trace.surface)} from{" "}
-                              {trace.sourceSignalCount} learning signal(s)
+                              {safeDisplay(trace.playbook)} 作用于 {safeDisplay(trace.surface)}，来自
+                              {trace.sourceSignalCount} 个学习信号
                             </p>
                             {trace.reasons.length > 0 ? (
                               <ul className="flex flex-wrap gap-1.5">
@@ -340,7 +341,7 @@ export default async function RunDetailPage({ params }: PageProps) {
                       </ul>
                     ) : null}
                   </div>
-                  <p className="tabular-nums text-[var(--muted)]">{stage.evidenceCount} ev</p>
+                  <p className="tabular-nums text-[var(--muted)]">{stage.evidenceCount} 条证据</p>
                 </li>
               ))}
             </ol>
@@ -349,37 +350,37 @@ export default async function RunDetailPage({ params }: PageProps) {
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ClipboardCheck} title="Closed Loop" />
+            <SectionHeader icon={ClipboardCheck} title="闭环" />
             <div className="grid gap-4 p-5 text-sm">
               <p className="font-semibold text-[var(--accent-strong)]">
                 {formatLabel(closedLoop?.status ?? "not_started")}
               </p>
               <dl className="grid grid-cols-2 gap-3">
-                <Field label="Observations" value={closedLoop?.manual_observation_count ?? 0} />
-                <Field label="Reviews" value={closedLoop?.reviewed_claim_count ?? 0} />
-                <Field label="Candidates" value={closedLoop?.finding_candidate_count ?? 0} />
-                <Field label="Learning" value={closedLoop?.learning_signal_count ?? 0} />
-                <Field label="Lessons" value={closedLoop?.lesson_count ?? 0} />
-                <Field label="Memory" value={formatLabel(closedLoop?.brain_memory_status ?? "waiting_for_learning")} />
+                <Field label="观察" value={closedLoop?.manual_observation_count ?? 0} />
+                <Field label="审核" value={closedLoop?.reviewed_claim_count ?? 0} />
+                <Field label="候选项" value={closedLoop?.finding_candidate_count ?? 0} />
+                <Field label="学习" value={closedLoop?.learning_signal_count ?? 0} />
+                <Field label="经验" value={closedLoop?.lesson_count ?? 0} />
+                <Field label="记忆" value={formatLabel(closedLoop?.brain_memory_status ?? "waiting_for_learning")} />
               </dl>
               {closedLoopReasoningContext ? (
                 <div className="grid gap-2 border-t border-[var(--line)] pt-4">
                   <p className="font-semibold uppercase text-[var(--muted)]">
-                    Reasoning memory
+                    推理记忆
                   </p>
                   <dl className="grid grid-cols-2 gap-3">
                     <Field
-                      label="Highest score"
+                      label="最高评分"
                       value={closedLoopReasoningContext.highest_reasoning_review_score}
                     />
                     <Field
-                      label="Contexts"
+                      label="上下文"
                       value={closedLoopReasoningContext.learning_signal_context_count}
                     />
-                    <Field label="Source" value={closedLoopReasoningContext.source} />
+                    <Field label="来源" value={formatLabel(closedLoopReasoningContext.source)} />
                     <Field
-                      label="Gate"
-                      value={closedLoopReasoningContext.safety_gate ?? "advisory_memory_only"}
+                      label="审核门"
+                      value={formatLabel(closedLoopReasoningContext.safety_gate ?? "advisory_memory_only")}
                     />
                   </dl>
                 </div>
@@ -405,8 +406,8 @@ export default async function RunDetailPage({ params }: PageProps) {
                         {safeDisplay(step.reason)}
                       </p>
                       <dl className="grid gap-2 border-t border-[var(--line)] pt-2">
-                        <Field label="Gate" value={step.safety_gate} />
-                        <Field label="Next review action" value={step.next_allowed_action} />
+                        <Field label="审核门" value={formatLabel(step.safety_gate)} />
+                        <Field label="下一步审核操作" value={step.next_allowed_action} />
                       </dl>
                     </li>
                   ))}
@@ -421,16 +422,16 @@ export default async function RunDetailPage({ params }: PageProps) {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <p className="break-words font-semibold">
-                          {formatLabel(lesson.recommendation)} memory
+                          {formatLabel(lesson.recommendation)}记忆
                         </p>
                         <span className="shrink-0 text-xs font-semibold text-[var(--muted)]">
                           {lesson.confidence}
                         </span>
                       </div>
                       <p className="break-words text-[var(--muted)]">
-                        {safeDisplay(lesson.playbook_id)} on{" "}
-                        {safeDisplay(lesson.surface_pattern)} from{" "}
-                        {lesson.source_signal_count} learning signal(s)
+                        {safeDisplay(lesson.playbook_id)} 作用于
+                        {safeDisplay(lesson.surface_pattern)}，来自
+                        {lesson.source_signal_count} 个学习信号
                       </p>
                       {lesson.reasons.length > 0 ? (
                         <ul className="flex flex-wrap gap-1.5">
@@ -462,7 +463,7 @@ export default async function RunDetailPage({ params }: PageProps) {
               ) : null}
               {closedLoopBlockedReasons.length > 0 ? (
                 <div className="border-t border-[var(--line)] pt-3">
-                  <p className="font-semibold">Review requirements</p>
+                  <p className="font-semibold">审核要求</p>
                   <ul className="mt-2 grid gap-1 text-[var(--muted)]">
                     {closedLoopBlockedReasons.map((reason) => (
                       <li key={`closed-loop-blocked-${reason}`}>{formatLabel(reason)}</li>
@@ -474,20 +475,20 @@ export default async function RunDetailPage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ShieldCheck} title="Validation Gate" />
+            <SectionHeader icon={ShieldCheck} title="验证审核门" />
             <div className="grid gap-3 p-5 text-sm">
               <p className="font-semibold">{safeDisplay(summary.validationGate.label)}</p>
               <p className="text-pretty text-[var(--muted)]">
                 {safeDisplay(summary.validationGate.approval)}
               </p>
               <p className="font-semibold tabular-nums text-[var(--muted)]">
-                {summary.validationGate.evidenceCount} evidence item(s)
+                {summary.validationGate.evidenceCount} 条证据
               </p>
             </div>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Target} title="Hunter Priority" />
+            <SectionHeader icon={Target} title="研究优先级" />
             <div className="grid gap-3 p-5 text-sm">
               <div className="flex items-start justify-between gap-4">
                 <p className="font-semibold">{safeDisplay(summary.hunter.playbook)}</p>
@@ -517,20 +518,20 @@ export default async function RunDetailPage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Database} title="Safe Payload Facts" />
+            <SectionHeader icon={Database} title="安全载荷事实" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Artifact kind" value={payload?.artifact_kind ?? summary.artifact.kind} />
-              <Field label="Target endpoints" value={targetModel?.endpoints?.length ?? 0} />
-              <Field label="Objects" value={targetModel?.objects?.length ?? 0} />
-              <Field label="Sensitive actions" value={targetModel?.sensitive_actions?.length ?? 0} />
-              <Field label="Workspace" value={validationWorkspace?.status ?? "Unavailable"} />
-              <Field label="Report review" value={reportDraft?.human_review_required ? "Required" : "Unavailable"} />
+              <Field label="资料类型" value={formatLabel(payload?.artifact_kind ?? summary.artifact.kind)} />
+              <Field label="目标端点" value={targetModel?.endpoints?.length ?? 0} />
+              <Field label="对象" value={targetModel?.objects?.length ?? 0} />
+              <Field label="敏感操作" value={targetModel?.sensitive_actions?.length ?? 0} />
+              <Field label="工作区" value={formatLabel(validationWorkspace?.status ?? "unavailable")} />
+              <Field label="报告审核" value={reportDraft?.human_review_required ? "需要处理" : "暂不可用"} />
             </dl>
           </section>
 
           {refutationReasons.length > 0 ? (
             <section className="border border-[var(--line)] bg-white">
-              <SectionHeader icon={ClipboardCheck} title="Review Requirements" />
+              <SectionHeader icon={ClipboardCheck} title="审核要求" />
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {refutationReasons.map((reason) => (
                   <li key={reason}>{formatLabel(reason)}</li>
@@ -572,7 +573,7 @@ function PageBack() {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Dashboard
+      控制台
     </Link>
   );
 }
@@ -629,7 +630,7 @@ function ReviewList({ items, title }: { items: string[]; title: string }) {
     <div>
       <p className="text-xs font-semibold uppercase text-[var(--muted)]">{title}</p>
       {items.length === 0 ? (
-        <p className="mt-1 font-semibold">None ready</p>
+        <p className="mt-1 font-semibold">暂无就绪项</p>
       ) : (
         <ul className="mt-2 grid gap-1 text-[var(--muted)]">
           {items.map((item) => (

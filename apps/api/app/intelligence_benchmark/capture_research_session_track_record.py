@@ -65,6 +65,7 @@ def capture_research_session_track_record(
     language_family: str = "unknown",
     hypothesis_class: str = "authorization",
     vuln_family: str = "idor",
+    evaluation_top_k: int | None = None,
     human_allow_export_write: bool = False,
     rescore_market: bool = True,
     session_notes_path: str | Path | None = None,
@@ -104,6 +105,7 @@ def capture_research_session_track_record(
         language_family=language_family,
         hypothesis_class=hypothesis_class,
         vuln_family=vuln_family,
+        evaluation_top_k=evaluation_top_k,
         human_allow_export_write=True,
         out_dir=out,
     )

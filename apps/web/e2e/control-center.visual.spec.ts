@@ -39,7 +39,7 @@ const controlCenterOverview = {
       pipeline_run_id: "pipeline_visual",
       rank: 1,
       report_submission_allowed: false,
-      vuln_type: "IDOR candidate",
+      vuln_type: "越权访问候选（IDOR）",
     },
   ],
   data_mode: "live",
@@ -184,7 +184,7 @@ async function mockStudio(page: Page) {
             risk: "high",
             safe_validation_plan: ["在隔离 local-lab 中使用两个别名账户比较状态类别"],
             safe_verification: true,
-            vuln_type: "IDOR candidate",
+            vuln_type: "越权访问候选（IDOR）",
           },
         ],
         run_id: "visual-run",
@@ -202,7 +202,7 @@ async function mockStudio(page: Page) {
         gates: { submission_blocked: true, validation_execution_allowed: false },
         mode: "live",
         research_loop_stages: [
-          { key: "policy", status: "complete", summary: "Scope Guard 已审查" },
+          { key: "policy", status: "complete", summary: "范围守卫 已审查" },
           { key: "audit", status: "needs_review", summary: "候选需要人工证据审查" },
         ],
         run_id: "visual-run",
@@ -295,8 +295,8 @@ async function openVisualStudio(page: Page) {
   await mockStudio(page);
   await page.goto("/studio");
   await disableMotion(page);
-  await page.getByLabel("Workspace path").fill("C:/authorized/visual-workspace");
-  await page.getByRole("button", { name: "Open workspace" }).click();
+  await page.getByLabel("工作区路径").fill("C:/authorized/visual-workspace");
+  await page.getByRole("button", { name: "打开工作区" }).click();
   await expect(
     page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button", { name: /H-VISUAL-001/ }),
   ).toHaveCount(1);
@@ -307,8 +307,8 @@ test("control center remains framed, responsive, and visually stable", async ({ 
   await mockControlCenter(page);
   await page.goto("/");
   await disableMotion(page);
-  await expect(page.getByRole("heading", { level: 1, name: "Bounty Mythos-Lite 控制中心" })).toBeVisible();
-  await expect(page.getByText("IDOR candidate", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "赏金神话·轻量版控制中心" })).toBeVisible();
+  await expect(page.getByText("越权访问候选（IDOR）", { exact: true })).toBeVisible();
   await expectInViewport(page.getByRole("region", { name: "运行指标" }));
   await expectNoHorizontalOverflow(page);
 
@@ -332,7 +332,7 @@ test("control center remains framed, responsive, and visually stable", async ({ 
 
 test("Studio remains framed and visually stable at each approved viewport", async ({ page }, testInfo) => {
   await openVisualStudio(page);
-  await expect(page.getByText("Mythos Studio", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("赏金神话研究工作台", { exact: true }).first()).toBeVisible();
   await expectInViewport(page.getByRole("heading", { name: "研究阶段" }));
   await expectNoHorizontalOverflow(page);
 

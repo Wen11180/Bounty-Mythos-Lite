@@ -5,6 +5,7 @@ const mockApiPort = Number(process.env.E2E_MOCK_API_PORT ?? 46087);
 
 export default defineConfig({
   testDir: "./e2e",
+  workers: 1,
   timeout: 30_000,
   expect: {
     timeout: 10_000,
@@ -14,7 +15,7 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: "npm run build && node scripts/start-e2e-server.mjs",
+    command: "node scripts/start-e2e-server.mjs",
     env: {
       API_BASE_URL: `http://127.0.0.1:${mockApiPort}`,
       HOSTNAME: "127.0.0.1",

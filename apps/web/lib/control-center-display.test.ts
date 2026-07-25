@@ -101,7 +101,7 @@ test("repository contains the Radix shadcn contract and Precision Ops shared pri
 
   assert.doesNotMatch(
     sharedSources,
-    /\$18,650|73\.4%|app\.example\.com|Example Program|active scan tasks[^\n]*28/i,
+    /\$18,650|73\.4%|app\.example\.com|示例项目|active scan tasks[^\n]*28/i,
   );
 });
 

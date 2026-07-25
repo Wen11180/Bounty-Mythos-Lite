@@ -72,6 +72,7 @@ import {
   type StudioWorkspaceManifest,
 } from "@/lib/studio-data";
 import type { SafeRefreshStatus } from "@/lib/program-rule-data";
+import { formatLabel } from "@/lib/workbench-display";
 
 type LogEntry = {
   actor?: "operator" | "system";
@@ -97,6 +98,7 @@ type MythosStudioDesktopBridge = {
   closeBlackBoxSessions: () => Promise<string>;
   createBackup?: () => Promise<DesktopBackupResult>;
   createBlackBoxSessions: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
+  emergencyStopAutopilotLocal?: (campaignId: string) => Promise<{ tracking: boolean }>;
   refreshProgramRules: () => Promise<SafeRefreshStatus>;
   restoreBackup?: () => Promise<DesktopBackupResult>;
   runBlackBoxTrial: (payload: Readonly<Record<string, unknown>>) => Promise<string>;
@@ -113,7 +115,7 @@ declare global {
 }
 
 const emptyManifest: StudioWorkspaceManifest = {
-  name: "Local Mythos Studio",
+  name: "本地赏金神话研究工作台",
   artifacts: [],
   runs: [],
   safety: {
@@ -209,7 +211,7 @@ export function StudioWorkbench() {
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([
     {
-      message: "Studio ready.",
+      message: "研究工作台已就绪。",
       tone: "info",
     },
   ]);
@@ -248,26 +250,26 @@ export function StudioWorkbench() {
     () => [
       {
         id: "workspace",
-        label: "Workspace",
-        detail: workspacePath ? "Workspace selected" : "Create or open a local workspace",
+        label: "工作区",
+        detail: workspacePath ? "已选择工作区" : "创建或打开本地工作区",
       },
       {
         id: "authorized_materials",
-        label: "Authorized materials",
-        detail: workspacePath ? "Import authorized materials" : "Select a workspace first",
+        label: "授权材料",
+        detail: workspacePath ? "导入授权材料" : "请先选择工作区",
       },
       {
         id: "readiness_check",
-        label: "Readiness check",
-        detail: researchReadiness.canStart ? "Start local research" : researchReadiness.reason,
+        label: "就绪检查",
+        detail: researchReadiness.canStart ? "开始本地研究" : researchReadiness.reason,
       },
       {
         id: "candidate_review",
-        label: "Candidate review",
+        label: "候选审查",
         detail:
           candidates.length > 0
-            ? "Review candidates and export a submission-blocked report draft"
-            : "Review candidates after research completes",
+            ? "审查候选并导出已阻断提交的报告草稿"
+            : "研究完成后审查候选",
       },
     ],
     [candidates.length, researchReadiness.canStart, researchReadiness.reason, workspacePath],
@@ -374,7 +376,7 @@ export function StudioWorkbench() {
       return { workspace_path: path };
     }
     if (!candidateModelName.trim()) {
-      pushLog("Enter a model name before enabling model-assisted candidate generation.", "blocked");
+      pushLog("启用模型辅助候选生成前，请先填写模型名称。", "blocked");
       return null;
     }
     return {
@@ -629,19 +631,19 @@ export function StudioWorkbench() {
       const request = blackBoxLabLeaseRequest();
       const preview = await previewStudioBlackBoxLabLease(request);
       if (!preview) {
-        pushLog("Local lab lease preview was not returned.", "blocked");
+        pushLog("未返回本地实验室租约预览。", "blocked");
         return;
       }
       setLabLeaseRequestSnapshot(request);
       setLabLeasePreview(preview);
       pushLog(
         preview.sessions_ready
-          ? "Bounded loopback lease reviewed; both session aliases are marked ready."
-          : "Bounded loopback lease reviewed; create sessions and complete readiness checks.",
+          ? "已审查受限回环租约；两个会话别名均标记为就绪。"
+          : "已审查受限回环租约；请创建会话并完成就绪检查。",
         preview.sessions_ready ? "safe" : "info",
       );
     } catch (error) {
-      pushMutationFailure("Local lab lease preview", error);
+      pushMutationFailure("本地实验室租约预览", error);
     } finally {
       setBusy(null);
     }
@@ -650,7 +652,7 @@ export function StudioWorkbench() {
   async function handleCreateBlackBoxSessions() {
     const bridge = window.mythosStudio;
     if (!bridge || !labLeaseRequestSnapshot || labRunnerState !== "idle") {
-      pushLog("Preview a bounded local lease in Mythos Studio before creating sessions.", "blocked");
+      pushLog("创建会话前，请先在赏金神话研究工作台预览受限本地租约。", "blocked");
       return;
     }
     setBusy("lab-create-sessions");
@@ -672,9 +674,9 @@ export function StudioWorkbench() {
         throw new Error(String(event.reason ?? "sessions_not_created"));
       }
       setLabRunnerState("awaiting_sessions_ready");
-      pushLog("Two isolated local browser sessions created. Complete login manually.", "safe");
+      pushLog("已创建两个隔离的本地浏览器会话，请手动完成登录。", "safe");
     } catch (error) {
-      pushMutationFailure("Local lab session creation", error);
+      pushMutationFailure("本地实验室会话创建", error);
     } finally {
       setBusy(null);
     }
@@ -693,7 +695,7 @@ export function StudioWorkbench() {
       !labLeasePreview?.sessions_ready ||
       labRunnerState !== "awaiting_sessions_ready"
     ) {
-      pushLog("Both isolated sessions must be ready before recording.", "blocked");
+      pushLog("开始录制前，两个隔离会话都必须就绪。", "blocked");
       return;
     }
     setBusy("lab-start-recording");
@@ -729,9 +731,9 @@ export function StudioWorkbench() {
       setLabTraceReviewConfirmed(false);
       setLabBoundedResult(null);
       setLabRunnerState("recording");
-      pushLog("Recording alias-only normalized traces for the declared local workflow.", "safe");
+      pushLog("正在为声明的本地工作流录制仅含别名的标准化轨迹。", "safe");
     } catch (error) {
-      pushMutationFailure("Local lab recording start", error);
+      pushMutationFailure("本地实验室开始录制", error);
     } finally {
       setBusy(null);
     }
@@ -740,7 +742,7 @@ export function StudioWorkbench() {
   async function handleStopBlackBoxRecording() {
     const bridge = window.mythosStudio;
     if (!bridge || labRunnerState !== "recording") {
-      pushLog("No local lab recording is active.", "blocked");
+      pushLog("当前没有进行中的本地实验室录制。", "blocked");
       return;
     }
     setBusy("lab-stop-recording");
@@ -748,7 +750,7 @@ export function StudioWorkbench() {
       const event = parseBlackBoxRunnerEvent(await bridge.stopBlackBoxRecording());
       if (event.event === "stop") {
         setLabRunnerState("stopped");
-        pushLog(`Local lab stopped: ${String(event.reason ?? "safety_stop")}.`, "blocked");
+        pushLog(`本地实验室已停止：${formatLabel(event.reason ?? "safety_stop")}。`, "blocked");
         return;
       }
       if (event.event !== "recording_stopped") {
@@ -760,13 +762,13 @@ export function StudioWorkbench() {
       setLabRunnerState("sessions_ready");
       pushLog(
         traces.length > 0
-          ? `${traces.length} normalized trace(s) ready for human review.`
-          : "No matching normalized trace was captured. Stop the lab and retry.",
+          ? `${traces.length} 条标准化轨迹已准备好供人工审核。`
+          : "未捕获匹配的标准化轨迹，请停止实验室后重试。",
         traces.length > 0 ? "safe" : "blocked",
       );
     } catch (error) {
       setLabRunnerState("stopped");
-      pushMutationFailure("Local lab recording stop", error);
+      pushMutationFailure("本地实验室停止录制", error);
     } finally {
       setBusy(null);
     }
@@ -774,12 +776,12 @@ export function StudioWorkbench() {
 
   function handleReviewBlackBoxTraces() {
     if (labTraceReview.length === 0 || labRunnerState !== "sessions_ready") {
-      pushLog("Capture a matching normalized trace before review.", "blocked");
+      pushLog("审查前请先捕获匹配的标准化轨迹。", "blocked");
       return;
     }
     setLabTraceReviewConfirmed(true);
     pushLog(
-      "Normalized alias-only traces reviewed; raw headers and bodies remain excluded.",
+      "已审查仅含别名的标准化轨迹；原始请求头和消息体仍被排除。",
       "safe",
       "operator",
     );
@@ -797,7 +799,7 @@ export function StudioWorkbench() {
       !labValidationRunId.trim() ||
       labRunnerState !== "sessions_ready"
     ) {
-      pushLog("A durable validation run and reviewed traces are required for confirmation.", "blocked");
+      pushLog("确认前需要持久化验证运行和已审查的轨迹。", "blocked");
       return;
     }
     labDispatchInFlight.current = true;
@@ -870,7 +872,7 @@ export function StudioWorkbench() {
       );
       if (event.event === "stop") {
         setLabRunnerState("stopped");
-        pushLog(`Local trial stopped: ${String(event.reason ?? "safety_stop")}.`, "blocked");
+        pushLog(`本地试验已停止：${formatLabel(event.reason ?? "safety_stop")}。`, "blocked");
         return;
       }
       if (event.event !== "trial_result") {
@@ -899,18 +901,18 @@ export function StudioWorkbench() {
       }
       setLabBoundedResult(boundedResult);
       setLabRunnerState("trial_complete");
-      pushLog("One bounded local differential trial completed; result remains review-only.", "safe");
+      pushLog("已完成一次受限本地差异试验；结果仍仅供审核。", "safe");
       pushLog(
         boundedResult.report_preview_refreshed
-          ? "Bounded result recorded; report preview refreshed for human review. Submission remains blocked."
-          : "Bounded result recorded for human review. Submission remains blocked.",
+          ? "受限结果已记录；报告预览已刷新供人工审核。报告提交仍被阻断。"
+          : "受限结果已记录供人工审核。报告提交仍被阻断。",
         "safe",
       );
     } catch (error) {
       if (trialDispatched) {
         setLabRunnerState("stopped");
       }
-      pushMutationFailure("Complete local lab plan", error);
+      pushMutationFailure("完成本地实验室计划", error);
     } finally {
       setBusy(null);
       labDispatchInFlight.current = false;
@@ -920,7 +922,7 @@ export function StudioWorkbench() {
   async function handleCloseBlackBoxSessions() {
     const bridge = window.mythosStudio;
     if (!bridge || labRunnerState === "idle") {
-      pushLog("No local lab sessions are open.", "blocked");
+      pushLog("当前没有打开的本地实验室会话。", "blocked");
       return;
     }
     setBusy("lab-close");
@@ -930,9 +932,9 @@ export function StudioWorkbench() {
         throw new Error("sessions_not_closed");
       }
       resetBlackBoxLabState();
-      pushLog("Local lab stopped; ephemeral session and review state cleared.", "safe");
+      pushLog("本地实验室已停止；临时会话和审核状态已清除。", "safe");
     } catch (error) {
-      pushMutationFailure("Local lab stop", error);
+      pushMutationFailure("停止本地实验室", error);
     } finally {
       setBusy(null);
     }
@@ -940,7 +942,7 @@ export function StudioWorkbench() {
 
   async function handleOpenWorkspace() {
     if (!workspacePath.trim()) {
-      pushLog("Enter a local workspace path before opening.", "blocked");
+      pushLog("打开前请填写本地工作区路径。", "blocked");
       return;
     }
     setBusy("open");
@@ -951,15 +953,15 @@ export function StudioWorkbench() {
         workspacePath,
       });
       if (!projection) {
-        pushLog("Workspace manifest was not found.", "blocked");
+        pushLog("未找到工作区清单。", "blocked");
         return;
       }
       applyStudioProjection(projection);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
-      pushLog("Workspace opened locally.", "safe");
+      pushLog("已在本地打开工作区。", "safe");
     } catch (error) {
-      pushMutationFailure("Workspace open", error);
+      pushMutationFailure("打开工作区", error);
     } finally {
       setBusy(null);
     }
@@ -968,19 +970,19 @@ export function StudioWorkbench() {
   async function handleCreateDesktopBackup() {
     const createBackup = window.mythosStudio?.createBackup;
     if (!createBackup) {
-      pushLog("Desktop backup is available only in Mythos Studio.", "blocked");
+      pushLog("桌面备份仅可在赏金神话研究工作台中使用。", "blocked");
       return;
     }
     setBusy("backup");
     try {
       const result = await createBackup();
       if (result.status !== "created") {
-        pushLog("Backup was not created. No state was changed.", "blocked");
+        pushLog("未创建备份，状态未发生变化。", "blocked");
         return;
       }
-      pushLog(`Local backup created: ${result.archive_name}.`, "safe");
+      pushLog(`已创建本地备份：${result.archive_name}。`, "safe");
     } catch {
-      pushLog("Backup failed. No success state was recorded.", "blocked");
+      pushLog("备份失败，未记录成功状态。", "blocked");
     } finally {
       setBusy(null);
     }
@@ -989,20 +991,20 @@ export function StudioWorkbench() {
   async function handleRestoreDesktopBackup() {
     const restoreBackup = window.mythosStudio?.restoreBackup;
     if (!restoreBackup) {
-      pushLog("Desktop restore is available only in Mythos Studio.", "blocked");
+      pushLog("桌面恢复仅可在赏金神话研究工作台中使用。", "blocked");
       return;
     }
     setBusy("restore");
     try {
       const result = await restoreBackup();
       if (result.status !== "restored") {
-        pushLog("Backup was not restored. Current state remains active.", "blocked");
+        pushLog("未恢复备份，当前状态保持生效。", "blocked");
         return;
       }
-      pushLog("Local state restored. Reloading Studio.", "safe");
+      pushLog("本地状态已恢复，正在重新加载研究工作台。", "safe");
       window.setTimeout(() => window.location.reload(), 50);
     } catch {
-      pushLog("Restore failed. Current state remains active.", "blocked");
+      pushLog("恢复失败，当前状态保持生效。", "blocked");
     } finally {
       setBusy(null);
     }
@@ -1015,7 +1017,7 @@ export function StudioWorkbench() {
         { name: workspaceName, root_path: workspaceRoot },
       );
       if (!created) {
-        pushLog("Workspace creation failed. Check that the local API is running.", "blocked");
+        pushLog("创建工作区失败，请检查本地 API 是否运行。", "blocked");
         return;
       }
       setWorkspacePath(created.path);
@@ -1027,9 +1029,9 @@ export function StudioWorkbench() {
       setReportExport(null);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
-      pushLog("Workspace created locally. Scope Guard is waiting for authorized inputs.", "safe");
+      pushLog("已在本地创建工作区。范围守卫正在等待授权输入。", "safe");
     } catch (error) {
-      pushMutationFailure("Workspace creation", error);
+      pushMutationFailure("创建工作区", error);
     } finally {
       setBusy(null);
     }
@@ -1037,7 +1039,7 @@ export function StudioWorkbench() {
 
   async function handleImportArtifacts() {
     if (!workspacePath) {
-      pushLog("Create or open a workspace before importing artifacts.", "blocked");
+      pushLog("导入资料前请创建或打开工作区。", "blocked");
       return;
     }
     setBusy("import");
@@ -1053,10 +1055,10 @@ export function StudioWorkbench() {
       }
       if (updated) {
         setManifest(updated);
-        pushLog("Authorized artifact references imported. Sensitive items remain review-gated.", "safe");
+        pushLog("已导入授权资料引用，敏感项目仍需审核。", "safe");
       }
     } catch (error) {
-      pushMutationFailure("Artifact import", error);
+      pushMutationFailure("导入资料", error);
     } finally {
       setBusy(null);
     }
@@ -1073,14 +1075,14 @@ export function StudioWorkbench() {
   }) {
     const bridge = window.mythosStudio;
     if (!bridge) {
-      pushLog("Desktop path picker is available only in Mythos Studio.", "blocked");
+      pushLog("桌面路径选择器仅可在赏金神话研究工作台中使用。", "blocked");
       return;
     }
     const selected =
       mode === "directory" ? await bridge.selectDirectory() : await bridge.selectFile({ title });
     if (selected) {
       setter(selected);
-      pushLog("Local path selected. Artifact contents remain local and review-gated.", "safe");
+      pushLog("已选择本地路径，资料内容保持本地且仍需审核。", "safe");
     }
   }
 
@@ -1096,7 +1098,7 @@ export function StudioWorkbench() {
         return;
       }
       if (!run) {
-        pushLog("Research run did not start. Scope and code artifacts are required.", "blocked");
+        pushLog("研究运行未启动，需要范围和代码资料。", "blocked");
         return;
       }
       const projection = await refreshStudioProjection({
@@ -1105,18 +1107,18 @@ export function StudioWorkbench() {
         workspacePath,
       });
       if (!projection) {
-        pushLog("Research projection was not available. No success state was recorded.", "blocked");
+        pushLog("研究投影不可用，未记录成功状态。", "blocked");
         return;
       }
       applyStudioProjection(projection);
       setMissionDossierExport(null);
       setBenchmarkResult(null);
       pushLog(
-        `Research run ${run.run_id} produced ${run.candidate_count} submission-blocked candidates.`,
+        `研究运行 ${run.run_id} 产生了 ${run.candidate_count} 个报告提交已阻断的候选。`,
         "safe",
       );
     } catch (error) {
-      pushMutationFailure("Research run", error);
+      pushMutationFailure("研究运行", error);
     } finally {
       setBusy(null);
     }
@@ -1137,7 +1139,7 @@ export function StudioWorkbench() {
         },
       );
       if (!launched) {
-        pushLog("Campaign hunter launch failed. Check imported API/HAR/code materials.", "blocked");
+        pushLog("项目候选挖掘启动失败，请检查已导入的 API、HAR 和代码资料。", "blocked");
         return;
       }
       setManifest(launched.manifest);
@@ -1149,11 +1151,11 @@ export function StudioWorkbench() {
       setBenchmarkResult(null);
       const suggestionCount = launched.control_center.research_queue_suggestions?.length ?? 0;
       pushLog(
-        `Campaign hunter ${launched.campaign.id} started with ${suggestionCount} review-gated suggestions.`,
+        `项目候选挖掘 ${launched.campaign.id} 已启动，包含 ${suggestionCount} 条需要审核的建议。`,
         "safe",
       );
     } catch (error) {
-      pushMutationFailure("Campaign hunter launch", error);
+      pushMutationFailure("启动项目候选挖掘", error);
     } finally {
       setBusy(null);
     }
@@ -1172,7 +1174,7 @@ export function StudioWorkbench() {
           learning_evidence_needed_reasons: action.learningEvidenceNeededReasons,
           missing_evidence: action.missingEvidence,
           missing_required_artifact_kinds: action.missingRequiredArtifactKinds,
-          notes: `${action.nextAction}; validation and submission remain blocked.`,
+          notes: `${action.nextAction}；验证和报告提交仍保持阻断。`,
           outcome,
           playbook_id: action.learningSignalTemplate?.playbookId,
           reviewer: "studio-human-review",
@@ -1184,12 +1186,12 @@ export function StudioWorkbench() {
       );
       setLearningProfile(profile);
       pushLog(
-        `Recorded ${outcome} learning feedback for ${action.candidateId}.`,
+        `已为 ${action.candidateId} 记录${formatLabel(outcome)}学习反馈。`,
         "safe",
         "operator",
       );
     } catch (error) {
-      pushMutationFailure("Learning feedback", error);
+      pushMutationFailure("学习反馈", error);
     } finally {
       setBusy(null);
     }
@@ -1209,7 +1211,7 @@ export function StudioWorkbench() {
           missing_evidence: candidate.evidenceNeeds,
           missing_required_artifact_kinds:
             candidate.evidenceTraceSummary.missingRequiredArtifactKinds,
-          notes: `${candidate.reportReadiness.nextAllowedAction}; human outcome ${outcome}; validation and submission remain blocked.`,
+          notes: `${candidate.reportReadiness.nextAllowedAction}；人工结果：${formatLabel(outcome)}；验证和报告提交仍保持阻断。`,
           outcome,
           playbook_id: candidate.title,
           reviewer: "studio-human-review",
@@ -1219,9 +1221,9 @@ export function StudioWorkbench() {
         },
       );
       setLearningProfile(profile);
-      pushLog(`Recorded ${outcome} learning feedback for ${candidate.id}.`, "safe", "operator");
+      pushLog(`已为 ${candidate.id} 记录${formatLabel(outcome)}学习反馈。`, "safe", "operator");
     } catch (error) {
-      pushMutationFailure("Learning feedback", error);
+      pushMutationFailure("学习反馈", error);
     } finally {
       setBusy(null);
     }
@@ -1229,7 +1231,7 @@ export function StudioWorkbench() {
 
   async function handleExportReport() {
     if (!workspacePath || (!latestRunId && !latestCampaignHunterId)) {
-      pushLog("Run research or launch campaign hunter before exporting a report preview.", "blocked");
+      pushLog("导出报告预览前请先运行研究或启动项目候选挖掘。", "blocked");
       return;
     }
     setBusy("export");
@@ -1242,7 +1244,7 @@ export function StudioWorkbench() {
             { campaign_id: latestCampaignHunterId ?? "", workspace_path: workspacePath },
           );
       if (!exported) {
-        pushLog("Report preview export failed.", "blocked");
+        pushLog("导出报告预览失败。", "blocked");
         return;
       }
       setReportExport(exported);
@@ -1250,9 +1252,9 @@ export function StudioWorkbench() {
       if (latestRunId) {
         await refreshMissionPanel(workspacePath, latestRunId);
       }
-      pushLog("Report preview exported with submission still blocked.", "safe");
+      pushLog("已导出报告预览，报告提交仍被阻断。", "safe");
     } catch (error) {
-      pushMutationFailure("Report preview export", error);
+      pushMutationFailure("导出报告预览", error);
     } finally {
       setBusy(null);
     }
@@ -1260,7 +1262,7 @@ export function StudioWorkbench() {
 
   async function handleExportMissionDossier() {
     if (!workspacePath || !latestRunId) {
-      pushLog("Run research before exporting a mission dossier.", "blocked");
+      pushLog("导出任务档案前请先运行研究。", "blocked");
       return;
     }
     setBusy("mission-dossier");
@@ -1269,15 +1271,15 @@ export function StudioWorkbench() {
         { run_id: latestRunId, workspace_path: workspacePath },
       );
       if (!exported) {
-        pushLog("Mission dossier export failed.", "blocked");
+        pushLog("导出任务档案失败。", "blocked");
         return;
       }
       setMissionDossierExport(exported);
       setManifest(exported.manifest);
       await refreshMissionPanel(workspacePath, latestRunId);
-      pushLog("Mission dossier exported locally with validation and submission still blocked.", "safe");
+      pushLog("已在本地导出任务档案，验证与报告提交仍被阻断。", "safe");
     } catch (error) {
-      pushMutationFailure("Mission dossier export", error);
+      pushMutationFailure("导出任务档案", error);
     } finally {
       setBusy(null);
     }
@@ -1285,11 +1287,11 @@ export function StudioWorkbench() {
 
   async function handleRunBenchmark() {
     if (!workspacePath || !latestRunId) {
-      pushLog("Run research before benchmarking candidates.", "blocked");
+      pushLog("进行候选基准测试前请先运行研究。", "blocked");
       return;
     }
     if (!expectationsPath.trim()) {
-      pushLog("Select a local benchmark expectation file before benchmarking.", "blocked");
+      pushLog("进行基准测试前请选择本地基准期望结果文件。", "blocked");
       return;
     }
     setBusy("benchmark");
@@ -1302,18 +1304,18 @@ export function StudioWorkbench() {
         },
       );
       if (!benchmark) {
-        pushLog("Candidate benchmark failed to run.", "blocked");
+        pushLog("候选基准测试运行失败。", "blocked");
         return;
       }
       setBenchmarkResult(benchmark);
       setManifest(benchmark.manifest);
       await refreshMissionPanel(workspacePath, latestRunId);
       pushLog(
-        `Candidate benchmark ${benchmark.benchmark.status ?? "finished"}: ${benchmark.benchmark.matched ?? 0}/${benchmark.benchmark.expected_count ?? 0} expected candidates matched.`,
+        `候选基准测试${formatLabel(benchmark.benchmark.status ?? "finished")}：${benchmark.benchmark.matched ?? 0}/${benchmark.benchmark.expected_count ?? 0} 个期望候选已匹配。`,
         benchmark.benchmark.status === "passed" ? "safe" : "blocked",
       );
     } catch (error) {
-      pushMutationFailure("Candidate benchmark", error);
+      pushMutationFailure("候选基准测试", error);
     } finally {
       setBusy(null);
     }
@@ -1321,7 +1323,7 @@ export function StudioWorkbench() {
 
   async function handleCreateBenchmarkTemplate() {
     if (!workspacePath || !latestRunId) {
-      pushLog("Run research before creating a benchmark template.", "blocked");
+      pushLog("创建基准模板前请先运行研究。", "blocked");
       return;
     }
     setBusy("benchmark-template");
@@ -1333,7 +1335,7 @@ export function StudioWorkbench() {
         },
       );
       if (!template) {
-        pushLog("Benchmark template was not created.", "blocked");
+        pushLog("未创建基准模板。", "blocked");
         return;
       }
       setManifest(template.manifest);
@@ -1341,9 +1343,9 @@ export function StudioWorkbench() {
         setExpectationsPath(template.template_path);
       }
       await refreshMissionPanel(workspacePath, latestRunId);
-      pushLog("Benchmark expectation template created for human review.", "safe");
+      pushLog("已创建基准期望结果模板，等待人工审核。", "safe");
     } catch (error) {
-      pushMutationFailure("Benchmark template", error);
+      pushMutationFailure("基准模板", error);
     } finally {
       setBusy(null);
     }
@@ -1358,8 +1360,8 @@ export function StudioWorkbench() {
   }
 
   function pushMutationFailure(action: string, error: unknown) {
-    const status = error instanceof ApiRequestError && error.status > 0 ? ` (API ${error.status})` : "";
-    pushLog(`${action} failed${status}. No success state was recorded.`, "blocked");
+    const status = error instanceof ApiRequestError && error.status > 0 ? `（API ${error.status}）` : "";
+    pushLog(`${action}失败${status}，未记录成功状态。`, "blocked");
   }
 
   async function refreshMissionPanel(path: string, runId: string | null) {
@@ -1388,7 +1390,7 @@ export function StudioWorkbench() {
           busy: false,
           disabled: true,
           icon: <FolderPlus size={16} aria-hidden="true" />,
-          label: "Complete workspace setup in navigation",
+          label: "请在导航中完成工作区设置",
           onClick: () => undefined,
         }
       : currentWizardStep === "authorized_materials"
@@ -1396,7 +1398,7 @@ export function StudioWorkbench() {
             busy: busy === "import",
             disabled: !workspacePath,
             icon: <Upload size={16} aria-hidden="true" />,
-            label: "Import authorized materials",
+            label: "导入授权材料",
             onClick: handleImportArtifacts,
           }
         : currentWizardStep === "readiness_check"
@@ -1404,14 +1406,14 @@ export function StudioWorkbench() {
               busy: busy === "research",
               disabled: !researchReadiness.canStart,
               icon: <Play size={16} aria-hidden="true" />,
-              label: "Start local research",
+              label: "开始本地研究",
               onClick: handleStartResearch,
             }
           : {
               busy: false,
               disabled: studioView.selectedCandidate === null,
               icon: <ShieldCheck size={16} aria-hidden="true" />,
-              label: "Review selected candidate",
+              label: "审查所选候选",
               onClick: () => setInspectorTab("candidate"),
             };
 
@@ -1433,7 +1435,7 @@ export function StudioWorkbench() {
           >
             <span className="flex items-center justify-between gap-2">
               <span className="truncate font-mono text-xs">{candidate.id}</span>
-              <span className="text-[10px] text-[var(--warning)]">{candidate.status}</span>
+              <span className="text-[10px] text-[var(--warning)]">{formatLabel(candidate.status)}</span>
             </span>
             <span className="truncate text-xs text-[var(--muted)]">{candidate.title}</span>
           </button>
@@ -1444,7 +1446,7 @@ export function StudioWorkbench() {
 
   const studioNavigation = (
     <div className="grid gap-4 text-sm">
-      <nav aria-label="Studio 工作区分区" className="grid gap-1">
+      <nav aria-label="研究工作台分区" className="grid gap-1">
         {[
           ["#studio-mission", "研究任务"],
           ["#studio-artifacts", "授权材料"],
@@ -1463,12 +1465,12 @@ export function StudioWorkbench() {
       <div className="border-t border-[var(--line)] pt-4">
         <TextField
           browseEnabled={desktopPickerAvailable}
-          label="Workspace path"
+          label="工作区路径"
           onBrowse={() =>
             handleSelectPath({
               mode: "directory",
               setter: setWorkspacePath,
-              title: "Select Mythos workspace",
+              title: "选择研究工作台工作区",
             })
           }
           onChange={setWorkspacePath}
@@ -1477,28 +1479,28 @@ export function StudioWorkbench() {
         <ActionButton
           busy={busy === "open"}
           icon={<FolderOpen size={16} aria-hidden="true" />}
-          label="Open workspace"
+          label="打开工作区"
           onClick={handleOpenWorkspace}
         />
         <div className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4">
           <TextField
             browseEnabled={desktopPickerAvailable}
-            label="Workspace root"
+            label="工作区根目录"
             onBrowse={() =>
               handleSelectPath({
                 mode: "directory",
                 setter: setWorkspaceRoot,
-                title: "Select workspace root",
+                title: "选择工作区根目录",
               })
             }
             value={workspaceRoot}
             onChange={setWorkspaceRoot}
           />
-          <TextField label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
+          <TextField label="工作区名称" value={workspaceName} onChange={setWorkspaceName} />
           <ActionButton
             busy={busy === "workspace"}
             icon={<FolderPlus size={16} aria-hidden="true" />}
-            label="Create workspace"
+            label="创建工作区"
             onClick={handleCreateWorkspace}
           />
         </div>
@@ -1523,7 +1525,7 @@ export function StudioWorkbench() {
         </div>
       ) : null}
       <dl className="grid gap-2 border-t border-[var(--line)] pt-4 text-xs">
-        <StatusRow label="Scope Guard" value={workspace.scopeGuardLabel} warning />
+        <StatusRow label="范围守卫" value={formatLabel(workspace.scopeGuardLabel)} warning />
         <StatusRow label="授权材料" value={String(workspace.artifactCount)} />
         <StatusRow label="研究运行" value={String(workspace.runCount)} />
       </dl>
@@ -1572,19 +1574,19 @@ export function StudioWorkbench() {
                 <ActionButton
                   busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:needs_more_evidence`}
                   icon={<ShieldCheck size={16} aria-hidden="true" />}
-                  label="Record needs-evidence learning"
+                  label="记录需补充证据的学习结果"
                   onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "needs_more_evidence")}
                 />
                 <ActionButton
                   busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:refuted`}
                   icon={<ShieldCheck size={16} aria-hidden="true" />}
-                  label="Record refuted learning"
+                  label="记录已反证的学习结果"
                   onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "refuted")}
                 />
                 <ActionButton
                   busy={busy === `candidate-learning:${studioView.selectedCandidate.id}:duplicate`}
                   icon={<ShieldCheck size={16} aria-hidden="true" />}
-                  label="Record duplicate learning"
+                  label="记录重复项学习结果"
                   onClick={() => handleRecordCandidateCardLearning(studioView.selectedCandidate!, "duplicate")}
                 />
               </>
@@ -1608,14 +1610,14 @@ export function StudioWorkbench() {
                   busy={busy === "export"}
                   disabled={!latestRunId && !latestCampaignHunterId}
                   icon={<FileDown size={16} aria-hidden="true" />}
-                  label="Export report preview"
+                  label="导出报告预览"
                   onClick={handleExportReport}
                 />
                 <ActionButton
                   busy={busy === "mission-dossier"}
                   disabled={!latestRunId}
                   icon={<FileDown size={16} aria-hidden="true" />}
-                  label="Export mission dossier"
+                  label="导出任务档案"
                   onClick={handleExportMissionDossier}
                 />
               </>
@@ -1637,14 +1639,14 @@ export function StudioWorkbench() {
       connectionLabel={`实时连接：${connectionState}`}
       inspector={studioInspector}
       navigation={studioNavigation}
-      safetyLabel="submission-blocked"
+      safetyLabel="报告提交已阻断"
       workspaceName={workspace.name}
     >
       <div className="min-w-0 [&_.bg-white]:!bg-[var(--surface)]">
       <header className="border-b border-[var(--line)] pb-5" id="studio-mission">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ShieldCheck size={17} aria-hidden="true" />
-          Mythos Studio
+          赏金神话研究工作台
         </p>
         <h1 className="mt-3 max-w-4xl text-3xl font-semibold leading-tight text-balance">
           授权研究工作台
@@ -1664,7 +1666,7 @@ export function StudioWorkbench() {
       <ProgramRuleIntake />
 
       <section className="mt-6 border-b border-[var(--line)] pb-5" id="studio-artifacts">
-        <SectionHeader title="Local research setup" />
+        <SectionHeader title="本地研究设置" />
         <div className="grid gap-3 p-5 text-sm md:grid-cols-4">
           {wizardSteps.map((step, index) => (
             <div
@@ -1681,7 +1683,7 @@ export function StudioWorkbench() {
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] p-5 text-sm">
-          <p className="font-semibold">Next safe action</p>
+          <p className="font-semibold">建议的安全操作</p>
           <ActionButton
             busy={nextSafeAction.busy}
             disabled={nextSafeAction.disabled}
@@ -1693,7 +1695,7 @@ export function StudioWorkbench() {
             busy={busy === "campaign-hunter"}
             disabled={!researchReadiness.canStart}
             icon={<ShieldCheck size={16} aria-hidden="true" />}
-            label="Launch campaign hunter"
+            label="启动项目候选挖掘"
             onClick={handleLaunchCampaignHunter}
           />
         </div>
@@ -1706,16 +1708,16 @@ export function StudioWorkbench() {
               type="checkbox"
             />
             <span>
-              <span className="block font-semibold">Model assistance for next run only</span>
+              <span className="block font-semibold">仅在下一次运行中启用模型辅助</span>
               <span className="mt-1 block text-[var(--muted)]">
-                Optional proposals remain unverified and all credentials stay in the backend environment.
+                可选建议仍未验证，所有凭据均只保留在后端环境中。
               </span>
             </span>
           </label>
           {candidateModelEnabled ? (
             <div className="mt-4 grid gap-3 md:grid-cols-2">
               <label className="grid gap-2 text-sm font-medium">
-                Provider
+                模型提供方
                 <select
                   className="border border-[var(--line)] bg-white px-3 py-2.5 outline-none focus:border-[var(--accent)]"
                   onChange={(event) =>
@@ -1731,7 +1733,7 @@ export function StudioWorkbench() {
                 </select>
               </label>
               <TextField
-                label="Model name"
+                label="模型名称"
                 onChange={setCandidateModelName}
                 value={candidateModelName}
               />
@@ -1740,26 +1742,26 @@ export function StudioWorkbench() {
         </div>
         <div className="grid gap-3 border-t border-[var(--line)] p-5 text-sm md:grid-cols-2">
           <div>
-            <p className="font-semibold">Required inputs</p>
+            <p className="font-semibold">必需输入</p>
             <p className="mt-2 text-[var(--muted)]">
               {missingRequiredArtifacts.length === 0
-                ? "Required inputs are ready."
-                : `Missing required inputs: ${missingRequiredArtifacts
+                ? "必需输入已就绪。"
+                : `缺少必需输入：${missingRequiredArtifacts
                     .map((item) => item.label)
                     .join(", ")}`}
             </p>
           </div>
           <div>
-            <p className="font-semibold">Optional context</p>
+            <p className="font-semibold">可选上下文</p>
             <p className="mt-2 text-[var(--muted)]">
-              {optionalContextArtifacts.map((item) => `${item.label}: ${item.status}`).join(", ")}
+              {optionalContextArtifacts.map((item) => `${item.label}：${formatLabel(item.status)}`).join("、")}
             </p>
           </div>
         </div>
       </section>
 
       <section className="mt-6 border border-[var(--line)] bg-white">
-        <SectionHeader title="Remote human-lease profile (read-only)" />
+        <SectionHeader title="远程人工租约配置（只读）" />
         <div className="grid gap-4 p-5 text-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <p className="max-w-3xl text-[var(--muted)]">{remoteStatusView.detail}</p>
@@ -1767,44 +1769,43 @@ export function StudioWorkbench() {
               busy={busy === "remote-status"}
               disabled={Boolean(busy) && busy !== "remote-status"}
               icon={<ShieldCheck size={16} aria-hidden="true" />}
-              label="Refresh remote status"
+              label="刷新远程状态"
               onClick={handleRefreshRemoteStatus}
             />
           </div>
           <dl className="grid gap-3 sm:grid-cols-3">
             <StatusRow
-              label="Lease state"
+              label="租约状态"
               value={remoteStatusView.label}
               warning={remoteStatusView.warning}
             />
             <StatusRow
-              label="Re-login required"
-              value={remoteReloginRequired ? "yes" : "no"}
+              label="需要重新登录"
+              value={remoteReloginRequired ? "是" : "否"}
               warning={remoteReloginRequired}
             />
-            <StatusRow label="Report submission" value="blocked" />
+            <StatusRow label="报告提交" value="已阻断" />
           </dl>
           <p className="text-xs text-[var(--muted)]">
-            Report submission remains blocked. Human confirmation remains blocked. Any first real
-            run must be user-operated with a fresh dedicated approval; no background scheduling,
-            retry, discovery, or CI execution is available here.
+            报告提交与人工确认均保持阻断。任何首次真实运行都必须由用户操作并使用新的专项批准；
+            此处不提供后台调度、重试、发现或 CI 执行。
           </p>
         </div>
       </section>
 
       <section className="mt-6 border-y border-[var(--line)]" id="studio-lab">
-        <SectionHeader title="Local black-box lab (explicit)" />
+        <SectionHeader title="本地黑盒实验室（显式启用）" />
         <details className="p-5 text-sm">
-          <summary className="cursor-pointer font-semibold">Enable explicit local black-box lab</summary>
+          <summary className="cursor-pointer font-semibold">启用显式本地黑盒实验室</summary>
           <div className="mt-4 grid gap-4">
             <p className="text-[var(--muted)]">
-              Loopback only, two isolated sessions, one declared read-only workflow, and one
-              approved replay. Ephemeral only - not written to workspace manifest.
+              仅限回环地址、两个隔离会话、一个声明的只读工作流和一次经批准的回放。仅使用临时状态，
+              不会写入工作区清单。
             </p>
             <div className="grid gap-3 md:grid-cols-2">
               <label className="grid gap-1 text-sm">
                 <span className="text-xs font-semibold uppercase text-[var(--muted)]">
-                  Active loopback origin
+                  当前回环来源
                 </span>
                 <input
                   className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)] disabled:opacity-60"
@@ -1815,7 +1816,7 @@ export function StudioWorkbench() {
               </label>
               <label className="grid gap-1 text-sm">
                 <span className="text-xs font-semibold uppercase text-[var(--muted)]">
-                  Durable validation run ID
+                  持久化验证运行 ID
                 </span>
                 <input
                   className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)] disabled:opacity-60"
@@ -1835,7 +1836,7 @@ export function StudioWorkbench() {
                   }
                   type="checkbox"
                 />
-                <span>Session A ready</span>
+                <span>会话 A 已就绪</span>
               </label>
               <label className="flex items-center gap-3 border border-[var(--line)] p-3">
                 <input
@@ -1846,7 +1847,7 @@ export function StudioWorkbench() {
                   }
                   type="checkbox"
                 />
-                <span>Session B ready</span>
+                <span>会话 B 已就绪</span>
               </label>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1857,7 +1858,7 @@ export function StudioWorkbench() {
                   !["idle", "awaiting_sessions_ready"].includes(labRunnerState)
                 }
                 icon={<ShieldCheck size={16} aria-hidden="true" />}
-                label="Preview bounded lease"
+                label="预览受限租约"
                 onClick={handlePreviewBlackBoxLabLease}
               />
               <ActionButton
@@ -1869,7 +1870,7 @@ export function StudioWorkbench() {
                   labRunnerState !== "idle"
                 }
                 icon={<FolderPlus size={16} aria-hidden="true" />}
-                label="Create two sessions"
+                label="创建两个会话"
                 onClick={handleCreateBlackBoxSessions}
               />
               <ActionButton
@@ -1880,14 +1881,14 @@ export function StudioWorkbench() {
                   labRunnerState !== "awaiting_sessions_ready"
                 }
                 icon={<Play size={16} aria-hidden="true" />}
-                label="Start recording"
+                label="开始录制"
                 onClick={handleStartBlackBoxRecording}
               />
               <ActionButton
                 busy={busy === "lab-stop-recording"}
                 disabled={Boolean(busy) || labRunnerState !== "recording"}
                 icon={<ShieldCheck size={16} aria-hidden="true" />}
-                label="Stop recording"
+                label="停止录制"
                 onClick={handleStopBlackBoxRecording}
               />
               <ActionButton
@@ -1898,7 +1899,7 @@ export function StudioWorkbench() {
                   labRunnerState !== "sessions_ready"
                 }
                 icon={<ShieldCheck size={16} aria-hidden="true" />}
-                label="Review normalized traces"
+                label="审查标准化轨迹"
                 onClick={handleReviewBlackBoxTraces}
               />
               <ActionButton
@@ -1910,45 +1911,45 @@ export function StudioWorkbench() {
                   labRunnerState !== "sessions_ready"
                 }
                 icon={<ShieldCheck size={16} aria-hidden="true" />}
-                label="Review and approve complete plan"
+                label="审查并批准完整计划"
                 onClick={handleApproveBlackBoxLabRun}
               />
               <ActionButton
                 busy={busy === "lab-close"}
                 disabled={Boolean(busy) || labRunnerState === "idle"}
                 icon={<ShieldCheck size={16} aria-hidden="true" />}
-                label="Stop local lab"
+                label="停止本地实验室"
                 onClick={handleCloseBlackBoxSessions}
               />
             </div>
             <dl className="grid gap-3 sm:grid-cols-4">
-              <StatusRow label="Runner state" value={labRunnerState} />
+              <StatusRow label="运行器状态" value={formatLabel(labRunnerState)} />
               <StatusRow
-                label="Lease review"
-                value={labLeasePreview ? "reviewed" : "required"}
+                label="租约审查"
+                value={labLeasePreview ? "已审查" : "需要审查"}
                 warning={!labLeasePreview}
               />
               <StatusRow
-                label="Human trace review"
-                value={labTraceReviewConfirmed ? "confirmed" : "required"}
+                label="人工轨迹审查"
+                value={labTraceReviewConfirmed ? "已确认" : "需要审查"}
                 warning={!labTraceReviewConfirmed}
               />
               <StatusRow
-                label="Bounded result"
-                value={labBoundedResult ? "recorded" : "not recorded"}
+                label="受限结果"
+                value={labBoundedResult ? "已记录" : "未记录"}
                 warning={!labBoundedResult}
               />
             </dl>
             {labBoundedResult ? (
               <p className="text-xs text-[var(--muted)]">
                 {labBoundedResult.report_preview_refreshed
-                  ? "Report preview refreshed from the bounded local-lab result; human review remains required."
-                  : "Bounded local-lab result recorded; human review remains required."}
+                  ? "已根据受限本地实验结果刷新报告预览；仍需人工审核。"
+                  : "受限本地实验结果已记录；仍需人工审核。"}
               </p>
             ) : null}
             {labTraceReview.length > 0 ? (
               <div className="border-t border-[var(--line)] pt-4">
-                <p className="font-semibold">Normalized traces</p>
+                <p className="font-semibold">标准化轨迹</p>
                 <ul className="mt-2 grid gap-2 text-xs text-[var(--muted)]">
                   {labTraceReview.map((trace) => (
                     <li key={`${trace.session_alias}-${trace.workflow_alias}`}>
@@ -1965,17 +1966,17 @@ export function StudioWorkbench() {
 
       <div className="mt-6 grid min-w-0 gap-5">
         <section className="min-w-0 border-b border-[var(--line)] pb-5">
-          <SectionHeader title="Authorized materials / evaluation" />
+          <SectionHeader title="授权材料与评估" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="Policy file"
+                label="策略文件"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setPolicyPath,
-                    title: "Select policy file",
+                    title: "选择策略文件",
                   })
                 }
                 value={policyPath}
@@ -1983,12 +1984,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="Scope file"
+                label="范围文件"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setScopePath,
-                    title: "Select scope file",
+                    title: "选择范围文件",
                   })
                 }
                 value={scopePath}
@@ -1996,12 +1997,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="Code directory"
+                label="代码目录"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "directory",
                     setter: setCodePath,
-                    title: "Select authorized code directory",
+                    title: "选择授权代码目录",
                   })
                 }
                 value={codePath}
@@ -2009,12 +2010,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="API file"
+                label="API 文件"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setApiPath,
-                    title: "Select API artifact",
+                    title: "选择 API 资料",
                   })
                 }
                 value={apiPath}
@@ -2022,12 +2023,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="HAR file"
+                label="HAR 文件"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setHarPath,
-                    title: "Select HAR file",
+                    title: "选择 HAR 文件",
                   })
                 }
                 value={harPath}
@@ -2035,12 +2036,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="SBOM file"
+                label="SBOM 文件"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setSbomPath,
-                    title: "Select SBOM file",
+                    title: "选择 SBOM 文件",
                   })
                 }
                 value={sbomPath}
@@ -2048,12 +2049,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="SARIF file"
+                label="SARIF 文件"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setSarifPath,
-                    title: "Select SARIF file",
+                    title: "选择 SARIF 文件",
                   })
                 }
                 value={sarifPath}
@@ -2061,12 +2062,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="Fuzzing plan"
+                label="模糊测试计划"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setFuzzingPath,
-                    title: "Select fuzzing plan",
+                    title: "选择模糊测试计划",
                   })
                 }
                 value={fuzzingPath}
@@ -2074,12 +2075,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="Strategy file"
+                label="策略说明"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setStrategyPath,
-                    title: "Select strategy notes",
+                    title: "选择策略说明",
                   })
                 }
                 value={strategyPath}
@@ -2087,12 +2088,12 @@ export function StudioWorkbench() {
               />
               <TextField
                 browseEnabled={desktopPickerAvailable}
-                label="Knowledge file"
+                label="知识文件"
                 onBrowse={() =>
                   handleSelectPath({
                     mode: "file",
                     setter: setKnowledgePath,
-                    title: "Select knowledge pattern file",
+                    title: "选择知识模式文件",
                   })
                 }
                 value={knowledgePath}
@@ -2100,30 +2101,30 @@ export function StudioWorkbench() {
               />
             </div>
             <div className="border-t border-[var(--line)] p-4">
-              <p className="font-semibold">Artifact readiness</p>
+              <p className="font-semibold">资料就绪状态</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {artifactChecklist.map((item) => (
                   <span
                     className={`border-l-2 border-[var(--line)] px-3 py-2 ${checklistTone(item.status)}`}
                     key={item.kind}
                   >
-                    {item.label}: {item.status}
+                    {item.label}：{formatLabel(item.status)}
                   </span>
                 ))}
               </div>
               <p className="mt-3 text-[var(--muted)]">{researchReadiness.reason}</p>
             </div>
             <div className="border-t border-[var(--line)] p-4">
-              <p className="font-semibold">A+B benchmark</p>
+              <p className="font-semibold">A+B 基准测试</p>
               <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                 <TextField
                   browseEnabled={desktopPickerAvailable}
-                  label="Expectation file"
+                  label="期望结果文件"
                   onBrowse={() =>
                     handleSelectPath({
                       mode: "file",
                       setter: setExpectationsPath,
-                      title: "Select benchmark expectation file",
+                      title: "选择基准期望结果文件",
                     })
                   }
                   value={expectationsPath}
@@ -2135,14 +2136,14 @@ export function StudioWorkbench() {
                       busy={busy === "benchmark-template"}
                       disabled={!latestRunId}
                       icon={<FileDown size={16} aria-hidden="true" />}
-                      label="Create template"
+                      label="创建模板"
                       onClick={handleCreateBenchmarkTemplate}
                     />
                     <ActionButton
                       busy={busy === "benchmark"}
                       disabled={!latestRunId}
                       icon={<ShieldCheck size={16} aria-hidden="true" />}
-                      label="Run benchmark"
+                      label="运行基准测试"
                       onClick={handleRunBenchmark}
                     />
                   </div>
@@ -2152,29 +2153,29 @@ export function StudioWorkbench() {
                 <div className="mt-4 space-y-3">
                   <dl className="grid gap-3 sm:grid-cols-3">
                     <StatusRow
-                      label="Benchmark"
-                      value={benchmarkResult.benchmark.status ?? "unknown"}
+                      label="基准测试"
+                      value={formatLabel(benchmarkResult.benchmark.status)}
                       warning={benchmarkResult.benchmark.status !== "passed"}
                     />
                     <StatusRow
-                      label="Matched"
+                      label="匹配数"
                       value={`${benchmarkResult.benchmark.matched ?? 0}/${benchmarkResult.benchmark.expected_count ?? 0}`}
                     />
                     <StatusRow
-                      label="Result path"
-                      value={benchmarkResult.benchmark_path ?? "No result path"}
+                      label="结果路径"
+                      value={benchmarkResult.benchmark_path ?? "暂无结果路径"}
                     />
                   </dl>
                   {benchmarkEvidenceGaps.length > 0 ? (
                     <div>
                       <p className="text-xs font-semibold uppercase text-[var(--muted)]">
-                        Evidence gaps
+                        证据缺口
                       </p>
                       <ul className="mt-2 space-y-1 text-xs text-[var(--muted)]">
                         {benchmarkEvidenceGaps.map((gap, index) => (
                           <li key={`${gap.name ?? "gap"}-${gap.artifact_kind ?? "artifact"}-${index}`}>
-                            {gap.name ?? "candidate"}: {gap.artifact_kind ?? "artifact"} -{" "}
-                            {gap.reason ?? "needs_review"}
+                            {gap.name ?? "候选"}：{gap.artifact_kind ?? "资料"} -{" "}
+                            {formatLabel(gap.reason)}
                           </li>
                         ))}
                       </ul>
@@ -2184,126 +2185,126 @@ export function StudioWorkbench() {
               ) : null}
             </div>
             <div className="border-t border-[var(--line)] p-4">
-              <p className="font-semibold">Research intent</p>
+              <p className="font-semibold">研究意图</p>
               <p className="mt-2 text-[var(--muted)]">
-                Access control, role boundaries, refutation first.
+                访问控制、角色边界、优先反证。
               </p>
             </div>
           </div>
         </section>
 
         <section className="min-w-0 border-b border-[var(--line)] pb-5" data-testid="studio-mission-details">
-          <SectionHeader title="Mission details" />
+          <SectionHeader title="任务详情" />
           <div className="grid gap-4 p-5 text-sm">
             <div className="border-t border-[var(--line)] pt-4">
-              <p className="font-semibold">Mission control</p>
+              <p className="font-semibold">任务控制</p>
               <dl className="mt-3 grid gap-3">
-                <StatusRow label="Mode" value={missionPanel.modeLabel} />
-                <StatusRow label="Run" value={missionPanel.runId} />
-                <StatusRow label="Scope Guard" value={missionPanel.scopeGuardLabel} warning />
-                <StatusRow label="Artifact coverage" value={missionPanel.artifactCoverage} />
-                <StatusRow label="Advisory context" value={missionPanel.advisoryContextLabel} />
-                <StatusRow label="Candidates" value={missionPanel.candidateCountLabel} />
+                <StatusRow label="模式" value={formatLabel(missionPanel.modeLabel)} />
+                <StatusRow label="运行" value={missionPanel.runId} />
+                <StatusRow label="范围守卫" value={formatLabel(missionPanel.scopeGuardLabel)} warning />
+                <StatusRow label="资料覆盖度" value={missionPanel.artifactCoverage} />
+                <StatusRow label="参考上下文" value={formatLabel(missionPanel.advisoryContextLabel)} />
+                <StatusRow label="候选数" value={missionPanel.candidateCountLabel} />
                 <StatusRow
-                  label="Report gate"
-                  value={missionPanel.gates.submissionBlocked ? "submission-blocked" : "review required"}
+                  label="报告审批门"
+                  value={missionPanel.gates.submissionBlocked ? "报告提交已阻断" : "需要审核"}
                   warning
                 />
                 <StatusRow
-                  label="Validation gate"
+                  label="验证审批门"
                   value={
                     missionPanel.gates.validationExecutionAllowed
-                      ? "human review required"
-                      : "execution blocked"
+                      ? "需要人工审核"
+                      : "执行已阻断"
                   }
                   warning
                 />
                 <StatusRow
-                  label="Candidate quality"
-                  value={`${missionPanel.qualitySummary.topCandidateQualityGate} (${missionPanel.qualitySummary.reviewReadyCount}/${missionPanel.qualitySummary.candidateCount} review-ready, avg ${missionPanel.qualitySummary.averageQualityScore})`}
+                  label="候选质量"
+                  value={`${formatLabel(missionPanel.qualitySummary.topCandidateQualityGate)}（${missionPanel.qualitySummary.reviewReadyCount}/${missionPanel.qualitySummary.candidateCount} 已可审核，平均 ${missionPanel.qualitySummary.averageQualityScore}）`}
                   warning={!missionPanel.gates.topCandidateQualityGate}
                 />
               </dl>
               <ListBlock
-                title="Mission quality blockers"
+                title="任务质量阻断项"
                 items={missionPanel.qualitySummary.blockers}
               />
               <ListBlock
-                title="Candidate improvement actions"
+                title="候选改进操作"
                 items={missionPanel.qualitySummary.improvementActions}
               />
               <ListBlock
-                title="Attack surface model"
+                title="攻击面模型"
                 items={[
                   attackSurfaceModelLine(missionPanel.attackSurfaceModel),
                   ...missionPanel.attackSurfaceModel.topRoutes.map(attackSurfaceRouteLine),
                 ]}
               />
               <ListBlock
-                title="Candidate hunter backlog"
+                title="候选挖掘待办"
                 items={missionPanel.candidateHunterBacklog.map(candidateHunterBacklogLine)}
               />
               <ListBlock
-                title="Candidate hunter iteration"
+                title="候选挖掘迭代"
                 items={[candidateHunterIterationLine(missionPanel.candidateHunterIteration)]}
               />
               <ListBlock
-                title="Candidate hunter plan"
+                title="候选挖掘计划"
                 items={[candidateHunterPlanLine(missionPanel.candidateHunterPlan)]}
               />
               <ListBlock
-                title="Candidate hunter plan steps"
+                title="候选挖掘计划步骤"
                 items={missionPanel.candidateHunterPlan.planSteps.map(candidateHunterPlanStepLine)}
               />
               <ListBlock
-                title="Candidate hunter review loop"
+                title="候选挖掘审查循环"
                 items={[candidateHunterReviewLoopLine(missionPanel.candidateHunterReviewLoop)]}
               />
               <ListBlock
-                title="Candidate hunter review loop steps"
+                title="候选挖掘审查循环步骤"
                 items={missionPanel.candidateHunterReviewLoop.activeSteps.map(
                   candidateHunterReviewLoopStepLine,
                 )}
               />
               <ListBlock
-                title="Candidate hunter refutation queue"
+                title="候选挖掘反证队列"
                 items={missionPanel.candidateHunterExecutionLoop.refutationQueue.map(
                   candidateHunterRefutationQueueLine,
                 )}
               />
               <ListBlock
-                title="Candidate hunter evidence matrix"
+                title="候选挖掘证据矩阵"
                 items={missionPanel.candidateHunterExecutionLoop.candidateEvidenceMatrix.map(
                   candidateHunterEvidenceMatrixLine,
                 )}
               />
               <ListBlock
-                title="Candidate hunter ranked Top 1-5"
+                title="候选挖掘排名前 1-5"
                 items={missionPanel.candidateHunterExecutionLoop.rankedTopCandidates.map(
                   candidateHunterRankedTopCandidateLine,
                 )}
               />
               <ListBlock
-                title="Candidate hunter deduplication queue"
+                title="候选挖掘去重队列"
                 items={missionPanel.candidateHunterExecutionLoop.deduplicationQueue.map(
                   candidateHunterDeduplicationQueueLine,
                 )}
               />
               <ListBlock
-                title="Candidate hunter safe validation queue"
+                title="候选挖掘安全验证队列"
                 items={missionPanel.candidateHunterExecutionLoop.safeValidationQueue.map(
                   candidateHunterSafeValidationQueueLine,
                 )}
               />
               <ListBlock
-                title="Candidate hunter report draft queue"
+                title="候选挖掘报告草稿队列"
                 items={missionPanel.candidateHunterExecutionLoop.reportDraftQueue.map(
                   candidateHunterReportDraftQueueLine,
                 )}
               />
               <div className="mt-4">
                 <p className="text-xs font-semibold uppercase text-[var(--muted)]">
-                  Candidate hunter learning feedback
+                  候选挖掘学习反馈
                 </p>
                 <p className="mt-2 text-[var(--muted)]">
                   {candidateHunterLearningFeedbackLine(
@@ -2312,7 +2313,7 @@ export function StudioWorkbench() {
                 </p>
                 <div className="mt-3 grid gap-2">
                   {missionPanel.candidateHunterExecutionLoop.learningReviewActions.length === 0 ? (
-                    <p className="text-[var(--muted)]">Review required.</p>
+                    <p className="text-[var(--muted)]">需要审核。</p>
                   ) : (
                     missionPanel.candidateHunterExecutionLoop.learningReviewActions.map((action) => (
                       <div
@@ -2325,7 +2326,7 @@ export function StudioWorkbench() {
                         <ActionButton
                           busy={busy === `learning:${action.actionId}`}
                           icon={<ShieldCheck size={16} aria-hidden="true" />}
-                          label="Record suggested outcome"
+                          label="记录建议结果"
                           onClick={() => handleRecordCandidateHunterLearning(action)}
                         />
                       </div>
@@ -2334,66 +2335,66 @@ export function StudioWorkbench() {
                 </div>
                 {learningProfile?.recent_learning_signals[0] ? (
                   <p className="mt-3 text-[var(--muted)]">
-                    Recent learning signal:{" "}
-                    {learningProfile.recent_learning_signals[0].playbook_id} -{" "}
-                    {learningProfile.recent_learning_signals[0].outcome}
+                    最近学习信号：{" "}
+                    {learningProfile.recent_learning_signals[0].playbook_id}：{" "}
+                    {formatLabel(learningProfile.recent_learning_signals[0].outcome)}
                   </p>
                 ) : null}
               </div>
               <ListBlock
-                title="Research loop"
+                title="研究循环"
                 items={missionPanel.researchLoopStages.map(
-                  (stage) => `${stage.label}: ${stage.status} - ${stage.summary}`,
+                  (stage) => `${formatLabel(stage.label)}：${formatLabel(stage.status)} - ${stage.summary}`,
                 )}
               />
               <ListBlock
-                title="Agent queue"
+                title="智能体队列"
                 items={missionPanel.agentQueue.map(agentQueueLine)}
               />
               <ListBlock
-                title="Studio timeline summary"
+                title="工作台时间线摘要"
                 items={[studioTimelineSummaryLine(missionPanel.studioTimelineSummary)]}
               />
               <ListBlock
-                title="Candidate review packets"
+                title="候选审查包"
                 items={missionPanel.candidateReviewPackets.map(candidateReviewPacketLine)}
               />
               <ListBlock
-                title="Redacted evidence review queue"
+                title="脱敏证据审查队列"
                 items={missionPanel.candidateReviewPackets.map(redactedEvidenceReviewLine)}
               />
               <ListBlock
-                title="Submission-blocked report summary"
+                title="报告提交阻断摘要"
                 items={[
                   submissionBlockedReportSummaryLine(
                     missionPanel.submissionBlockedReportSummary,
                   ),
                 ]}
               />
-              <TextBlock title="Handoff brief" value={missionHandoffBrief} />
+              <TextBlock title="交接摘要" value={missionHandoffBrief} />
               <ListBlock
-                title="Agent handoff pack"
+                title="智能体交接包"
                 items={[agentHandoffPackLine(missionPanel.agentHandoffPack)]}
               />
               <ListBlock
-                title="Agent handoff items"
+                title="智能体交接项"
                 items={missionPanel.agentHandoffPack.handoffItems.map(agentHandoffItemLine)}
               />
               <ListBlock
-                title="Agent task timeline"
+                title="智能体任务时间线"
                 items={missionPanel.agentTaskTimeline.map(agentTaskTimelineLine)}
               />
-              <ListBlock title="Safe next actions" items={missionPanel.safeNextActions} />
+              <ListBlock title="建议的安全操作" items={missionPanel.safeNextActions} />
               <ListBlock
-                title="Mission Top candidates"
+                title="任务高优先级候选"
                 items={missionPanel.topCandidates.map(missionCandidateLine)}
               />
             </div>
-            <p className="font-semibold text-[var(--warning)]">submission-blocked</p>
+            <p className="font-semibold text-[var(--warning)]">报告提交已阻断</p>
             <div className="grid gap-2">
               {workspace.blockedActions.map((action) => (
                 <span key={action} className="border border-[var(--line)] px-3 py-2 text-[var(--muted)]">
-                  {action}
+                  {formatLabel(action)}
                 </span>
               ))}
             </div>
@@ -2445,7 +2446,7 @@ function TextField({
             type="button"
           >
             <FolderOpen size={16} aria-hidden="true" />
-            Browse
+            浏览
           </button>
         ) : null}
       </span>
@@ -2474,7 +2475,7 @@ function ActionButton({
       type="button"
     >
       {icon}
-      {busy ? "Working" : label}
+      {busy ? "处理中" : label}
     </button>
   );
 }
@@ -2503,7 +2504,7 @@ function ListBlock({ items, title }: { items: string[]; title: string }) {
     <div className="mt-4">
       <p className="text-xs font-semibold uppercase text-[var(--muted)]">{title}</p>
       {items.length === 0 ? (
-        <p className="mt-2 text-[var(--muted)]">Review required.</p>
+        <p className="mt-2 text-[var(--muted)]">需要审核。</p>
       ) : (
         <ul className="mt-2 grid gap-1 text-[var(--muted)]">
           {items.map((item) => (
@@ -2530,347 +2531,349 @@ function attackSurfaceModelLine(
   model: ReturnType<typeof toStudioMissionPanel>["attackSurfaceModel"],
 ): string {
   const sources =
-    model.sourceArtifactKinds.length > 0 ? model.sourceArtifactKinds.join(", ") : "none";
-  const methods = model.methods.length > 0 ? model.methods.join(", ") : "none";
+    model.sourceArtifactKinds.length > 0 ? model.sourceArtifactKinds.join(", ") : "无";
+  const methods = model.methods.length > 0 ? model.methods.join(", ") : "无";
   const gates = [
-    model.executionAllowed ? "execution allowed" : "execution blocked",
-    model.validationAllowed ? "validation allowed" : "validation blocked",
-    model.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    model.executionAllowed ? "执行已允许" : "执行已阻断",
+    model.validationAllowed ? "验证已允许" : "验证已阻断",
+    model.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${model.status}; routes ${model.routeCount} (api ${model.apiRouteCount}, har ${model.harRouteCount}); advisory signals ${model.advisorySignalCount}; methods ${methods}; sources ${sources}; gate ${model.safetyGate}; next ${model.nextAction}; ${gates}`;
+  return `${formatLabel(model.status)}；路由 ${model.routeCount}（API ${model.apiRouteCount}，HAR ${model.harRouteCount}）；参考信号 ${model.advisorySignalCount}；方法 ${methods}；来源 ${sources}；审批门 ${formatLabel(model.safetyGate)}；下一步 ${model.nextAction}；${gates}`;
 }
 
 function attackSurfaceRouteLine(
   route: ReturnType<typeof toStudioMissionPanel>["attackSurfaceModel"]["topRoutes"][number],
 ): string {
-  const sources = route.artifactKinds.length > 0 ? route.artifactKinds.join(", ") : "artifact";
-  return `${route.method} ${route.path}; sources ${sources}`;
+  const sources = route.artifactKinds.length > 0 ? route.artifactKinds.join(", ") : "资料";
+  return `${route.method} ${route.path}；来源 ${sources}`;
 }
 
 function missionCandidateLine(
   candidate: ReturnType<typeof toStudioMissionPanel>["topCandidates"][number],
 ): string {
-  const qualityReasons = candidate.qualityReasons.join(", ") || "needs_review";
+  const qualityReasons = candidate.qualityReasons.join(", ") || "需要审核";
   const crossChecks =
-    candidate.hallucinationGuard.independentCrossCheckSources.join(", ") || "none";
+    candidate.hallucinationGuard.independentCrossCheckSources.join(", ") || "无";
   return [
     `${candidate.hypothesisId}: ${candidate.affectedEndpoint} -> ${candidate.affectedCodePath}`,
-    `evidence ${candidate.evidenceReviewStatus}/${candidate.evidenceNeedCount}`,
-    `refutation ${candidate.refutationStatus}/${candidate.refutationReviewStatus}`,
-    `provenance ${candidate.provenanceReviewStatus}`,
-    `dedup ${candidate.deduplicationReviewStatus}`,
-    `validation ${candidate.validationStatus}/${candidate.safeValidationStepCount}`,
-    `quality ${candidate.qualityStatus}/${candidate.qualityScore} (${qualityReasons})`,
-    `hallucination ${candidate.hallucinationGuard.status}/${candidate.hallucinationGuard.modelOutputStatus}`,
-    `independent challenge ${crossChecks}`,
-    `report ${candidate.reportStatus}`,
+    `证据 ${formatLabel(candidate.evidenceReviewStatus)}/${candidate.evidenceNeedCount}`,
+    `反证 ${formatLabel(candidate.refutationStatus)}/${formatLabel(candidate.refutationReviewStatus)}`,
+    `溯源 ${formatLabel(candidate.provenanceReviewStatus)}`,
+    `去重 ${formatLabel(candidate.deduplicationReviewStatus)}`,
+    `验证 ${formatLabel(candidate.validationStatus)}/${candidate.safeValidationStepCount}`,
+    `质量 ${formatLabel(candidate.qualityStatus)}/${candidate.qualityScore}（${qualityReasons}）`,
+    `幻觉防护 ${formatLabel(candidate.hallucinationGuard.status)}/${formatLabel(candidate.hallucinationGuard.modelOutputStatus)}`,
+    `独立交叉检查 ${crossChecks}`,
+    `报告 ${formatLabel(candidate.reportStatus)}`,
   ].join("; ");
 }
 
 function agentQueueLine(
   task: ReturnType<typeof toStudioMissionPanel>["agentQueue"][number],
 ): string {
-  const inputs = task.inputRefs.length > 0 ? task.inputRefs.join(", ") : "no refs";
-  const focus = task.reviewFocus.length > 0 ? `; focus ${task.reviewFocus.join(", ")}` : "";
+  const inputs = task.inputRefs.length > 0 ? task.inputRefs.join(", ") : "无引用";
+  const focus = task.reviewFocus.length > 0 ? `；重点 ${task.reviewFocus.join(", ")}` : "";
   const gaps =
     task.candidateQualityGaps.length > 0
-      ? `; quality gaps ${task.candidateQualityGaps.join(", ")}`
+      ? `；质量缺口 ${task.candidateQualityGaps.join(", ")}`
       : "";
   const candidates =
-    task.targetCandidates.length > 0 ? `; candidates ${task.targetCandidates.join(", ")}` : "";
-  const prefix = `${task.taskId}: ${task.agent} - ${task.status}`;
-  return `${prefix}; gate ${task.safetyGate}; inputs ${inputs}${focus}${candidates}${gaps}; ${task.nextAction}`;
+    task.targetCandidates.length > 0 ? `；候选 ${task.targetCandidates.join(", ")}` : "";
+  const prefix = `${task.taskId}：${task.agent} - ${formatLabel(task.status)}`;
+  return `${prefix}；审批门 ${formatLabel(task.safetyGate)}；输入 ${inputs}${focus}${candidates}${gaps}；${task.nextAction}`;
 }
 
 function agentTaskTimelineLine(
   stage: ReturnType<typeof toStudioMissionPanel>["agentTaskTimeline"][number],
 ): string {
-  return `${stage.stageId}: ${stage.status}/${stage.gateDecision}; ${stage.inputSummary}; ${stage.outputSummary}; next ${stage.nextHumanAction}`;
+  return `${stage.stageId}：${formatLabel(stage.status)}/${formatLabel(stage.gateDecision)}；${stage.inputSummary}；${stage.outputSummary}；下一步 ${stage.nextHumanAction}`;
 }
 
 function studioTimelineSummaryLine(
   summary: ReturnType<typeof toStudioMissionPanel>["studioTimelineSummary"],
 ): string {
   const counts = Object.entries(summary.gateDecisionCounts)
-    .map(([gate, count]) => `${gate} ${count}`)
-    .join(", ") || "no stages";
+    .map(([gate, count]) => `${formatLabel(gate)} ${count}`)
+    .join("，") || "无阶段";
   const blocked =
-    summary.blockedStageIds.length > 0 ? summary.blockedStageIds.join(", ") : "none";
+    summary.blockedStageIds.length > 0 ? summary.blockedStageIds.join(", ") : "无";
   const needsReview =
     summary.needsReviewStageIds.length > 0
       ? summary.needsReviewStageIds.join(", ")
-      : "none";
+      : "无";
   const pending =
-    summary.pendingStageIds.length > 0 ? summary.pendingStageIds.join(", ") : "none";
+    summary.pendingStageIds.length > 0 ? summary.pendingStageIds.join(", ") : "无";
   const nextActions =
     summary.nextHumanActions.length > 0
       ? summary.nextHumanActions.join("; ")
-      : "Review required.";
+      : "需要审核。";
   const gates = [
-    summary.validationExecutionAllowed ? "validation allowed" : "validation blocked",
-    summary.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    summary.validationExecutionAllowed ? "验证已允许" : "验证已阻断",
+    summary.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `stages ${summary.totalStages}; gates ${counts}; blocked ${blocked}; needs review ${needsReview}; pending ${pending}; safety ${summary.safetyGate}; next ${nextActions}; ${gates}`;
+  return `阶段 ${summary.totalStages}；审批门 ${counts}；已阻断 ${blocked}；需要审核 ${needsReview}；待处理 ${pending}；安全状态 ${formatLabel(summary.safetyGate)}；下一步 ${nextActions}；${gates}`;
 }
 
 function candidateReviewPacketLine(
   packet: ReturnType<typeof toStudioMissionPanel>["candidateReviewPackets"][number],
 ): string {
   const missing =
-    packet.missingItems.length > 0 ? packet.missingItems.join(", ") : "none";
+    packet.missingItems.length > 0 ? packet.missingItems.join(", ") : "无";
   const completed =
-    packet.completedItems.length > 0 ? packet.completedItems.join(", ") : "none";
+    packet.completedItems.length > 0 ? packet.completedItems.join(", ") : "无";
   const gates = [
-    packet.executionAllowed ? "execution allowed" : "execution blocked",
-    packet.validationAllowed ? "validation allowed" : "validation blocked",
-    packet.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    packet.executionAllowed ? "执行已允许" : "执行已阻断",
+    packet.validationAllowed ? "验证已允许" : "验证已阻断",
+    packet.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${packet.candidateId}: ${packet.status}; priority ${packet.reportReviewPriority}; quality ${packet.qualityScore}/100; completed ${completed}; missing ${missing}; evidence ${packet.evidenceNeedCount}; refutation ${packet.falsePositiveCheckCount}; validation steps ${packet.safeValidationStepCount}; hallucination ${packet.hallucinationGuardStatus}; report ${packet.reportStatus}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
+  return `${packet.candidateId}：${formatLabel(packet.status)}；优先级 ${packet.reportReviewPriority}；质量 ${packet.qualityScore}/100；已完成 ${completed}；缺少 ${missing}；证据 ${packet.evidenceNeedCount}；反证 ${packet.falsePositiveCheckCount}；验证步骤 ${packet.safeValidationStepCount}；幻觉防护 ${formatLabel(packet.hallucinationGuardStatus)}；报告 ${formatLabel(packet.reportStatus)}；审批门 ${formatLabel(packet.safetyGate)}；下一步 ${packet.nextHumanAction}；${gates}`;
 }
 
 function redactedEvidenceReviewLine(
   packet: ReturnType<typeof toStudioMissionPanel>["candidateReviewPackets"][number],
 ): string {
   const missing =
-    packet.missingItems.length > 0 ? packet.missingItems.join(", ") : "none";
+    packet.missingItems.length > 0 ? packet.missingItems.join(", ") : "无";
   const completed =
-    packet.completedItems.length > 0 ? packet.completedItems.join(", ") : "none";
+    packet.completedItems.length > 0 ? packet.completedItems.join(", ") : "无";
   const gates = [
-    packet.executionAllowed ? "execution allowed" : "execution blocked",
-    packet.validationAllowed ? "validation allowed" : "validation blocked",
-    packet.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    packet.executionAllowed ? "执行已允许" : "执行已阻断",
+    packet.validationAllowed ? "验证已允许" : "验证已阻断",
+    packet.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${packet.candidateId}: redaction review ${packet.reportReviewPriority}; evidence needs ${packet.evidenceNeedCount}; missing ${missing}; completed ${completed}; gate ${packet.safetyGate}; next ${packet.nextHumanAction}; ${gates}`;
+  return `${packet.candidateId}：脱敏审查 ${packet.reportReviewPriority}；证据需求 ${packet.evidenceNeedCount}；缺少 ${missing}；已完成 ${completed}；审批门 ${formatLabel(packet.safetyGate)}；下一步 ${packet.nextHumanAction}；${gates}`;
 }
 
 function submissionBlockedReportSummaryLine(
   summary: ReturnType<typeof toStudioMissionPanel>["submissionBlockedReportSummary"],
 ): string {
   const ready =
-    summary.readyCandidateIds.length > 0 ? summary.readyCandidateIds.join(", ") : "none";
+    summary.readyCandidateIds.length > 0 ? summary.readyCandidateIds.join(", ") : "无";
   const needsReview =
     summary.needsReviewCandidateIds.length > 0
       ? summary.needsReviewCandidateIds.join(", ")
-      : "none";
+      : "无";
   const missing = Object.entries(summary.missingReviewItems)
     .map(([candidateId, items]) => `${candidateId}: ${items.join(", ")}`)
-    .join("; ") || "none";
+    .join("；") || "无";
   const nextActions =
     summary.nextHumanActions.length > 0
       ? summary.nextHumanActions.join("; ")
-      : "Human redaction review required.";
+      : "需要人工脱敏审查。";
   const reviewQueue =
     summary.reportReviewQueue.length > 0
       ? summary.reportReviewQueue
           .map((item) => `${item.candidateId}: ${item.priority} (${item.qualityScore}/100)`)
-          .join("; ")
-      : "none";
+          .join("；")
+      : "无";
   const gates = [
-    summary.validationExecutionAllowed ? "validation allowed" : "validation blocked",
-    summary.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    summary.validationExecutionAllowed ? "验证已允许" : "验证已阻断",
+    summary.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${summary.status}; candidates ${summary.candidateCount}; ready ${ready}; needs review ${needsReview}; missing ${missing}; report queue ${reviewQueue}; gate ${summary.safetyGate}; redaction review ${summary.redactionReviewRequired ? "required" : "missing"}; next ${nextActions}; ${gates}`;
+  return `${formatLabel(summary.status)}；候选 ${summary.candidateCount}；已就绪 ${ready}；需要审核 ${needsReview}；缺少 ${missing}；报告队列 ${reviewQueue}；审批门 ${formatLabel(summary.safetyGate)}；脱敏审查 ${summary.redactionReviewRequired ? "需要" : "缺失"}；下一步 ${nextActions}；${gates}`;
 }
 
 function agentHandoffPackLine(
   pack: ReturnType<typeof toStudioMissionPanel>["agentHandoffPack"],
 ): string {
-  const priority = pack.priorityOrder.length > 0 ? pack.priorityOrder.join(", ") : "none";
-  const focus = pack.reviewFocus.length > 0 ? pack.reviewFocus.join(", ") : "review";
+  const priority = pack.priorityOrder.length > 0 ? pack.priorityOrder.join(", ") : "无";
+  const focus = pack.reviewFocus.length > 0 ? pack.reviewFocus.join(", ") : "审查";
   const queueRefs =
-    pack.agentQueueRefs.length > 0 ? pack.agentQueueRefs.join(", ") : "agent queue";
+    pack.agentQueueRefs.length > 0 ? pack.agentQueueRefs.join(", ") : "智能体队列";
   const counts = Object.entries(pack.timelineGateCounts)
-    .map(([gate, count]) => `${gate} ${count}`)
-    .join(", ") || "no timeline gates";
+    .map(([gate, count]) => `${formatLabel(gate)} ${count}`)
+    .join("，") || "无时间线审批门";
   const blocked =
-    pack.blockedActions.length > 0 ? pack.blockedActions.join(", ") : "no blocked actions";
+    pack.blockedActions.length > 0 ? pack.blockedActions.join(", ") : "无阻断操作";
   const gates = [
-    pack.executionAllowed ? "execution allowed" : "execution blocked",
-    pack.validationAllowed ? "validation allowed" : "validation blocked",
-    pack.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    pack.executionAllowed ? "执行已允许" : "执行已阻断",
+    pack.validationAllowed ? "验证已允许" : "验证已阻断",
+    pack.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${pack.packId}: ${pack.status}; next ${pack.nextReviewAgent}; items ${pack.handoffItemCount}; priority ${priority}; focus ${focus}; queue ${queueRefs}; timeline ${counts}; gate ${pack.safetyGate}/${pack.completionGate}; blocked ${blocked}; ${gates}`;
+  return `${pack.packId}：${formatLabel(pack.status)}；下一审查智能体 ${pack.nextReviewAgent}；项目 ${pack.handoffItemCount}；优先级 ${priority}；重点 ${focus}；队列 ${queueRefs}；时间线 ${counts}；审批门 ${formatLabel(pack.safetyGate)}/${formatLabel(pack.completionGate)}；已阻断 ${blocked}；${gates}`;
 }
 
 function agentHandoffItemLine(
   item: ReturnType<typeof toStudioMissionPanel>["agentHandoffPack"]["handoffItems"][number],
 ): string {
-  const refs = item.inputRefs.length > 0 ? item.inputRefs.join(", ") : "no refs";
-  const focus = item.reviewFocus.length > 0 ? item.reviewFocus.join(", ") : "review";
+  const refs = item.inputRefs.length > 0 ? item.inputRefs.join(", ") : "无引用";
+  const focus = item.reviewFocus.length > 0 ? item.reviewFocus.join(", ") : "审查";
   const evidence =
-    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "审查说明";
   const criteria =
-    item.successCriteria.length > 0 ? item.successCriteria.join("; ") : "human decision";
+    item.successCriteria.length > 0 ? item.successCriteria.join("；") : "人工决定";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${item.handoffId}: ${item.assignedAgent} handles ${item.workItemId} (${item.status}/${item.gap}); refs ${refs}; focus ${focus}; evidence ${evidence}; success ${criteria}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+  return `${item.handoffId}：${item.assignedAgent} 处理 ${item.workItemId}（${formatLabel(item.status)}/${formatLabel(item.gap)}）；引用 ${refs}；重点 ${focus}；证据 ${evidence}；完成条件 ${criteria}；审批门 ${formatLabel(item.safetyGate)}；下一步 ${item.nextAction}；${gates}`;
 }
 
 function candidateHunterBacklogLine(
   item: ReturnType<typeof toStudioMissionPanel>["candidateHunterBacklog"][number],
 ): string {
-  const focus = item.reviewFocus.length > 0 ? item.reviewFocus.join(", ") : "candidate_quality";
+  const focus = item.reviewFocus.length > 0 ? item.reviewFocus.join(", ") : "候选质量";
   const evidence =
-    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review_notes";
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "审查说明";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${item.workItemId}: ${item.gap} - ${item.status}; gate ${item.safetyGate}; focus ${focus}; evidence ${evidence}; ${gates}; ${item.nextAction}`;
+  return `${item.workItemId}：${formatLabel(item.gap)} - ${formatLabel(item.status)}；审批门 ${formatLabel(item.safetyGate)}；重点 ${focus}；证据 ${evidence}；${gates}；${item.nextAction}`;
 }
 
 function candidateHunterIterationLine(
   iteration: ReturnType<typeof toStudioMissionPanel>["candidateHunterIteration"],
 ): string {
   const priority =
-    iteration.priorityOrder.length > 0 ? iteration.priorityOrder.join(", ") : "no backlog";
+    iteration.priorityOrder.length > 0 ? iteration.priorityOrder.join(", ") : "无待办";
   const focus =
-    iteration.reviewFocus.length > 0 ? iteration.reviewFocus.join(", ") : "candidate_quality";
+    iteration.reviewFocus.length > 0 ? iteration.reviewFocus.join(", ") : "候选质量";
   const criteria =
     iteration.successCriteria.length > 0
       ? iteration.successCriteria.join("; ")
-      : "human review required";
+      : "需要人工审核";
   const gates = [
-    iteration.executionAllowed ? "execution allowed" : "execution blocked",
-    iteration.validationAllowed ? "validation allowed" : "validation blocked",
-    iteration.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    iteration.executionAllowed ? "执行已允许" : "执行已阻断",
+    iteration.validationAllowed ? "验证已允许" : "验证已阻断",
+    iteration.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${iteration.iterationId}: ${iteration.status}; next ${iteration.nextReviewAgent}; work items ${iteration.workItemCount}; gate ${iteration.safetyGate}/${iteration.completionGate}; priority ${priority}; focus ${focus}; success ${criteria}; ${gates}`;
+  return `${iteration.iterationId}：${formatLabel(iteration.status)}；下一审查智能体 ${iteration.nextReviewAgent}；工作项 ${iteration.workItemCount}；审批门 ${formatLabel(iteration.safetyGate)}/${formatLabel(iteration.completionGate)}；优先级 ${priority}；重点 ${focus}；完成条件 ${criteria}；${gates}`;
 }
 
 function candidateHunterPlanLine(
   plan: ReturnType<typeof toStudioMissionPanel>["candidateHunterPlan"],
 ): string {
   const gates = [
-    plan.executionAllowed ? "execution allowed" : "execution blocked",
-    plan.validationAllowed ? "validation allowed" : "validation blocked",
-    plan.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    plan.executionAllowed ? "执行已允许" : "执行已阻断",
+    plan.validationAllowed ? "验证已允许" : "验证已阻断",
+    plan.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
   const governance = [
-    `claim ${plan.hallucinationGovernance.claimPromotionRule}`,
-    `knowledge ${plan.hallucinationGovernance.knowledgePolicy}`,
-    `promotion ${plan.hallucinationGovernance.candidatePromotionAllowed ? "allowed" : "blocked"}`,
+    `声明 ${formatLabel(plan.hallucinationGovernance.claimPromotionRule)}`,
+    `知识 ${formatLabel(plan.hallucinationGovernance.knowledgePolicy)}`,
+    `提升 ${plan.hallucinationGovernance.candidatePromotionAllowed ? "已允许" : "已阻断"}`,
   ].join(", ");
-  return `${plan.planId}: ${plan.status}; next ${plan.nextReviewAgent}; work items ${plan.workItemCount}; steps ${plan.stepCount}; governance ${governance}; gate ${plan.safetyGate}/${plan.completionGate}; ${gates}`;
+  return `${plan.planId}：${formatLabel(plan.status)}；下一审查智能体 ${plan.nextReviewAgent}；工作项 ${plan.workItemCount}；步骤 ${plan.stepCount}；治理 ${governance}；审批门 ${formatLabel(plan.safetyGate)}/${formatLabel(plan.completionGate)}；${gates}`;
 }
 
 function candidateHunterPlanStepLine(
   step: ReturnType<typeof toStudioMissionPanel>["candidateHunterPlan"]["planSteps"][number],
 ): string {
-  const refs = step.inputRefs.length > 0 ? step.inputRefs.join(", ") : "no refs";
-  const focus = step.reviewFocus.length > 0 ? step.reviewFocus.join(", ") : "review";
+  const refs = step.inputRefs.length > 0 ? step.inputRefs.join(", ") : "无引用";
+  const focus = step.reviewFocus.length > 0 ? step.reviewFocus.join(", ") : "审查";
   const evidence =
-    step.requiredEvidence.length > 0 ? step.requiredEvidence.join(", ") : "review notes";
+    step.requiredEvidence.length > 0 ? step.requiredEvidence.join(", ") : "审查说明";
   const criteria =
-    step.successCriteria.length > 0 ? step.successCriteria.join("; ") : "human decision";
+    step.successCriteria.length > 0 ? step.successCriteria.join("；") : "人工决定";
   const checklist =
     step.reviewChecklist.length > 0
       ? step.reviewChecklist
-          .map((item) => `${item.key}:${item.status}`)
+          .map((item) => `${formatLabel(item.key)}：${formatLabel(item.status)}`)
           .join(", ")
-      : "checklist pending";
+      : "检查清单待处理";
   const governance =
     step.hallucinationGovernanceRefs.length > 0
       ? step.hallucinationGovernanceRefs.join("; ")
-      : "LLM claims require local evidence and independent review";
+      : "模型声明需要本地证据与独立审核";
   const gates = [
-    step.executionAllowed ? "execution allowed" : "execution blocked",
-    step.validationAllowed ? "validation allowed" : "validation blocked",
-    step.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    step.executionAllowed ? "执行已允许" : "执行已阻断",
+    step.validationAllowed ? "验证已允许" : "验证已阻断",
+    step.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${step.stepId}: ${step.assignedAgent} handles ${step.workItemId} (${step.status}/${step.gap}); refs ${refs}; focus ${focus}; evidence ${evidence}; checklist ${checklist}; success ${criteria}; governance ${governance}; gate ${step.safetyGate}; next ${step.nextAction}; ${gates}`;
+  return `${step.stepId}：${step.assignedAgent} 处理 ${step.workItemId}（${formatLabel(step.status)}/${formatLabel(step.gap)}）；引用 ${refs}；重点 ${focus}；证据 ${evidence}；检查清单 ${checklist}；完成条件 ${criteria}；治理 ${governance}；审批门 ${formatLabel(step.safetyGate)}；下一步 ${step.nextAction}；${gates}`;
 }
 
 function candidateHunterReviewLoopLine(
   loop: ReturnType<typeof toStudioMissionPanel>["candidateHunterReviewLoop"],
 ): string {
-  const agents = loop.reviewAgents.length > 0 ? loop.reviewAgents.join(", ") : "Human Reviewer";
+  const agents = loop.reviewAgents.length > 0 ? loop.reviewAgents.join(", ") : "人工审查者";
   const evidence =
-    loop.requiredEvidence.length > 0 ? loop.requiredEvidence.join(", ") : "review notes";
+    loop.requiredEvidence.length > 0 ? loop.requiredEvidence.join(", ") : "审查说明";
   const consensus =
     loop.governanceSummary.requiredConsensus.length > 0
       ? loop.governanceSummary.requiredConsensus.join(", ")
-      : "human_review_decision";
+      : "人工审核决策";
   const gates = [
-    loop.executionAllowed ? "execution allowed" : "execution blocked",
-    loop.validationAllowed ? "validation allowed" : "validation blocked",
-    loop.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    loop.executionAllowed ? "执行已允许" : "执行已阻断",
+    loop.validationAllowed ? "验证已允许" : "验证已阻断",
+    loop.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${loop.loopId}: ${loop.status}; source ${loop.sourcePlanId}; active steps ${loop.activeStepCount}; next ${loop.nextReviewAgent}; agents ${agents}; evidence ${evidence}; consensus ${consensus}; gate ${loop.safetyGate}/${loop.completionGate}; ${gates}`;
+  return `${loop.loopId}：${formatLabel(loop.status)}；来源 ${loop.sourcePlanId}；活跃步骤 ${loop.activeStepCount}；下一审查智能体 ${loop.nextReviewAgent}；智能体 ${agents}；证据 ${evidence}；共识 ${formatLabel(consensus)}；审批门 ${formatLabel(loop.safetyGate)}/${formatLabel(loop.completionGate)}；${gates}`;
 }
 
 function candidateHunterReviewLoopStepLine(
   step: ReturnType<typeof toStudioMissionPanel>["candidateHunterReviewLoop"]["activeSteps"][number],
 ): string {
   const evidence =
-    step.requiredEvidence.length > 0 ? step.requiredEvidence.join(", ") : "review notes";
+    step.requiredEvidence.length > 0 ? step.requiredEvidence.join(", ") : "审查说明";
   const governance =
     step.governanceRefs.length > 0
       ? step.governanceRefs.join("; ")
-      : "LLM claims require local evidence and independent review";
+      : "模型声明需要本地证据与独立审核";
   const checklist =
     step.reviewChecklist.length > 0
-      ? step.reviewChecklist.map((item) => `${item.key}:${item.status}`).join(", ")
-      : "checklist pending";
+      ? step.reviewChecklist
+          .map((item) => `${formatLabel(item.key)}：${formatLabel(item.status)}`)
+          .join("、")
+      : "检查清单待处理";
   const criteria =
-    step.successCriteria.length > 0 ? step.successCriteria.join("; ") : "human decision";
+    step.successCriteria.length > 0 ? step.successCriteria.join("；") : "人工决定";
   const gates = [
-    step.executionAllowed ? "execution allowed" : "execution blocked",
-    step.validationAllowed ? "validation allowed" : "validation blocked",
-    step.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    step.executionAllowed ? "执行已允许" : "执行已阻断",
+    step.validationAllowed ? "验证已允许" : "验证已阻断",
+    step.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${step.stepId}: ${step.assignedAgent} handles ${step.workItemId} (${step.gap}); evidence ${evidence}; governance ${governance}; checklist ${checklist}; success ${criteria}; gate ${step.safetyGate}; next ${step.nextAction}; ${gates}`;
+  return `${step.stepId}：${step.assignedAgent} 处理 ${step.workItemId}（${formatLabel(step.gap)}）；证据 ${evidence}；治理 ${governance}；检查清单 ${checklist}；完成条件 ${criteria}；审批门 ${formatLabel(step.safetyGate)}；下一步 ${step.nextAction}；${gates}`;
 }
 
 function candidateHunterRefutationQueueLine(
   item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["refutationQueue"][number],
 ): string {
   const missingEvidence =
-    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "none";
+    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "无";
   const missingArtifacts =
     item.missingRequiredArtifactKinds.length > 0
       ? item.missingRequiredArtifactKinds.join(", ")
-      : "none";
-  const questions = item.questions.length > 0 ? item.questions.join("; ") : "review";
+      : "无";
+  const questions = item.questions.length > 0 ? item.questions.join("；") : "审查";
   const requiredEvidence =
-    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "审查说明";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${item.queueId}: ${item.candidateId}; trace ${item.traceStatus}; priority ${item.priorityScore}; missing evidence ${missingEvidence}; missing artifacts ${missingArtifacts}; required evidence ${requiredEvidence}; questions ${questions}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+  return `${item.queueId}：${item.candidateId}；轨迹 ${formatLabel(item.traceStatus)}；优先级 ${item.priorityScore}；缺少证据 ${missingEvidence}；缺少资料 ${missingArtifacts}；所需证据 ${requiredEvidence}；问题 ${questions}；审批门 ${formatLabel(item.safetyGate)}；下一步 ${item.nextAction}；${gates}`;
 }
 
 function candidateHunterEvidenceMatrixLine(
   item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["candidateEvidenceMatrix"][number],
 ): string {
   const missingEvidence =
-    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "none";
+    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "无";
   const missingRequiredArtifacts =
     item.missingRequiredArtifactKinds.length > 0
       ? item.missingRequiredArtifactKinds.join(", ")
-      : "none";
+      : "无";
   const learnedEvidence =
     item.learningEvidenceNeededReasons.length > 0
       ? item.learningEvidenceNeededReasons.join(", ")
-      : "none";
+      : "无";
   const ranking =
     item.rankingSignalBreakdown.length > 0
       ? item.rankingSignalBreakdown.join(", ")
-      : "ranking signals unavailable";
+      : "暂无排序信号";
   const requiredEvidence =
-    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "审查说明";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${item.candidateId}: quality ${item.qualityScore}; hunter ${item.hunterPriorityScore}; impact ${item.impactScore}; rejection risk ${item.rejectionRiskScore}; policy risk ${item.policyRiskScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequiredArtifacts}; required evidence ${requiredEvidence}; learned evidence ${learnedEvidence}; ranking ${ranking}; ${gates}`;
+  return `${item.candidateId}：质量 ${item.qualityScore}；挖掘优先级 ${item.hunterPriorityScore}；影响 ${item.impactScore}；拒绝风险 ${item.rejectionRiskScore}；策略风险 ${item.policyRiskScore}；端点 ${item.affectedEndpoint}；代码 ${item.affectedCodePath}；缺少证据 ${missingEvidence}；缺少必需资料 ${missingRequiredArtifacts}；所需证据 ${requiredEvidence}；学习证据 ${learnedEvidence}；排序 ${ranking}；${gates}`;
 }
 
 function candidateHunterRankedTopCandidateLine(
@@ -2879,86 +2882,86 @@ function candidateHunterRankedTopCandidateLine(
   const ranking =
     item.rankingSignalBreakdown.length > 0
       ? item.rankingSignalBreakdown.join(", ")
-      : "ranking signals unavailable";
+      : "暂无排序信号";
   const requiredEvidence =
-    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "review notes";
+    item.requiredEvidence.length > 0 ? item.requiredEvidence.join(", ") : "审查说明";
   const missingEvidence =
-    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "none";
+    item.missingEvidence.length > 0 ? item.missingEvidence.join(", ") : "无";
   const missingRequiredArtifacts =
     item.missingRequiredArtifactKinds.length > 0
       ? item.missingRequiredArtifactKinds.join(", ")
-      : "none";
+      : "无";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `#${item.rank} ${item.candidateId}: ${item.reason}; phase ${item.phaseId}; priority ${item.priorityScore}; status ${item.qualityStatus}; trace ${item.traceStatus}; evidence ready ${item.evidenceReady ? "true" : "false"}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequiredArtifacts}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; required ${requiredEvidence}; next ${item.nextAction}; ranking ${ranking}; gate ${item.safetyGate}; ${gates}`;
+  return `#${item.rank} ${item.candidateId}：${item.reason}；阶段 ${item.phaseId}；优先级 ${item.priorityScore}；状态 ${formatLabel(item.qualityStatus)}；轨迹 ${formatLabel(item.traceStatus)}；证据就绪 ${item.evidenceReady ? "是" : "否"}；缺少证据 ${missingEvidence}；缺少必需资料 ${missingRequiredArtifacts}；端点 ${item.affectedEndpoint}；代码 ${item.affectedCodePath}；所需 ${requiredEvidence}；下一步 ${item.nextAction}；排序 ${ranking}；审批门 ${formatLabel(item.safetyGate)}；${gates}`;
 }
 
 function candidateHunterDeduplicationQueueLine(
   item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["deduplicationQueue"][number],
 ): string {
   const similarityKeys =
-    item.similarityKeys.length > 0 ? item.similarityKeys.join(", ") : "review";
-  const questions = item.questions.length > 0 ? item.questions.join("; ") : "review";
+    item.similarityKeys.length > 0 ? item.similarityKeys.join(", ") : "审查";
+  const questions = item.questions.length > 0 ? item.questions.join("；") : "审查";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${item.queueId}: ${item.candidateId}; duplicate risk ${item.duplicateRiskScore}/100; priority ${item.priorityScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; similarity ${similarityKeys}; questions ${questions}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+  return `${item.queueId}：${item.candidateId}；重复风险 ${item.duplicateRiskScore}/100；优先级 ${item.priorityScore}；端点 ${item.affectedEndpoint}；代码 ${item.affectedCodePath}；相似项 ${similarityKeys}；问题 ${questions}；审批门 ${formatLabel(item.safetyGate)}；下一步 ${item.nextAction}；${gates}`;
 }
 
 function candidateHunterSafeValidationQueueLine(
   item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["safeValidationQueue"][number],
 ): string {
-  const planSteps = item.planSteps.length > 0 ? item.planSteps.join("; ") : "review plan";
+  const planSteps = item.planSteps.length > 0 ? item.planSteps.join("；") : "审查计划";
   const approvals =
-    item.requiredApprovals.length > 0 ? item.requiredApprovals.join(", ") : "human review";
+    item.requiredApprovals.length > 0 ? item.requiredApprovals.join(", ") : "人工审核";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
     item.validationExecutionAllowed
-      ? "validation execution allowed"
-      : "validation execution blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+      ? "验证执行已允许"
+      : "验证执行已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${item.queueId}: ${item.candidateId}; mode ${item.validationMode}; priority ${item.priorityScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; plan ${planSteps}; approvals ${approvals}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+  return `${item.queueId}：${item.candidateId}；模式 ${formatLabel(item.validationMode)}；优先级 ${item.priorityScore}；端点 ${item.affectedEndpoint}；代码 ${item.affectedCodePath}；计划 ${planSteps}；审批 ${approvals}；审批门 ${formatLabel(item.safetyGate)}；下一步 ${item.nextAction}；${gates}`;
 }
 
 function candidateHunterReportDraftQueueLine(
   item: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["reportDraftQueue"][number],
 ): string {
   const requiredSections =
-    item.requiredSections.length > 0 ? item.requiredSections.join(", ") : "report sections";
+    item.requiredSections.length > 0 ? item.requiredSections.join(", ") : "报告章节";
   const redactionChecks =
-    item.redactionChecks.length > 0 ? item.redactionChecks.join(", ") : "redaction review";
+    item.redactionChecks.length > 0 ? item.redactionChecks.join(", ") : "脱敏审查";
   const evidenceFocus =
-    item.evidenceFocus.length > 0 ? item.evidenceFocus.join(", ") : "evidence focus";
+    item.evidenceFocus.length > 0 ? item.evidenceFocus.join(", ") : "证据重点";
   const gates = [
-    item.executionAllowed ? "execution allowed" : "execution blocked",
-    item.validationAllowed ? "validation allowed" : "validation blocked",
-    item.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    item.executionAllowed ? "执行已允许" : "执行已阻断",
+    item.validationAllowed ? "验证已允许" : "验证已阻断",
+    item.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${item.queueId}: ${item.candidateId}; report ${item.reportStatus}; priority ${item.priorityScore}; endpoint ${item.affectedEndpoint}; code ${item.affectedCodePath}; sections ${requiredSections}; evidence focus ${evidenceFocus}; redaction ${redactionChecks}; gate ${item.safetyGate}; next ${item.nextAction}; ${gates}`;
+  return `${item.queueId}：${item.candidateId}；报告 ${formatLabel(item.reportStatus)}；优先级 ${item.priorityScore}；端点 ${item.affectedEndpoint}；代码 ${item.affectedCodePath}；章节 ${requiredSections}；证据重点 ${evidenceFocus}；脱敏 ${redactionChecks}；审批门 ${formatLabel(item.safetyGate)}；下一步 ${item.nextAction}；${gates}`;
 }
 
 function candidateHunterLearningFeedbackLine(
   target: ReturnType<typeof toStudioMissionPanel>["candidateHunterExecutionLoop"]["learningFeedbackTarget"],
 ): string {
-  const candidates = target.candidateIds.length > 0 ? target.candidateIds.join(", ") : "none";
+  const candidates = target.candidateIds.length > 0 ? target.candidateIds.join(", ") : "无";
   const outcomes =
     target.allowedOutcomes.length > 0
       ? target.allowedOutcomes.join(", ")
-      : "confirmed, refuted, needs_more_evidence, duplicate";
+      : "已确认、已反证、需要更多证据、重复";
   const gates = [
-    target.learningWriteAllowed ? "learning write allowed" : "learning write review-gated",
-    target.executionAllowed ? "execution allowed" : "execution blocked",
-    target.validationAllowed ? "validation allowed" : "validation blocked",
-    target.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    target.learningWriteAllowed ? "允许写入学习记录" : "写入学习记录需要审核",
+    target.executionAllowed ? "执行已允许" : "执行已阻断",
+    target.validationAllowed ? "验证已允许" : "验证已阻断",
+    target.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
-  return `${target.targetId}: ${target.status}; candidates ${candidates}; outcomes ${outcomes}; gate ${target.safetyGate}; next ${target.nextAction}; ${gates}`;
+  return `${target.targetId}：${formatLabel(target.status)}；候选 ${candidates}；结果 ${outcomes}；审批门 ${formatLabel(target.safetyGate)}；下一步 ${target.nextAction}；${gates}`;
 }
 
 function candidateHunterLearningReviewActionLine(
@@ -2967,23 +2970,23 @@ function candidateHunterLearningReviewActionLine(
   const outcomes =
     action.allowedOutcomes.length > 0
       ? action.allowedOutcomes.join(", ")
-      : "confirmed, refuted, needs_more_evidence, duplicate";
+      : "已确认、已反证、需要更多证据、重复";
   const gates = [
-    action.learningWriteAllowed ? "learning write allowed" : "learning write review-gated",
-    action.executionAllowed ? "execution allowed" : "execution blocked",
-    action.validationAllowed ? "validation allowed" : "validation blocked",
-    action.reportSubmissionAllowed ? "submission allowed" : "submission blocked",
+    action.learningWriteAllowed ? "允许写入学习记录" : "写入学习记录需要审核",
+    action.executionAllowed ? "执行已允许" : "执行已阻断",
+    action.validationAllowed ? "验证已允许" : "验证已阻断",
+    action.reportSubmissionAllowed ? "报告提交已允许" : "报告提交已阻断",
   ].join(", ");
   const missingEvidence =
-    action.missingEvidence.length > 0 ? action.missingEvidence.join(", ") : "none";
+    action.missingEvidence.length > 0 ? action.missingEvidence.join(", ") : "无";
   const missingRequiredArtifacts =
     action.missingRequiredArtifactKinds.length > 0
       ? action.missingRequiredArtifactKinds.join(", ")
-      : "none";
+      : "无";
   const template = action.learningSignalTemplate
-    ? `; Learning signal template: playbook ${action.learningSignalTemplate.playbookId}; surface ${action.learningSignalTemplate.surfaceKey}; refs ${action.learningSignalTemplate.targetRelationships.length}; learning write review-gated`
+    ? `；学习信号模板：手册 ${action.learningSignalTemplate.playbookId}；攻击面 ${action.learningSignalTemplate.surfaceKey}；引用 ${action.learningSignalTemplate.targetRelationships.length}；写入学习记录需要审核`
     : "";
-  return `${action.actionId}: ${action.candidateId}; suggested ${action.suggestedOutcome}; trace ${action.traceStatus}; evidence ready ${action.evidenceReady ? "true" : "false"}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequiredArtifacts}; outcomes ${outcomes}; gate ${action.safetyGate}; next ${action.nextAction}; ${gates}${template}`;
+  return `${action.actionId}：${action.candidateId}；建议 ${formatLabel(action.suggestedOutcome)}；轨迹 ${formatLabel(action.traceStatus)}；证据就绪 ${action.evidenceReady ? "是" : "否"}；缺少证据 ${missingEvidence}；缺少必需资料 ${missingRequiredArtifacts}；结果 ${outcomes}；审批门 ${formatLabel(action.safetyGate)}；下一步 ${action.nextAction}；${gates}${template}`;
 }
 
 function toCandidateHunterLearningOutcome(value: string): CandidateHunterLearningOutcome {

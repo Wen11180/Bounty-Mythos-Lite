@@ -6,6 +6,7 @@ import {
   recordCampaignValidationRunManualResult,
   type ValidationRunManualResultOutcome,
 } from "@/lib/api";
+import { formatLabel } from "@/lib/workbench-detail-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string; validationRunId: string }>;
@@ -20,7 +21,7 @@ export default async function CampaignValidationRunManualResultPage({ params }: 
     "use server";
 
     const reviewer = formText(formData, "reviewer") || "lead_reviewer";
-    const summary = formText(formData, "summary") || "Redacted manual validation observation reviewed.";
+    const summary = formText(formData, "summary") || "已审核的已脱敏人工验证观察。";
 
     await recordCampaignValidationRunManualResult(
       validationRunId,
@@ -47,21 +48,20 @@ export default async function CampaignValidationRunManualResultPage({ params }: 
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ClipboardCheck size={17} aria-hidden="true" />
-          Manual validation observation review
+          人工验证观察审核
         </p>
         <h1 className="mt-3 max-w-4xl break-words text-3xl font-semibold leading-tight text-balance">
           {validationRunId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Review manual validation observations and attach report-safe evidence references. This
-          gate records candidate evidence only.
+          审核人工验证观察并附加可用于报告的安全证据引用。此审核门仅记录候选证据。
         </p>
       </header>
 
       <section className="grid gap-3 py-5 md:grid-cols-3">
-        <GateMetric label="Candidate evidence only" value="Review manual observation" />
-        <GateMetric label="Evidence promotion" value="Manual review required" />
-        <GateMetric label="Report submission" value="Gated" />
+        <GateMetric label="仅候选证据" value="审核人工观察" />
+        <GateMetric label="证据晋级" value="需要人工审核" />
+        <GateMetric label="报告提交" value="受控" />
       </section>
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -70,7 +70,7 @@ export default async function CampaignValidationRunManualResultPage({ params }: 
           className="grid gap-4 border border-[var(--line)] bg-white p-5"
         >
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Reviewer</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">审核人</span>
             <input
               className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
               name="reviewer"
@@ -78,49 +78,49 @@ export default async function CampaignValidationRunManualResultPage({ params }: 
             />
           </label>
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Outcome</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">结果</span>
             <select
               className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
               name="outcome"
               defaultValue="observed"
             >
-              <option value="observed">Observed</option>
-              <option value="refuted">Refuted</option>
-              <option value="needs_more_evidence">Needs more evidence</option>
+              <option value="observed">已观察</option>
+              <option value="refuted">已反驳</option>
+              <option value="needs_more_evidence">需要更多证据</option>
             </select>
           </label>
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Summary</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">摘要</span>
             <textarea
               className="min-h-28 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
               name="summary"
             />
           </label>
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence refs</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">证据引用</span>
             <textarea
               className="min-h-24 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
               name="evidence_refs"
-              placeholder="One redacted evidence ref per line"
+              placeholder="每行填写一条已脱敏证据引用"
             />
           </label>
           <button
             type="submit"
             className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
           >
-            Review manual observation
+            审核人工观察
           </button>
         </form>
 
         <aside className="border border-[var(--line)] bg-white p-5">
-          <h2 className="text-lg font-semibold">Gate boundaries</h2>
+          <h2 className="text-lg font-semibold">审核门边界</h2>
           <dl className="mt-4 grid gap-3 text-sm">
-            <Field label="Validation audit" value={validationRunId} />
-            <Field label="Campaign" value={campaignId} />
-            <Field label="Target" value={run?.target_ref ?? "No target ref"} />
-            <Field label="Validation mode" value={run?.validation_mode ?? "No validation mode"} />
-            <Field label="Execution gate" value="Gated" />
-            <Field label="Report submission gate" value="Gated" />
+            <Field label="验证审计" value={validationRunId} />
+            <Field label="研究活动" value={campaignId} />
+            <Field label="目标" value={run?.target_ref ?? "暂无目标引用"} />
+            <Field label="验证模式" value={run?.validation_mode ? formatLabel(run.validation_mode) : "暂无验证模式"} />
+            <Field label="执行门" value="受控" />
+            <Field label="报告提交门" value="受控" />
           </dl>
         </aside>
       </section>
@@ -135,7 +135,7 @@ function PageBack({ campaignId }: { campaignId: string }) {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Validation Audit
+      验证审计
     </Link>
   );
 }

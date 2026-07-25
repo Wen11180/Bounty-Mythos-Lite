@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Bounty Mythos-Lite",
-  description: "Bug bounty research assistant foundation",
+  title: "赏金神话·轻量版",
+  description: "漏洞赏金研究助手基础设施",
 };
 
 export default function RootLayout({

@@ -16,7 +16,7 @@ export default async function CampaignValidationFeedbackReviewPage({ params }: P
     const reviewer = formText(formData, "reviewer") || "lead_reviewer";
     const rationale =
       formText(formData, "rationale") ||
-      "Manual review confirmed this feedback may be used only for finding candidate promotion.";
+      "人工审核确认此反馈仅可用于发现候选项晋级审核。";
 
     await reviewValidationFeedbackForFindingPromotion(
       campaignId,
@@ -43,21 +43,20 @@ export default async function CampaignValidationFeedbackReviewPage({ params }: P
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <ShieldCheck size={17} aria-hidden="true" />
-          Finding candidate promotion review
+          发现候选项晋级审核
         </p>
         <h1 className="mt-3 max-w-4xl break-words text-3xl font-semibold leading-tight text-balance">
           {stageId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Manual gate for advisory research validation feedback. This page can only mark the
-          feedback as review-ready for finding candidate promotion review.
+          建议性研究验证反馈的人工审核门。此页面仅可将反馈标记为可进行发现候选项晋级审核。
         </p>
       </header>
 
       <section className="grid gap-3 py-5 md:grid-cols-3">
-        <GateMetric label="Finding promotion" value="Promotion review ready" />
-        <GateMetric label="Validation execution" value="Gated" />
-        <GateMetric label="Report submission" value="Gated" />
+        <GateMetric label="发现晋级" value="晋级审核已就绪" />
+        <GateMetric label="验证执行" value="受控" />
+        <GateMetric label="报告提交" value="受控" />
       </section>
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -67,7 +66,7 @@ export default async function CampaignValidationFeedbackReviewPage({ params }: P
         >
           <input name="decision" type="hidden" value="allow_finding_promotion" />
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Reviewer</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">审核人</span>
             <input
               className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
               name="reviewer"
@@ -75,7 +74,7 @@ export default async function CampaignValidationFeedbackReviewPage({ params }: P
             />
           </label>
           <label className="grid gap-1">
-            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Rationale</span>
+            <span className="text-xs font-semibold uppercase text-[var(--muted)]">依据</span>
             <textarea
               className="min-h-28 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
               name="rationale"
@@ -85,18 +84,18 @@ export default async function CampaignValidationFeedbackReviewPage({ params }: P
             type="submit"
             className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
           >
-            Record promotion review
+            记录晋级审核
           </button>
         </form>
 
         <aside className="border border-[var(--line)] bg-white p-5">
-          <h2 className="text-lg font-semibold">Gate boundaries</h2>
+          <h2 className="text-lg font-semibold">审核门边界</h2>
           <dl className="mt-4 grid gap-3 text-sm">
-            <Field label="Feedback stage" value={stageId} />
-            <Field label="Campaign" value={campaignId} />
-            <Field label="Execution gate" value="Gated" />
-            <Field label="Validation gate" value="Gated" />
-            <Field label="Report submission gate" value="Gated" />
+            <Field label="反馈阶段" value={stageId} />
+            <Field label="研究活动" value={campaignId} />
+            <Field label="执行门" value="受控" />
+            <Field label="验证门" value="受控" />
+            <Field label="报告提交门" value="受控" />
           </dl>
         </aside>
       </section>
@@ -111,7 +110,7 @@ function PageBack({ campaignId }: { campaignId: string }) {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Evidence Review
+      证据审核
     </Link>
   );
 }

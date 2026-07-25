@@ -849,18 +849,21 @@ def build_intake_profile(
     languages = _detect_languages(repo_path, authorized_files)
     package_managers = _detect_package_managers(repo_path)
     frameworks = _detect_frameworks(repo_path, authorized_files)
-    entrypoints = sorted(
-        {
-            f"{fact.route_method or 'GET'} {fact.route_path}"
-            for fact in facts
-            if fact.fact_type == "route_handler" and fact.route_path
-        }
+    entrypoints = {
+        f"{fact.route_method or 'GET'} {fact.route_path}"
+        for fact in facts
+        if fact.fact_type == "route_handler" and fact.route_path
+    }
+    entrypoints.update(
+        entrypoint
+        for fact in facts
+        if (entrypoint := _graphql_operation_entrypoint(fact)) is not None
     )
     return IntakeProfile(
         languages=languages,
         frameworks=frameworks,
         package_managers=package_managers,
-        entrypoints=entrypoints,
+        entrypoints=sorted(entrypoints),
         file_count=len(authorized_files),
     )
 
@@ -964,8 +967,16 @@ def normalize_semgrep_json(payload: dict) -> list[StaticFinding]:
 
 def _source_fact_from_codebase_candidate(fact: CodebaseFactCandidate) -> dict:
     payload = fact.payload if isinstance(fact.payload, dict) else {}
+    fact_ref_location = fact.route_path or fact.source_path
+    if payload.get("entrypoint_kind") == "graphql_operation":
+        operation_type = payload.get("graphql_operation_type")
+        operation_name = payload.get("graphql_operation_name")
+        if isinstance(operation_type, str) and isinstance(operation_name, str):
+            fact_ref_location = (
+                f"graphql:{fact.source_path}:{operation_type}:{operation_name}"
+            )
     source_fact = {
-        "fact_ref": f"codebase_fact:{fact.fact_type}:{fact.route_path or fact.source_path}",
+        "fact_ref": f"codebase_fact:{fact.fact_type}:{fact_ref_location}",
         "fact_type": fact.fact_type,
         "artifact_kind": "code",
         "route_method": fact.route_method,
@@ -2437,6 +2448,20 @@ def _route_location(fact: CodebaseFactCandidate) -> str:
     method = fact.route_method or "GET"
     path = fact.route_path or fact.source_path
     return f"{method} {path}"
+
+
+def _graphql_operation_entrypoint(fact: CodebaseFactCandidate) -> str | None:
+    if fact.fact_type != "graphql_operation" or not isinstance(fact.payload, dict):
+        return None
+    operation_type = fact.payload.get("operation_type")
+    operation_name = fact.payload.get("operation_name")
+    if (
+        operation_type not in {"query", "mutation", "subscription"}
+        or not isinstance(operation_name, str)
+        or not operation_name
+    ):
+        return None
+    return f"GraphQL {operation_type} {safe_display_text(operation_name)}"
 
 
 def _finding_vuln_type(finding: StaticFinding) -> str:

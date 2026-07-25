@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from app.cli import main
 from app.intelligence_benchmark.authorized_live_calibration import (
@@ -27,6 +28,12 @@ def test_authorized_live_calibration_gate_passes():
     assert "Does not claim live bounty program superiority." in result["non_claims"]
     for key in REQUIRED_METRICS:
         assert result["metrics"][key] == 1.0, key
+    outcome_metrics = result["measured"]["track_record_summary"]["outcome_metrics"]
+    assert outcome_metrics["precision_at_k"] is None
+    assert outcome_metrics["false_positive_rate"] is None
+    assert outcome_metrics["duplicate_rate"] is None
+    assert outcome_metrics["report_readiness_rate"] is None
+    assert outcome_metrics["valid_report_rate"] is None
 
 
 def test_cli_authorized_live_calibration(tmp_path, capsys):
@@ -130,6 +137,131 @@ def test_crafted_real_package_flips_track_record_flags(tmp_path):
     )
     assert signals["has_real_wall_clock_logs"] is True
     assert signals["has_real_live_valid_report_outcomes"] is True
+    summary = run_authorized_live_calibration_gate(log_path=path)["measured"][
+        "track_record_summary"
+    ]
+    outcome_metrics = summary["outcome_metrics"]
+    assert outcome_metrics["precision_at_k"] is None
+    assert outcome_metrics["report_readiness_rate"] is None
+    assert outcome_metrics["valid_report_rate"] is None
+
+
+def test_operator_attested_package_reports_complete_outcome_metrics(tmp_path):
+    package = {
+        "schema_version": "authorized_live_outcomes_v1",
+        "source_kind": "authorized_redacted_real",
+        "program_authorization_id": "auth-program-metrics-001",
+        "evaluation_top_k": 3,
+        "entries": [
+            {
+                "entry_id": "metric-valid-1",
+                "program_handle": "attested-program",
+                "program_authorization_id": "auth-program-metrics-001",
+                "authorized": True,
+                "human_confirmed": True,
+                "outcome": "human_confirmed_valid",
+                "candidate_rank": 1,
+                "report_ready": True,
+                "report_valid": True,
+                "wall_clock_minutes": 42,
+                "report_outcome_ref": "report-metric-001",
+                "language_family": "python",
+                "hypothesis_class": "authorization",
+                "vuln_family": "idor",
+                "package_label": "attested-valid",
+                "execution_allowed": False,
+                "report_submission_allowed": False,
+                "auto_submitted": False,
+                "source_kind": "authorized_redacted_real",
+            },
+            {
+                "entry_id": "metric-fp-1",
+                "program_handle": "attested-program",
+                "program_authorization_id": "auth-program-metrics-001",
+                "authorized": True,
+                "human_confirmed": True,
+                "outcome": "human_confirmed_fp",
+                "candidate_rank": 2,
+                "wall_clock_minutes": 20,
+                "language_family": "java",
+                "hypothesis_class": "authorization",
+                "vuln_family": "idor",
+                "package_label": "attested-fp",
+                "execution_allowed": False,
+                "report_submission_allowed": False,
+                "auto_submitted": False,
+                "source_kind": "authorized_redacted_real",
+            },
+            {
+                "entry_id": "metric-duplicate-1",
+                "program_handle": "attested-program",
+                "program_authorization_id": "auth-program-metrics-001",
+                "authorized": True,
+                "human_confirmed": True,
+                "outcome": "human_deduplicated",
+                "candidate_rank": 3,
+                "wall_clock_minutes": 18,
+                "language_family": "go",
+                "hypothesis_class": "authorization",
+                "vuln_family": "idor",
+                "package_label": "attested-duplicate",
+                "execution_allowed": False,
+                "report_submission_allowed": False,
+                "auto_submitted": False,
+                "source_kind": "authorized_redacted_real",
+            },
+        ],
+    }
+    path = tmp_path / "operator_attested_metrics.json"
+    path.write_text(json.dumps(package), encoding="utf-8")
+
+    outcome_metrics = run_authorized_live_calibration_gate(log_path=path)["measured"][
+        "track_record_summary"
+    ]["outcome_metrics"]
+    assert outcome_metrics["precision_at_k"] == 0.3333
+    assert outcome_metrics["precision_at_k_k"] == 3
+    assert outcome_metrics["false_positive_rate"] == 0.3333
+    assert outcome_metrics["duplicate_rate"] == 0.3333
+    assert outcome_metrics["report_readiness_rate"] == 1.0
+    assert outcome_metrics["valid_report_rate"] == 1.0
+    assert outcome_metrics["independent_verification"] is False
+
+
+def test_template_package_cannot_flip_real_track_record_flags():
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "intelligence_benchmark"
+        / "fixtures"
+        / "templates"
+        / "authorized_wall_clock_and_outcomes.template.json"
+    )
+    from app.intelligence_benchmark.authorized_live_calibration import (
+        detect_real_track_record_signals,
+        load_live_outcome_package,
+        package_source_kind,
+    )
+
+    entries, meta = load_live_outcome_package(template)
+    signals = detect_real_track_record_signals(
+        entries=entries,
+        source_kind=package_source_kind(meta, entries),
+        package_meta=meta,
+    )
+    assert signals["has_real_wall_clock_logs"] is False
+    assert signals["has_real_live_valid_report_outcomes"] is False
+
+    meta["source_kind"] = "authorized_redacted_real"
+    meta.pop("fixture_kind")
+    for entry in entries:
+        entry["source_kind"] = "authorized_redacted_real"
+    relabeled_signals = detect_real_track_record_signals(
+        entries=entries,
+        source_kind=package_source_kind(meta, entries),
+        package_meta=meta,
+    )
+    assert relabeled_signals["has_real_wall_clock_logs"] is False
+    assert relabeled_signals["has_real_live_valid_report_outcomes"] is False
 
 
 def test_delivery_readiness_remaining_empty_with_real_live_package(tmp_path):

@@ -29,14 +29,15 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
       <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
         <PageBack />
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
-          <h1 className="text-2xl font-semibold text-balance">Validation workspace unavailable</h1>
+          <h1 className="text-2xl font-semibold text-balance">验证工作区暂不可用</h1>
           <p className="mt-2 text-pretty text-[var(--muted)]">{safeDisplay(runId)}</p>
         </section>
       </main>
     );
   }
 
-  const workspaceDataMode = run.policy_text_hash === "fallback-only" ? "Demo data" : "Live data";
+  const isDemoData = run.policy_text_hash === "fallback-only";
+  const workspaceDataMode = isDemoData ? "演示数据" : "在线数据";
   const currentRunId = run.id;
 
   async function recordManualObservationAction(formData: FormData) {
@@ -82,44 +83,44 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
         <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="max-w-4xl text-3xl font-semibold leading-tight text-balance">
-              Validation Workspace
+              验证工作区
             </h1>
             <p className="mt-2 text-pretty text-[var(--muted)]">{safeDisplay(run.asset)}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <ActionLink href={`/runs/${encodeURIComponent(run.id)}`} icon={Target}>
-              Run
+              运行
             </ActionLink>
             <ActionLink href={`/reports/${encodeURIComponent(run.id)}`} icon={FileText}>
-              Report
+              报告
             </ActionLink>
           </div>
         </div>
       </header>
-      {workspaceDataMode === "Demo data" ? (
+      {isDemoData ? (
         <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
-          Demo data is shown because this validation workspace comes from a fallback run record.
+          当前显示演示数据，因为此验证工作区来自后备运行记录。
         </p>
       ) : null}
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-4">
         <GateMetric
-          label="Preflight gate"
+          label="预检门"
           value={workspace.allowed_to_execute === true}
-          trueLabel="Preflight reviewed"
-          falseLabel="Preflight blocked"
+          trueLabel="预检已审核"
+          falseLabel="预检已阻断"
         />
-        <GateMetric label="Test accounts only" value={workspace.test_accounts_only !== false} />
-        <GateMetric label="No real user data" value={workspace.no_real_user_data !== false} />
-        <GateMetric label="Non destructive only" value={workspace.non_destructive_only !== false} />
+        <GateMetric label="仅测试账号" value={workspace.test_accounts_only !== false} trueLabel="是" falseLabel="否" />
+        <GateMetric label="不使用真实用户数据" value={workspace.no_real_user_data !== false} trueLabel="是" falseLabel="否" />
+        <GateMetric label="仅非破坏性操作" value={workspace.non_destructive_only !== false} trueLabel="是" falseLabel="否" />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="grid gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ClipboardCheck} title="Safe Steps" />
+            <SectionHeader icon={ClipboardCheck} title="安全步骤" />
             {steps.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No validation steps ready.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">暂无验证步骤。</p>
             ) : (
               <ol className="divide-y divide-[var(--line)]">
                 {steps.map((step, index) => (
@@ -127,7 +128,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                     key={`${safeDisplay(step.method)}-${index}`}
                     className="grid gap-3 p-5 text-sm lg:grid-cols-[80px_180px_minmax(0,1fr)]"
                   >
-                    <p className="font-semibold tabular-nums">Step {index + 1}</p>
+                    <p className="font-semibold tabular-nums">步骤 {index + 1}</p>
                     <div>
                       <p className="font-semibold">{formatLabel(step.status)}</p>
                       <p className="mt-1 text-[var(--muted)]">{formatLabel(step.method)}</p>
@@ -142,9 +143,9 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Target} title="Claim Review" />
+            <SectionHeader icon={Target} title="声明审核" />
             {claimTasks.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No claim review items ready.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">暂无声明审核项。</p>
             ) : (
               <ol className="divide-y divide-[var(--line)]">
                 {claimTasks.map((task) => {
@@ -176,35 +177,35 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                         </p>
                         <dl className="mt-4 grid gap-3 sm:grid-cols-2">
                           <Field
-                            label="Promotion gate"
-                            value={task.promotion_eligible ? "Review ready" : "Review required"}
+                            label="晋级门"
+                            value={task.promotion_eligible ? "审核已就绪" : "需要审核"}
                           />
-                          <Field label="Review" value={task.review_status} />
-                          <Field label="Readiness" value={task.readiness_level} />
-                          <Field label="Quality" value={`${task.quality_score}/100`} />
+                          <Field label="审核" value={formatLabel(task.review_status)} />
+                          <Field label="就绪度" value={formatLabel(task.readiness_level)} />
+                          <Field label="质量" value={`${task.quality_score}/100`} />
                           <Field
-                            label="Relationship"
+                            label="关系"
                             value={
                               relationshipContexts.length === 0
-                                ? "None"
-                                : relationshipContexts.join(", ")
+                                ? "无"
+                                : relationshipContexts.join("、")
                             }
                           />
                           <Field
-                            label="Focus"
-                            value={evidenceFocus.length === 0 ? "None" : evidenceFocus.join(", ")}
+                            label="重点"
+                            value={evidenceFocus.length === 0 ? "无" : evidenceFocus.join("、")}
                           />
                           <Field
-                            label="Preflight status"
-                            value={task.execution_allowed ? "Preflight reviewed" : "Preflight blocked"}
+                            label="预检状态"
+                            value={task.execution_allowed ? "预检已审核" : "预检已阻断"}
                           />
                           <Field
-                            label="Required observation"
-                            value={requiredTypes.length === 0 ? "None" : requiredTypes.join(", ")}
+                            label="所需观察"
+                            value={requiredTypes.length === 0 ? "无" : requiredTypes.map((type) => formatLabel(type)).join("、")}
                           />
                           <Field
-                            label="Evidence"
-                            value={evidenceRefs.length === 0 ? "Missing" : evidenceRefs.join(", ")}
+                            label="证据"
+                            value={evidenceRefs.length === 0 ? "缺失" : evidenceRefs.join("、")}
                           />
                         </dl>
                         {blockers.length > 0 ? (
@@ -219,12 +220,10 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                         {needsReportSafeEvidence ? (
                           <div className="mt-4 border border-[var(--line)] bg-[#f7f7f4] p-3">
                             <p className="text-sm font-semibold text-[var(--warning)]">
-                              Report-safe evidence required
+                              需要可用于报告的安全证据
                             </p>
                             <p className="mt-2 text-sm text-[var(--muted)]">
-                              The last manual observation only supplied redacted evidence refs. Add
-                              a sanitized request_response_diff or role_matrix_observation before
-                              this claim can move toward report review.
+                              最近一次人工观察仅提供了已脱敏证据引用。在此声明进入报告审核前，请补充已清理的请求响应差异或角色矩阵观察。
                             </p>
                           </div>
                         ) : null}
@@ -246,18 +245,18 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                           <input name="safety_notes" type="hidden" value="no_real_user_data" />
                           <input name="safety_notes" type="hidden" value="human_review_required" />
                           <label className="grid gap-1">
-                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Observation type</span>
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">观察类型</span>
                             <select
                               className="min-h-10 rounded-md border border-[var(--line)] bg-white px-3 outline-none focus:border-[var(--accent)]"
                               name="observation_type"
                               defaultValue={requiredTypes[0] ?? "request_response_diff"}
                             >
-                              <option value="request_response_diff">Request response diff</option>
-                              <option value="role_matrix_observation">Role matrix observation</option>
+                              <option value="request_response_diff">请求响应差异</option>
+                              <option value="role_matrix_observation">角色矩阵观察</option>
                             </select>
                           </label>
                           <label className="grid gap-1">
-                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Observer</span>
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">观察人</span>
                             <input
                               className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
                               name="observer"
@@ -265,14 +264,14 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                             />
                           </label>
                           <label className="grid gap-1">
-                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Observation</span>
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">观察记录</span>
                             <textarea
                               className="min-h-24 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
                               name="observation"
                             />
                           </label>
                           <label className="grid gap-1">
-                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">Evidence refs</span>
+                            <span className="text-xs font-semibold uppercase text-[var(--muted)]">证据引用</span>
                             <input
                               className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
                               name="evidence_refs"
@@ -282,7 +281,7 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                             type="submit"
                             className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
                           >
-                            Record Observation
+                            记录观察
                           </button>
                         </form>
                       </div>
@@ -294,9 +293,9 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={FileText} title="Manual Observations" />
+            <SectionHeader icon={FileText} title="人工观察" />
             {manualObservations.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No manual observations ready for review.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">暂无可审核的人工观察。</p>
             ) : (
               <ol className="divide-y divide-[var(--line)]">
                 {manualObservations.map((observation, index) => {
@@ -320,20 +319,20 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
                           {safeDisplay(observation.observation)}
                         </p>
                         <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                          <Field label="Claim" value={observation.claim_id} />
-                          <Field label="Redaction" value={observation.redaction_status} />
+                          <Field label="声明" value={observation.claim_id} />
+                          <Field label="脱敏" value={formatLabel(observation.redaction_status)} />
                           <Field
-                            label="Observation boundary"
-                            value={observation.execution_allowed ? "Preflight reviewed" : "Review only"}
+                            label="观察边界"
+                            value={observation.execution_allowed ? "预检已审核" : "仅供审核"}
                           />
                           <Field
-                            label="Report chain gate"
-                            value={observation.report_chain_blocked ? "Review required" : "Review ready"}
+                            label="报告链门"
+                            value={observation.report_chain_blocked ? "需要审核" : "审核已就绪"}
                           />
-                          <Field label="Created" value={observation.created_at} />
+                          <Field label="创建时间" value={observation.created_at} />
                           <Field
-                            label="Evidence"
-                            value={evidenceRefs.length === 0 ? "Missing" : evidenceRefs.join(", ")}
+                            label="证据"
+                            value={evidenceRefs.length === 0 ? "缺失" : evidenceRefs.join("、")}
                           />
                         </dl>
                         {safetyNotes.length > 0 ? (
@@ -356,21 +355,21 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ShieldCheck} title="Preflight Gate" />
+            <SectionHeader icon={ShieldCheck} title="预检门" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Workspace" value={workspace.status} />
-              <Field label="Plan" value={workspace.validation_plan_status} />
-              <Field label="Refutation" value={workspace.refutation_status} />
-              <Field label="Gate status" value={gate?.status} />
-              <Field label="Gate reason" value={gate?.reason} />
-              <Field label="Human review gate" value={gate?.human_approved ? "Review captured" : "Review required"} />
+              <Field label="工作区" value={formatLabel(workspace.status)} />
+              <Field label="计划" value={formatLabel(workspace.validation_plan_status)} />
+              <Field label="反证" value={formatLabel(workspace.refutation_status)} />
+              <Field label="审核门状态" value={formatLabel(gate?.status)} />
+              <Field label="审核门原因" value={formatLabel(gate?.reason)} />
+              <Field label="人工审核门" value={gate?.human_approved ? "已记录审核" : "需要审核"} />
             </dl>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Lock} title="Review Requirements" />
+            <SectionHeader icon={Lock} title="审核要求" />
             {blockedReasons.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No active review requirements.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">当前没有待处理的审核要求。</p>
             ) : (
               <ul className="grid gap-2 p-5 text-sm text-[var(--muted)]">
                 {blockedReasons.map((reason) => (
@@ -381,9 +380,9 @@ export default async function ValidationWorkspacePage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Target} title="Evidence Hints" />
+            <SectionHeader icon={Target} title="证据提示" />
             {evidenceHints.length === 0 ? (
-              <p className="p-5 text-sm text-[var(--muted)]">No evidence hints ready.</p>
+              <p className="p-5 text-sm text-[var(--muted)]">暂无证据提示。</p>
             ) : (
               <dl className="grid gap-0 divide-y divide-[var(--line)] text-sm">
                 {evidenceHints.map((hint, index) => (
@@ -410,7 +409,7 @@ function PageBack() {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Dashboard
+      控制台
     </Link>
   );
 }

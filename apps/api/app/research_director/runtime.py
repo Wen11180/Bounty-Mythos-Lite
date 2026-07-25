@@ -263,6 +263,24 @@ def run_campaign_local_tool_task(
     plan_digest = _text(payload.get("research_plan_digest"))
     tool_id = _text(payload.get("tool_id"))
     campaign_payload = _campaign_payload(campaign)
+    from app.bounty_autopilot.authority import current_execution_authority_reason
+
+    authority_reason = current_execution_authority_reason(
+        campaign=campaign,
+        repository=repository,
+        source_snapshot_digest=source_snapshot_digest,
+    )
+    if authority_reason is not None:
+        return _finish_local_task(
+            task=task,
+            repository=repository,
+            task_status="blocked",
+            agent_status="blocked",
+            safety_gate_state="blocked",
+            stop_reason=authority_reason,
+            output_refs=[],
+            payload=_task_result_payload(task=task, result=None),
+        )
     plan_stage = current_campaign_local_tool_plan(
         campaign=campaign,
         tool_id=tool_id,
@@ -523,6 +541,21 @@ def retry_campaign_local_tool_task(
         )
     payload = task.payload if isinstance(task.payload, dict) else {}
     source_snapshot_digest = _text(payload.get("source_snapshot_digest"))
+    from app.bounty_autopilot.authority import current_execution_authority_reason
+
+    authority_reason = current_execution_authority_reason(
+        campaign=campaign,
+        repository=repository,
+        source_snapshot_digest=source_snapshot_digest,
+        now=now,
+    )
+    if authority_reason is not None:
+        return _result(
+            status="blocked",
+            campaign_task_id=task.id,
+            stop_reason=authority_reason,
+            source_snapshot_digest=source_snapshot_digest,
+        )
     expired_agent_run_id = _expired_local_tool_agent_run_id(
         task=task,
         repository=repository,
@@ -1100,6 +1133,21 @@ def _dispatch_campaign_local_tool_task(
     dispatcher: Callable[..., Any],
     now: datetime | None,
 ) -> dict[str, Any]:
+    from app.bounty_autopilot.authority import current_execution_authority_reason
+
+    authority_reason = current_execution_authority_reason(
+        campaign=campaign,
+        repository=repository,
+        source_snapshot_digest=source_snapshot_digest,
+        now=now,
+    )
+    if authority_reason is not None:
+        return _result(
+            status="blocked",
+            campaign_task_id=task.id,
+            stop_reason=authority_reason,
+            source_snapshot_digest=source_snapshot_digest,
+        )
     dispatched = repository.dispatch_research_director_local_tool_task(
         task_id=task.id,
         agent_payload=_task_result_payload(task=task, result=None),

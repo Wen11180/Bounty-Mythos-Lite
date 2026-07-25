@@ -68,7 +68,7 @@ export function StudioShell({
             <ShieldCheck aria-hidden="true" className="size-5" />
           </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">Mythos Studio</p>
+            <p className="truncate text-sm font-semibold">赏金神话研究工作台</p>
             <p className="truncate text-xs text-[var(--cc-text-muted)]">{workspaceName}</p>
           </div>
         </div>
@@ -97,7 +97,7 @@ export function StudioShell({
             >
               <SheetHeader className="border-b border-[var(--cc-border)]">
                 <SheetTitle>候选详情抽屉</SheetTitle>
-                <SheetDescription>证据、验证计划与 submission-blocked 报告审查</SheetDescription>
+                <SheetDescription>证据、验证计划与报告提交阻断审查</SheetDescription>
                 <SheetClose asChild>
                   <Button className="absolute right-3 top-3" size="icon-sm" title="关闭详情检查器" variant="ghost">
                     <X aria-hidden="true" />
@@ -113,7 +113,7 @@ export function StudioShell({
 
       <Tabs className="!block gap-0" defaultValue="overview">
         <TabsList
-          aria-label="Studio 移动视图"
+          aria-label="工作台移动视图"
           className="grid h-11 w-full grid-cols-3 rounded-none border-b border-[var(--cc-border)] bg-transparent p-0 sm:hidden"
           variant="line"
         >

@@ -29,6 +29,21 @@ contextBridge.exposeInMainWorld("mythosStudio", {
   refreshProgramRules() {
     return ipcRenderer.invoke("mythos:refresh-program-rules");
   },
+  listAutopilotAliases() {
+    return ipcRenderer.invoke("mythos:autopilot-vault-list");
+  },
+  putAutopilotAliasSecret(payload) {
+    return ipcRenderer.invoke("mythos:autopilot-vault-put", payload);
+  },
+  runAutopilotBrowserMapping(payload) {
+    return ipcRenderer.invoke("mythos:autopilot-browser-map", payload);
+  },
+  runAutopilotR2Differential(payload) {
+    return ipcRenderer.invoke("mythos:autopilot-r2-differential", payload);
+  },
+  emergencyStopAutopilotLocal(campaignId) {
+    return ipcRenderer.invoke("mythos:autopilot-emergency-stop-local", campaignId);
+  },
   restoreBackup() {
     return ipcRenderer.invoke("mythos:restore-backup");
   },

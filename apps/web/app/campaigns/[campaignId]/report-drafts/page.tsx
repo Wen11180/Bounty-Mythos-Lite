@@ -14,6 +14,7 @@ import {
   toCampaignReportDraftSummaries,
   toCampaignResearchFeedbackEvidenceSummaries,
 } from "@/lib/campaigns-data";
+import { formatLabel } from "@/lib/workbench-detail-data";
 
 type PageProps = {
   params: Promise<{ campaignId: string }>;
@@ -56,98 +57,94 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <FileText size={17} aria-hidden="true" />
-          Report Readiness
+          报告就绪度
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
-            Read only
+            只读
           </span>
         </p>
         <h1 className="mt-3 max-w-4xl break-words text-3xl font-semibold leading-tight text-balance">
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Campaign-linked report previews summarized by review state, claim readiness, manual
-          validation state, and evidence ref counts. Draft bodies and raw evidence payloads stay out
-          of this view.
+          按审核状态、声明就绪度、人工验证状态和证据引用计数汇总研究活动关联的报告预览。此视图不展示草稿正文或原始证据载荷。
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-5">
-        <Metric label="Drafts" value={drafts.length} />
-        <Metric label="Reviewed claims" value={drafts.reduce((total, draft) => total + draft.readyClaimCount, 0)} />
+        <Metric label="草稿" value={drafts.length} />
+        <Metric label="已审核声明" value={drafts.reduce((total, draft) => total + draft.readyClaimCount, 0)} />
         <Metric
-          label="Claims needing review"
+          label="需要审核的声明"
           value={drafts.reduce((total, draft) => total + draft.blockedClaimCount, 0)}
         />
-        <Metric label="Evidence refs" value={drafts.reduce((total, draft) => total + draft.evidenceRefCount, 0)} />
-        <Metric label="Manual evidence" value={validationEvidence.manualEvidenceCount} />
+        <Metric label="证据引用" value={drafts.reduce((total, draft) => total + draft.evidenceRefCount, 0)} />
+        <Metric label="人工证据" value={validationEvidence.manualEvidenceCount} />
       </section>
 
       <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
         <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px_150px]">
           <div className="min-w-0">
-            <p className="font-semibold">Manual validation state</p>
+            <p className="font-semibold">人工验证状态</p>
             <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
-              Report drafts can see reviewed validation outcomes as counts only; raw observations,
-              request data, and response data remain outside this view.
+              报告草稿仅可查看已审核验证结果的计数；原始观察、请求数据和响应数据不在此视图中显示。
             </p>
           </div>
-          <Field label="Validation audits" value={String(validationEvidence.validationRunCount)} />
-          <Field label="Evidence refs" value={String(validationEvidence.evidenceRefCount)} />
-          <Field label="Evidence gaps" value={String(validationEvidence.evidenceGapCount)} />
+          <Field label="验证审计" value={String(validationEvidence.validationRunCount)} />
+          <Field label="证据引用" value={String(validationEvidence.evidenceRefCount)} />
+          <Field label="证据缺口" value={String(validationEvidence.evidenceGapCount)} />
         </div>
       </section>
 
       <section className="mb-5 border border-[var(--line)] bg-white px-5 py-4">
         <div className="grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_150px_150px_150px_150px_150px]">
           <div className="min-w-0">
-            <p className="font-semibold">Finding candidate gate</p>
+            <p className="font-semibold">发现候选项审核门</p>
             <p className="mt-2 text-pretty text-xs text-[var(--muted)]">
-              Candidate promotion remains manual-only. This view counts reviewed claims that meet
-              the report-chain gate without showing raw evidence refs.
+              候选项晋级仍仅可人工操作。此视图仅统计满足报告链审核门的已审核声明，不展示原始证据引用。
             </p>
           </div>
-          <Field label="Reviewed claims" value={String(findingCandidateGate.eligibleClaimCount)} />
-          <Field label="Research feedback" value={String(findingCandidateGate.researchFeedbackCount)} />
+          <Field label="已审核声明" value={String(findingCandidateGate.eligibleClaimCount)} />
+          <Field label="研究反馈" value={String(findingCandidateGate.researchFeedbackCount)} />
           <Field
-            label="Required evidence holds"
+            label="所需证据阻塞项"
             value={String(findingCandidateGate.requiredEvidenceBlockedCount)}
           />
-          <Field label="Promotion review holds" value={String(findingCandidateGate.researchPromotionBlockedCount)} />
+          <Field label="晋级审核阻塞项" value={String(findingCandidateGate.researchPromotionBlockedCount)} />
           <Field
-            label="Promotion audit holds"
+            label="晋级审计阻塞项"
             value={String(findingCandidateGate.promotionAuditBlockedCount)}
           />
           <Field
-            label="Promotion reviews"
+            label="晋级审核"
             value={String(findingCandidateGate.promotionAuditCreatedCount)}
           />
           <Field
-            label="Provenance refs"
+            label="溯源引用"
             value={String(findingCandidateGate.promotionAuditProvenanceRefCount)}
           />
           <Field
-            label="Review evidence"
+            label="审核证据"
             value={String(findingCandidateGate.promotionAuditReviewEvidenceRefCount)}
           />
           <Field
-            label="Mode"
+            label="模式"
             value={
               findingCandidateGate.status === "blocked_by_required_evidence"
-                ? "Required evidence blocks promotion"
+                ? "所需证据阻断晋级"
                 : findingCandidateGate.status === "blocked_by_research_feedback"
-                ? "Research feedback blocks promotion"
+                ? "研究反馈阻断晋级"
                 : findingCandidateGate.promotionAuditLatestReason
                 ? findingCandidateGate.promotionAuditLatestReason
                 : findingCandidateGate.manualPromotionOnly
-                ? `Manual review required; ${findingCandidateGate.blockedClaimCount} claim(s) needing review`
-                : "Review required"
+                ? `需要人工审核；${findingCandidateGate.blockedClaimCount} 项声明需要审核`
+                : "需要审核"
             }
           />
         </div>
         {findingCandidateGate.readyRunIds.length > 0 ? (
           <div className="mt-4 border-t border-[var(--line)] pt-4">
             <p className="text-xs font-semibold uppercase text-[var(--muted)]">
-              Finding candidate reviews queued
+              已加入队列的发现候选项审核
             </p>
             <ul className="mt-3 grid gap-2">
               {findingCandidateGate.readyRunIds.map((runId) => (
@@ -161,7 +158,7 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
                     className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] px-3 text-sm font-semibold text-[var(--accent-strong)]"
                   >
                     <ShieldCheck size={16} aria-hidden="true" />
-                    Review finding candidate
+                    审核发现候选项
                   </Link>
                 </li>
               ))}
@@ -172,15 +169,15 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
 
       <section className="border border-[var(--line)] bg-white">
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_150px]">
-          <span>Draft</span>
-          <span>Manual submission gate</span>
-          <span>Claims</span>
-          <span>Evidence refs</span>
+          <span>草稿</span>
+          <span>人工提交门</span>
+          <span>声明</span>
+          <span>证据引用</span>
         </div>
         {drafts.length === 0 ? (
           <p className="flex items-center gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
             <AlertTriangle size={16} aria-hidden="true" />
-            No report drafts queued for review.
+            暂无加入审核队列的报告草稿。
           </p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
@@ -192,9 +189,9 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{draft.title}</p>
                   <dl className="mt-2 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-2">
-                    <Field label="Research audit" value={draft.runId} />
-                    <Field label="Severity" value={draft.severity} />
-                    <Field label="Scope" value={draft.scopeStatus} />
+                    <Field label="研究审计" value={draft.runId} />
+                    <Field label="严重性" value={formatLabel(draft.severity)} />
+                    <Field label="范围" value={formatLabel(draft.scopeStatus)} />
                   </dl>
                   {draft.topClaims.length > 0 ? (
                     <ul className="mt-3 grid gap-1 text-xs text-[var(--muted)]">
@@ -207,24 +204,24 @@ export default async function CampaignReportDraftsPage({ params }: PageProps) {
                   ) : null}
                 </div>
                 <div className="grid content-start gap-2">
-                  <GateText value={draft.submissionBlocked ? "Submission blocked" : "Human review requires manual decision"} />
+                  <GateText value={draft.submissionBlocked ? "报告提交已阻断" : "人工审核需要人工决策"} />
                   <p className="text-xs text-[var(--muted)]">
-                    {draft.humanReviewRequired ? "Human review required" : "Human review not required"}
+                    {draft.humanReviewRequired ? "需要人工审核" : "无需人工审核"}
                   </p>
                   {draft.safetyNotes.length > 0 ? (
                     <ul className="grid gap-1 text-xs text-[var(--muted)]">
                       {draft.safetyNotes.map((note) => (
                         <li key={`${draft.runId}-${note}`} className="break-words">
-                          {note}
+                          {formatLabel(note)}
                         </li>
                       ))}
                     </ul>
                   ) : null}
                 </div>
                 <dl className="grid content-start gap-2 text-xs text-[var(--muted)]">
-                  <Field label="Total" value={String(draft.claimCount)} />
-                  <Field label="Reviewed" value={String(draft.readyClaimCount)} />
-                  <Field label="Review holds" value={String(draft.blockedClaimCount)} />
+                  <Field label="总计" value={String(draft.claimCount)} />
+                  <Field label="已审核" value={String(draft.readyClaimCount)} />
+                  <Field label="审核阻塞项" value={String(draft.blockedClaimCount)} />
                 </dl>
                 <span className="font-semibold tabular-nums">{draft.evidenceRefCount}</span>
               </article>
@@ -243,7 +240,7 @@ function PageBack({ campaignId }: { campaignId: string }) {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Campaign
+      研究活动
     </Link>
   );
 }

@@ -65,8 +65,8 @@ module.exports = {
       name: "@electron-forge/maker-squirrel",
       platforms: ["win32"],
       config: {
-        authors: "Bounty Mythos-Lite Contributors",
-        description: "Local, review-gated security research control center.",
+        authors: "赏金神话·轻量版贡献者",
+        description: "本地、审核门控的安全研究控制中心。",
         name: "BountyMythosLite",
         setupExe: "BountyMythosLite Setup.exe",
       },

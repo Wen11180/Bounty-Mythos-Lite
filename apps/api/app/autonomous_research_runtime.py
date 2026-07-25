@@ -178,6 +178,14 @@ def tick_autonomous_research_campaign(
     if campaign is None:
         return _tick_result(status="not_found", stop_reason="campaign_not_found")
 
+    authorization_stop = _autopilot_authorization_stop_reason(
+        campaign,
+        repository,
+        now=now,
+    )
+    if authorization_stop is not None:
+        return _tick_result(status="blocked", stop_reason=authorization_stop)
+
     failure_stage_recovery = _reconcile_missing_runtime_failure_stage(
         campaign=campaign,
         repository=repository,
@@ -914,6 +922,149 @@ def autonomous_research_task_stop_reason(
     return None
 
 
+def _research_branch_from_record(record) -> "ResearchBranch":
+    from app.bounty_autopilot.branches import (
+        BranchBudgetCounters,
+        BranchStatus,
+        ResearchBranch,
+    )
+    from app.bounty_autopilot.contracts import RecipeRef, RiskTier
+
+    recipe_ref = None
+    if record.recipe_id and record.recipe_version:
+        recipe_ref = RecipeRef(recipe_id=record.recipe_id, version=record.recipe_version)
+    budget_payload = record.budget_counters if isinstance(record.budget_counters, dict) else {}
+    return ResearchBranch(
+        branch_id=record.branch_id,
+        campaign_id=record.campaign_id,
+        asset_id=record.asset_id,
+        status=BranchStatus(record.status),
+        priority=int(record.priority),
+        recipe_ref=recipe_ref,
+        risk_tier=RiskTier(record.risk_tier),
+        hypothesis_id=record.hypothesis_id,
+        account_aliases=tuple(record.account_aliases or ()),
+        budget=BranchBudgetCounters.model_validate(budget_payload or {}),
+        stop_reason=record.stop_reason,
+        version=int(record.version),
+    )
+
+
+def _authorization_bounded_branch_limit(value: Any, ceiling: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return min(value, ceiling)
+    return ceiling
+
+
+def _select_autopilot_branch_work(
+    *,
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+) -> dict[str, Any] | None:
+    """Continue an eligible Autopilot branch while peers wait on R3/WAF/human."""
+
+    from app.bounty_autopilot.authority import authorization_from_payload
+    from app.bounty_autopilot.branches import (
+        BranchLimits,
+        branch_matches_authorization,
+        select_next_branch,
+    )
+
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    authorization_record = repository.get_current_campaign_authorization(campaign.id)
+    if authorization_record is None:
+        return None
+    try:
+        authorization = authorization_from_payload(authorization_record.payload)
+    except Exception:  # noqa: BLE001 - scheduler input must remain fail-closed
+        return _blocked("authorization_invalid")
+    scope_snapshot_digest = payload.get("scope_snapshot_digest")
+    if not isinstance(scope_snapshot_digest, str):
+        scope_snapshot_digest = authorization.scope_snapshot_digest
+    if scope_snapshot_digest != authorization.scope_snapshot_digest:
+        return _blocked("authorization_scope_stale")
+    if not isinstance(scope_snapshot_digest, str):
+        return None
+    branch_rows = repository.list_research_branches(campaign.id)
+    if not branch_rows:
+        return None
+    branches = [_research_branch_from_record(row) for row in branch_rows]
+    admitted = repository.list_admitted_campaign_asset_ids(
+        campaign.id,
+        scope_snapshot_digest=scope_snapshot_digest,
+    ) & set(authorization.asset_ids)
+    branches = [
+        branch
+        for branch in branches
+        if branch_matches_authorization(
+            branch,
+            authorized_asset_ids=set(authorization.asset_ids),
+            authorized_recipe_refs=authorization.recipe_refs,
+            risk_ceiling=authorization.risk_ceiling,
+            authorized_account_aliases=set(authorization.account_aliases),
+        )
+    ]
+    limits_payload = payload.get("branch_limits") if isinstance(payload.get("branch_limits"), dict) else {}
+    budget_usage = repository.get_autopilot_authorization_budget_usage(
+        campaign_id=campaign.id,
+        authorization_id=authorization_record.id,
+    )
+    if budget_usage is None:
+        return _blocked("authorization_budget_ledger_invalid")
+    limits = BranchLimits(
+        campaign_max_requests=_authorization_bounded_branch_limit(
+            limits_payload.get("campaign_max_requests"),
+            authorization.budget.max_requests,
+        ),
+        campaign_max_time_seconds=_authorization_bounded_branch_limit(
+            limits_payload.get("campaign_max_time_seconds"),
+            authorization.budget.max_duration_seconds,
+        ),
+        campaign_max_cost_units=_authorization_bounded_branch_limit(
+            limits_payload.get("campaign_max_cost_units"),
+            authorization.budget.max_cost_units,
+        ),
+        per_asset_max_requests=_authorization_bounded_branch_limit(
+            limits_payload.get("per_asset_max_requests"),
+            authorization.budget.max_requests,
+        ),
+        per_account_max_requests=_authorization_bounded_branch_limit(
+            limits_payload.get("per_account_max_requests"),
+            authorization.budget.max_requests,
+        ),
+        per_hypothesis_max_requests=_authorization_bounded_branch_limit(
+            limits_payload.get("per_hypothesis_max_requests"),
+            authorization.budget.max_requests,
+        ),
+    )
+    policy_drift = bool(payload.get("policy_drift"))
+    selection = select_next_branch(
+        branches,
+        limits=limits,
+        policy_drift=policy_drift,
+        admitted_asset_ids=admitted,
+        campaign_requests_used=budget_usage["requests_reserved"],
+        campaign_time_used=budget_usage["duration_reserved_seconds"],
+        campaign_cost_used=budget_usage["cost_units_reserved"],
+    )
+    if selection.frozen_for_policy_drift:
+        return _blocked("policy_drift_freeze")
+    if selection.selected_branch_id is None:
+        return None
+    return {
+        "status": "ready",
+        "task_type": "autopilot_branch",
+        "action_id": "continue_research_branch",
+        "branch_id": selection.selected_branch_id,
+        "visible_waiting_branch_ids": list(selection.visible_waiting_branch_ids),
+        "suppressed_duplicate_branch_ids": list(
+            selection.suppressed_duplicate_branch_ids
+        ),
+        "source_snapshot_digest": payload.get("source_snapshot_digest"),
+        **_SAFETY_FIELDS,
+    }
+
+
 def select_autonomous_research_work(
     *,
     campaign: CampaignRecord,
@@ -923,10 +1074,22 @@ def select_autonomous_research_work(
     stop_reason = _campaign_stop_reason(campaign, repository, now=now)
     if stop_reason is not None:
         return _blocked(stop_reason)
-    if any(
+    awaiting_validation_handoff = any(
         task.task_type == "validation_handoff" and task.status == "awaiting_approval"
         for task in repository.list_campaign_tasks(campaign.id)
-    ):
+    )
+    if awaiting_validation_handoff:
+        # Legacy linear campaigns still stop. Autopilot keeps waiting branches
+        # visible and may continue an unrelated eligible research branch.
+        campaign_mode = getattr(campaign, "campaign_mode", "legacy") or "legacy"
+        if campaign_mode != "bounty_autopilot":
+            return _blocked("human_review_required")
+        branch_selection = _select_autopilot_branch_work(
+            campaign=campaign,
+            repository=repository,
+        )
+        if branch_selection is not None:
+            return branch_selection
         return _blocked("human_review_required")
     payload = campaign.payload if isinstance(campaign.payload, dict) else {}
     source_snapshot_digest = payload.get("source_snapshot_digest")
@@ -1000,6 +1163,13 @@ def _campaign_stop_reason(
     now: datetime | None,
     allow_awaiting_review: bool = False,
 ) -> str | None:
+    authorization_stop = _autopilot_authorization_stop_reason(
+        campaign,
+        repository,
+        now=now,
+    )
+    if authorization_stop is not None:
+        return authorization_stop
     if campaign.autonomy_level not in _READ_ONLY_RESEARCH_AUTONOMY_LEVELS:
         return "autonomy_level_not_read_only"
     if campaign.scope_status != "in_scope":
@@ -1059,6 +1229,55 @@ def _campaign_stop_reason(
         >= budget.token_budget
     ):
         return "budget_exhausted"
+    return None
+
+
+def _autopilot_authorization_stop_reason(
+    campaign: CampaignRecord,
+    repository: DatabaseRepository,
+    *,
+    now: datetime | None,
+) -> str | None:
+    """Resolve current Autopilot authority before any wakeup work."""
+
+    if (getattr(campaign, "campaign_mode", None) or "legacy") != "bounty_autopilot":
+        return None
+    from app.bounty_autopilot.authority import (
+        AuthorizationValidationError,
+        authorization_from_payload,
+        validate_current_authorization,
+    )
+
+    row = repository.get_current_campaign_authorization(campaign.id)
+    if row is None:
+        return "authorization_missing"
+    try:
+        authorization = authorization_from_payload(row.payload)
+        expected_policy_digest = "sha256:" + str(
+            campaign.policy_text_hash
+        ).removeprefix("sha256:")
+        validate_current_authorization(
+            authorization,
+            now=now,
+            expected_policy_digest=expected_policy_digest,
+        )
+    except AuthorizationValidationError as exc:
+        return exc.reason
+    except Exception:  # noqa: BLE001 - persisted authority fails closed
+        return "authorization_invalid"
+    payload = campaign.payload if isinstance(campaign.payload, dict) else {}
+    if payload.get("current_authorization_id") not in {None, row.id}:
+        return "authorization_stale"
+    if payload.get("current_authorization_digest") not in {
+        None,
+        authorization.authorization_digest,
+    }:
+        return "authorization_stale"
+    if payload.get("scope_snapshot_digest") not in {
+        None,
+        authorization.scope_snapshot_digest,
+    }:
+        return "authorization_scope_stale"
     return None
 
 

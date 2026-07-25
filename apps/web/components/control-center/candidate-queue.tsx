@@ -16,7 +16,7 @@ export function CandidateQueue({ candidates }: CandidateQueueProps) {
       <div className="px-4 pt-4">
         <SectionHeader
           title="候选与验证队列"
-          description="候选并非已确认漏洞；验证仍受人工批准和 Scope Guard 约束。"
+          description="候选并非已确认漏洞；验证仍受人工批准和范围守卫约束。"
         />
       </div>
       {candidates.length === 0 ? (

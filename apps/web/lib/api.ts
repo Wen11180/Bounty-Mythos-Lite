@@ -310,6 +310,7 @@ export type PipelineStageAgentBoundary = {
 export type PipelineTargetModel = {
   endpoints?: unknown[];
   objects?: unknown[];
+  relationships?: unknown[];
   sensitive_actions?: unknown[];
   roles?: string[];
 };
@@ -1382,16 +1383,16 @@ async function apiGetRequired<T>(path: string, signal?: AbortSignal): Promise<T>
   try {
     response = await fetch(new URL(path, getRuntimeApiBaseUrl()), { cache: "no-store", signal });
   } catch {
-    throw apiNetworkError(`GET ${path} failed`);
+    throw apiNetworkError(`读取请求失败：${path}`);
   }
   if (!response.ok) {
-    throw await apiResponseError(response, `GET ${path} failed`);
+    throw await apiResponseError(response, `读取请求失败：${path}`);
   }
   try {
     return (await response.json()) as T;
   } catch {
     throw new ApiRequestError(
-      `GET ${path} returned an invalid response`,
+      `读取请求返回无效响应：${path}`,
       response.status,
       "invalid_response",
     );
@@ -1408,17 +1409,17 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
       method: "POST",
     });
   } catch {
-    throw apiNetworkError(`POST ${path} failed`);
+    throw apiNetworkError(`提交请求失败：${path}`);
   }
 
   if (!response.ok) {
-    throw await apiResponseError(response, `POST ${path} failed`);
+    throw await apiResponseError(response, `提交请求失败：${path}`);
   }
 
   try {
     return (await response.json()) as T;
   } catch {
-    throw new ApiRequestError(`POST ${path} returned an invalid response`, response.status, "invalid_response");
+    throw new ApiRequestError(`提交请求返回无效响应：${path}`, response.status, "invalid_response");
   }
 }
 
@@ -1567,18 +1568,18 @@ export async function getControlCenterOverview(
   try {
     response = await fetch(url, { cache: "no-store", signal });
   } catch {
-    throw apiNetworkError("GET /mythos/control-center/overview failed");
+    throw apiNetworkError("读取控制中心失败");
   }
 
   if (!response.ok) {
-    throw await apiResponseError(response, "GET /mythos/control-center/overview failed");
+    throw await apiResponseError(response, "读取控制中心失败");
   }
 
   try {
     return (await response.json()) as ControlCenterOverviewResponse;
   } catch {
     throw new ApiRequestError(
-      "GET /mythos/control-center/overview returned an invalid response",
+      "控制中心返回无效响应",
       response.status,
       "invalid_response",
     );
@@ -1929,26 +1930,26 @@ async function runSourceAuditScanRequest(
       method: "POST",
     });
   } catch {
-    throw apiNetworkError("Source audit scan request failed");
+    throw apiNetworkError("源代码审计请求失败");
   }
 
   if (response.status === 403) {
     throw new SourceAuditScanError(
-      "Source audit scan blocked by Scope Guard",
+      "源代码审计已被范围守卫阻断",
       response.status,
       await safeSourceAuditBlockDetail(response),
     );
   }
 
   if (!response.ok) {
-    throw await apiResponseError(response, "Source audit scan request failed");
+    throw await apiResponseError(response, "源代码审计请求失败");
   }
 
   try {
     return (await response.json()) as SourceAuditScanResponse;
   } catch {
     throw new ApiRequestError(
-      "Source audit scan returned an invalid response",
+      "源代码审计返回无效响应",
       response.status,
       "invalid_response",
     );
@@ -2067,25 +2068,25 @@ async function createFindingCandidateRequest(runId: string): Promise<Finding | n
       },
     );
   } catch {
-    throw apiNetworkError("Finding candidate promotion request failed");
+    throw apiNetworkError("漏洞候选晋级请求失败");
   }
 
   if (response.status === 409) {
     const detail = await safePromotionGateDetail(response.clone());
     if (detail) {
-      throw new ApiRequestError("Finding candidate promotion blocked", response.status, detail);
+      throw new ApiRequestError("漏洞候选晋级已阻断", response.status, detail);
     }
   }
 
   if (!response.ok) {
-    throw await apiResponseError(response, "Finding candidate promotion request failed");
+    throw await apiResponseError(response, "漏洞候选晋级请求失败");
   }
 
   try {
     return (await response.json()) as Finding;
   } catch {
     throw new ApiRequestError(
-      "Finding candidate promotion returned an invalid response",
+      "漏洞候选晋级返回无效响应",
       response.status,
       "invalid_response",
     );
@@ -2243,32 +2244,32 @@ function candidateHunterLearningEvidenceNote(
 
   const missingEvidence =
     request.missing_evidence?.map(candidateHunterLearningContextValue).join(", ") ||
-    "none";
+    "无";
   const missingRequired =
     request.missing_required_artifact_kinds
       ?.map(candidateHunterLearningContextValue)
-      .join(", ") || "none";
+      .join(", ") || "无";
   const traceStatus = candidateHunterLearningContextValue(
     request.trace_status ?? "needs_evidence",
   );
   const learnedEvidence =
     request.learning_evidence_needed_reasons
       ?.map(candidateHunterLearningContextValue)
-      .join(", ") || "none";
+      .join(", ") || "无";
   const evidenceReady =
     typeof request.evidence_ready === "boolean"
       ? request.evidence_ready
-        ? "true"
-        : "false"
-      : "unknown";
-  return ` evidence ready ${evidenceReady}; trace ${traceStatus}; missing evidence ${missingEvidence}; missing required artifacts ${missingRequired}; learned evidence ${learnedEvidence}.`;
+        ? "是"
+        : "否"
+      : "未知";
+  return `证据就绪：${evidenceReady}；轨迹：${traceStatus}；缺少证据：${missingEvidence}；缺少必需资料：${missingRequired}；学习证据：${learnedEvidence}。`;
 }
 
 export function recordCandidateHunterLearningOutcome(
   request: CandidateHunterLearningOutcomeRequest,
 ): Promise<ProgramIntelligenceProfile> {
   const evidenceNote = candidateHunterLearningEvidenceNote(request);
-  const notes = `Candidate hunter outcome (${request.outcome}) by ${request.reviewer}: ${request.notes}${evidenceNote ? `;${evidenceNote}` : ""}`;
+  const notes = `候选挖掘结果（${request.outcome}），审核人：${request.reviewer}：${request.notes}${evidenceNote ? `；${evidenceNote}` : ""}`;
   const targetRelationships = candidateHunterLearningEvidenceRelationships(request);
 
   return recordMythosBrainOutcome(
@@ -2292,4 +2293,156 @@ export function evaluateScopeGuard(
   request: ScopeGuardRequest,
 ): Promise<ScopeGuardDecision> {
   return apiPost("/scope-guard/evaluate", { rule, request });
+}
+
+export async function getAutopilotCampaignProjection<T>(
+  campaignId: string,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot`,
+    fallback,
+    signal,
+  );
+}
+
+export async function getAutopilotCampaignProjectionRequired<T>(
+  campaignId: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiGetRequired(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot`,
+    signal,
+  );
+}
+
+export async function postAutopilotEmergencyStop(
+  campaignId: string,
+  request: {
+    actor?: string;
+    reason?: string;
+    confirmation_nonce: string;
+  },
+): Promise<Record<string, unknown>> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/emergency-stop`,
+    {
+      actor: request.actor ?? "operator",
+      reason: request.reason ?? "emergency_stop",
+      confirmation_nonce: request.confirmation_nonce,
+    },
+  );
+}
+
+export async function prepareAutopilotEmergencyStop(
+  campaignId: string,
+  request: { actor?: string; reason?: string } = {},
+): Promise<{ campaign_id: string; confirmation_nonce: string; expires_at: string }> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/emergency-stop/prepare`,
+    {
+      actor: request.actor ?? "operator",
+      reason: request.reason ?? "emergency_stop",
+    },
+  );
+}
+
+export async function getAutopilotAssets<T>(
+  campaignId: string,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/assets`,
+    fallback,
+    signal,
+  );
+}
+
+export async function getAutopilotBranches<T>(
+  campaignId: string,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/branches`,
+    fallback,
+    signal,
+  );
+}
+
+export async function getAutopilotBudgets<T>(
+  campaignId: string,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/budgets`,
+    fallback,
+    signal,
+  );
+}
+
+export async function getAutopilotApprovals<T>(
+  campaignId: string,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/approvals`,
+    fallback,
+    signal,
+  );
+}
+
+export async function getAutopilotEvents<T>(
+  campaignId: string,
+  fallback: T,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiGet(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/events`,
+    fallback,
+    signal,
+  );
+}
+
+export async function postAutopilotSteering(
+  campaignId: string,
+  request: {
+    branch_id?: string | null;
+    priority?: number | null;
+    hypothesis_guidance?: string | null;
+    reason?: string;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/steering`,
+    {
+      branch_id: request.branch_id ?? null,
+      priority: request.priority ?? null,
+      hypothesis_guidance: request.hypothesis_guidance ?? null,
+      reason: request.reason ?? "operator_steering",
+    },
+  );
+}
+
+export async function postAutopilotApprovalDecision(
+  campaignId: string,
+  approvalId: string,
+  request: {
+    decision: "approved" | "denied";
+    actor?: string;
+    reason?: string;
+  },
+): Promise<Record<string, unknown>> {
+  return apiPost(
+    `/mythos/campaigns/${encodeURIComponent(campaignId)}/autopilot/approvals/${encodeURIComponent(approvalId)}/decision`,
+    {
+      decision: request.decision,
+      actor: request.actor ?? "operator",
+      reason: request.reason ?? "operator_decision",
+    },
+  );
 }

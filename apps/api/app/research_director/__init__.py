@@ -389,3 +389,33 @@ __all__ = [
     "ResearchSignal",
     "build_research_director_plan",
 ]
+
+def select_research_director_branch(
+    branches: list,
+    *,
+    limits,
+    policy_drift: bool = False,
+    admitted_asset_ids: set[str] | frozenset[str] | None = None,
+    asset_requests: dict[str, int] | None = None,
+    account_requests: dict[str, int] | None = None,
+    hypothesis_requests: dict[str, int] | None = None,
+    campaign_requests_used: int = 0,
+    campaign_time_used: int = 0,
+    campaign_cost_used: int = 0,
+):
+    """Select one eligible Autopilot branch without stopping parked/R3 peers."""
+
+    from app.bounty_autopilot.branches import select_next_branch
+
+    return select_next_branch(
+        branches,
+        limits=limits,
+        policy_drift=policy_drift,
+        admitted_asset_ids=admitted_asset_ids,
+        asset_requests=asset_requests,
+        account_requests=account_requests,
+        hypothesis_requests=hypothesis_requests,
+        campaign_requests_used=campaign_requests_used,
+        campaign_time_used=campaign_time_used,
+        campaign_cost_used=campaign_cost_used,
+    )

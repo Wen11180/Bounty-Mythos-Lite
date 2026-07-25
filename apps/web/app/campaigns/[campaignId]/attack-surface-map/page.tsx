@@ -29,62 +29,61 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <Network size={17} aria-hidden="true" />
-          Attack Surface Map
+          攻击面地图
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
-            Read only
+            只读
           </span>
         </p>
         <h1 className="mt-3 max-w-4xl break-words text-3xl font-semibold leading-tight text-balance">
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Campaign target-model facts: endpoints, objects, roles, relationships, and sensitive
-          actions extracted from audited review sources.
+          从已审计研究来源提取的目标模型事实：端点、对象、角色、关系和敏感操作。
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
-        <Metric label="Audited sources" value={map.runCount} />
-        <Metric label="Endpoints" value={map.endpointCount} />
-        <Metric label="Objects" value={map.objectCount} />
-        <Metric label="Roles" value={map.roleCount} />
-        <Metric label="Sensitive actions" value={map.sensitiveActionCount} />
-        <Metric label="Relationships" value={map.relationshipCount} />
+        <Metric label="已审计来源" value={map.runCount} />
+        <Metric label="端点" value={map.endpointCount} />
+        <Metric label="对象" value={map.objectCount} />
+        <Metric label="角色" value={map.roleCount} />
+        <Metric label="敏感操作" value={map.sensitiveActionCount} />
+        <Metric label="关系" value={map.relationshipCount} />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="grid gap-5">
-          <SurfaceTable title="Endpoints" emptyLabel="No endpoints mapped yet.">
+          <SurfaceTable title="端点" emptyLabel="尚未映射端点。">
             {map.endpoints.map((endpoint) => (
               <article key={`${endpoint.runId}-${endpoint.route}`} className="grid gap-2 p-5 text-sm">
                 <p className="break-words font-semibold">{endpoint.route}</p>
                 {endpoint.summary ? <p className="break-words text-[var(--muted)]">{endpoint.summary}</p> : null}
-                <Field label="Audit source" value={endpoint.runId} />
+                <Field label="审计来源" value={endpoint.runId} />
               </article>
             ))}
           </SurfaceTable>
 
-          <SurfaceTable title="Sensitive Actions" emptyLabel="No sensitive actions mapped yet.">
+          <SurfaceTable title="敏感操作" emptyLabel="尚未映射敏感操作。">
             {map.sensitiveActions.map((action) => (
               <article key={`${action.runId}-${action.action}-${action.route}`} className="grid gap-2 p-5 text-sm">
                 <p className="break-words font-semibold">{action.action}</p>
-                <Field label="Route" value={action.route} />
-                <Field label="Roles" value={String(action.roleCount)} />
-                <Field label="Audit source" value={action.runId} />
+                <Field label="路由" value={action.route} />
+                <Field label="角色" value={String(action.roleCount)} />
+                <Field label="审计来源" value={action.runId} />
               </article>
             ))}
           </SurfaceTable>
 
-          <SurfaceTable title="Relationships" emptyLabel="No relationships mapped yet.">
+          <SurfaceTable title="关系" emptyLabel="尚未映射关系。">
             {map.relationships.map((relationship) => (
               <article
                 key={`${relationship.runId}-${relationship.summary}-${relationship.relationship}`}
                 className="grid gap-2 p-5 text-sm"
               >
                 <p className="break-words font-semibold">{relationship.summary}</p>
-                <Field label="Relationship" value={relationship.relationship} />
-                <Field label="Paths" value={String(relationship.pathCount)} />
-                <Field label="Audit source" value={relationship.runId} />
+                <Field label="关系" value={relationship.relationship} />
+                <Field label="路径" value={String(relationship.pathCount)} />
+                <Field label="审计来源" value={relationship.runId} />
               </article>
             ))}
           </SurfaceTable>
@@ -92,16 +91,16 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Objects" />
+            <SectionHeader title="对象" />
             {map.objects.length === 0 ? (
-              <EmptyState label="No objects mapped yet." />
+              <EmptyState label="尚未映射对象。" />
             ) : (
               <div className="divide-y divide-[var(--line)]">
                 {map.objects.map((object) => (
                   <article key={`${object.runId}-${object.name}`} className="grid gap-2 p-5 text-sm">
                     <p className="break-words font-semibold">{object.name}</p>
-                    <Field label="Identifiers" value={String(object.identifierCount)} />
-                    <Field label="Audit source" value={object.runId} />
+                    <Field label="标识符" value={String(object.identifierCount)} />
+                    <Field label="审计来源" value={object.runId} />
                   </article>
                 ))}
               </div>
@@ -109,9 +108,9 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Roles" />
+            <SectionHeader title="角色" />
             {map.roles.length === 0 ? (
-              <EmptyState label="No roles mapped yet." />
+              <EmptyState label="尚未映射角色。" />
             ) : (
               <ul className="grid gap-2 p-5 text-sm font-semibold text-[var(--muted)]">
                 {map.roles.map((role) => (
@@ -122,11 +121,11 @@ export default async function CampaignAttackSurfaceMapPage({ params }: PageProps
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader title="Safety Boundary" />
+            <SectionHeader title="安全边界" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Review boundary" value="Audit facts only; execution gates stay outside this view" />
-              <Field label="Fact status" value="Target model facts, not confirmed findings" />
-              <Field label="Raw payloads" value="Not displayed" />
+              <Field label="审核边界" value="仅显示审计事实；执行审核门不在此视图中操作" />
+              <Field label="事实状态" value="目标模型事实，不是已确认发现" />
+              <Field label="原始载荷" value="不显示" />
             </dl>
           </section>
         </aside>
@@ -142,7 +141,7 @@ function PageBack({ campaignId }: { campaignId: string }) {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Campaign
+      研究活动
     </Link>
   );
 }

@@ -1,9 +1,10 @@
 {
   "schema_version": "human_hour_review_logs_v1",
-  "source_kind": "authorized_redacted_real",
+  "source_kind": "template",
+  "fixture_kind": "authorized_human_hour_wall_clock_template",
   "program_authorization_id": "REPLACE_WITH_AUTH_PROGRAM_REF",
-  "claim_scope": "authorized_human_hour_real_package",
-  "description": "Template for attaching redacted real authorized program review wall-clock logs. Never include secrets.",
+  "claim_scope": "authorized_human_hour_template_only",
+  "description": "Template only. Replace all placeholders, set source_kind to authorized_redacted_real, and remove fixture_kind after supplying redacted operator-attested data. Never include secrets.",
   "execution_allowed": false,
   "report_submission_allowed": false,
   "entries": [
@@ -20,7 +21,7 @@
       "notes": "Redacted human review minutes only.",
       "execution_allowed": false,
       "report_submission_allowed": false,
-      "source_kind": "authorized_redacted_real"
+      "source_kind": "template"
     }
   ]
 }

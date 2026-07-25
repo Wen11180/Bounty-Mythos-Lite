@@ -19,48 +19,47 @@ export default async function CampaignAgentRunsPage({ params }: PageProps) {
         className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
       >
         <ArrowLeft size={17} aria-hidden="true" />
-        Campaign
+        研究活动
       </Link>
 
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <Bot size={17} aria-hidden="true" />
-          Agent Audit
+          智能体审计
           <span className="rounded-sm border border-[var(--line)] px-2 py-0.5 text-xs font-semibold uppercase text-[var(--muted)]">
-            Read only
+            只读
           </span>
         </p>
         <h1 className="mt-3 break-words text-3xl font-semibold leading-tight text-balance">
           {campaignId}
         </h1>
         <p className="mt-2 max-w-2xl text-pretty text-[var(--muted)]">
-          Inspect agent status, review gates, stop reasons, and ref counts without exposing raw
-          prompts, payloads, tool calls, or evidence refs.
+          查看智能体状态、审核门、停止原因和引用计数；不展示原始提示词、载荷、工具调用或证据引用。
         </p>
       </header>
 
       <section className="grid gap-3 py-5 sm:grid-cols-3">
-        <Metric label="Agent audits" value={summaries.length} />
+        <Metric label="智能体审计" value={summaries.length} />
         <Metric
-          label="Blocked"
+          label="已阻断"
           value={summaries.filter((run) => run.status === "Blocked").length}
         />
         <Metric
-          label="With stop reason"
+          label="含停止原因"
           value={summaries.filter((run) => run.stopReason !== null).length}
         />
       </section>
 
       <section className="border border-[var(--line)] bg-white">
         <div className="grid gap-3 border-b border-[var(--line)] px-5 py-4 text-sm font-semibold text-[var(--muted)] lg:grid-cols-[minmax(0,1fr)_150px_150px_110px_110px]">
-          <span>Agent</span>
-          <span>Status</span>
-          <span>Scope Guard decision</span>
-          <span>Input refs</span>
-          <span>Output refs</span>
+          <span>智能体</span>
+          <span>状态</span>
+          <span>范围守卫决策</span>
+          <span>输入引用</span>
+          <span>输出引用</span>
         </div>
         {summaries.length === 0 ? (
-          <p className="p-5 text-sm text-[var(--muted)]">No agent audits ready.</p>
+          <p className="p-5 text-sm text-[var(--muted)]">暂无可查看的智能体审计。</p>
         ) : (
           <div className="divide-y divide-[var(--line)]">
             {summaries.map((run) => (

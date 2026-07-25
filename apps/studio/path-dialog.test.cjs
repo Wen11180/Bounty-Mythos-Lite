@@ -57,7 +57,7 @@ test("selectStudioDirectory opens only a directory picker", async () => {
   assert.equal(await selectStudioDirectory(dialog, "window"), "C:/targets/repo");
   assert.deepEqual(capturedOptions, {
     properties: ["openDirectory"],
-    title: "Select authorized directory",
+    title: "选择授权目录",
   });
 });
 
@@ -73,8 +73,8 @@ test("desktop backup dialog returns a portable backup suffix", async () => {
   const selected = await selectDesktopBackupDestination(dialog, "window");
 
   assert.equal(selected, "C:/backups/personal.mythos-backup.zip");
-  assert.equal(options.title, "Create Mythos backup");
-  assert.deepEqual(options.filters, [{ name: "Mythos backup", extensions: ["zip"] }]);
+  assert.equal(options.title, "创建研究工作台备份");
+  assert.deepEqual(options.filters, [{ name: "研究工作台备份", extensions: ["zip"] }]);
 });
 
 test("desktop restore selects one ZIP and requires explicit confirmation", async () => {
@@ -96,9 +96,9 @@ test("desktop restore selects one ZIP and requires explicit confirmation", async
   assert.equal(archive, "C:/backups/personal.mythos-backup.zip");
   assert.equal(confirmed, true);
   assert.deepEqual(calls[0].options.filters, [
-    { name: "Mythos backup", extensions: ["zip"] },
+    { name: "研究工作台备份", extensions: ["zip"] },
   ]);
   assert.equal(calls[1].options.cancelId, 0);
   assert.equal(calls[1].options.defaultId, 0);
-  assert.deepEqual(calls[1].options.buttons, ["Cancel", "Restore"]);
+  assert.deepEqual(calls[1].options.buttons, ["取消", "恢复"]);
 });

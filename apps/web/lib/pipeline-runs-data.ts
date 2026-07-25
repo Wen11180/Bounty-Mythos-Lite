@@ -1,4 +1,5 @@
 import type { EvidenceSupportSummary, PipelineRun, PipelineStage } from "./api";
+import { formatLabel } from "./workbench-display.ts";
 
 export type PipelineStageStatus =
   | "queued"
@@ -115,7 +116,7 @@ export type IntelligenceRadarSummary = {
 };
 
 export type PipelineRunRowsResult = {
-  dataMode: "Demo data" | "Live data";
+  dataMode: "演示数据" | "实时数据";
   runs: PipelineRunSummary[];
 };
 
@@ -127,11 +128,11 @@ type RunSeed = Pick<
 };
 
 const fallbackStageLabels = [
-  "Artifact intake",
-  "Scope Guard",
-  "Hypothesis engine",
-  "Validation gate",
-  "Evidence snapshot",
+  "资料接入",
+  "范围守卫",
+  "假设引擎",
+  "验证审批门",
+  "证据快照",
 ];
 
 function numberOrFallback(value: number | undefined, fallback: number): number {
@@ -154,16 +155,16 @@ function safeText(value: string | null | undefined, fallback: string): string {
   const text = typeof value === "string" ? value.trim() : "";
 
   if (!text) {
-    return fallback;
+    return formatLabel(fallback);
   }
 
   if (containsSensitiveIdentityText(text)) {
-    return fallback;
+    return formatLabel(fallback);
   }
 
   return stripUrlQuery(text)
-    .replace(/\b(policy_text|secret|token)\b\s*[:=]\s*[^,;\s]+/gi, "$1=[redacted]")
-    .replace(/\b(policy_text|secret|token)\b/gi, "[redacted]");
+    .replace(/\b(policy_text|secret|token)\b\s*[:=]\s*[^,;\s]+/gi, "$1=[已脱敏]")
+    .replace(/\b(policy_text|secret|token)\b/gi, "[已脱敏]");
 }
 
 function containsSensitiveIdentityText(value: string): boolean {
@@ -176,11 +177,7 @@ function containsSensitiveIdentityText(value: string): boolean {
 }
 
 function readableStageLabel(value: string): string {
-  return value
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return formatLabel(value);
 }
 
 function normalizeStageStatus(
@@ -307,7 +304,7 @@ function resolveAgentBoundary(stage: PipelineStage): StageAgentBoundarySummary |
     allowedActions: stringList(boundary.allowed_actions),
     blockedActions: stringList(boundary.blocked_actions),
     requiresHumanReview: boundary.requires_human_review === true,
-    role: safeText(boundary.role, "Bounded Agent"),
+    role: safeText(boundary.role, "受限智能体"),
   };
 }
 
@@ -318,44 +315,44 @@ function buildDefaultStages(seed: RunSeed): PipelineRunStageSummary[] {
 
   return [
     {
-      label: "Artifact intake",
+      label: "资料接入",
       status: "complete",
-      detail: "Run manifest available; artifact repository fields will attach here.",
+      detail: "运行清单已就绪；资料库字段会在此关联。",
       evidenceCount: seed.evidenceCount,
     },
     {
-      label: "Scope Guard",
+      label: "范围守卫",
       status: scopeBlocked || seed.blockedCount > 0 ? "blocked" : scopeComplete ? "complete" : "needs_review",
       detail: scopeBlocked
-        ? `${seed.asset} is out of scope; validation remains blocked.`
+        ? `${seed.asset} 不在范围内；验证保持阻断。`
         : seed.blockedCount > 0
-          ? `${seed.blockedCount} checks held before active validation.`
+          ? `${seed.blockedCount} 项检查在活动验证前被暂缓。`
           : scopeComplete
-            ? `${seed.asset} reviewed for low-risk planning.`
-            : "Scope needs review before validation.",
+            ? `${seed.asset} 已完成低风险规划审核。`
+            : "验证前需要审核范围。",
       evidenceCount: 0,
     },
     {
-      label: "Hypothesis engine",
+      label: "假设引擎",
       status: seed.hypothesisCount > 0 ? "complete" : "queued",
-      detail: `${seed.hypothesisCount} hypotheses generated from scoped artifacts.`,
+      detail: `已从范围内资料生成 ${seed.hypothesisCount} 个假设。`,
       evidenceCount: 0,
     },
     {
-      label: "Validation gate",
+      label: "验证审批门",
       status: scopeBlocked || seed.blockedCount > 0 ? "blocked" : "needs_review",
       detail:
         scopeBlocked || seed.blockedCount > 0
-          ? "Unsafe actions remain queued for human review."
-          : "Human review required before live target validation.",
+          ? "高风险操作保持排队，等待人工审核。"
+          : "对实时目标验证前需要人工审核。",
       evidenceCount: 0,
     },
     {
-      label: "Evidence snapshot",
+      label: "证据快照",
       status: hasEvidence ? "complete" : "needs_review",
       detail: hasEvidence
-        ? `${seed.evidenceCount} evidence items linked to the run.`
-        : "No submission-ready evidence attached yet.",
+        ? `已关联 ${seed.evidenceCount} 项运行证据。`
+        : "尚未关联可用于报告审核的证据。",
       evidenceCount: seed.evidenceCount,
     },
   ];
@@ -364,9 +361,9 @@ function buildDefaultStages(seed: RunSeed): PipelineRunStageSummary[] {
 function buildDefaultArtifact(seed: RunSeed): ArtifactProvenanceSummary {
   return {
     artifactId: null,
-    source: "Pipeline response summary",
-    kind: "Run artifact manifest",
-    provenance: "Artifact repository pending; safe counters are shown from the run.",
+    source: "流程响应摘要",
+    kind: "运行资料清单",
+    provenance: "资料库尚待接入；当前仅显示运行中的安全计数。",
     evidenceCount: seed.evidenceCount,
   };
 }
@@ -374,29 +371,29 @@ function buildDefaultArtifact(seed: RunSeed): ArtifactProvenanceSummary {
 function buildDefaultGate(seed: RunSeed): ValidationGateSummary {
   if (seed.scopeStatus === "out_of_scope" || seed.blockedCount > 0) {
     return {
-      label: seed.scopeStatus === "out_of_scope" ? "Out-of-scope gate blocked" : "Review gate blocked",
+      label: seed.scopeStatus === "out_of_scope" ? "范围外审核门已阻断" : "审核门已阻断",
       status: "blocked",
       approval:
         seed.scopeStatus === "out_of_scope"
-          ? "Validation is blocked until the asset is confirmed in scope."
-          : `${seed.blockedCount} validation checks require human review.`,
+          ? "资产确认在范围内之前，验证将保持阻断。"
+          : `${seed.blockedCount} 项验证检查需要人工审核。`,
       evidenceCount: seed.evidenceCount,
     };
   }
 
   if (seed.evidenceCount > 0) {
     return {
-      label: "Low-risk validation reviewed",
+      label: "低风险验证已审核",
       status: "approved",
-      approval: "Evidence captured under a scoped validation plan.",
+      approval: "已在范围内验证计划下记录证据。",
       evidenceCount: seed.evidenceCount,
     };
   }
 
   return {
-    label: "Awaiting review gate",
+    label: "等待审核门",
     status: "waiting_human",
-    approval: "Needs human review and evidence before report drafting.",
+    approval: "起草报告前需要人工审核和证据。",
     evidenceCount: seed.evidenceCount,
   };
 }
@@ -410,9 +407,9 @@ function resolveStages(run: PipelineRun, seed: RunSeed): PipelineRunStageSummary
 
   return apiStages.map((stage: PipelineStage, index) => {
     const fallbackStage = buildDefaultStages(seed)[index] ?? {
-      label: fallbackStageLabels[index] ?? `Stage ${index + 1}`,
+      label: fallbackStageLabels[index] ?? `阶段 ${index + 1}`,
       status: "queued" as const,
-      detail: "Awaiting pipeline metadata.",
+      detail: "等待流程元数据。",
       evidenceCount: 0,
       safetyNotes: [],
     };
@@ -428,7 +425,7 @@ function resolveStages(run: PipelineRun, seed: RunSeed): PipelineRunStageSummary
       evidenceCount: numberOrFallback(stage.evidence_count, fallbackStage.evidenceCount),
       agentBoundary,
       safetyNotes: Array.isArray(stage.safety_notes)
-        ? stage.safety_notes.map((note) => safeText(note, "safety_note"))
+        ? stage.safety_notes.map((note) => safeText(note, "安全说明"))
         : fallbackStage.safetyNotes ?? [],
       lessonTraces: lessonTraces.length > 0 ? lessonTraces : undefined,
     };
@@ -444,14 +441,14 @@ function resolveArtifact(run: PipelineRun, seed: RunSeed): ArtifactProvenanceSum
 
   return {
     artifactId: artifact.artifact_id ?? null,
-    source: safeText(artifact.source ?? artifact.repository, "Pipeline artifact repository"),
+    source: safeText(artifact.source ?? artifact.repository, "流程资料库"),
     kind: safeText(
       artifact.artifact_type ?? artifact.kind ?? artifact.source_type,
-      "Run artifact manifest",
+      "运行资料清单",
     ),
     provenance: safeText(
-      artifact.provenance ?? artifact.summary ?? (artifact.digest ? "Digest recorded" : undefined),
-      "Artifact repository pending; safe counters are shown from the run.",
+      artifact.provenance ?? artifact.summary ?? (artifact.digest ? "已记录摘要" : undefined),
+      "资料库尚待接入；当前仅显示运行中的安全计数。",
     ),
     evidenceCount: numberOrFallback(artifact.evidence_count, seed.evidenceCount),
   };
@@ -469,10 +466,10 @@ function resolveValidationGate(run: PipelineRun, seed: RunSeed): ValidationGateS
     label: safeText(gate.label ?? gate.decision ?? gate.status, fallbackGate.label),
     status: normalizeGateStatus(gate.status ?? gate.decision, fallbackGate.status),
     approval: gate.approved_by
-      ? `Reviewed by ${safeText(gate.approved_by, "reviewer")}`
+      ? `审核人：${safeText(gate.approved_by, "审核人")}`
       : safeText(
           gate.summary,
-          gate.approval_required ? "Waiting for human review." : fallbackGate.approval,
+          gate.approval_required ? "等待人工审核。" : fallbackGate.approval,
         ),
     evidenceCount: numberOrFallback(gate.evidence_count, seed.evidenceCount),
   };
@@ -482,14 +479,14 @@ function buildDefaultHunter(seed: RunSeed): HunterPrioritySummary {
   const blocked = seed.scopeStatus === "out_of_scope" || seed.blockedCount > 0;
 
   return {
-    playbook: seed.hypothesisCount > 0 ? "Candidate needs playbook match" : "No candidate",
-    recommendation: blocked ? "Needs review" : "Pursue with care",
+    playbook: seed.hypothesisCount > 0 ? "候选项需要匹配研究手册" : "无候选项",
+    recommendation: blocked ? "需要审核" : "谨慎推进",
     priorityScore: blocked ? 42 : 62,
     impactScore: seed.hypothesisCount > 0 ? 75 : 0,
     rejectionRiskScore: blocked ? 55 : 25,
     nextAction: blocked
-      ? "Resolve Scope Guard or review blockers before validation."
-      : "Collect minimal safe evidence under human review.",
+      ? "验证前请处理范围守卫或审核阻断项。"
+      : "请在人工审核下收集最小化安全证据。",
   };
 }
 
@@ -532,14 +529,14 @@ function resolveMemory(run: PipelineRun): MemoryReadinessSummary | null {
   const lessons = closedLoop.memory_lessons ?? [];
   const topLesson = lessons[0];
   const recommendation = topLesson
-    ? readableStageLabel(safeText(topLesson.recommendation, "memory"))
+    ? readableStageLabel(safeText(topLesson.recommendation, "记忆"))
     : null;
-  const surface = topLesson ? safeText(topLesson.surface_pattern, "unknown surface") : null;
+  const surface = topLesson ? safeText(topLesson.surface_pattern, "未知攻击面") : null;
 
   return {
     lessonCount: numberOrFallback(closedLoop.lesson_count, lessons.length),
     status: safeText(closedLoop.status ?? closedLoop.brain_memory_status, "waiting_for_learning"),
-    topLesson: recommendation && surface ? `${recommendation} memory on ${surface}` : null,
+    topLesson: recommendation && surface ? `${surface} 上的${recommendation}记忆` : null,
   };
 }
 
@@ -573,7 +570,7 @@ function resolveRefutationSummary(run: PipelineRun): RefutationReviewSummary {
 
 export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
   const seed: RunSeed = {
-    asset: safeText(run.asset, "unknown asset"),
+    asset: safeText(run.asset, "未知资产"),
     blockedCount: numberOrFallback(run.blocked_count, 0),
     evidenceCount: numberOrFallback(run.evidence_count, 0),
     hypothesisCount: numberOrFallback(run.hypothesis_count, 0),
@@ -581,11 +578,11 @@ export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
   };
 
   return {
-    runId: safeText(run.id, "pipeline_run"),
+    runId: safeText(run.id, "流程运行"),
     asset: seed.asset,
     hypothesisCount: seed.hypothesisCount,
     blockedCount: seed.blockedCount,
-    reportTitle: run.report_title ? safeText(run.report_title, "Report draft") : null,
+    reportTitle: run.report_title ? safeText(run.report_title, "报告草稿") : null,
     evidenceCount: seed.evidenceCount,
     stages: resolveStages(run, seed),
     artifact: resolveArtifact(run, seed),
@@ -600,13 +597,13 @@ export function toPipelineRunSummary(run: PipelineRun): PipelineRunSummary {
 export function resolvePipelineRunRows(runs: PipelineRun[]): PipelineRunRowsResult {
   if (runs.length === 0) {
     return {
-      dataMode: "Demo data",
+      dataMode: "演示数据",
       runs: fallbackPipelineRuns,
     };
   }
 
   return {
-    dataMode: "Live data",
+    dataMode: "实时数据",
     runs: runs.map((run) => toPipelineRunSummary(run)),
   };
 }
@@ -703,10 +700,10 @@ function runReportDistance(run: PipelineRunSummary): string {
   ].filter(Boolean).length;
 
   if (gates === 0) {
-    return "Report review queue";
+    return "报告审核队列";
   }
 
-  return gates === 1 ? "1 gate to report review" : `${gates} gates to report review`;
+  return gates === 1 ? "距离报告审核还差 1 个审核门" : `距离报告审核还差 ${gates} 个审核门`;
 }
 
 export const fallbackPipelineRuns: PipelineRunSummary[] = [
@@ -715,60 +712,60 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
     asset: "api.example.com",
     hypothesisCount: 3,
     blockedCount: 1,
-    reportTitle: "普通用户可访问其他用户私有文件 metadata",
+    reportTitle: "普通用户可访问其他用户私有文件元数据",
     evidenceCount: 4,
     stages: [
       {
-        label: "Artifact intake",
+        label: "资料接入",
         status: "complete",
-        detail: "OpenAPI schema, HAR capture, and role notes linked.",
+        detail: "已关联 OpenAPI 架构、HAR 捕获和角色说明。",
         evidenceCount: 2,
       },
       {
-        label: "Scope Guard",
+        label: "范围守卫",
         status: "complete",
-        detail: "In-scope API asset; destructive checks removed.",
+        detail: "范围内 API 资产；已移除破坏性检查。",
         evidenceCount: 0,
       },
       {
-        label: "Hypothesis engine",
+        label: "假设引擎",
         status: "complete",
-        detail: "IDOR candidate reduced to low-risk metadata read.",
+        detail: "已将 IDOR 候选收敛为低风险元数据读取。",
         evidenceCount: 0,
       },
       {
-        label: "Validation gate",
+        label: "验证审批门",
         status: "blocked",
-        detail: "One live-user data path held for human review.",
+        detail: "一条涉及实时用户数据的路径已转人工审核。",
         evidenceCount: 0,
       },
       {
-        label: "Evidence snapshot",
+        label: "证据快照",
         status: "complete",
-        detail: "Four sanitized request/response references attached.",
+        detail: "已关联四条脱敏请求/响应引用。",
         evidenceCount: 4,
       },
     ],
     artifact: {
       artifactId: "artifact_fallback_001",
-      source: "Research vault: HAR capture + OpenAPI schema",
-      kind: "API artifact bundle",
-      provenance: "Captured from researcher test account and linked to dry-run manifest.",
+      source: "研究资料库：HAR 捕获 + OpenAPI 架构",
+      kind: "API 资料包",
+      provenance: "由研究人员测试账号捕获，并关联到演练清单。",
       evidenceCount: 4,
     },
     validationGate: {
-      label: "Low-risk path reviewed",
+      label: "低风险路径已审核",
       status: "approved",
-      approval: "Human reviewer captured metadata-only validation evidence.",
+      approval: "人工审核员已记录仅含元数据的验证证据。",
       evidenceCount: 4,
     },
     hunter: {
-      playbook: "BOLA / IDOR object boundary",
+      playbook: "BOLA / IDOR 对象边界",
       recommendation: "needs_human_review",
       priorityScore: 68,
       impactScore: 85,
       rejectionRiskScore: 30,
-      nextAction: "Prepare test-account-only validation for human review.",
+      nextAction: "准备仅限测试账号的验证，供人工审核。",
     },
     evidenceSupportSummary: null,
     memory: null,
@@ -788,56 +785,56 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
     evidenceCount: 1,
     stages: [
       {
-        label: "Artifact intake",
+        label: "资料接入",
         status: "complete",
-        detail: "UI trace and role matrix imported from test workspace.",
+        detail: "已从测试工作区导入界面轨迹和角色矩阵。",
         evidenceCount: 1,
       },
       {
-        label: "Scope Guard",
+        label: "范围守卫",
         status: "needs_review",
-        detail: "Team-admin route is in scope; mutation proof needs review.",
+        detail: "团队管理员路由在范围内；状态修改证明需要审核。",
         evidenceCount: 0,
       },
       {
-        label: "Hypothesis engine",
+        label: "假设引擎",
         status: "complete",
-        detail: "Two privilege-boundary hypotheses generated.",
+        detail: "已生成两个权限边界假设。",
         evidenceCount: 0,
       },
       {
-        label: "Validation gate",
+        label: "验证审批门",
         status: "blocked",
-        detail: "State-changing validation is blocked until review.",
+        detail: "状态修改型验证在审核前保持阻断。",
         evidenceCount: 0,
       },
       {
-        label: "Evidence snapshot",
+        label: "证据快照",
         status: "needs_review",
-        detail: "One screenshot attached; missing safe replay evidence.",
+        detail: "已关联一张截图；缺少安全重放证据。",
         evidenceCount: 1,
       },
     ],
     artifact: {
       artifactId: "artifact_fallback_002",
-      source: "Research vault: UI trace + role matrix",
-      kind: "Browser workflow artifact",
-      provenance: "Generated from seeded test tenant with no production user data.",
+      source: "研究资料库：界面轨迹 + 角色矩阵",
+      kind: "浏览器工作流资料",
+      provenance: "由预置测试租户生成，未包含生产用户数据。",
       evidenceCount: 1,
     },
     validationGate: {
-      label: "Review gate required",
+      label: "需要审核门",
       status: "blocked",
-      approval: "Two mutation checks are waiting for human review.",
+      approval: "两项状态修改检查正在等待人工审核。",
       evidenceCount: 1,
     },
     hunter: {
-      playbook: "Role boundary / privilege escalation",
+      playbook: "角色边界 / 权限提升",
       recommendation: "needs_human_review",
       priorityScore: 61,
       impactScore: 82,
       rejectionRiskScore: 35,
-      nextAction: "Collect role-matrix evidence before any state-changing validation.",
+      nextAction: "在任何状态修改型验证前收集角色矩阵证据。",
     },
     evidenceSupportSummary: null,
     memory: null,
@@ -857,56 +854,56 @@ export const fallbackPipelineRuns: PipelineRunSummary[] = [
     evidenceCount: 0,
     stages: [
       {
-        label: "Artifact intake",
+        label: "资料接入",
         status: "complete",
-        detail: "Public docs and export-flow notes linked.",
+        detail: "已关联公开文档和导出流程说明。",
         evidenceCount: 0,
       },
       {
-        label: "Scope Guard",
+        label: "范围守卫",
         status: "needs_review",
-        detail: "Admin-only surface requires explicit program authorization.",
+        detail: "仅管理员可见的攻击面需要明确项目授权。",
         evidenceCount: 0,
       },
       {
-        label: "Hypothesis engine",
+        label: "假设引擎",
         status: "complete",
-        detail: "One authorization boundary hypothesis retained.",
+        detail: "已保留一个授权边界假设。",
         evidenceCount: 0,
       },
       {
-        label: "Validation gate",
+        label: "验证审批门",
         status: "blocked",
-        detail: "No live validation before review and test data setup.",
+        detail: "在审核和测试数据准备前，不进行实时验证。",
         evidenceCount: 0,
       },
       {
-        label: "Evidence snapshot",
+        label: "证据快照",
         status: "queued",
-        detail: "Waiting for safe fixture and reproduction evidence.",
+        detail: "等待安全样本和复现证据。",
         evidenceCount: 0,
       },
     ],
     artifact: {
       artifactId: "artifact_fallback_004",
-      source: "Research vault: docs + export-flow notes",
-      kind: "Documentation artifact",
-      provenance: "Manual notes only; artifact repository ingest is pending.",
+      source: "研究资料库：文档 + 导出流程说明",
+      kind: "文档资料",
+      provenance: "仅包含人工说明；资料库接入尚待完成。",
       evidenceCount: 0,
     },
     validationGate: {
-      label: "Awaiting human review",
+      label: "等待人工审核",
       status: "waiting_human",
-      approval: "Needs test fixture and scoped review before validation.",
+      approval: "验证前需要测试样本和范围审核。",
       evidenceCount: 0,
     },
     hunter: {
-      playbook: "Generic business logic candidate",
+      playbook: "通用业务逻辑候选",
       recommendation: "park",
       priorityScore: 34,
       impactScore: 62,
       rejectionRiskScore: 55,
-      nextAction: "Park until stronger provenance or impact evidence appears.",
+      nextAction: "暂停，直至出现更强的溯源或影响证据。",
     },
     evidenceSupportSummary: null,
     memory: null,

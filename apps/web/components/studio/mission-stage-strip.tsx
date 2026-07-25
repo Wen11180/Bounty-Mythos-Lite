@@ -1,6 +1,7 @@
 import { Check, Circle, ShieldAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { formatLabel } from "@/lib/workbench-display";
 
 interface MissionStageStripProps {
   activeStage: string;
@@ -12,7 +13,7 @@ export function MissionStageStrip({ activeStage, stages }: MissionStageStripProp
     <section aria-labelledby="mission-stage-title" className="border-y border-[var(--cc-border)] py-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold" id="mission-stage-title">研究阶段</h2>
-        <span className="font-mono text-xs text-[var(--cc-text-muted)]">review-only</span>
+        <span className="font-mono text-xs text-[var(--cc-text-muted)]">仅供审核</span>
       </div>
       <ol className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {stages.map((stage, index) => {
@@ -32,9 +33,9 @@ export function MissionStageStrip({ activeStage, stages }: MissionStageStripProp
             >
               <div className="flex items-center gap-2">
                 <Icon aria-hidden="true" className="size-3.5 shrink-0" />
-                <span className="truncate text-xs font-semibold">{stage.label}</span>
+                <span className="truncate text-xs font-semibold">{formatLabel(stage.label)}</span>
               </div>
-              <p className="mt-1 truncate text-[11px] text-[var(--cc-text-muted)]">{stage.status}</p>
+              <p className="mt-1 truncate text-[11px] text-[var(--cc-text-muted)]">{formatLabel(stage.status)}</p>
             </li>
           );
         })}

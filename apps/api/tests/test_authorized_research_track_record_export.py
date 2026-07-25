@@ -15,6 +15,7 @@ from app.human_review_approvals import (
     build_human_review_approval,
 )
 from app.intelligence_benchmark.authorized_live_calibration import (
+    compute_live_calibration_metrics,
     detect_real_track_record_signals,
     load_live_outcome_package,
     package_source_kind,
@@ -34,6 +35,36 @@ from app.intelligence_benchmark.human_hour_calibration import (
 from app.wall_clock_multi_hour_runner import build_wall_clock_multi_hour_runner
 
 
+def _operator_attested_session_notes() -> list[dict]:
+    """Minimal non-fixture input that represents a user-attested package."""
+    return [
+        {
+            "entry_id": "attested-retain-1",
+            "outcome": "retained_review_ready",
+            "live_outcome": "human_confirmed_valid",
+            "review_minutes": 14.0,
+            "wall_clock_minutes": 48.0,
+            "report_outcome_ref": "attested-report-draft-1",
+            "package_label": "attested-unguarded-read",
+            "language_family": "python",
+            "hypothesis_class": "authorization",
+            "vuln_family": "idor",
+            "notes": "Redacted operator-attested outcome.",
+        },
+        {
+            "entry_id": "attested-fp-1",
+            "outcome": "refuted_fp",
+            "live_outcome": "human_confirmed_fp",
+            "review_minutes": 9.0,
+            "wall_clock_minutes": 22.0,
+            "package_label": "attested-owner-guarded",
+            "language_family": "java",
+            "hypothesis_class": "authorization",
+            "vuln_family": "idor",
+            "notes": "Redacted operator-attested false positive.",
+        },
+    ]
+
 def test_synthetic_demo_export_never_flips_real_flags():
     result = export_research_track_record(session_notes=build_demo_session_notes())
     assert result["source_kind"] == "synthetic"
@@ -47,9 +78,20 @@ def test_synthetic_demo_export_never_flips_real_flags():
     assert result["auto_submitted"] is False
 
 
-def test_authorized_export_flips_wall_clock_and_valid_flags():
+def test_declared_real_export_rejects_synthetic_demo_notes():
+    with pytest.raises(TrackRecordExportError, match="synthetic_input"):
+        export_research_track_record(
+            session_notes=build_demo_session_notes(),
+            program_authorization_id="auth-export-001",
+            declare_real_package=True,
+            program_handle="auth-program",
+            package_label="export-real-demo",
+        )
+
+
+def test_operator_attested_export_flips_wall_clock_and_valid_flags():
     result = export_research_track_record(
-        session_notes=build_demo_session_notes(),
+        session_notes=_operator_attested_session_notes(),
         program_authorization_id="auth-export-001",
         declare_real_package=True,
         program_handle="auth-program",
@@ -61,6 +103,34 @@ def test_authorized_export_flips_wall_clock_and_valid_flags():
     assert live["has_real_wall_clock_logs"] is True
     assert live["has_real_live_valid_report_outcomes"] is True
     assert hh["has_real_human_hour_wall_clock_logs"] is True
+
+
+def test_operator_attested_export_preserves_outcome_metric_fields():
+    notes = _operator_attested_session_notes()
+    notes[0].update(
+        {
+            "candidate_rank": 1,
+            "report_ready": True,
+            "report_valid": True,
+        }
+    )
+    notes[1]["candidate_rank"] = 2
+    result = export_research_track_record(
+        session_notes=notes,
+        program_authorization_id="auth-export-metrics-001",
+        declare_real_package=True,
+        evaluation_top_k=2,
+    )
+    summary = compute_live_calibration_metrics(
+        result["live_package"]["entries"],
+        package_meta=result["live_package"],
+    )["track_record_summary"]
+    outcome_metrics = summary["outcome_metrics"]
+    assert outcome_metrics["precision_at_k"] == 0.5
+    assert outcome_metrics["false_positive_rate"] == 0.5
+    assert outcome_metrics["duplicate_rate"] == 0.0
+    assert outcome_metrics["report_readiness_rate"] == 1.0
+    assert outcome_metrics["valid_report_rate"] == 1.0
 
 
 def test_declare_real_without_auth_ref_raises():
@@ -148,7 +218,7 @@ def test_write_requires_human_allow_export_write(tmp_path: Path):
 def test_written_packages_load_through_calibration_gates(tmp_path: Path):
     out_dir = tmp_path / "export"
     result = export_research_track_record(
-        session_notes=build_demo_session_notes(),
+        session_notes=_operator_attested_session_notes(),
         program_authorization_id="auth-export-e2e",
         declare_real_package=True,
         program_handle="auth-program",
@@ -182,7 +252,7 @@ def test_written_packages_load_through_calibration_gates(tmp_path: Path):
     assert hh_gate["passed"] is True
 
 
-def test_cli_demo_export_and_delivery_remaining_with_declared_real(tmp_path: Path):
+def test_cli_demo_export_rejects_declared_real(tmp_path: Path):
     out_dir = tmp_path / "cli-export"
     manifest = tmp_path / "manifest.json"
     code = main(
@@ -201,23 +271,42 @@ def test_cli_demo_export_and_delivery_remaining_with_declared_real(tmp_path: Pat
             str(manifest),
         ]
     )
-    assert code == 0
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    assert payload["source_kind"] == "authorized_redacted_real"
-    live_path = payload["paths"]["live_path"]
-    delivery_out = tmp_path / "delivery.json"
-    code2 = main(
+    assert code == 2
+    assert not manifest.exists()
+    assert not (out_dir / "authorized_live_outcomes.export.json").exists()
+
+
+def test_cli_operator_attested_export_writes_evaluation_top_k(tmp_path: Path):
+    notes = _operator_attested_session_notes()
+    notes[0].update(
+        {
+            "candidate_rank": 1,
+            "report_ready": True,
+            "report_valid": True,
+        }
+    )
+    notes[1]["candidate_rank"] = 2
+    notes_path = tmp_path / "notes.json"
+    notes_path.write_text(json.dumps(notes), encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    code = main(
         [
-            "delivery-readiness",
+            "export-research-track-record",
+            "--session-notes",
+            str(notes_path),
+            "--declare-real-package",
+            "--program-authorization-id",
+            "auth-cli-metrics-001",
+            "--evaluation-top-k",
+            "2",
             "--out",
-            str(delivery_out),
-            "--live-log",
-            live_path,
+            str(manifest),
         ]
     )
-    assert code2 == 0
-    delivery = json.loads(delivery_out.read_text(encoding="utf-8"))
-    assert delivery["remaining_for_full_market_leadership"] == []
+    assert code == 0
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["evaluation_top_k"] == 2
+    assert payload["live_package"]["evaluation_top_k"] == 2
 
 
 def test_cli_synthetic_demo_does_not_close_remaining(tmp_path: Path):

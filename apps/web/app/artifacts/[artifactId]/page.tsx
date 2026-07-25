@@ -36,14 +36,15 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
       <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
         <PageBack />
         <section className="mt-6 border border-[var(--line)] bg-white p-6">
-          <h1 className="text-2xl font-semibold text-balance">Artifact not found</h1>
+          <h1 className="text-2xl font-semibold text-balance">未找到资料</h1>
           <p className="mt-2 text-pretty text-[var(--muted)]">{safeDisplay(artifactId)}</p>
         </section>
       </main>
     );
   }
 
-  const artifactDataMode = artifact.source_hash === "fallback-only" ? "Demo data" : "Live data";
+  const artifactDataMode = artifact.source_hash === "fallback-only" ? "演示数据" : "在线数据";
+  const isDemoData = artifact.source_hash === "fallback-only";
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-10">
@@ -67,66 +68,66 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
             </p>
           </div>
           <div className="border border-[var(--line)] bg-white px-4 py-3 text-sm">
-            <p className="text-xs font-semibold uppercase text-[var(--muted)]">Ingestion</p>
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">接入</p>
             <p className="mt-1 font-semibold">{formatLabel(artifact.ingestion_status)}</p>
           </div>
         </div>
       </header>
-      {artifactDataMode === "Demo data" ? (
+      {isDemoData ? (
         <p className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--warning)]">
-          Demo data is shown because this artifact comes from a fallback summary.
+          当前显示演示数据，因为此资料来自后备摘要。
         </p>
       ) : null}
 
       <section className="grid gap-3 py-5 sm:grid-cols-2 xl:grid-cols-6">
-        <Metric label="Kind" value={formatLabel(artifact.kind)} />
-        <Metric label="Source" value={formatLabel(artifact.source_type)} />
-        <Metric label="Sensitivity" value={formatLabel(artifact.sensitivity_label)} />
-        <Metric label="Summary fields" value={payloadSummary.length} />
-        <Metric label="Derived facts" value={derivedFacts.length} />
-        <Metric label="Usages" value={usageRecords.length} />
+        <Metric label="类型" value={formatLabel(artifact.kind)} />
+        <Metric label="来源" value={formatLabel(artifact.source_type)} />
+        <Metric label="敏感度" value={formatLabel(artifact.sensitivity_label)} />
+        <Metric label="摘要字段" value={payloadSummary.length} />
+        <Metric label="派生事实" value={derivedFacts.length} />
+        <Metric label="使用记录" value={usageRecords.length} />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="border border-[var(--line)] bg-white">
-          <SectionHeader icon={Layers} title="Payload Summary" />
-          <KeyValueGrid entries={payloadSummary} empty="No payload summary ready." />
+          <SectionHeader icon={Layers} title="载荷摘要" />
+          <KeyValueGrid entries={payloadSummary} empty="暂无载荷摘要。" />
         </section>
 
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ShieldCheck} title="Safety Gate" />
+            <SectionHeader icon={ShieldCheck} title="安全审核门" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Sensitivity" value={formatLabel(artifact.sensitivity_label)} />
-              <Field label="Redaction" value={formatLabel(artifact.redaction_status)} />
+              <Field label="敏感度" value={formatLabel(artifact.sensitivity_label)} />
+              <Field label="脱敏" value={formatLabel(artifact.redaction_status)} />
               <Field
-                label="Report-chain review readiness"
+                label="报告链审核就绪度"
                 value={
                   artifact.report_chain_allowed === true
-                    ? "Report chain review ready"
+                    ? "报告链审核已就绪"
                     : artifact.report_chain_allowed === false
-                      ? "Report chain review required"
-                      : "Unknown"
+                      ? "报告链需要审核"
+                      : "未知"
                 }
               />
               <Field
-                label="Blockers"
+                label="阻塞项"
                 value={
                   artifact.safety_blockers.length > 0
                     ? artifact.safety_blockers.map(formatSafetyBlocker).join(", ")
-                    : "None"
+                    : "无"
                 }
               />
             </dl>
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={Fingerprint} title="Provenance" />
-            <KeyValueGrid entries={provenance} empty="No provenance summary ready." />
+            <SectionHeader icon={Fingerprint} title="溯源" />
+            <KeyValueGrid entries={provenance} empty="暂无溯源摘要。" />
             {duplicateImports.length > 0 ? (
               <div className="border-t border-[var(--line)] p-5">
                 <p className="text-xs font-semibold uppercase text-[var(--muted)]">
-                  Duplicate imports
+                  重复导入
                 </p>
                 <ul className="mt-3 grid gap-2 text-sm">
                   {duplicateImports.map((entry, index) => (
@@ -143,20 +144,20 @@ export default async function ArtifactDetailPage({ params }: PageProps) {
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={FileText} title="Derived Facts" />
-            <KeyValueGrid entries={derivedFacts} empty="No derived facts ready." />
+            <SectionHeader icon={FileText} title="派生事实" />
+            <KeyValueGrid entries={derivedFacts} empty="暂无派生事实。" />
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={GitBranch} title="Used By" />
+            <SectionHeader icon={GitBranch} title="使用方" />
             <UsageRecords records={usageRecords} />
           </section>
 
           <section className="border border-[var(--line)] bg-white">
-            <SectionHeader icon={ShieldCheck} title="Digest" />
+            <SectionHeader icon={ShieldCheck} title="摘要哈希" />
             <dl className="grid gap-3 p-5 text-sm">
-              <Field label="Source hash" value={artifact.source_hash} />
-              <Field label="Created" value={artifact.created_at} />
+              <Field label="来源哈希" value={artifact.source_hash} />
+              <Field label="创建时间" value={artifact.created_at} />
             </dl>
           </section>
         </aside>
@@ -172,7 +173,7 @@ function PageBack() {
       className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
     >
       <ArrowLeft size={17} aria-hidden="true" />
-      Dashboard
+      控制台
     </Link>
   );
 }
@@ -242,9 +243,9 @@ function usageRecordEntries(value: unknown): ArtifactUsageRecord[] {
 
 function formatSafetyBlocker(value: string): string {
   const knownBlockers: Record<string, string> = {
-    contains_secret_like_value: "Contains Secret Like Value",
-    contains_real_user_data_risk: "Contains Real User Data Risk",
-    missing_safety_metadata: "Missing Safety Metadata",
+    contains_secret_like_value: "包含类似密钥的值",
+    contains_real_user_data_risk: "存在真实用户数据风险",
+    missing_safety_metadata: "缺少安全元数据",
   };
 
   return knownBlockers[value] ?? formatLabel(value);
@@ -252,7 +253,7 @@ function formatSafetyBlocker(value: string): string {
 
 function UsageRecords({ records }: { records: ArtifactUsageRecord[] }) {
   if (records.length === 0) {
-    return <p className="p-5 text-sm text-[var(--muted)]">No artifact usage ready.</p>;
+    return <p className="p-5 text-sm text-[var(--muted)]">暂无资料使用记录。</p>;
   }
 
   return (
@@ -274,13 +275,13 @@ function UsageRecords({ records }: { records: ArtifactUsageRecord[] }) {
             {record.refutation_status ? <span>{formatLabel(record.refutation_status)}</span> : null}
             {record.playbook_id ? <span>{formatLabel(record.playbook_id)}</span> : null}
             {typeof record.hunter_priority_score === "number" ? (
-              <span>{record.hunter_priority_score} priority</span>
+              <span>优先级 {record.hunter_priority_score}</span>
             ) : null}
             {record.learning_signal_id ? <span>{safeDisplay(record.learning_signal_id)}</span> : null}
             {record.outcome ? <span>{formatLabel(record.outcome)}</span> : null}
             {record.surface_key ? <span>{safeDisplay(record.surface_key)}</span> : null}
             {typeof record.bounty_amount === "number" ? (
-              <span>{record.bounty_amount} bounty</span>
+              <span>赏金 {record.bounty_amount}</span>
             ) : null}
             {record.severity_delta ? <span>{formatLabel(record.severity_delta)}</span> : null}
             {record.evidence_quality ? <span>{formatLabel(record.evidence_quality)}</span> : null}

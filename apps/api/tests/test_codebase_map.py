@@ -11639,6 +11639,2317 @@ def deliver_webhook(subscriber_url: str):
 
 
 @pytest.mark.parametrize(
+    ("import_statement", "outbound_call"),
+    (
+        ("import urllib.request", "urllib.request.urlopen(target)"),
+        ("import urllib.request as outbound", "outbound.urlopen(target)"),
+        ("from urllib import request as outbound", "outbound.urlopen(target)"),
+        (
+            "from urllib.request import urlopen as open_url",
+            "open_url(target)",
+        ),
+    ),
+)
+def test_map_authorized_code_files_marks_explicit_stdlib_urllib_call_as_ssrf_gap(
+    import_statement,
+    outbound_call,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+{import_statement}
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+    return {outbound_call}
+""",
+                }
+            ]
+        }
+    )
+
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+    )
+
+    assert sink.payload["input_ref"] == "input:target"
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_accepts_ssrf_guard_for_stdlib_urllib_call():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+import urllib.request as outbound
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+    validate_url_for_ssrf(target)
+    return outbound.urlopen(url=target)
+""",
+                }
+            ]
+        }
+    )
+
+    sink = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+    )
+    assert sink.payload["input_ref"] == "input:target"
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "rebind_statement", "outbound_call"),
+    (
+        (
+            "import urllib.request as outbound",
+            "outbound = local_client",
+            "outbound.urlopen(target)",
+        ),
+        (
+            "from urllib.request import urlopen",
+            "urlopen = local_open",
+            "urlopen(target)",
+        ),
+    ),
+)
+def test_map_authorized_code_files_does_not_treat_rebound_urllib_alias_as_http_sdk(
+    import_statement,
+    rebind_statement,
+    outbound_call,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+{import_statement}
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+    {rebind_statement}
+    return {outbound_call}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_urllib_alias_parameter_as_http_sdk():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str, urlopen):
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_sink_when_unrelated_function_shadows_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib import request
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+    return request.urlopen(target)
+
+def health(request):
+    return request
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_later_module_rebound_urllib_as_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+import urllib.request as outbound
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+    return outbound.urlopen(target)
+
+outbound = local_client
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_resolves_urllib_import_after_handler_definition():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(target: str):
+    return outbound.urlopen(target)
+
+import urllib.request as outbound
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "rebind_statement", "outbound_call"),
+    (
+        (
+            "import urllib.request as outbound",
+            "from local_client import client as outbound",
+            "outbound.urlopen(target)",
+        ),
+        (
+            "import urllib.request",
+            "urllib.request = local_client",
+            "urllib.request.urlopen(target)",
+        ),
+    ),
+)
+def test_map_authorized_code_files_does_not_treat_module_rebound_urllib_alias_as_http_sdk(
+    import_statement,
+    rebind_statement,
+    outbound_call,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+{import_statement}
+{rebind_statement}
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+    return {outbound_call}
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "source_code",
+    (
+        """
+if outbound_enabled:
+    import urllib.request as outbound
+""",
+        """
+import urllib.request as outbound
+""",
+    ),
+)
+def test_map_authorized_code_files_requires_unconditional_urllib_binding(
+    source_code,
+):
+    rebind = (
+        ""
+        if "outbound_enabled" in source_code
+        else "    global outbound\n    outbound = local_client\n"
+    )
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+{source_code}
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+{rebind}    return outbound.urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_multiline_urllib_import_in_handler_scope():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(target: str):
+    from urllib.request import (
+        urlopen,
+    )
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_function_urllib_attribute_rebind_as_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+import urllib.request
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver_webhook(target: str):
+    urllib.request = local_client
+    return urllib.request.urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_resolution_isolated_to_function_source():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return urlopen(target)
+
+class Noise:
+    def deliver(self, urlopen):
+        return urlopen("https://example.test")
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink"
+        and fact.symbol_name == "fetch"
+        and fact.payload.get("handler") == "deliver"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("outer_import", "expect_sink"),
+    (
+        ("from local_client import urlopen", False),
+        ("from urllib.request import urlopen", True),
+    ),
+)
+def test_map_authorized_code_files_resolves_urllib_from_lexical_parent_scope(
+    outer_import,
+    expect_sink,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from fastapi import APIRouter
+
+router = APIRouter()
+
+def register_routes():
+    {outer_import}
+
+    @router.post("/webhooks/deliver")
+    def deliver(target: str):
+        return urlopen(target)
+
+    return deliver
+""",
+                }
+            ]
+        }
+    )
+
+    has_sink = any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert has_sink is expect_sink
+
+
+def test_map_authorized_code_files_maps_multiline_urllib_call():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return urlopen(
+        target,
+    )
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_urllib_call_in_comprehension():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return [urlopen(target) for _ in range(1)]
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_binding_after_with_block():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    with request_context():
+        from urllib.request import urlopen
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_binding_after_irrefutable_match():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, variant: str):
+    match variant:
+        case "primary":
+            from urllib.request import urlopen
+        case _:
+            from urllib.request import urlopen
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_relative_urllib_import_as_stdlib_sink():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from .urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_keep_global_urllib_alias_after_named_rebind():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    enabled = (urlopen := local_open)
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_global_urllib_binding_from_registering_scope():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+def register_routes():
+    global urlopen
+    from urllib.request import urlopen
+
+    @router.post("/webhooks/deliver")
+    def deliver(target: str):
+        global urlopen
+        return urlopen(target)
+
+    return deliver
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_parenthesized_urllib_call():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return (urlopen)(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_call_before_named_rebind():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    return urlopen(target), (urlopen := local_open)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_unshadowed_urllib_alias_in_lambda():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+import urllib.request as outbound
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return (lambda urlopen: outbound.urlopen(target))(local_open)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_urllib_call_in_lambda_default():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return (lambda urlopen=urlopen: urlopen(target))()
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize("arguments", ("*()", "**{}"))
+def test_map_authorized_code_files_maps_empty_expanded_lambda_default(
+    arguments,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return (lambda urlopen=urlopen: urlopen(target))({arguments})
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ("*(local_open,)", "**{'urlopen': local_open}"),
+)
+def test_map_authorized_code_files_does_not_map_overridden_lambda_default(
+    arguments,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return (lambda urlopen=urlopen: urlopen(target))({arguments})
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize("arguments", ("*values", "**options"))
+def test_map_authorized_code_files_does_not_assume_unknown_lambda_expansion(
+    arguments,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, values: tuple, options: dict):
+    return (lambda urlopen=urlopen: urlopen(target))({arguments})
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "(lambda opener: opener(target))(urlopen)",
+        "(lambda opener: opener(target))(opener=urlopen)",
+        "(lambda urlopen=urlopen: urlopen(target))(urlopen)",
+        "(lambda list: list(target))(urlopen)",
+        "(lambda list=urlopen: list(target))()",
+        (
+            "(lambda ignored=None, urlopen=urlopen: urlopen(target))"
+            "(*(*(), local_open))"
+        ),
+    ),
+)
+def test_map_authorized_code_files_maps_urllib_passed_to_lambda(
+    expression,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return {expression}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize("consumer", ("list", "next"))
+def test_map_authorized_code_files_respects_lambda_consumer_shadowing(
+    consumer,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, passthrough):
+    return (lambda {consumer}: {consumer}(urlopen(target) for _ in range(1)))(passthrough)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_respects_nested_lambda_keyword_expansion():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return (lambda urlopen=urlopen: urlopen(target))(**{**{"urlopen": local_open}})
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_urllib_call_in_outer_comprehension_iterable():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return [item for item in urlopen(target) for urlopen in item]
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_keep_urllib_after_comprehension_named_rebind():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    [(urlopen := local_open) for _ in range(1)]
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_global_urllib_after_deferred_generator_rebind():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    pending = ((urlopen := local_open) for _ in range(1))
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_applies_eager_generator_rebind_before_later_call():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    list((urlopen := local_open) for _ in range(1))
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "consumer_statement",
+    (
+        "next((urlopen := local_open) for _ in range(1))",
+        "for _ in ((urlopen := local_open) for _ in range(1)):\n        break",
+    ),
+)
+def test_map_authorized_code_files_applies_consumed_generator_rebind_before_later_call(
+    consumer_statement,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    {consumer_statement}
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_consume_next_default_generator():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return next(iter([None]), (urlopen(target) for _ in range(1)))
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_consume_generator_nested_in_for_iterable():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+def discard(values):
+    return ()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    for _ in discard(urlopen(target) for _ in range(1)):
+        pass
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize("consumer", ("list", "next"))
+def test_map_authorized_code_files_maps_literal_starred_generator_consumer(
+    consumer,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return {consumer}(*((urlopen(target) for _ in range(1)),))
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize("consumer", ("list", "next"))
+def test_map_authorized_code_files_maps_direct_starred_generator_consumer(
+    consumer,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return {consumer}(*(urlopen(target) for _ in range(1)))
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_urllib_call_in_yield_from_generator():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    yield from (urlopen(target) for _ in range(1))
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_resolve_deferred_generator_body_early():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    pending = (urlopen(target) for _ in range(1))
+    urlopen = local_open
+    return next(pending)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "consumer_statement",
+    (
+        "return next(urlopen(target) for _ in range(1))",
+        """
+    for response in (urlopen(target) for _ in range(1)):
+        return response
+    return None
+""",
+    ),
+)
+def test_map_authorized_code_files_maps_direct_generator_consumers(
+    consumer_statement,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    {consumer_statement}
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_shadowed_list_as_generator_consumer():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+def list(values):
+    return values
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return list(urlopen(target) for _ in range(1))
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_after_terminating_if_branch():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, enabled: bool):
+    if enabled:
+        return None
+    else:
+        from urllib.request import urlopen
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_after_nested_terminating_if_branch():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, enabled: bool, nested: bool):
+    if enabled:
+        if nested:
+            return None
+        return None
+    else:
+        from urllib.request import urlopen
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_ignores_urllib_import_after_return():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    return None
+    from urllib.request import urlopen
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_urllib_call_in_finally_after_return():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        return None
+    finally:
+        urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_finally_urllib_call_from_return_branch():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, enabled: bool):
+    global urlopen
+    try:
+        if enabled:
+            return None
+        urlopen = local_open
+    finally:
+        urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("inner_finally", "has_sink"),
+    (
+        ("urlopen = local_open", False),
+        ("from urllib.request import urlopen", True),
+    ),
+)
+def test_map_authorized_code_files_applies_inner_finally_bindings_to_outer_finally(
+    inner_finally,
+    has_sink,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    try:
+        try:
+            return None
+        finally:
+            {inner_finally}
+    finally:
+        urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    ) is has_sink
+
+
+def test_map_authorized_code_files_keeps_urllib_binding_for_except_after_raise():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        from urllib.request import urlopen
+        raise RuntimeError()
+    except RuntimeError:
+        return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_binding_for_except_after_assert():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        from urllib.request import urlopen
+        assert False
+    except AssertionError:
+        return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_binding_for_except_after_with_raise():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import nullcontext
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        with nullcontext():
+            from urllib.request import urlopen
+            raise RuntimeError()
+    except RuntimeError:
+        return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_reachable_urllib_exception_branch():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, enabled: bool):
+    try:
+        if enabled:
+            from urllib.request import urlopen
+            raise RuntimeError()
+        raise RuntimeError()
+    except RuntimeError:
+        return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_keep_urllib_after_handler_rebind():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    try:
+        raise RuntimeError()
+    except RuntimeError:
+        urlopen = local_open
+    finally:
+        urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_route_mismatched_exception_to_handler():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, enabled: bool):
+    try:
+        if enabled:
+            from urllib.request import urlopen
+            raise RuntimeError()
+        raise ValueError()
+    except ValueError:
+        return urlopen(target)
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_unmatched_raise_path_for_finally():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    try:
+        raise ValueError()
+    except RuntimeError:
+        urlopen = local_open
+    finally:
+        return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_propagate_suppressed_raise_to_except():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import suppress
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        with suppress(RuntimeError):
+            from urllib.request import urlopen
+            raise RuntimeError()
+    except RuntimeError:
+        return urlopen(target)
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("contextlib_import", "manager", "suppressed_types", "has_sink"),
+    (
+        ("from contextlib import suppress", "suppress", "ValueError", True),
+        (
+            "from contextlib import suppress as ignore",
+            "ignore",
+            "RuntimeError",
+            False,
+        ),
+        ("import contextlib as ctx", "ctx.suppress", "RuntimeError", False),
+        ("from contextlib import suppress", "suppress", "Exception", False),
+        ("from contextlib import suppress", "suppress", "", True),
+    ),
+)
+def test_map_authorized_code_files_tracks_suppress_exception_types_and_aliases(
+    contextlib_import,
+    manager,
+    suppressed_types,
+    has_sink,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+{contextlib_import}
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        with {manager}({suppressed_types}):
+            from urllib.request import urlopen
+            raise RuntimeError()
+    except RuntimeError:
+        return urlopen(target)
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    ) is has_sink
+
+
+def test_map_authorized_code_files_resolves_suppress_before_body_rebind():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import suppress
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global suppress
+    try:
+        with suppress(RuntimeError):
+            from urllib.request import urlopen
+            suppress = local_suppress
+            raise RuntimeError()
+    except RuntimeError:
+        return urlopen(target)
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_treat_unknown_as_exception_subclass():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import suppress
+from fastapi import APIRouter
+
+router = APIRouter()
+
+class Escape(BaseException):
+    pass
+
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        with suppress(Exception):
+            from urllib.request import urlopen
+            raise Escape()
+    except Escape:
+        return urlopen(target)
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_only_unsuppressed_exception_paths():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import suppress
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str, enabled: bool):
+    try:
+        with suppress(RuntimeError):
+            if enabled:
+                from urllib.request import urlopen
+                raise RuntimeError()
+            raise ValueError()
+    except ValueError:
+        return urlopen(target)
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_recognizes_oserror_subtypes_in_suppress():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import suppress
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    try:
+        with suppress(OSError):
+            from urllib.request import urlopen
+            raise FileNotFoundError()
+    except FileNotFoundError:
+        return urlopen(target)
+    return None
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_binding_for_outer_finally_after_raise():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    try:
+        try:
+            raise RuntimeError()
+        finally:
+            from urllib.request import urlopen
+    finally:
+        return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_binding_after_finally_raises():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    global urlopen
+    try:
+        try:
+            pass
+        finally:
+            from urllib.request import urlopen
+            raise RuntimeError()
+    finally:
+        return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_urllib_after_suppressed_raise():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import suppress
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    with suppress(RuntimeError):
+        raise RuntimeError()
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_ignores_urllib_after_return_from_with_block():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from contextlib import suppress
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+    with suppress(RuntimeError):
+        return None
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "control_flow",
+    (
+        """
+    match variant:
+        case "disabled":
+            return None
+        case _:
+            from urllib.request import urlopen
+""",
+        """
+    try:
+        raise RuntimeError()
+    except RuntimeError:
+        from urllib.request import urlopen
+""",
+    ),
+)
+def test_map_authorized_code_files_keeps_urllib_after_terminating_control_flow(
+    control_flow,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": f"""
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post("/webhooks/deliver")
+def deliver(target: str):
+{control_flow}
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_restore_global_urllib_after_nested_rebind():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from urllib.request import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+def register():
+    global urlopen
+    urlopen = local_open
+
+    @router.post("/webhooks/deliver")
+    def deliver(target: str):
+        global urlopen
+        return urlopen(target)
+
+    return deliver
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_does_not_guess_local_urlopen_as_http_sdk():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/webhooks.py",
+                    "content": """
+from local_client import urlopen
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.post(\"/webhooks/deliver\")
+def deliver_webhook(target: str):
+    return urlopen(target)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(
+        fact.fact_type == "sensitive_sink" and fact.symbol_name == "fetch"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.payload.get("root_cause") == "missing_ssrf_validation"
+        for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
     ("path", "content", "sink_symbol"),
     [
         (
@@ -15384,6 +17695,745 @@ class Query:
     @strawberry.field(name="record")
     def backup_record(self, info, record_id: str):
         return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_skips_invalid_strawberry_operation_name():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field(name="record-secret-token")
+    def read_record(self, info, record_id: str):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_strawberry_resolver_symbol_case():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import strawberry
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def ReadRecord(self, info, record_id: str):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    operation = next(
+        fact for fact in result.facts if fact.fact_type == "graphql_operation"
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert operation.symbol_name == "ReadRecord"
+    assert operation.payload["handler"] == "ReadRecord"
+    assert gap.symbol_name == "ReadRecord"
+
+
+@pytest.mark.parametrize(
+    ("root_type", "decorator", "operation_type", "resolver"),
+    [
+        ("Mutation", "mutation", "mutation", "delete_record"),
+        ("Subscription", "subscription", "subscription", "watch_record"),
+    ],
+)
+def test_map_authorized_code_files_maps_strawberry_root_operation_decorators(
+    root_type,
+    decorator,
+    operation_type,
+    resolver,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": f"""
+import strawberry
+
+
+@strawberry.type
+class {root_type}:
+    @strawberry.{decorator}
+    def {resolver}(self, info, record_id: str):
+        return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    operation = next(
+        fact for fact in result.facts if fact.fact_type == "graphql_operation"
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert operation.symbol_name == resolver
+    assert operation.payload["operation_type"] == operation_type
+    assert operation.payload["operation_name"] == resolver
+    assert gap.payload["graphql_operation_type"] == operation_type
+    assert gap.payload["graphql_operation_name"] == resolver
+
+
+@pytest.mark.parametrize(
+    (
+        "import_line",
+        "base",
+        "field",
+        "root_type",
+        "operation_type",
+        "resolver",
+        "field_name",
+        "operation_name",
+    ),
+    [
+        (
+            "import graphene as gql",
+            "gql.ObjectType",
+            'gql.Field(str, name="recordById")',
+            "Query",
+            "query",
+            "resolve_record",
+            "record",
+            "recordById",
+        ),
+        (
+            "from graphene import Field, ObjectType",
+            "ObjectType",
+            "Field(str)",
+            "Mutation",
+            "mutation",
+            "resolve_delete_record",
+            "delete_record",
+            "delete_record",
+        ),
+    ],
+)
+def test_map_authorized_code_files_maps_graphene_root_resolvers(
+    import_line,
+    base,
+    field,
+    root_type,
+    operation_type,
+    resolver,
+    field_name,
+    operation_name,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": f"""
+{import_line}
+
+
+class {root_type}({base}):
+    {field_name} = {field}
+
+    def {resolver}(self, info, record_id):
+        return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    operation = next(
+        fact for fact in result.facts if fact.fact_type == "graphql_operation"
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert operation.symbol_name == resolver
+    assert operation.route_method is None
+    assert operation.route_path is None
+    assert operation.payload["framework"] == "graphene"
+    assert operation.payload["operation_type"] == operation_type
+    assert operation.payload["operation_name"] == operation_name
+    assert gap.payload["entrypoint_kind"] == "graphql_operation"
+    assert gap.payload["graphql_operation_type"] == operation_type
+    assert gap.payload["graphql_operation_name"] == operation_name
+
+
+def test_map_authorized_code_files_does_not_invent_graphene_resolver_binding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import graphene
+
+
+class Query(graphene.ObjectType):
+    def resolve_record(self, info, record_id):
+        return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_refutes_graphql_resolver_with_prior_owner_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import graphene
+
+
+class Query(graphene.ObjectType):
+    record = graphene.Field(str)
+
+    def resolve_record(self, info, record_id):
+        record = load_record(record_id)
+        if record.owner_id != info.context.user.id:
+            raise PermissionError("forbidden")
+        return send_file(record.path)
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "resolve_record"
+        for fact in result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_keeps_graphql_resolver_with_late_owner_check():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import graphene
+
+
+class Query(graphene.ObjectType):
+    record = graphene.Field(str)
+
+    def resolve_record(self, info, record_id):
+        record = load_record(record_id)
+        exported = send_file(record.path)
+        if record.owner_id != info.context.user.id:
+            raise PermissionError("forbidden")
+        return exported
+""",
+                }
+            ]
+        }
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "resolve_record"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "import_line",
+        "factory",
+        "operation_variable",
+        "operation_type",
+        "operation_name",
+        "resolver",
+    ),
+    [
+        (
+            "import ariadne as gql",
+            "gql.QueryType",
+            "query",
+            "query",
+            "record",
+            "resolve_record",
+        ),
+        (
+            "from ariadne import MutationType",
+            "MutationType",
+            "mutation",
+            "mutation",
+            "deleteRecord",
+            "resolve_delete_record",
+        ),
+    ],
+)
+def test_map_authorized_code_files_maps_ariadne_resolver_bindings(
+    import_line,
+    factory,
+    operation_variable,
+    operation_type,
+    operation_name,
+    resolver,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": f"""
+{import_line}
+
+
+{operation_variable} = {factory}()
+
+
+@{operation_variable}.field("{operation_name}")
+def {resolver}(_, info, record_id):
+    return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    operation = next(
+        fact for fact in result.facts if fact.fact_type == "graphql_operation"
+    )
+    gap = next(
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authorization_gap_candidate"
+    )
+
+    assert operation.symbol_name == resolver
+    assert operation.route_method is None
+    assert operation.route_path is None
+    assert operation.payload["framework"] == "ariadne"
+    assert operation.payload["operation_type"] == operation_type
+    assert operation.payload["operation_name"] == operation_name
+    assert gap.payload["entrypoint_kind"] == "graphql_operation"
+    assert gap.payload["graphql_operation_type"] == operation_type
+    assert gap.payload["graphql_operation_name"] == operation_name
+
+
+def test_map_authorized_code_files_skips_dynamic_ariadne_operation_name():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+from ariadne import QueryType
+
+
+query = QueryType()
+operation_name = "record"
+
+
+@query.field(operation_name)
+def resolve_record(_, info, record_id):
+    return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_uses_ariadne_factory_before_rebinding_target():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+from ariadne import QueryType
+
+
+QueryType = QueryType()
+
+
+@QueryType.field("record")
+def resolve_record(_, info, record_id):
+    return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    operation = next(
+        fact for fact in result.facts if fact.fact_type == "graphql_operation"
+    )
+
+    assert operation.symbol_name == "resolve_record"
+    assert operation.payload["operation_type"] == "query"
+    assert operation.payload["operation_name"] == "record"
+
+
+@pytest.mark.parametrize(
+    "rebind",
+    [
+        "QueryType = build_dynamic_query_type",
+        "def QueryType():\n    return build_dynamic_query_type()",
+        "class QueryType:\n    pass",
+    ],
+)
+def test_map_authorized_code_files_skips_rebound_ariadne_factory_alias(rebind):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": f"""
+from ariadne import QueryType
+
+
+{rebind}
+query = QueryType()
+
+
+@query.field("record")
+def resolve_record(_, info, record_id):
+    return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_skips_rebound_ariadne_operation_source():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+from ariadne import QueryType
+
+
+query = QueryType()
+query = build_dynamic_query_type()
+
+
+@query.field("record")
+def resolve_record(_, info, record_id):
+    return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_skips_ambiguous_ariadne_factory_rebinding():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+from ariadne import QueryType
+
+
+if use_dynamic_query_type:
+    QueryType = build_dynamic_query_type
+query = QueryType()
+
+
+@query.field("record")
+def resolve_record(_, info, record_id):
+    return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_skips_ariadne_binding_after_wildcard_import():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+from ariadne import QueryType
+
+
+query = QueryType()
+from ariadne import *
+
+
+@query.field("record")
+def resolve_record(_, info, record_id):
+    return delete_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_maps_strawberry_module_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+import strawberry as gql
+
+
+@gql.type
+class Query:
+    @gql.field(name="recordById")
+    def record(_, info, record_id):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    operation = next(
+        fact for fact in result.facts if fact.fact_type == "graphql_operation"
+    )
+
+    assert operation.payload["framework"] == "strawberry"
+    assert operation.payload["operation_type"] == "query"
+    assert operation.payload["operation_name"] == "recordById"
+
+
+@pytest.mark.parametrize(
+    "rebind",
+    [
+        "strawberry = build_dynamic_schema",
+        "if use_dynamic_schema:\n    strawberry = build_dynamic_schema",
+    ],
+)
+def test_map_authorized_code_files_skips_rebound_strawberry_module_alias(rebind):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": f"""
+import strawberry
+
+
+{rebind}
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(_, info, record_id):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_skips_strawberry_binding_before_import():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+@strawberry.type
+class Query:
+    @strawberry.field
+    def record(_, info, record_id):
+        return send_file(record_id)
+
+
+import strawberry
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+@pytest.mark.parametrize(
+    "rebind",
+    [
+        "gql = build_dynamic_schema",
+        "if use_dynamic_schema:\n    gql = build_dynamic_schema",
+    ],
+)
+def test_map_authorized_code_files_skips_rebound_graphene_module_alias(rebind):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": f"""
+import graphene as gql
+
+
+{rebind}
+
+
+class Query(gql.ObjectType):
+    record = gql.Field(str)
+
+    def resolve_record(self, info, record_id):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_skips_rebound_graphene_object_type_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+from graphene import Field, ObjectType
+
+
+ObjectType = build_dynamic_object_type
+
+
+class Query(ObjectType):
+    record = Field(str)
+
+    def resolve_record(self, info, record_id):
+        return send_file(record_id)
+""",
+                }
+            ]
+        }
+    )
+
+    assert not any(fact.fact_type == "graphql_operation" for fact in result.facts)
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+    )
+
+
+def test_map_authorized_code_files_skips_graphene_binding_before_import():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "gql/records.py",
+                    "content": """
+class Query(graphene.ObjectType):
+    record = graphene.Field(str)
+
+    def resolve_record(self, info, record_id):
+        return send_file(record_id)
+
+
+import graphene
 """,
                 }
             ]

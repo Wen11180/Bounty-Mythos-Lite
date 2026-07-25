@@ -21,33 +21,33 @@ test("Studio registers, refreshes, and reviews one public rule source without br
   const intake = page.getByTestId("program-rule-intake");
   await expect(intake).toBeVisible();
 
-  await intake.getByLabel("Program alias").fill("synthetic_program");
-  await intake.getByLabel("Public HTTPS rule URL").fill(publicRuleUrl);
-  await intake.getByRole("button", { name: "Register source" }).click();
+  await intake.getByLabel("项目别名").fill("synthetic_program");
+  await intake.getByLabel("公开 HTTPS 规则 URL").fill(publicRuleUrl);
+  await intake.getByRole("button", { name: "注册来源" }).click();
 
   await expect(intake.getByText("synthetic_program", { exact: true })).toBeVisible();
-  await expect(intake.getByText("Human snapshot review")).toBeVisible();
+  await expect(intake.getByText("人工快照审核")).toBeVisible();
   expect(mock.registrationBodies).toEqual([{
     program_alias: "synthetic_program",
     public_rule_url: publicRuleUrl,
   }]);
   await expect.poll(() => page.evaluate(() => window.__programRuleRefreshCalls)).toBe(1);
 
-  await expect(intake.getByText("Fetch state", { exact: true })).toBeVisible();
-  await expect(intake.getByText("Effective state", { exact: true })).toBeVisible();
-  await expect(intake.getByText("Review state", { exact: true }).first()).toBeVisible();
-  await expect(intake.getByText("automated_scanning", { exact: true }).first()).toBeVisible();
-  await expect(intake.getByText(/5 per minute/).first()).toBeVisible();
-  await expect(intake.getByText("en", { exact: true })).toBeVisible();
-  await expect(intake.getByText("not_requested", { exact: true })).toBeVisible();
+  await expect(intake.getByText("获取状态", { exact: true })).toBeVisible();
+  await expect(intake.getByText("生效状态", { exact: true })).toBeVisible();
+  await expect(intake.getByText("审核状态", { exact: true }).first()).toBeVisible();
+  await expect(intake.getByText(/已禁止：自动扫描/u).first()).toBeVisible();
+  await expect(intake.getByText(/5 次\/分钟/u).first()).toBeVisible();
+  await expect(intake.getByText("英语", { exact: true })).toBeVisible();
+  await expect(intake.getByText("未请求", { exact: true })).toBeVisible();
   expect(await intake.locator("blockquote p").textContent()).toHaveLength(500);
   await expect(intake).not.toContainText("RAW_POLICY_SECRET_SENTINEL");
 
-  await intake.getByLabel("Reviewer alias").fill("reviewer_one");
+  await intake.getByLabel("审核人别名").fill("reviewer_one");
   await intake.getByRole("checkbox").check();
-  await intake.getByRole("button", { name: "Approve snapshot" }).click();
+  await intake.getByRole("button", { name: "批准快照" }).click();
 
-  await expect(intake.getByText("approved", { exact: true }).first()).toBeVisible();
+  await expect(intake.getByText("已批准", { exact: true }).first()).toBeVisible();
   expect(mock.reviewBodies).toEqual([{
     expected_review_digest: sha,
     operator_confirmed: true,
@@ -64,9 +64,9 @@ test("browser-only registration fails closed with studio_required and never fetc
 
   await page.goto("/studio");
   const intake = page.getByTestId("program-rule-intake");
-  await intake.getByLabel("Program alias").fill("browser_only_program");
-  await intake.getByLabel("Public HTTPS rule URL").fill(publicRuleUrl);
-  await intake.getByRole("button", { name: "Register source" }).click();
+  await intake.getByLabel("项目别名").fill("browser_only_program");
+  await intake.getByLabel("公开 HTTPS 规则 URL").fill(publicRuleUrl);
+  await intake.getByRole("button", { name: "注册来源" }).click();
 
   await expect(intake.getByText("studio_required", { exact: true })).toBeVisible();
   expect(mock.registrationBodies).toEqual([{
@@ -82,17 +82,17 @@ test("snapshot selection clears the prior diff and keeps a non-pending review bl
 
   await page.goto("/studio");
   const intake = page.getByTestId("program-rule-intake");
-  await expect(intake.getByText("diff_marker_a", { exact: true })).toBeVisible();
+  await expect(intake.getByText("Diff Marker A", { exact: true })).toBeVisible();
 
-  await intake.getByRole("button", { name: /2026-07-19T03:00:00Z · pending/u }).click();
-  await expect(intake.getByText("Snapshot diff", { exact: true })).toHaveCount(0);
-  await intake.getByLabel("Reviewer alias").fill("reviewer_two");
+  await intake.getByRole("button", { name: /2026-07-19T03:00:00Z · 待处理/u }).click();
+  await expect(intake.getByText("快照差异", { exact: true })).toHaveCount(0);
+  await intake.getByLabel("审核人别名").fill("reviewer_two");
   await intake.getByRole("checkbox").check();
-  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
+  await expect(intake.getByRole("button", { name: "批准快照" })).toBeDisabled();
 
   mock.releaseSelectedDiff();
-  await expect(intake.getByText("diff_marker_b", { exact: true })).toBeVisible();
-  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
+  await expect(intake.getByText("Diff Marker B", { exact: true })).toBeVisible();
+  await expect(intake.getByRole("button", { name: "批准快照" })).toBeDisabled();
   expect(mock.reviewPaths).toEqual([]);
   expect(mock.reviewBodies).toEqual([]);
 });
@@ -102,17 +102,17 @@ test("out-of-order diff responses cannot replace the selected snapshot binding",
 
   await page.goto("/studio");
   const intake = page.getByTestId("program-rule-intake");
-  await intake.getByRole("button", { name: /2026-07-19T03:00:00Z · pending/u }).click();
-  await expect(intake.getByText("diff_marker_b", { exact: true })).toBeVisible();
+  await intake.getByRole("button", { name: /2026-07-19T03:00:00Z · 待处理/u }).click();
+  await expect(intake.getByText("Diff Marker B", { exact: true })).toBeVisible();
 
   mock.releaseInitialDiff();
   await expect.poll(() => mock.initialDiffFulfilled).toBe(1);
-  await expect(intake.getByText("diff_marker_b", { exact: true })).toBeVisible();
-  await expect(intake.getByText("diff_marker_a", { exact: true })).toHaveCount(0);
+  await expect(intake.getByText("Diff Marker B", { exact: true })).toBeVisible();
+  await expect(intake.getByText("Diff Marker A", { exact: true })).toHaveCount(0);
 
-  await intake.getByLabel("Reviewer alias").fill("reviewer_two");
+  await intake.getByLabel("审核人别名").fill("reviewer_two");
   await intake.getByRole("checkbox").check();
-  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
+  await expect(intake.getByRole("button", { name: "批准快照" })).toBeDisabled();
   expect(mock.reviewPaths).toEqual([]);
   expect(mock.reviewBodies).toEqual([]);
 });
@@ -122,14 +122,15 @@ test("invalid contracts and authority drift are explicit and block both review d
 
   await page.goto("/studio");
   const intake = page.getByTestId("program-rule-intake");
-  await expect(intake.getByText(/Review disabled: the source, snapshot, displayed diff/u)).toBeVisible();
-  await expect(intake.getByText(/Contract invalid; authority invalid\./u)).toBeVisible();
-  await expect(intake).not.toContainText("fixed false");
+  await expect(intake.getByText(/已禁用审核：来源、快照、显示的差异/u)).toBeVisible();
+  await expect(intake.getByText("契约", { exact: true }).first()).toBeVisible();
+  await expect(intake.getByText("权限", { exact: true }).first()).toBeVisible();
+  await expect(intake).not.toContainText("固定为否");
 
-  await intake.getByLabel("Reviewer alias").fill("reviewer_one");
+  await intake.getByLabel("审核人别名").fill("reviewer_one");
   await intake.getByRole("checkbox").check();
-  await expect(intake.getByRole("button", { name: "Approve snapshot" })).toBeDisabled();
-  await expect(intake.getByRole("button", { name: "Reject snapshot" })).toBeDisabled();
+  await expect(intake.getByRole("button", { name: "批准快照" })).toBeDisabled();
+  await expect(intake.getByRole("button", { name: "拒绝快照" })).toBeDisabled();
 });
 
 async function installProgramRuleBridge(page: Page) {

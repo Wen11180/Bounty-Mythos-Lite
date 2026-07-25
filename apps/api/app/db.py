@@ -205,7 +205,69 @@ def _adopt_supported_unversioned_schema(engine: Engine, config: Config) -> None:
                             "active_execution_claim_id",
                             "legacy_active_task_count",
                         }.issubset(slot_columns):
-                            revision = "0019_campaign_local_tool_execution_slot"
+                            campaign_columns = {
+                                column["name"]
+                                for column in inspector.get_columns("campaigns")
+                            }
+                            if "autopilot_observations" in slot_tables:
+                                lease_columns = {
+                                    column["name"]
+                                    for column in inspector.get_columns("execution_leases")
+                                }
+                                if {
+                                    "requests_reserved",
+                                    "authorization_id",
+                                    "expires_at",
+                                    "duration_reserved_seconds",
+                                    "cost_units_reserved",
+                                }.issubset(lease_columns):
+                                    observation_columns = {
+                                        column["name"]
+                                        for column in inspector.get_columns(
+                                            "autopilot_observations"
+                                        )
+                                    }
+                                    if {
+                                        "lease_id",
+                                        "reservation_id",
+                                        "comparison_reservation_id",
+                                    }.issubset(observation_columns):
+                                        revision = "0028_bounty_autopilot_r2_observation_pair"
+                                    elif {
+                                        "lease_id",
+                                        "reservation_id",
+                                    }.issubset(observation_columns):
+                                        revision = "0027_bounty_autopilot_observation_binding"
+                                    else:
+                                        revision = "0026_bounty_autopilot_budget_ledger"
+                                elif {
+                                    "requests_reserved",
+                                    "authorization_id",
+                                    "expires_at",
+                                }.issubset(lease_columns):
+                                    revision = "0025_bounty_autopilot_lease_deadlines"
+                                elif "requests_reserved" in lease_columns:
+                                    revision = "0024_bounty_autopilot_reservation_bounds"
+                                else:
+                                    revision = "0023_bounty_autopilot_evidence_lineage"
+                            elif {
+                                "validation_plans",
+                                "execution_leases",
+                                "execution_request_ledger",
+                            }.issubset(slot_tables):
+                                revision = "0022_bounty_autopilot_execution_authority"
+                            elif {
+                                "campaign_assets",
+                                "research_branches",
+                            }.issubset(slot_tables):
+                                revision = "0021_bounty_autopilot_assets_branches"
+                            elif (
+                                "campaign_mode" in campaign_columns
+                                and "campaign_authorizations" in slot_tables
+                            ):
+                                revision = "0020_bounty_autopilot_authority"
+                            else:
+                                revision = "0019_campaign_local_tool_execution_slot"
                         elif "tool_calls_reserved" in budget_columns:
                             revision = "0018_campaign_tool_call_reservations"
                         else:

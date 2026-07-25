@@ -17,11 +17,11 @@ export function ReportReadiness({ report }: ReportReadinessProps) {
         <SectionHeader
           title="报告草稿就绪度"
           description="报告只提供预览和人工复核，系统不提供自动提交。"
-          actions={<Badge variant="outline" className="border-approval/35 bg-approval/10 text-approval">submission-blocked</Badge>}
+          actions={<Badge variant="outline" className="border-approval/35 bg-approval/10 text-approval">报告提交已阻断</Badge>}
         />
       </div>
       {!report.available ? (
-        <PanelState state="empty" detail="候选完成证据与声明复核后，submission-blocked 草稿会显示在这里。" />
+        <PanelState state="empty" detail="候选完成证据与声明复核后，提交已阻断的草稿会显示在这里。" />
       ) : (
         <div className="border-t border-border px-4 py-4">
           <div className="flex items-start gap-3">
@@ -30,7 +30,7 @@ export function ReportReadiness({ report }: ReportReadinessProps) {
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold">{report.title ?? "未命名报告草稿"}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{report.statusLabel} · submission-blocked</p>
+              <p className="mt-1 text-xs text-muted-foreground">{report.statusLabel} · 报告提交已阻断</p>
             </div>
           </div>
           <dl className="mt-4 grid grid-cols-2 border-y border-border text-sm">

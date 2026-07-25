@@ -186,16 +186,16 @@ test("startupErrorHtml renders only the fixed startup diagnostic projection", ()
     detail: "C:\\Users\\operator\\token=<secret>",
   });
 
-  assert.match(html, /Mythos Studio could not start/);
-  assert.match(html, /Diagnostic code:\s*<code>api_unhealthy<\/code>/);
-  assert.match(html, /No research, validation, or report submission was started/);
+  assert.match(html, /赏金神话研究工作台无法启动/);
+  assert.match(html, /诊断代码：\s*<code>api_unhealthy<\/code>/);
+  assert.match(html, /尚未启动研究、验证或报告提交/);
   assert.doesNotMatch(html, /Users|token|secret/i);
 });
 
 test("startupErrorHtml gives development-only local recovery steps", () => {
   const html = startupErrorHtml({ code: "startup_unknown" }, { packaged: false });
 
-  assert.match(html, /Check local prerequisites/);
+  assert.match(html, /检查本地前置条件/);
   assert.match(html, /apps\/api/);
   assert.match(html, /python -m pip install -r requirements\.txt/);
   assert.match(html, /apps\/web/);
@@ -207,8 +207,8 @@ test("startupErrorHtml gives development-only local recovery steps", () => {
 test("startupErrorHtml keeps packaged recovery steps free of source install commands", () => {
   const html = startupErrorHtml({ code: "state_unwritable" }, { packaged: true });
 
-  assert.match(html, /Diagnostic code:\s*<code>state_unwritable<\/code>/);
-  assert.match(html, /Restart the installed app/);
+  assert.match(html, /诊断代码：\s*<code>state_unwritable<\/code>/);
+  assert.match(html, /重新启动已安装的应用/);
   assert.doesNotMatch(html, /python -m pip|npm install|apps\/api|apps\/web/i);
 });
 

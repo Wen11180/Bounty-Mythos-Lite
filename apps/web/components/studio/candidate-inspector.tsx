@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { StudioCandidateCard } from "@/lib/studio-data";
+import { formatLabel } from "@/lib/workbench-display";
 
 interface CandidateInspectorProps {
   actions?: ReactNode;
@@ -26,14 +27,14 @@ export function CandidateInspector({ actions, candidate, candidates, onSelect }:
       <div className="mt-4 border-b border-[var(--cc-border)] pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="font-mono text-xs text-[var(--cc-text-muted)]">{candidate?.id ?? "NO-CANDIDATE"}</p>
+            <p className="font-mono text-xs text-[var(--cc-text-muted)]">{candidate?.id ?? "暂无候选"}</p>
             <h2 className="mt-1 text-base font-semibold" id="candidate-inspector-title">{candidate?.title ?? "等待候选"}</h2>
           </div>
-          <span className="rounded-sm border border-[var(--cc-warning-border)] bg-[var(--cc-warning-soft)] px-2 py-1 text-xs text-[var(--cc-warning)]">{candidate?.status ?? "review-only"}</span>
+          <span className="rounded-sm border border-[var(--cc-warning-border)] bg-[var(--cc-warning-soft)] px-2 py-1 text-xs text-[var(--cc-warning)]">{formatLabel(candidate?.status ?? "review-only")}</span>
         </div>
         <p className="mt-3 text-sm leading-6 text-[var(--cc-text-muted)]">{candidate?.reason ?? "导入授权材料并运行研究后，候选会出现在这里。"}</p>
-        <p className="mt-3 text-xs text-[var(--cc-text-muted)]">Broken invariant</p>
-        <p className="mt-1 text-sm leading-6">{candidate?.brokenInvariant ?? "Security invariant needs review."}</p>
+        <p className="mt-3 text-xs text-[var(--cc-text-muted)]">失效的安全不变量</p>
+        <p className="mt-1 text-sm leading-6">{candidate?.brokenInvariant ?? "安全不变量需要审核。"}</p>
       </div>
       <dl className="grid gap-3 py-4 text-sm">
         <div><dt className="text-xs text-[var(--cc-text-muted)]">受影响端点</dt><dd className="mt-1 break-all font-mono text-xs">{candidate?.affectedEndpoint ?? "待补充受影响端点"}</dd></div>
@@ -42,21 +43,21 @@ export function CandidateInspector({ actions, candidate, candidates, onSelect }:
       </dl>
       <div className="grid gap-3 border-t border-[var(--cc-border)] py-4 text-xs">
         <div>
-          <p className="font-semibold">Why still alive</p>
+          <p className="font-semibold">保留原因</p>
           <p className="mt-1 text-[var(--cc-text-muted)]">
-            {candidate?.whyStillAlive.join(" · ") || "Review required."}
+            {candidate?.whyStillAlive.join(" · ") || "需要审核。"}
           </p>
         </div>
         <div>
-          <p className="font-semibold">Ranking reasons</p>
+          <p className="font-semibold">排序原因</p>
           <p className="mt-1 text-[var(--cc-text-muted)]">
-            {candidate?.rankingReasons.join(" · ") || "Review required."}
+            {candidate?.rankingReasons.join(" · ") || "需要审核。"}
           </p>
         </div>
         <div>
-          <p className="font-semibold">Falsification open dimensions</p>
+          <p className="font-semibold">待反证维度</p>
           <p className="mt-1 text-[var(--cc-text-muted)]">
-            {candidate?.falsificationSummary.openDimensions.join(" · ") || "Review required."}
+            {candidate?.falsificationSummary.openDimensions.join(" · ") || "需要审核。"}
           </p>
         </div>
       </div>

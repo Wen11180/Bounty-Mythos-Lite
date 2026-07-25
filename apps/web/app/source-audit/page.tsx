@@ -65,26 +65,25 @@ export default async function SourceAuditPage({ searchParams }: PageProps) {
         className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold"
       >
         <ArrowLeft size={17} aria-hidden="true" />
-        Dashboard
+        控制台
       </Link>
 
       <header className="mt-6 border-b border-[var(--line)] pb-6">
         <p className="flex items-center gap-2 text-sm font-semibold text-[var(--accent-strong)]">
           <FileSearch size={17} aria-hidden="true" />
-          V0 local source audit
+          V0 本地源代码审计
         </p>
         <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="max-w-4xl text-3xl font-semibold leading-tight text-balance">
-              Source Audit
+              源代码审计
             </h1>
             <p className="mt-2 max-w-3xl text-pretty text-[var(--muted)]">
-              Start a local repository review that creates a pipeline run, report preview, and
-              human review workspace. The scan stores metadata and review artifacts only.
+              启动本地仓库审核，创建流水线运行、报告预览和人工审核工作区。扫描仅存储元数据和审核资料。
             </p>
           </div>
           <span className="rounded-sm border border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase text-[var(--warning)]">
-            submission_blocked
+            报告提交已阻断
           </span>
         </div>
       </header>
@@ -93,10 +92,10 @@ export default async function SourceAuditPage({ searchParams }: PageProps) {
         <section className="mt-4 border border-[var(--line)] bg-white px-4 py-3 text-sm">
           <p className="font-semibold text-[var(--warning)]">
             {scanStatus === "blocked"
-              ? "Scope Guard blocked this source audit."
+              ? "范围守卫已阻断此源代码审计。"
               : scanStatus === "missing_required"
-                ? "Repository path and scope path are required."
-                : "Source audit scan did not create a run."}
+                ? "必须提供仓库路径和范围策略路径。"
+                : "源代码审计扫描未创建运行。"}
           </p>
           {scopeError ? (
             <p className="mt-2 text-[var(--muted)]">{formatLabel(scopeError)}</p>
@@ -107,13 +106,13 @@ export default async function SourceAuditPage({ searchParams }: PageProps) {
       <div className="grid gap-5 py-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="border border-[var(--line)] bg-white">
           <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
-            <h2 className="text-lg font-semibold">Local Audit Input</h2>
+            <h2 className="text-lg font-semibold">本地审计输入</h2>
             <ShieldCheck size={19} className="text-[var(--accent)]" aria-hidden="true" />
           </div>
           <form action={sourceAuditScanAction} className="grid gap-4 p-5 text-sm">
             <label className="grid gap-1">
               <span className="text-xs font-semibold uppercase text-[var(--muted)]">
-                Repository path
+                仓库路径
               </span>
               <input
                 className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
@@ -124,7 +123,7 @@ export default async function SourceAuditPage({ searchParams }: PageProps) {
             </label>
             <label className="grid gap-1">
               <span className="text-xs font-semibold uppercase text-[var(--muted)]">
-                Scope policy path
+                范围策略路径
               </span>
               <input
                 className="min-h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--accent)]"
@@ -135,19 +134,19 @@ export default async function SourceAuditPage({ searchParams }: PageProps) {
             </label>
             <label className="grid gap-1">
               <span className="text-xs font-semibold uppercase text-[var(--muted)]">
-                Policy text
+                策略文本
               </span>
               <textarea
                 className="min-h-28 rounded-md border border-[var(--line)] px-3 py-2 outline-none focus:border-[var(--accent)]"
                 name="policy_text"
-                placeholder="Optional policy summary for provenance."
+                placeholder="可选的策略摘要，用于溯源。"
               />
             </label>
             <button
               type="submit"
               className="min-h-10 justify-self-start rounded-md border border-[var(--line)] bg-[var(--foreground)] px-4 text-sm font-semibold text-white"
             >
-              Start Source Audit
+              启动源代码审计
             </button>
           </form>
         </section>
@@ -155,13 +154,12 @@ export default async function SourceAuditPage({ searchParams }: PageProps) {
         <aside className="grid content-start gap-5">
           <section className="border border-[var(--line)] bg-white">
             <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
-              <h2 className="text-lg font-semibold">Scope Guard</h2>
+              <h2 className="text-lg font-semibold">范围守卫</h2>
               <Lock size={19} className="text-[var(--accent)]" aria-hidden="true" />
             </div>
             <div className="grid gap-3 p-5 text-sm">
               <p className="text-pretty font-semibold text-[var(--muted)]">
-                The scope file must allowlist the local repository before any source audit run is
-                created.
+                创建任何源代码审计运行前，范围文件必须将本地仓库列入允许列表。
               </p>
               <ul className="grid gap-2 text-[var(--muted)]">
                 {safetyNotes.map((note) => (

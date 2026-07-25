@@ -10,7 +10,6 @@ import pytest
 
 from app.cli import main
 from app.intelligence_benchmark.authorized_research_track_record_export import (
-    build_demo_session_notes,
     export_research_track_record,
 )
 from app.intelligence_benchmark.capture_research_session_track_record import (
@@ -29,6 +28,21 @@ from app.intelligence_benchmark.track_record_path_resolver import (
     resolve_attached_track_record_paths,
 )
 
+
+def _operator_attested_session_notes() -> list[dict]:
+    return [
+        {
+            "entry_id": "attested-valid-1",
+            "outcome": "retained_review_ready",
+            "live_outcome": "human_confirmed_valid",
+            "review_minutes": 12.0,
+            "wall_clock_minutes": 40.0,
+            "report_outcome_ref": "attested-report-1",
+            "package_label": "attested-unguarded-read",
+            "language_family": "python",
+            "notes": "Redacted operator-attested outcome.",
+        }
+    ]
 
 def test_resolve_prefers_cli_over_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     live_cli = tmp_path / "cli-live.json"
@@ -107,10 +121,10 @@ def test_prepare_then_capture_synthetic_keeps_remaining(tmp_path: Path):
 
 
 def test_publish_drop_dir_and_market_auto_attach(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # Build a declared-real export, publish to drop dir, auto-attach via env drop dir
+    # Build an operator-attested export, publish to drop dir, auto-attach via env drop dir.
     export_dir = tmp_path / "export"
     exported = export_research_track_record(
-        session_notes=build_demo_session_notes(),
+        session_notes=_operator_attested_session_notes(),
         program_authorization_id="auth-drop-001",
         declare_real_package=True,
         program_handle="drop-program",
@@ -142,7 +156,7 @@ def test_publish_drop_dir_and_market_auto_attach(tmp_path: Path, monkeypatch: py
     assert market["signals"]["has_real_live_valid_report_outcomes"] is True
 
 
-def test_cli_prepare_and_capture_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_cli_prepare_scaffold_cannot_be_captured_as_real(tmp_path: Path):
     pkg = tmp_path / "pkg"
     drop = tmp_path / "drop"
     code = main(
@@ -173,16 +187,9 @@ def test_cli_prepare_and_capture_publish(tmp_path: Path, monkeypatch: pytest.Mon
             str(drop),
         ]
     )
-    assert code2 == 0
-    assert (drop / "authorized_live_outcomes.export.json").is_file()
-    assert (drop / "human_hour_review_logs.export.json").is_file()
-
-    monkeypatch.setenv(ENV_DROP_DIR, str(drop))
-    delivery_out = tmp_path / "delivery.json"
-    code3 = main(["delivery-readiness", "--out", str(delivery_out)])
-    assert code3 == 0
-    delivery = json.loads(delivery_out.read_text(encoding="utf-8"))
-    assert delivery["remaining_for_full_market_leadership"] == []
+    assert code2 == 2
+    assert not (drop / "authorized_live_outcomes.export.json").exists()
+    assert not (drop / "human_hour_review_logs.export.json").exists()
 
 
 def test_default_drop_dir_name():

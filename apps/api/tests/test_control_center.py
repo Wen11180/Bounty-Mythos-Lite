@@ -685,7 +685,7 @@ def test_control_center_event_stream_uses_cursor_and_closes_before_cancellation(
 
 
 def test_control_center_events_route_is_bounded_filtered_and_unbuffered(monkeypatch):
-    main_module = importlib.import_module("app.main")
+    router_module = importlib.import_module("app.routers.control_center")
     testing_session = build_testing_session()
     calls = []
     preflight_session_closed = False
@@ -706,7 +706,15 @@ def test_control_center_events_route_is_bounded_filtered_and_unbuffered(monkeypa
         calls.append(kwargs)
         yield ": keepalive\n\n"
 
-    monkeypatch.setattr(main_module, "stream_control_center_events", finite_stream)
+    event_routes = [
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/mythos/control-center/events"
+        and "GET" in getattr(route, "methods", set())
+    ]
+    assert len(event_routes) == 1
+
+    monkeypatch.setattr(router_module, "stream_control_center_events", finite_stream)
     app.dependency_overrides[get_session] = override_get_session
     try:
         response = client.get(
@@ -736,7 +744,7 @@ def test_control_center_events_route_is_bounded_filtered_and_unbuffered(monkeypa
 
 
 def test_control_center_events_route_rejects_unknown_campaign_before_streaming(monkeypatch):
-    main_module = importlib.import_module("app.main")
+    router_module = importlib.import_module("app.routers.control_center")
     testing_session = build_testing_session()
     stream_started = False
 
@@ -749,7 +757,7 @@ def test_control_center_events_route_rejects_unknown_campaign_before_streaming(m
         stream_started = True
         yield ": keepalive\n\n"
 
-    monkeypatch.setattr(main_module, "stream_control_center_events", finite_stream)
+    monkeypatch.setattr(router_module, "stream_control_center_events", finite_stream)
     app.dependency_overrides[get_session] = override_get_session
     try:
         response = client.get(

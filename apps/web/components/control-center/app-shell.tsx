@@ -36,7 +36,7 @@ export function AppShell({
   navigation,
   commandBar,
   footer,
-  productName = "Mythos-Lite",
+  productName = "赏金神话·轻量版",
   productDescription = "授权漏洞研究",
 }: AppShellProps) {
   return (

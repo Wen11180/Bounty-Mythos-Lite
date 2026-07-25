@@ -24,6 +24,31 @@ from app.intelligence_benchmark.authorized_live_calibration import (
 )
 
 
+def _operator_attested_session_notes() -> list[dict]:
+    return [
+        {
+            "entry_id": "attested-valid-1",
+            "outcome": "retained_review_ready",
+            "live_outcome": "human_confirmed_valid",
+            "review_minutes": 14.0,
+            "wall_clock_minutes": 48.0,
+            "report_outcome_ref": "attested-report-1",
+            "package_label": "attested-unguarded-read",
+            "language_family": "python",
+            "notes": "Redacted operator-attested outcome.",
+        },
+        {
+            "entry_id": "attested-fp-1",
+            "outcome": "refuted_fp",
+            "live_outcome": "human_confirmed_fp",
+            "review_minutes": 9.0,
+            "wall_clock_minutes": 22.0,
+            "package_label": "attested-owner-guarded",
+            "language_family": "java",
+            "notes": "Redacted operator-attested false positive.",
+        },
+    ]
+
 def _write_pkg_with_session_notes(
     root: Path,
     notes: list[dict] | None = None,
@@ -82,8 +107,10 @@ def test_synthetic_capture_never_flips_real_flags(tmp_path: Path):
     assert (out / "market_after_capture.json").is_file()
 
 
-def test_declared_real_capture_can_close_remaining(tmp_path: Path):
-    pkg = _write_pkg_with_session_notes(tmp_path / "pkg")
+def test_operator_attested_capture_can_close_remaining(tmp_path: Path):
+    pkg = _write_pkg_with_session_notes(
+        tmp_path / "pkg", notes=_operator_attested_session_notes()
+    )
     out = tmp_path / "out"
     result = capture_research_session_track_record(
         package_root=pkg,
@@ -188,7 +215,7 @@ def test_cli_synthetic_capture_keeps_remaining(tmp_path: Path):
     assert payload["execution_allowed"] is False
 
 
-def test_cli_declared_real_capture_closes_remaining(tmp_path: Path):
+def test_cli_declared_real_capture_rejects_scaffold_demo_notes(tmp_path: Path):
     pkg = _write_pkg_with_session_notes(tmp_path / "pkg")
     out = tmp_path / "out"
     manifest = tmp_path / "manifest.json"
@@ -209,11 +236,9 @@ def test_cli_declared_real_capture_closes_remaining(tmp_path: Path):
             str(manifest),
         ]
     )
-    assert code == 0
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    assert payload["export"]["source_kind"] == "authorized_redacted_real"
-    assert payload["remaining_for_full_market_leadership"] == []
-    assert payload["gap_closure"]["full_market_leadership"] is True
+    assert code == 2
+    assert not manifest.exists()
+    assert not (out / "authorized_live_outcomes.export.json").exists()
 
 
 def test_cli_requires_human_allow_export_write(tmp_path: Path):

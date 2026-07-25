@@ -27,7 +27,7 @@ test("workspace summary maps manifest safety state", () => {
   });
 
   assert.equal(summary.name, "acme-api");
-  assert.equal(summary.scopeGuardLabel, "Missing scope");
+  assert.equal(summary.scopeGuardLabel, "缺少范围");
   assert.deepEqual(summary.blockedActions, ["execute_live_validation"]);
 });
 
@@ -42,7 +42,7 @@ test("remote human-lease status exposes expiry and fails closed on gate drift", 
     report_submission_allowed: false,
     human_confirmation_allowed: false,
   });
-  assert.equal(active.label, "Active human lease");
+  assert.equal(active.label, "人工租约生效中");
   assert.equal(active.warning, false);
   assert.match(active.detail, /2026-07-15T12:30:00Z/);
 
@@ -56,7 +56,7 @@ test("remote human-lease status exposes expiry and fails closed on gate drift", 
     report_submission_allowed: false,
     human_confirmation_allowed: false,
   });
-  assert.equal(expired.label, "Expired - re-login required");
+  assert.equal(expired.label, "已过期，需要重新登录");
   assert.equal(expired.warning, true);
 
   const gateDrift = toStudioBlackBoxRemoteStatus({
@@ -69,7 +69,7 @@ test("remote human-lease status exposes expiry and fails closed on gate drift", 
     report_submission_allowed: true,
     human_confirmation_allowed: false,
   });
-  assert.equal(gateDrift.label, "Blocked invalid status");
+  assert.equal(gateDrift.label, "状态契约无效，已阻断");
   assert.equal(gateDrift.warning, true);
 });
 
@@ -106,8 +106,8 @@ test("candidate cards map missing endpoint and code path to review fallbacks", (
   ]);
 
   assert.equal(card.id, "H-001");
-  assert.equal(card.affectedEndpoint, "Endpoint needs review");
-  assert.equal(card.affectedCodePath, "Code path needs review");
+  assert.equal(card.affectedEndpoint, "端点需要审核");
+  assert.equal(card.affectedCodePath, "代码路径需要审核");
   assert.equal(card.status, "needs_review");
 });
 
@@ -148,7 +148,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       status: "needs_review",
       work_item_count: 1,
       priority_order: ["H-002:draft_validation_plan"],
-      next_review_agent: "Evidence Planner",
+      next_review_agent: "证据计划ner",
       review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
       success_criteria: [
         "H-002:draft_validation_plan has traceable evidence: non_destructive_validation_plan.",
@@ -165,7 +165,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       status: "needs_review",
       work_item_count: 1,
       step_count: 1,
-      next_review_agent: "Evidence Planner",
+      next_review_agent: "证据计划ner",
       hallucination_governance: {
         claim_promotion_rule: "no_verified_evidence_no_high_confidence",
         model_output_policy: "llm_claims_start_unverified",
@@ -189,7 +189,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
           work_item_id: "H-002:draft_validation_plan",
           candidate_id: "H-002",
           status: "needs_review",
-          assigned_agent: "Evidence Planner",
+          assigned_agent: "证据计划ner",
           gap: "missing_safe_validation_plan",
           input_refs: ["scope", "policy", "code", "api", "har"],
           review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
@@ -197,7 +197,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
           next_action: "Draft a non-destructive validation plan for H-002.",
           success_criteria: [
             "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
-            "Evidence refs required: non_destructive_validation_plan.",
+            "证据引用 required: non_destructive_validation_plan.",
             "No validation, fuzzing, or report submission is executed.",
           ],
           hallucination_governance_refs: [
@@ -232,15 +232,15 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       status: "needs_review",
       source_plan_id: "candidate_hunter:autonomous_review_plan",
       active_step_count: 1,
-      next_review_agent: "Evidence Planner",
-      review_agents: ["Evidence Planner"],
+      next_review_agent: "证据计划ner",
+      review_agents: ["证据计划ner"],
       required_evidence: ["non_destructive_validation_plan"],
       active_steps: [
         {
           step_id: "candidate_hunter:plan:H-002:draft_validation_plan",
           work_item_id: "H-002:draft_validation_plan",
           candidate_id: "H-002",
-          assigned_agent: "Evidence Planner",
+          assigned_agent: "证据计划ner",
           gap: "missing_safe_validation_plan",
           required_evidence: ["non_destructive_validation_plan"],
           governance_refs: [
@@ -302,7 +302,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
             label: "Non-destructive validation plan is drafted.",
           },
         ],
-        next_human_action: "Human evidence and redaction review required.",
+        next_human_action: "Human evidence and 脱敏审查 required.",
         safety_gate: "human_review_required",
         evidence_need_count: 2,
         false_positive_check_count: 2,
@@ -327,13 +327,13 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
           candidate_id: "H-001",
           priority: "redaction_review_ready",
           quality_score: 95,
-          next_human_action: "Human evidence and redaction review required.",
+          next_human_action: "Human evidence and 脱敏审查 required.",
           safety_gate: "submission_blocked_human_review",
           report_submission_allowed: true,
           validation_execution_allowed: true,
         },
       ],
-      next_human_actions: ["Human evidence and redaction review required."],
+      next_human_actions: ["Human evidence and 脱敏审查 required."],
       safety_gate: "submission_blocked_human_review",
       redaction_review_required: true,
       report_submission_allowed: true,
@@ -343,7 +343,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       pack_id: "studio:agent_handoff:next_review",
       status: "needs_review",
       handoff_item_count: 1,
-      next_review_agent: "Evidence Planner",
+      next_review_agent: "证据计划ner",
       priority_order: ["H-002:draft_validation_plan"],
       review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
       success_criteria: [
@@ -356,7 +356,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
           work_item_id: "H-002:draft_validation_plan",
           candidate_id: "H-002",
           status: "needs_review",
-          assigned_agent: "Evidence Planner",
+          assigned_agent: "证据计划ner",
           gap: "missing_safe_validation_plan",
           input_refs: ["scope", "policy", "code", "api", "har"],
           review_focus: ["safe_validation_plan", "non_destructive_plan_only"],
@@ -415,7 +415,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     agent_queue: [
       {
         task_id: "scope_guard_intake",
-        agent: "Scope Guard",
+        agent: "范围守卫",
         status: "complete",
         safety_gate: "authorized_artifacts_only",
         input_refs: ["scope"],
@@ -437,7 +437,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       },
       {
         task_id: "report_draft_review",
-        agent: "Report Draft Builder",
+        agent: "报告草稿 Builder",
         status: "blocked",
         safety_gate: "submission_blocked",
         input_refs: ["policy", "code", "api", "har"],
@@ -512,7 +512,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       {
         key: "scope_guard",
         status: "complete",
-        summary: "Scope Guard is ready for imported authorized materials.",
+        summary: "范围守卫 is ready for imported authorized materials.",
       },
       {
         key: "target_intake",
@@ -527,7 +527,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
       {
         key: "submission_blocked_report",
         status: "blocked",
-        summary: "Submission-blocked report draft remains review-only.",
+        summary: "提交已阻断的报告草稿 remains review-only.",
       },
     ],
     top_candidates: [
@@ -545,7 +545,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
           execution_allowed: true,
           independent_cross_check_count: 1,
           missing_required_artifact_kinds: [],
-          next_action: "Review trace summary and refutation questions before any validation.",
+          next_action: "任何验证前请审查轨迹摘要和反证问题。",
           present_required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
           report_submission_allowed: true,
           required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
@@ -570,7 +570,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
           status: "cross_checked",
         },
         hypothesis_id: "H-001",
-        next_report_action: "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
+        next_report_action: "审核证据, refutation checks, and safety blockers before exporting a report preview.",
         policy_review_status: "needs_human_review",
         priority_score: 80,
         quality_reasons: [
@@ -592,9 +592,9 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     ],
   });
 
-  assert.equal(panel.modeLabel, "Local AI vulnerability research workbench");
-  assert.equal(panel.scopeGuardLabel, "Scope imported");
-  assert.equal(panel.artifactCoverage, "5/5 required artifacts");
+  assert.equal(panel.modeLabel, "本地 AI 漏洞研究工作台");
+  assert.equal(panel.scopeGuardLabel, "已导入范围");
+  assert.equal(panel.artifactCoverage, "5/5 项必需资料");
   assert.deepEqual(panel.attackSurfaceModel, {
     advisorySignalCount: 2,
     apiRouteCount: 1,
@@ -622,11 +622,11 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     validationAllowed: false,
   });
   assert.equal(panel.advisoryContextLabel, "strategy");
-  assert.equal(panel.candidateCountLabel, "1 Top candidate");
+  assert.equal(panel.candidateCountLabel, "1 个高优先级候选");
   assert.deepEqual(panel.safeNextActions, [
-    "Review top candidates",
-    "Create benchmark template",
-    "Export submission-blocked report",
+    "审查高优先级候选",
+    "创建基准模板",
+    "导出提交已阻断的报告",
   ]);
   assert.deepEqual(panel.blockedActions, [
     "execute_live_validation",
@@ -651,7 +651,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.deepEqual(panel.agentQueue, [
     {
       taskId: "scope_guard_intake",
-      agent: "Scope Guard",
+      agent: "范围守卫",
       status: "complete",
       safetyGate: "authorized_artifacts_only",
       inputRefs: ["scope"],
@@ -673,7 +673,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     },
     {
       taskId: "report_draft_review",
-      agent: "Report Draft Builder",
+      agent: "报告草稿 Builder",
       status: "blocked",
       safetyGate: "submission_blocked",
       inputRefs: ["policy", "code", "api", "har"],
@@ -724,7 +724,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     executionAllowed: false,
     independentCrossCheckCount: 1,
     missingRequiredArtifactKinds: [],
-    nextAction: "Review trace summary and refutation questions before any validation.",
+    nextAction: "任何验证前请审查轨迹摘要和反证问题。",
     presentRequiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
     reportSubmissionAllowed: false,
     requiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
@@ -752,7 +752,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     status: "needs_review",
     workItemCount: 1,
     priorityOrder: ["H-002:draft_validation_plan"],
-    nextReviewAgent: "Evidence Planner",
+    nextReviewAgent: "证据计划ner",
     reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
     successCriteria: [
       "H-002:draft_validation_plan has traceable evidence: non_destructive_validation_plan.",
@@ -769,7 +769,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     status: "needs_review",
     workItemCount: 1,
     stepCount: 1,
-    nextReviewAgent: "Evidence Planner",
+    nextReviewAgent: "证据计划ner",
     hallucinationGovernance: {
       claimPromotionRule: "no_verified_evidence_no_high_confidence",
       modelOutputPolicy: "llm_claims_start_unverified",
@@ -793,7 +793,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         workItemId: "H-002:draft_validation_plan",
         candidateId: "H-002",
         status: "needs_review",
-        assignedAgent: "Evidence Planner",
+        assignedAgent: "证据计划ner",
         gap: "missing_safe_validation_plan",
         inputRefs: ["scope", "policy", "code", "api", "har"],
         reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
@@ -801,7 +801,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         nextAction: "Draft a non-destructive validation plan for H-002.",
         successCriteria: [
           "H-002:draft_validation_plan is reviewed against authorized local artifacts.",
-          "Evidence refs required: non_destructive_validation_plan.",
+          "证据引用 required: non_destructive_validation_plan.",
           "No validation, fuzzing, or report submission is executed.",
         ],
         hallucinationGovernanceRefs: [
@@ -836,15 +836,15 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     status: "needs_review",
     sourcePlanId: "candidate_hunter:autonomous_review_plan",
     activeStepCount: 1,
-    nextReviewAgent: "Evidence Planner",
-    reviewAgents: ["Evidence Planner"],
+    nextReviewAgent: "证据计划ner",
+    reviewAgents: ["证据计划ner"],
     requiredEvidence: ["non_destructive_validation_plan"],
     activeSteps: [
       {
         stepId: "candidate_hunter:plan:H-002:draft_validation_plan",
         workItemId: "H-002:draft_validation_plan",
         candidateId: "H-002",
-        assignedAgent: "Evidence Planner",
+        assignedAgent: "证据计划ner",
         gap: "missing_safe_validation_plan",
         requiredEvidence: ["non_destructive_validation_plan"],
         governanceRefs: [
@@ -906,7 +906,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
           label: "Non-destructive validation plan is drafted.",
         },
       ],
-      nextHumanAction: "Human evidence and redaction review required.",
+      nextHumanAction: "Human evidence and 脱敏审查 required.",
       safetyGate: "human_review_required",
       evidenceNeedCount: 2,
       falsePositiveCheckCount: 2,
@@ -924,13 +924,13 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     candidateCount: 1,
     missingReviewItems: {},
     needsReviewCandidateIds: [],
-    nextHumanActions: ["Human evidence and redaction review required."],
+    nextHumanActions: ["Human evidence and 脱敏审查 required."],
     reportReviewQueue: [
       {
         candidateId: "H-001",
         priority: "redaction_review_ready",
         qualityScore: 95,
-        nextHumanAction: "Human evidence and redaction review required.",
+        nextHumanAction: "Human evidence and 脱敏审查 required.",
         safetyGate: "submission_blocked_human_review",
         reportSubmissionAllowed: false,
         validationExecutionAllowed: false,
@@ -947,7 +947,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
     packId: "studio:agent_handoff:next_review",
     status: "needs_review",
     handoffItemCount: 1,
-    nextReviewAgent: "Evidence Planner",
+    nextReviewAgent: "证据计划ner",
     priorityOrder: ["H-002:draft_validation_plan"],
     reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
     successCriteria: [
@@ -960,7 +960,7 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
         workItemId: "H-002:draft_validation_plan",
         candidateId: "H-002",
         status: "needs_review",
-        assignedAgent: "Evidence Planner",
+        assignedAgent: "证据计划ner",
         gap: "missing_safe_validation_plan",
         inputRefs: ["scope", "policy", "code", "api", "har"],
         reviewFocus: ["safe_validation_plan", "non_destructive_plan_only"],
@@ -992,33 +992,33 @@ test("mission panel maps Studio mission summary into safe desktop workbench stat
   assert.deepEqual(panel.researchLoopStages, [
     {
       key: "scope_guard",
-      label: "Scope Guard",
+      label: "范围守卫",
       status: "complete",
-      summary: "Scope Guard is ready for imported authorized materials.",
+      summary: "范围守卫 is ready for imported authorized materials.",
     },
     {
       key: "target_intake",
-      label: "Target intake",
+      label: "目标接入",
       status: "complete",
       summary: "Required A+B artifacts are present.",
     },
     {
       key: "refutation_review",
-      label: "Refutation review",
+      label: "反证审查",
       status: "needs_review",
       summary: "Candidate refutation questions need human review.",
     },
     {
       key: "submission_blocked_report",
-      label: "Submission-blocked report",
+      label: "提交已阻断的报告",
       status: "blocked",
-      summary: "Submission-blocked report draft remains review-only.",
+      summary: "提交已阻断的报告草稿 remains review-only.",
     },
   ]);
   assert.equal(panel.topCandidates[0]?.reportStatus, "submission_blocked");
   assert.equal(
     panel.topCandidates[0]?.nextReportAction,
-    "Review evidence, refutation checks, and safety blockers before exporting a report preview.",
+    "审核证据, refutation checks, and safety blockers before exporting a report preview.",
   );
   assert.equal(panel.topCandidates[0]?.evidenceReviewStatus, "needs_human_review");
   assert.equal(panel.topCandidates[0]?.deduplicationReviewStatus, "needs_human_review");
@@ -1099,13 +1099,13 @@ test("mission handoff brief summarizes review-only state for another session", (
       status: "needs_review",
       work_item_count: 1,
       step_count: 1,
-      next_review_agent: "Evidence Planner",
+      next_review_agent: "证据计划ner",
       plan_steps: [
         {
           step_id: "candidate_hunter:plan:H-001:draft_validation_plan",
           work_item_id: "H-001:draft_validation_plan",
           candidate_id: "H-001",
-          assigned_agent: "Evidence Planner",
+          assigned_agent: "证据计划ner",
           gap: "missing_safe_validation_plan",
           next_action: "Draft a non-destructive validation plan for H-001.",
           safety_gate: "review_only_no_execution",
@@ -1124,7 +1124,7 @@ test("mission handoff brief summarizes review-only state for another session", (
       loop_id: "candidate_hunter:next_review_loop",
       status: "needs_review",
       active_step_count: 1,
-      next_review_agent: "Evidence Planner",
+      next_review_agent: "证据计划ner",
       execution_allowed: true,
       validation_allowed: true,
       report_submission_allowed: true,
@@ -1198,7 +1198,7 @@ test("mission handoff brief summarizes review-only state for another session", (
       pack_id: "studio:agent_handoff:next_review",
       status: "needs_review",
       handoff_item_count: 1,
-      next_review_agent: "Evidence Planner",
+      next_review_agent: "证据计划ner",
       priority_order: ["H-001:draft_validation_plan"],
       safety_gate: "review_only_no_execution",
       completion_gate: "human_review_required",
@@ -1208,7 +1208,7 @@ test("mission handoff brief summarizes review-only state for another session", (
           handoff_id: "handoff:H-001:draft_validation_plan",
           work_item_id: "H-001:draft_validation_plan",
           candidate_id: "H-001",
-          assigned_agent: "Evidence Planner",
+          assigned_agent: "证据计划ner",
           status: "needs_review",
           gap: "missing_safe_validation_plan",
           next_action: "Draft a non-destructive validation plan for H-001.",
@@ -1223,56 +1223,56 @@ test("mission handoff brief summarizes review-only state for another session", (
 
   const brief = toStudioMissionHandoffBrief(panel);
 
-  assert.match(brief, /Mythos \/ MDASH \/ XBOW style local AI vulnerability research/);
-  assert.match(brief, /Run: pipeline_run_1/);
-  assert.match(brief, /Artifacts: 5\/5 required artifacts/);
-  assert.match(brief, /Quality: passed/);
-  assert.match(brief, /Report: ready_for_redaction_review/);
+  assert.match(brief, /本地人工智能漏洞研究交接（MDASH \/ XBOW 风格）/);
+  assert.match(brief, /运行：pipeline_run_1/);
+  assert.match(brief, /资料：5\/5 项必需资料/);
+  assert.match(brief, /质量：passed/);
+  assert.match(brief, /报告：ready_for_redaction_review/);
   assert.match(
     brief,
-    /Candidate hunter plan: needs_review; steps 1; next reviewer Evidence Planner/,
+    /候选挖掘计划：needs_review；步骤 1；下一审查者 证据计划ner/,
   );
   assert.match(
     brief,
-    /Candidate hunter review loop: needs_review; active steps 1; next reviewer Evidence Planner/,
+    /候选挖掘审查循环：needs_review；活跃步骤 1；下一审查者 证据计划ner/,
   );
   assert.match(
     brief,
-    /Candidate hunter execution loop: needs_review; current phase safe_validation_work; next action H-001 -> safe_validation_work \(85\)/,
+    /候选挖掘执行循环：needs_review；当前阶段 safe_validation_work；下一操作 H-001 -> safe_validation_work（85）/,
   );
   assert.match(
     brief,
-    /Ranked Top 1-5: #1 H-001 missing_safe_validation_plan \(85\)/,
+    /排名前 1-5：#1 H-001 missing_safe_validation_plan（85）/,
   );
   assert.match(
     brief,
-    /Top candidate evidence: trace needs_evidence; ready false; missing non_destructive_validation_plan; missing required artifacts policy/,
+    /高优先级候选证据：轨迹 needs_evidence；就绪 否；缺少 non_destructive_validation_plan；缺少必需资料 policy/,
   );
   assert.match(
     brief,
-    /Top candidate next action: Draft non-destructive validation plan evidence for H-001\./,
+    /高优先级候选下一操作：Draft non-destructive validation plan evidence for H-001\./,
   );
   assert.match(
     brief,
-    /Next candidate action: Draft non-destructive validation plan evidence for H-001\./,
+    /下一候选操作：Draft non-destructive validation plan evidence for H-001\./,
   );
   assert.match(
     brief,
-    /Learning feedback: awaiting_human_outcome; candidates H-001; outcomes confirmed, refuted, needs_more_evidence, duplicate/,
+    /学习反馈：awaiting_human_outcome；候选 H-001；结果 confirmed, refuted, needs_more_evidence, duplicate/,
   );
   assert.match(
     brief,
-    /Learning action: Record human-reviewed outcomes for candidate hunter next actions before updating future ranking\./,
+    /学习操作：Record human-reviewed outcomes for candidate hunter next actions before updating future ranking\./,
   );
   assert.match(
     brief,
-    /Learning review actions: H-001 -> needs_more_evidence; write allowed false/,
+    /学习审核操作：H-001 -> needs_more_evidence；允许写入 否/,
   );
-  assert.match(brief, /Next reviewer: Evidence Planner/);
+  assert.match(brief, /下一审查者：证据计划ner/);
   assert.match(brief, /handoff:H-001:draft_validation_plan/);
-  assert.match(brief, /Safety gate: review_only_no_execution/);
-  assert.match(brief, /Blocked actions: execute_live_validation, run_fuzzer, submit_report/);
-  assert.match(brief, /No validation, fuzzing, or report submission is authorized/);
+  assert.match(brief, /安全审批门：review_only_no_execution/);
+  assert.match(brief, /阻断操作：execute_live_validation, run_fuzzer, submit_report/);
+  assert.match(brief, /此交接不授予验证、模糊测试或报告提交权限/);
   assert.doesNotMatch(brief, /executeValidation|submitReport|send_file/);
 });
 
@@ -1306,7 +1306,7 @@ test("mission panel maps bounded candidate hunter execution loop safely", () => 
           work_item_id: "H-002:draft_validation_plan",
           candidate_id: "H-002",
           gap: "missing_safe_validation_plan",
-          assigned_agent: "Evidence Planner",
+          assigned_agent: "证据计划ner",
           phase_id: "safe_validation_work",
           required_evidence: ["non_destructive_validation_plan"],
           next_action: "Draft a non-destructive validation plan for H-002.",
@@ -1475,7 +1475,7 @@ test("mission panel maps bounded candidate hunter execution loop safely", () => 
         workItemId: "H-002:draft_validation_plan",
         candidateId: "H-002",
         gap: "missing_safe_validation_plan",
-        assignedAgent: "Evidence Planner",
+        assignedAgent: "证据计划ner",
         phaseId: "safe_validation_work",
         requiredEvidence: ["non_destructive_validation_plan"],
         nextAction: "Draft a non-destructive validation plan for H-002.",
@@ -1622,7 +1622,7 @@ test("mission panel maps bounded candidate hunter execution loop safely", () => 
           learningWriteAllowed: false,
         },
         nextAction:
-          "Review H-001 and record a human outcome before updating future ranking.",
+          "审核 H-001 并记录人工结果后，再更新后续排序。",
         reportSubmissionAllowed: false,
         safetyGate: "human_review_required",
         sourceLoopId: "candidate_hunter:bounded_execution_loop",
@@ -1797,7 +1797,7 @@ test("mission panel exposes bounded candidate hunter review queues safely", () =
         "redaction_review",
       ],
       nextAction:
-        "Review and approve the non-destructive validation plan for H-001; execution remains blocked.",
+        "审核并批准 H-001 的非破坏性验证计划；执行仍保持阻断。",
       safetyGate: "human_approval_required",
       executionAllowed: false,
       validationAllowed: false,
@@ -1820,7 +1820,7 @@ test("mission panel exposes bounded candidate hunter review queues safely", () =
       ],
       redactionChecks: ["Remove raw secrets."],
       nextAction:
-        "Draft a submission-blocked report for H-001 and keep submission disabled pending human review.",
+        "为 H-001 起草提交已阻断的报告，等待人工审核期间保持禁止提交。",
       safetyGate: "submission_blocked_human_review",
       executionAllowed: false,
       validationAllowed: false,
@@ -1829,10 +1829,10 @@ test("mission panel exposes bounded candidate hunter review queues safely", () =
   ]);
 
   const brief = toStudioMissionHandoffBrief(panel);
-  assert.match(brief, /Refutation queue: H-001 needs_evidence \(75\)/);
-  assert.match(brief, /Deduplication queue: H-001 duplicate risk 72\/100/);
-  assert.match(brief, /Safe validation queue: H-001 human_approved_non_destructive_plan/);
-  assert.match(brief, /Report draft queue: H-001 submission_blocked/);
+  assert.match(brief, /反证队列：H-001 needs_evidence（75）/);
+  assert.match(brief, /去重队列：H-001，重复风险 72\/100/);
+  assert.match(brief, /安全验证队列：H-001 human_approved_non_destructive_plan/);
+  assert.match(brief, /报告草稿队列：H-001 submission_blocked/);
   assert.doesNotMatch(
     JSON.stringify(panel.candidateHunterExecutionLoop),
     /execute_live_validation|ready_to_submit|submitReport|send_file/i,
@@ -1984,7 +1984,7 @@ test("research readiness requires a workspace plus A+B artifacts", () => {
   });
 
   assert.equal(missingCode.canStart, false);
-  assert.equal(missingCode.reason, "Create or open a workspace before research.");
+  assert.equal(missingCode.reason, "研究前请创建或打开工作区。");
 
   const ready = toStudioResearchReadiness("C:/mythos-workspaces/acme", {
     artifacts: [
@@ -1997,7 +1997,7 @@ test("research readiness requires a workspace plus A+B artifacts", () => {
   });
 
   assert.equal(ready.canStart, true);
-  assert.equal(ready.reason, "Policy, scope, API/HAR, and code are ready for A+B candidate research.");
+  assert.equal(ready.reason, "策略、范围、API/HAR 和代码已就绪，可开展 A+B 候选研究。");
 });
 
 test("research readiness blocks source-only workspaces before A+B materials are imported", () => {
@@ -2009,7 +2009,7 @@ test("research readiness blocks source-only workspaces before A+B materials are 
   });
 
   assert.equal(readiness.canStart, false);
-  assert.equal(readiness.reason, "Import policy and API and HAR before research.");
+  assert.equal(readiness.reason, "研究前请导入策略、API、HAR。");
 });
 
 test("candidate cards expose review rationale and ranking reasons", () => {
@@ -2074,7 +2074,7 @@ test("candidate cards expose report readiness gate", () => {
         report_submission_allowed: true,
         required_evidence_count: 2,
         safe_validation_step_count: 3,
-        next_allowed_action: "Review evidence before exporting a report preview.",
+        next_allowed_action: "审核证据 before exporting a report preview.",
         submission_blocked: false,
         trace_status: "traceable",
       },
@@ -2090,7 +2090,7 @@ test("candidate cards expose report readiness gate", () => {
   assert.equal(card.reportReadiness.traceStatus, "traceable");
   assert.equal(
     card.reportReadiness.nextAllowedAction,
-    "Review evidence before exporting a report preview.",
+    "审核证据 before exporting a report preview.",
   );
 });
 
@@ -2133,7 +2133,7 @@ test("candidate cards expose evidence trace summary safely", () => {
         execution_allowed: true,
         independent_cross_check_count: 1,
         missing_required_artifact_kinds: [],
-        next_action: "Review trace summary and refutation questions before any validation.",
+        next_action: "任何验证前请审查轨迹摘要和反证问题。",
         present_required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
         report_submission_allowed: true,
         required_artifact_kinds: ["scope", "policy", "code", "api", "har"],
@@ -2152,7 +2152,7 @@ test("candidate cards expose evidence trace summary safely", () => {
     executionAllowed: false,
     independentCrossCheckCount: 1,
     missingRequiredArtifactKinds: [],
-    nextAction: "Review trace summary and refutation questions before any validation.",
+    nextAction: "任何验证前请审查轨迹摘要和反证问题。",
     presentRequiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
     reportSubmissionAllowed: false,
     requiredArtifactKinds: ["scope", "policy", "code", "api", "har"],
@@ -2242,7 +2242,7 @@ test("candidate report next action names evidence gaps before export", () => {
       report_readiness: {
         status: "submission_blocked",
         report_submission_allowed: false,
-        next_allowed_action: "Review evidence before exporting a report preview.",
+        next_allowed_action: "审核证据 before exporting a report preview.",
       },
       safe_verification: true,
     },
@@ -2250,7 +2250,7 @@ test("candidate report next action names evidence gaps before export", () => {
 
   assert.equal(
     card.reportReadiness.nextAllowedAction,
-    "Resolve candidate evidence gaps before exporting a report preview: code: missing_code_path; har: missing_required_artifact.",
+    "导出报告预览前请处理候选证据缺口：code: missing_code_path；har: missing_required_artifact。",
   );
 });
 
@@ -2331,7 +2331,7 @@ test("campaign hunter suggestions map into review-only Studio candidate cards", 
         safety_gate: "awaiting_evidence_review",
         source: "mythos_pipeline_autonomous_hunt_queue",
         surface_key: "GET /files/{file_id}/export",
-        title: "Review autonomous hunt candidate",
+        title: "审核自动挖掘候选",
         validation_step_count: 3,
       },
     ],
@@ -2384,8 +2384,8 @@ test("studio page exposes the four studio regions", async () => {
   assert.match(studioSource, /工作区导航/);
   assert.match(studioSource, /ResearchConversation/);
   assert.match(studioSource, /CandidateInspector/);
-  assert.match(studioSource, /Mission details/);
-  assert.match(studioSource, /submission-blocked/);
+  assert.match(studioSource, /任务详情/);
+  assert.match(studioSource, /报告提交已阻断/);
 });
 
 test("studio page mounts the interactive local workbench", async () => {
@@ -2408,13 +2408,13 @@ test("studio page mounts the interactive local workbench", async () => {
   assert.match(workbench, /exportStudioWorkspaceMissionDossier/);
   assert.match(workbench, /runStudioWorkspaceBenchmark/);
   assert.match(workbench, /createStudioWorkspaceBenchmarkTemplate/);
-  assert.match(workbench, /Create workspace/);
-  assert.match(workbench, /Start local research/);
-  assert.match(workbench, /Launch campaign hunter/);
-  assert.match(workbench, /Export report preview/);
-  assert.match(workbench, /Export mission dossier/);
-  assert.match(workbench, /Run benchmark/);
-  assert.match(workbench, /Create template/);
+  assert.match(workbench, /创建工作区/);
+  assert.match(workbench, /开始本地研究/);
+  assert.match(workbench, /启动项目候选挖掘/);
+  assert.match(workbench, /导出报告预览/);
+  assert.match(workbench, /导出任务档案/);
+  assert.match(workbench, /运行基准测试/);
+  assert.match(workbench, /创建模板/);
 });
 
 test("studio workbench records rejected mutations as blocked run-log entries", async () => {
@@ -2424,16 +2424,16 @@ test("studio workbench records rejected mutations as blocked run-log entries", a
   );
 
   assert.match(workbench, /function pushMutationFailure/);
-  assert.match(workbench, /pushMutationFailure\("Workspace open", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Workspace creation", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Artifact import", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Research run", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Campaign hunter launch", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Learning feedback", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Report preview export", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Mission dossier export", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Candidate benchmark", error\)/);
-  assert.match(workbench, /pushMutationFailure\("Benchmark template", error\)/);
+  assert.match(workbench, /pushMutationFailure\("打开工作区", error\)/);
+  assert.match(workbench, /pushMutationFailure\("创建工作区", error\)/);
+  assert.match(workbench, /pushMutationFailure\("导入资料", error\)/);
+  assert.match(workbench, /pushMutationFailure\("研究运行", error\)/);
+  assert.match(workbench, /pushMutationFailure\("启动项目候选挖掘", error\)/);
+  assert.match(workbench, /pushMutationFailure\("学习反馈", error\)/);
+  assert.match(workbench, /pushMutationFailure\("导出报告预览", error\)/);
+  assert.match(workbench, /pushMutationFailure\("导出任务档案", error\)/);
+  assert.match(workbench, /pushMutationFailure\("候选基准测试", error\)/);
+  assert.match(workbench, /pushMutationFailure\("基准模板", error\)/);
   assert.match(workbench, /pushLog\([^;]+, "blocked"\)/s);
 });
 
@@ -2446,7 +2446,7 @@ test("studio workbench can open an existing local workspace", async () => {
   assert.match(workbench, /getStudioWorkspaceManifestRequired/);
   assert.match(workbench, /getCampaignControlCenterRequired/);
   assert.match(workbench, /handleOpenWorkspace/);
-  assert.match(workbench, /Open workspace/);
+  assert.match(workbench, /打开工作区/);
   assert.match(workbench, /refreshStudioProjection/);
   assert.match(workbench, /studioRefreshDependencies/);
   assert.match(workbench, /applyStudioProjection/);
@@ -2463,8 +2463,8 @@ test("studio workbench restores exported report drafts from workspace manifest",
   assert.match(live, /manifest\.runs \?\? \[\]/);
   assert.match(live, /manifest\.campaign_hunter_runs \?\? \[\]/);
   assert.match(live, /run\?\.report_markdown_path/);
-  assert.match(live, /Submission-blocked campaign hunter draft/);
-  assert.match(live, /Submission-blocked report draft/);
+  assert.match(live, /提交已阻断的项目候选挖掘草稿/);
+  assert.match(live, /提交已阻断的报告草稿/);
   assert.match(live, /report_submission_allowed: false/);
   assert.match(live, /restored_from_manifest: true/);
 });
@@ -2479,10 +2479,10 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /toStudioMissionPanel/);
   assert.match(workbench, /toStudioMissionHandoffBrief/);
   assert.match(workbench, /missionPanel/);
-  assert.match(workbench, /Mission control/);
-  assert.match(workbench, /Handoff brief/);
-  assert.match(workbench, /Research loop/);
-  assert.match(workbench, /Agent queue/);
+  assert.match(workbench, /任务控制/);
+  assert.match(workbench, /交接摘要/);
+  assert.match(workbench, /研究循环/);
+  assert.match(workbench, /智能体队列/);
   assert.match(workbench, /missionPanel\.artifactCoverage/);
   assert.match(workbench, /missionPanel\.attackSurfaceModel/);
   assert.match(workbench, /missionPanel\.agentQueue/);
@@ -2490,7 +2490,7 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.studioTimelineSummary/);
   assert.match(workbench, /missionPanel\.submissionBlockedReportSummary/);
   assert.match(workbench, /missionPanel\.candidateReviewPackets/);
-  assert.match(workbench, /Redacted evidence review queue/);
+  assert.match(workbench, /脱敏证据审查队列/);
   assert.match(workbench, /missionPanel\.agentHandoffPack/);
   assert.match(workbench, /missionPanel\.candidateHunterIteration/);
   assert.match(workbench, /missionPanel\.candidateHunterPlan/);
@@ -2501,16 +2501,16 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.deduplicationQueue/);
   assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.safeValidationQueue/);
   assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.reportDraftQueue/);
-  assert.match(workbench, /Candidate hunter plan/);
-  assert.match(workbench, /Candidate hunter plan steps/);
-  assert.match(workbench, /Candidate hunter review loop/);
-  assert.match(workbench, /Candidate hunter review loop steps/);
-  assert.match(workbench, /Candidate hunter refutation queue/);
-  assert.match(workbench, /Candidate hunter evidence matrix/);
-  assert.match(workbench, /Candidate hunter ranked Top 1-5/);
-  assert.match(workbench, /Candidate hunter deduplication queue/);
-  assert.match(workbench, /Candidate hunter safe validation queue/);
-  assert.match(workbench, /Candidate hunter report draft queue/);
+  assert.match(workbench, /候选挖掘计划/);
+  assert.match(workbench, /候选挖掘计划步骤/);
+  assert.match(workbench, /候选挖掘审查循环/);
+  assert.match(workbench, /候选挖掘审查循环步骤/);
+  assert.match(workbench, /候选挖掘反证队列/);
+  assert.match(workbench, /候选挖掘证据矩阵/);
+  assert.match(workbench, /候选挖掘排名前 1-5/);
+  assert.match(workbench, /候选挖掘去重队列/);
+  assert.match(workbench, /候选挖掘安全验证队列/);
+  assert.match(workbench, /候选挖掘报告草稿队列/);
   assert.match(workbench, /agentTaskTimelineLine/);
   assert.match(workbench, /studioTimelineSummaryLine/);
   assert.match(workbench, /submissionBlockedReportSummaryLine/);
@@ -2531,10 +2531,10 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missingEvidence/);
   assert.match(workbench, /missingRequiredArtifactKinds/);
   assert.match(workbench, /learningEvidenceNeededReasons/);
-  assert.match(workbench, /learned evidence/);
+  assert.match(workbench, /学习证据/);
   assert.match(workbench, /hunterPriorityScore/);
   assert.match(workbench, /rankingSignalBreakdown/);
-  assert.match(workbench, /required evidence/);
+  assert.match(workbench, /所需证据/);
   assert.match(workbench, /candidateHunterDeduplicationQueueLine/);
   assert.match(workbench, /candidateHunterSafeValidationQueueLine/);
   assert.match(workbench, /candidateHunterReportDraftQueueLine/);
@@ -2544,9 +2544,9 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /missionPanel\.researchLoopStages/);
   assert.match(workbench, /missionPanel\.safeNextActions/);
   assert.match(workbench, /missionPanel\.qualitySummary/);
-  assert.match(workbench, /Mission quality blockers/);
-  assert.match(workbench, /Candidate improvement actions/);
-  assert.match(workbench, /Attack surface model/);
+  assert.match(workbench, /任务质量阻断项/);
+  assert.match(workbench, /候选改进操作/);
+  assert.match(workbench, /攻击面模型/);
   assert.match(workbench, /attackSurfaceModelLine/);
   assert.match(workbench, /attackSurfaceRouteLine/);
   assert.match(workbench, /missionPanel\.topCandidates/);
@@ -2556,8 +2556,8 @@ test("studio workbench reads mission summary for desktop workbench state", async
   assert.match(workbench, /candidate\.hallucinationGuard/);
   assert.match(workbench, /handleExportMissionDossier/);
   assert.match(workbench, /missionDossierExport/);
-  assert.match(workbench, /Mission dossier exported/);
-  assert.match(workbench, /review-only/);
+  assert.match(workbench, /导出任务档案/);
+  assert.match(workbench, /报告提交已阻断/);
   assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
 });
 
@@ -2568,7 +2568,7 @@ test("studio workbench imports policy as a first-class authorized artifact", asy
   );
 
   assert.match(workbench, /policyPath/);
-  assert.match(workbench, /Policy file/);
+  assert.match(workbench, /策略文件/);
   assert.match(workbench, /kind: "policy"/);
 });
 
@@ -2579,7 +2579,7 @@ test("studio workbench imports HAR as a first-class authorized artifact", async 
   );
 
   assert.match(workbench, /harPath/);
-  assert.match(workbench, /HAR file/);
+  assert.match(workbench, /HAR 文件/);
   assert.match(workbench, /kind: "har"/);
 });
 
@@ -2591,8 +2591,8 @@ test("studio workbench imports SBOM and SARIF as optional local context", async 
 
   assert.match(workbench, /sbomPath/);
   assert.match(workbench, /sarifPath/);
-  assert.match(workbench, /SBOM file/);
-  assert.match(workbench, /SARIF file/);
+  assert.match(workbench, /SBOM 文件/);
+  assert.match(workbench, /SARIF 文件/);
   assert.match(workbench, /kind: "sbom"/);
   assert.match(workbench, /kind: "sarif"/);
   assert.match(workbench, /setSbomPath/);
@@ -2608,9 +2608,9 @@ test("studio workbench imports strategy and fuzzing plans as optional advisory c
   assert.match(workbench, /strategyPath/);
   assert.match(workbench, /fuzzingPath/);
   assert.match(workbench, /knowledgePath/);
-  assert.match(workbench, /Strategy file/);
-  assert.match(workbench, /Fuzzing plan/);
-  assert.match(workbench, /Knowledge file/);
+  assert.match(workbench, /策略文件/);
+  assert.match(workbench, /模糊测试计划/);
+  assert.match(workbench, /知识文件/);
   assert.match(workbench, /kind: "strategy"/);
   assert.match(workbench, /kind: "fuzzing"/);
   assert.match(workbench, /kind: "knowledge"/);
@@ -2634,7 +2634,7 @@ test("studio workbench shows artifact readiness before research", async () => {
 
   assert.match(workbench, /toStudioArtifactChecklist/);
   assert.match(workbench, /toStudioResearchReadiness/);
-  assert.match(workbench, /Artifact readiness/);
+  assert.match(workbench, /资料就绪状态/);
   assert.match(workbench, /researchReadiness\.reason/);
   assert.match(workbench, /disabled=\{!researchReadiness\.canStart\}/);
 });
@@ -2645,22 +2645,22 @@ test("studio workbench guides the first local research run", async () => {
     "utf8",
   );
 
-  assert.match(workbench, /Local research setup/);
+  assert.match(workbench, /本地研究设置/);
   assert.match(workbench, /currentWizardStep/);
   assert.match(workbench, /wizardSteps/);
-  assert.match(workbench, /Workspace selected/);
-  assert.match(workbench, /Authorized materials/);
-  assert.match(workbench, /Readiness check/);
-  assert.match(workbench, /Candidate review/);
-  assert.match(workbench, /submission-blocked report draft/);
-  assert.match(workbench, /Import authorized materials/);
-  assert.match(workbench, /Start local research/);
-  assert.match(workbench, /Next safe action/);
+  assert.match(workbench, /已选择工作区/);
+  assert.match(workbench, /授权材料/);
+  assert.match(workbench, /就绪检查/);
+  assert.match(workbench, /候选审查/);
+  assert.match(workbench, /已阻断提交的报告草稿/);
+  assert.match(workbench, /导入授权材料/);
+  assert.match(workbench, /开始本地研究/);
+  assert.match(workbench, /建议的安全操作/);
   assert.match(workbench, /nextSafeAction/);
-  assert.match(workbench, /Review selected candidate/);
-  assert.match(workbench, /Required inputs/);
-  assert.match(workbench, /Missing required inputs/);
-  assert.match(workbench, /Optional context/);
+  assert.match(workbench, /审查所选候选/);
+  assert.match(workbench, /必需输入/);
+  assert.match(workbench, /缺少必需输入/);
+  assert.match(workbench, /可选上下文/);
   assert.match(workbench, /missingRequiredArtifacts/);
   assert.match(workbench, /optionalContextArtifacts/);
   assert.match(workbench, /handleCreateWorkspace/);
@@ -2671,7 +2671,7 @@ test("studio workbench guides the first local research run", async () => {
   assert.doesNotMatch(workbench, /localCandidateHuntInputReady/);
   assert.match(workbench, /recordCandidateHunterLearningOutcome/);
   assert.match(workbench, /handleRecordCandidateHunterLearning/);
-  assert.match(workbench, /Candidate hunter learning feedback/);
+  assert.match(workbench, /候选挖掘学习反馈/);
   assert.match(workbench, /handleExportReport/);
   assert.doesNotMatch(workbench, /Submit report/);
 });
@@ -2696,8 +2696,8 @@ test("studio workbench runs local research once after authorized inputs are read
   assert.match(startHandler, /applyStudioProjection\(projection\)/u);
   assert.doesNotMatch(startHandler, /setManifest|setLatestRunId|setCandidates|setMissionPanel/u);
   assert.doesNotMatch(startHandler, /listStudioWorkspaceCandidates\(|refreshMissionPanel\(/u);
-  assert.match(workbench, /Research run/);
-  assert.match(workbench, /submission-blocked candidates/);
+  assert.match(workbench, /研究运行/);
+  assert.match(workbench, /报告提交已阻断的候选/);
   assert.match(workbench, /disabled:\s*!researchReadiness\.canStart/);
   assert.doesNotMatch(workbench, /handleRunLocalCandidateHunt|busy === "candidate-hunt"/);
   assert.doesNotMatch(workbench, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
@@ -2715,12 +2715,12 @@ test("studio workbench model assistance is explicit default-off and single-run",
   );
   assert.match(workbench, /candidateModelProvider/);
   assert.match(workbench, /candidateModelName/);
-  assert.match(workbench, /Model assistance for next run only/);
+  assert.match(workbench, /仅在下一次运行中启用模型辅助/);
   assert.match(workbench, /candidateModelEnabled \? \(/);
   assert.match(workbench, /value="openai"/);
   assert.match(workbench, /value="claude"/);
   assert.match(workbench, /value="deepseek"/);
-  assert.match(workbench, /Model name/);
+  assert.match(workbench, /模型名称/);
   assert.match(workbench, /function studioResearchRunRequest/);
   assert.match(workbench, /if \(!candidateModelEnabled\)/);
   assert.match(workbench, /if \(!candidateModelName\.trim\(\)\)/);
@@ -2745,15 +2745,15 @@ test("studio workbench exposes a redacted evidence review queue", async () => {
   );
   const source = `${workbench}\n${evidenceInspector}`;
 
-  assert.match(source, /Redacted evidence review queue/);
+  assert.match(source, /脱敏证据审查队列/);
   assert.match(workbench, /missionPanel\.candidateReviewPackets\.map\(redactedEvidenceReviewLine\)/);
   assert.match(workbench, /function redactedEvidenceReviewLine/);
-  assert.match(source, /原始 secrets、tokens、cookies、authorization headers 与用户数据保持排除/);
+  assert.match(source, /原始密钥、令牌、Cookie、授权请求头与用户数据均保持排除/);
   assert.match(source, /脱敏审查/);
-  assert.match(source, /evidence needs/);
-  assert.match(source, /execution blocked/);
-  assert.match(source, /validation blocked/);
-  assert.match(source, /submission blocked/);
+  assert.match(source, /证据重点/);
+  assert.match(source, /执行已阻断/);
+  assert.match(source, /验证已阻断/);
+  assert.match(source, /报告提交已阻断/);
   assert.doesNotMatch(source, /Authorization\s*[:=]|secret-token|raw_cookie|raw_token/i);
   assert.doesNotMatch(source, /executeValidation|submitReport|runFuzzer|executeFuzzing/);
 });
@@ -2769,10 +2769,10 @@ test("studio workbench records candidate hunter learning only after human review
   assert.match(workbench, /toCandidateHunterLearningOutcome/);
   assert.doesNotMatch(workbench, /studioLearningFallbackProfile/);
   assert.match(workbench, /reviewer: "studio-human-review"/);
-  assert.match(workbench, /validation and submission remain blocked/);
+  assert.match(workbench, /验证和报告提交仍保持阻断/);
   assert.match(workbench, /learningProfile/);
-  assert.match(workbench, /Recent learning signal/);
-  assert.match(workbench, /Record suggested outcome/);
+  assert.match(workbench, /最近学习信号/);
+  assert.match(workbench, /记录建议结果/);
   assert.match(workbench, /missionPanel\.candidateHunterExecutionLoop\.learningReviewActions/);
   assert.match(workbench, /learningSignalTemplate/);
   assert.match(workbench, /playbook_id: action\.learningSignalTemplate\?\.playbookId/);
@@ -2781,17 +2781,17 @@ test("studio workbench records candidate hunter learning only after human review
     /learning_evidence_needed_reasons: action\.learningEvidenceNeededReasons/,
   );
   assert.match(workbench, /target_relationships: action\.learningSignalTemplate\?\.targetRelationships/);
-  assert.match(workbench, /Learning signal template/);
+  assert.match(workbench, /学习信号模板/);
   assert.match(workbench, /playbook/);
   assert.match(workbench, /surface/);
   assert.match(workbench, /handleRecordCandidateCardLearning/);
-  assert.match(workbench, /Record needs-evidence learning/);
-  assert.match(workbench, /Record refuted learning/);
-  assert.match(workbench, /Record duplicate learning/);
+  assert.match(workbench, /记录需补充证据的学习结果/);
+  assert.match(workbench, /记录已反证的学习结果/);
+  assert.match(workbench, /记录重复项学习结果/);
   assert.match(workbench, /handleRecordCandidateCardLearning\(studioView\.selectedCandidate!, "needs_more_evidence"\)/);
   assert.match(workbench, /handleRecordCandidateCardLearning\(studioView\.selectedCandidate!, "refuted"\)/);
   assert.match(workbench, /handleRecordCandidateCardLearning\(studioView\.selectedCandidate!, "duplicate"\)/);
-  assert.match(workbench, /human outcome \$\{outcome\}/);
+  assert.match(workbench, /人工结果：\$\{formatLabel\(outcome\)\}/);
   assert.match(workbench, /candidate\.evidenceTraceSummary\.missingRequiredArtifactKinds/);
   assert.match(workbench, /candidate\.reportReadiness\.nextAllowedAction/);
   assert.doesNotMatch(workbench, /Record confirmed learning/);
@@ -2805,17 +2805,17 @@ test("studio workbench runs local A+B benchmarks from expectation files", async 
   );
 
   assert.match(workbench, /expectationsPath/);
-  assert.match(workbench, /Expectation file/);
-  assert.match(workbench, /Select benchmark expectation file/);
+  assert.match(workbench, /期望结果文件/);
+  assert.match(workbench, /选择基准期望结果文件/);
   assert.match(workbench, /handleRunBenchmark/);
   assert.match(workbench, /handleCreateBenchmarkTemplate/);
   assert.match(workbench, /createStudioWorkspaceBenchmarkTemplate/);
   assert.match(workbench, /runStudioWorkspaceBenchmark/);
-  assert.match(workbench, /Candidate benchmark/);
-  assert.match(workbench, /Benchmark expectation template created for human review/);
+  assert.match(workbench, /候选基准测试/);
+  assert.match(workbench, /已创建基准期望结果模板/);
   assert.match(workbench, /benchmarkResult/);
   assert.match(workbench, /benchmark_path/);
-  assert.match(workbench, /Evidence gaps/);
+  assert.match(workbench, /证据缺口/);
   assert.match(workbench, /benchmark\.evidence_gaps/);
   assert.match(workbench, /disabled=\{!latestRunId\}/);
   assert.doesNotMatch(workbench, /submitReport/);
@@ -2883,16 +2883,16 @@ test("studio workbench exposes explicit non-persistent local black-box lab contr
   assert.match(workbench, /stopBlackBoxRecording/);
   assert.match(workbench, /runBlackBoxTrial/);
   assert.match(workbench, /closeBlackBoxSessions/);
-  assert.match(workbench, /<details[^>]*>\s*<summary[^>]*>Enable explicit local black-box lab/s);
-  assert.match(workbench, /Ephemeral only - not written to workspace manifest/);
-  assert.match(workbench, /Session A ready/);
-  assert.match(workbench, /Session B ready/);
-  assert.match(workbench, /Preview bounded lease/);
-  assert.match(workbench, /Create two sessions/);
-  assert.match(workbench, /Start recording/);
-  assert.match(workbench, /Stop recording/);
-  assert.match(workbench, /Review normalized traces/);
-  assert.match(workbench, /Review and approve complete plan/);
+  assert.match(workbench, /<details[^>]*>\s*<summary[^>]*>启用显式本地黑盒实验室/s);
+  assert.match(workbench, /不会写入工作区清单/);
+  assert.match(workbench, /会话 A 已就绪/);
+  assert.match(workbench, /会话 B 已就绪/);
+  assert.match(workbench, /预览受限租约/);
+  assert.match(workbench, /创建两个会话/);
+  assert.match(workbench, /开始录制/);
+  assert.match(workbench, /停止录制/);
+  assert.match(workbench, /审查标准化轨迹/);
+  assert.match(workbench, /审查并批准完整计划/);
   const approvalStart = workbench.indexOf("async function handleApproveBlackBoxLabRun");
   const approvalEnd = workbench.indexOf("async function handleCloseBlackBoxSessions");
   assert.ok(approvalStart >= 0 && approvalEnd > approvalStart);
@@ -2901,11 +2901,11 @@ test("studio workbench exposes explicit non-persistent local black-box lab contr
     /finally \{[\s\S]*setBusy\(null\);[\s\S]*labDispatchInFlight\.current = false;/,
   );
   assert.doesNotMatch(workbench, /Confirm bounded lab run|Run approved trial/);
-  assert.match(workbench, /Stop local lab/);
+  assert.match(workbench, /停止本地实验室/);
   assert.match(workbench, /approval\.approved_session_alias/);
   assert.match(workbench, /approval\.approved_workflow_alias/);
   assert.equal(workbench.match(/await bridge\.runBlackBoxTrial\(/g)?.length, 1);
-  assert.match(workbench, /Bounded result/);
+  assert.match(workbench, /受限结果/);
 
   const labStart = workbench.indexOf("function blackBoxLabLeaseRequest");
   const labEnd = workbench.indexOf("async function handleOpenWorkspace");
@@ -2925,10 +2925,10 @@ test("studio workbench shows remote human-lease status without execution control
 
   assert.match(workbench, /getStudioBlackBoxRemoteStatus/);
   assert.match(workbench, /toStudioBlackBoxRemoteStatus/);
-  assert.match(workbench, /Remote human-lease profile \(read-only\)/);
-  assert.match(workbench, /Refresh remote status/);
-  assert.match(workbench, /Report submission remains blocked/);
-  assert.match(workbench, /Re-login required/);
+  assert.match(workbench, /远程人工租约配置（只读）/);
+  assert.match(workbench, /刷新远程状态/);
+  assert.match(workbench, /报告提交已阻断/);
+  assert.match(workbench, /需要重新登录/);
   assert.doesNotMatch(workbench, /Run remote trial|Enable remote automation|issueRemoteBlackBoxLease/);
 });
 
@@ -2943,7 +2943,7 @@ test("studio workbench surfaces exported markdown report drafts", async () => {
   );
 
   assert.match(workbench, /report_markdown_path/);
-  assert.match(reportInspector, /Markdown draft/);
+  assert.match(reportInspector, /Markdown 草稿/);
 });
 
 test("studio workbench surfaces candidate rationale and ranking reasons", async () => {
@@ -2953,7 +2953,7 @@ test("studio workbench surfaces candidate rationale and ranking reasons", async 
   );
 
   assert.match(source, /candidate\?\.reason/);
-  assert.match(source, /Ranking reasons/);
+  assert.match(source, /排序原因/);
   assert.match(source, /candidate\?\.rankingReasons/);
 });
 
@@ -2964,8 +2964,8 @@ test("studio workbench surfaces validation plan and safety blockers", async () =
   );
 
   assert.match(source, /安全验证计划/);
-  assert.match(source, /Safety blockers/);
-  assert.match(source, /Candidate evidence gaps/);
+  assert.match(source, /安全阻断项/);
+  assert.match(source, /候选证据缺口/);
   assert.match(source, /candidate\?\.evidenceGaps/);
   assert.match(source, /candidate\?\.validationMode/);
 });
@@ -3062,8 +3062,8 @@ test("studio control center localizes missing traces and fails hostile permissio
 });
 
 test("studio conversation labels only explicit operator messages as researcher", () => {
-  assert.equal(toStudioConversationActorLabel(), "Mythos Agent");
-  assert.equal(toStudioConversationActorLabel("system"), "Mythos Agent");
+  assert.equal(toStudioConversationActorLabel(), "研究智能体");
+  assert.equal(toStudioConversationActorLabel("system"), "研究智能体");
   assert.equal(toStudioConversationActorLabel("operator"), "研究员");
 });
 
@@ -3128,7 +3128,7 @@ test("studio workbench renders one research entry and no legacy board or run log
     new URL("../app/studio/studio-workbench.tsx", import.meta.url),
     "utf8",
   );
-  assert.equal(workbench.match(/label:\s*"Start local research"/g)?.length, 1);
+  assert.equal(workbench.match(/label:\s*"开始本地研究"/g)?.length, 1);
   assert.doesNotMatch(workbench, /label="Run local candidate hunt"/);
   assert.doesNotMatch(workbench, /SectionHeader title="Candidate Board"/);
   assert.doesNotMatch(workbench, /SectionHeader title="Safety and Run Log"/);
@@ -3139,7 +3139,7 @@ test("studio workbench surfaces falsification why still alive", async () => {
     "utf8",
   );
 
-  assert.match(source, /Why still alive/);
+  assert.match(source, /保留原因/);
   assert.match(source, /candidate\?\.whyStillAlive/);
   assert.match(source, /candidate\?\.falsificationSummary\.openDimensions/);
 });
@@ -3170,18 +3170,18 @@ test("studio workbench exposes each primary mutation on one surface", async () =
     "utf8",
   );
 
-  assert.equal(workbench.match(/label="Open workspace"/g)?.length, 1);
-  assert.equal(workbench.match(/label="Create workspace"/g)?.length, 1);
+  assert.equal(workbench.match(/label="打开工作区"/g)?.length, 1);
+  assert.equal(workbench.match(/label="创建工作区"/g)?.length, 1);
   assert.doesNotMatch(workbench, /label="Run local candidate hunt"/);
-  assert.equal(workbench.match(/label="Launch campaign hunter"/g)?.length, 1);
-  assert.equal(workbench.match(/label="Export report preview"/g)?.length, 1);
-  assert.equal(workbench.match(/label="Export mission dossier"/g)?.length, 1);
+  assert.equal(workbench.match(/label="启动项目候选挖掘"/g)?.length, 1);
+  assert.equal(workbench.match(/label="导出报告预览"/g)?.length, 1);
+  assert.equal(workbench.match(/label="导出任务档案"/g)?.length, 1);
   assert.doesNotMatch(workbench, /wizardPrimaryAction/);
   assert.doesNotMatch(workbench, /handleRunLocalCandidateHunt/);
   assert.equal(workbench.match(/runStudioResearchOnce\(/g)?.length, 2);
   assert.match(
     workbench,
-    /label:\s*"Start local research"[\s\S]{0,180}onClick:\s*handleStartResearch/u,
+    /label:\s*"开始本地研究"[\s\S]{0,180}onClick:\s*handleStartResearch/u,
   );
   assert.match(reportInspector, /actions\?: ReactNode/);
 });
@@ -3197,8 +3197,8 @@ test("studio logs default to system and mark explicit operator decisions", async
     /function pushLog\([\s\S]{0,160}actor: LogEntry\["actor"\] = "system"/,
   );
   assert.match(workbench, /setLog\(\(entries\) => \[\{ actor, message, tone \}/);
-  assert.match(workbench, /Normalized alias-only traces reviewed[\s\S]{0,200}"operator"/);
-  assert.match(workbench, /Recorded \$\{outcome\} learning feedback[\s\S]{0,200}"operator"/);
+  assert.match(workbench, /已审查仅含别名的标准化轨迹[\s\S]{0,200}"operator"/);
+  assert.match(workbench, /已为 \$\{action\.candidateId\} 记录[\s\S]{0,200}"operator"/);
 });
 
 test("studio redesigned sections avoid nested bordered card containers", async () => {
@@ -3247,5 +3247,5 @@ test("opening a workspace uses the same strict atomic projection primitive as li
   assert.doesNotMatch(openHandler, /listStudioWorkspaceCandidates\(/u);
   assert.doesNotMatch(openHandler, /getStudioWorkspaceMission\(/u);
   assert.doesNotMatch(openHandler, /getCampaignControlCenter\(/u);
-  assert.match(openHandler, /pushMutationFailure\("Workspace open", error\)/u);
+  assert.match(openHandler, /pushMutationFailure\("打开工作区", error\)/u);
 });

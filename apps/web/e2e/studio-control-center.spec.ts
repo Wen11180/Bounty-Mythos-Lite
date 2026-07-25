@@ -178,7 +178,7 @@ async function mockStudioApi(
             risk: "high",
             safe_validation_plan: ["在隔离 local-lab 中使用两个别名账户比较状态类别"],
             safe_verification: true,
-            vuln_type: "IDOR candidate",
+            vuln_type: "越权访问候选（IDOR）",
           },
           {
             affected_code_path: "src/services/preview.ts:18",
@@ -222,7 +222,7 @@ async function mockStudioApi(
         gates: { submission_blocked: true, validation_execution_allowed: false },
         mode: "live",
         research_loop_stages: [
-          { key: "policy", status: "complete", summary: "Scope Guard 已审查" },
+          { key: "policy", status: "complete", summary: "范围守卫 已审查" },
           { key: "audit", status: "needs_review", summary: "候选需要人工证据审查" },
         ],
         run_id: runId,
@@ -278,10 +278,10 @@ async function openWorkspace(
   await installStudioBridge(page);
   const mock = await mockStudioApi(page, options);
   await page.goto("/studio");
-  const workspaceInput = page.getByLabel("Workspace path");
+  const workspaceInput = page.getByLabel("工作区路径");
   await expect(workspaceInput).toHaveCount(1);
   await workspaceInput.fill(workspacePath);
-  const openButton = page.getByRole("button", { name: "Open workspace" });
+  const openButton = page.getByRole("button", { name: "打开工作区" });
   await expect(openButton).toHaveCount(1);
   await openButton.click();
   await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button", { name: /H-001/ })).toBeVisible();
@@ -306,11 +306,11 @@ test("Studio desktop keeps three columns and candidate selection preserves conve
   expect(navigationBox!.x).toBeLessThan(mainBox!.x);
   expect(mainBox!.x).toBeLessThan(inspectorBox!.x);
 
-  await expect(page.getByText("Studio ready.")).toHaveCount(1);
-  await expect(page.getByText("Studio ready.")).toBeVisible();
+  await expect(page.getByText("研究工作台已就绪。")).toHaveCount(1);
+  await expect(page.getByText("研究工作台已就绪。")).toBeVisible();
   await page.getByLabel("候选漏洞").selectOption("H-002");
   await expect(page.getByTestId("studio-inspector").getByRole("heading", { name: "SSRF candidate" })).toBeVisible();
-  await expect(page.getByText("Studio ready.")).toBeVisible();
+  await expect(page.getByText("研究工作台已就绪。")).toBeVisible();
   await expect(page.getByTestId("studio-inspector").getByText("POST /preview")).toBeVisible();
 
   const before = { ...mock.requests };
@@ -385,12 +385,12 @@ test("Studio mobile tabs and desktop path selectors remain keyboard operable", a
   await expect(mobileDetails.getByRole("tab", { name: "候选详情" })).toBeFocused();
 
   await page.getByRole("tab", { name: "总览" }).click();
-  const workspaceBrowse = page.getByLabel("Workspace path").locator("..").getByRole("button", { name: "Browse" });
+  const workspaceBrowse = page.getByLabel("工作区路径").locator("..").getByRole("button", { name: "浏览" });
   await workspaceBrowse.click();
-  await expect(page.getByLabel("Workspace path")).toHaveValue("C:/authorized/selected-directory");
+  await expect(page.getByLabel("工作区路径")).toHaveValue("C:/authorized/selected-directory");
 
-  const policyLabel = page.getByText("Policy file", { exact: true });
-  await policyLabel.locator("..").getByRole("button", { name: "Browse" }).click();
+  const policyLabel = page.getByText("策略文件", { exact: true });
+  await policyLabel.locator("..").getByRole("button", { name: "浏览" }).click();
   await expect(policyLabel.locator("..").locator("input")).toHaveValue("C:/authorized/selected-policy.yaml");
 });
 
@@ -399,11 +399,11 @@ test("Studio workspace open keeps its last-known-good projection when candidates
   await installStudioBridge(page);
   await mockStudioApi(page, { candidatesUnavailable: true });
   await page.goto("/studio");
-  await page.getByLabel("Workspace path").fill(workspacePath);
-  await page.getByRole("button", { name: "Open workspace" }).click();
+  await page.getByLabel("工作区路径").fill(workspacePath);
+  await page.getByRole("button", { name: "打开工作区" }).click();
 
-  await expect(page.getByText(/Workspace open failed \(API 503\)/)).toBeVisible();
-  await expect(page.getByText("Workspace opened locally.")).toHaveCount(0);
+  await expect(page.getByText(/打开工作区失败（API 503）/u)).toBeVisible();
+  await expect(page.getByText("已在本地打开工作区。")).toHaveCount(0);
   await expect(page.getByText("授权研究演练")).toHaveCount(0);
   await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button"))
     .toHaveCount(0);
@@ -414,14 +414,14 @@ test("Studio research start publishes nothing when strict candidates refresh ret
   await installStudioBridge(page);
   await mockStudioApi(page, { startProjectionUnavailable: true });
   await page.goto("/studio");
-  await page.getByLabel("Workspace path").fill(workspacePath);
-  await page.getByRole("button", { name: "Open workspace" }).click();
+  await page.getByLabel("工作区路径").fill(workspacePath);
+  await page.getByRole("button", { name: "打开工作区" }).click();
   await expect(page.getByText("授权研究演练")).toBeVisible();
 
-  await page.getByRole("button", { name: "Start local research" }).click();
+  await page.getByRole("button", { name: "开始本地研究" }).click();
 
-  await expect(page.getByText(/Research run failed \(API 503\)/)).toBeVisible();
-  await expect(page.getByText(/Research run post-run produced/)).toHaveCount(0);
+  await expect(page.getByText(/研究运行失败（API 503）/u)).toBeVisible();
+  await expect(page.getByText(/研究运行 post-run produced/)).toHaveCount(0);
   await expect(page.getByText("授权研究演练")).toBeVisible();
   await expect(page.getByText("Research POST partial manifest")).toHaveCount(0);
   await expect(page.locator('[data-testid="studio-candidate-list"]:visible').getByRole("button"))

@@ -338,20 +338,20 @@ function startupErrorHtml(diagnostic, { packaged = false } = {}) {
   const safeDiagnostic = createStartupDiagnostic(diagnostic?.code);
   const steps = packaged
     ? [
-      "Restart the installed app.",
-      "Close other local copies of Studio before trying again.",
-      "Keep local data unchanged until the app can open its existing recovery controls.",
+      "重新启动已安装的应用。",
+      "再次尝试前，请关闭其他本地研究工作台实例。",
+      "在应用能够打开现有恢复控件前，请保持本地数据不变。",
     ]
     : [
-      '<span class="command">apps/api</span>: run <span class="command">python -m pip install -r requirements.txt</span>',
-      '<span class="command">apps/web</span>: run <span class="command">npm install</span>',
-      '<span class="command">apps/studio</span>: run <span class="command">npm install</span>, then <span class="command">npm start</span>',
+      '<span class="command">apps/api</span>：执行 <span class="command">python -m pip install -r requirements.txt</span>',
+      '<span class="command">apps/web</span>：执行 <span class="command">npm install</span>',
+      '<span class="command">apps/studio</span>：执行 <span class="command">npm install</span>，然后执行 <span class="command">npm start</span>',
     ];
   return `<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <title>Mythos Studio startup failed</title>
+    <title>赏金神话研究工作台启动失败</title>
     <style>
       body {
         margin: 0;
@@ -388,14 +388,14 @@ function startupErrorHtml(diagnostic, { packaged = false } = {}) {
   </head>
   <body>
     <main>
-      <h1>Mythos Studio could not start</h1>
+      <h1>赏金神话研究工作台无法启动</h1>
       <p>${escapeHtml(safeDiagnostic.detail)}</p>
-      <p>Diagnostic code: <code>${escapeHtml(safeDiagnostic.code)}</code></p>
-      <h2>Check local prerequisites</h2>
+      <p>诊断代码：<code>${escapeHtml(safeDiagnostic.code)}</code></p>
+      <h2>检查本地前置条件</h2>
       <ol>
         ${steps.map((step) => `<li>${step}</li>`).join("\n        ")}
       </ol>
-      <p>No research, validation, or report submission was started.</p>
+      <p>尚未启动研究、验证或报告提交。</p>
     </main>
   </body>
 </html>`;
