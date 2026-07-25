@@ -1,3 +1,6 @@
+> **状态（2026-07-24）**：本文为早期 spine 差距记录，**不作为现役能力声明**。
+> 现役阶段目标见 `docs/product/north-star.md`；实现快照与剩余 gap 见 `docs/product/requirements-and-features.md` 的 Current Implementation Status；近期设计见 `docs/superpowers/`。
+
 # Mythos Gap
 
 ## Current State

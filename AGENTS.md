@@ -53,28 +53,31 @@ Bounty Mythos-Lite is a lawful bug bounty research assistant. It must stay insid
 
 ## Project North Star
 
-This project targets the final direction in `私人 AI 漏洞研究系统最终方案.md`.
+The active product direction is `docs/product/north-star.md`. `私人 AI 漏洞研究系统最终方案.md` remains a long-term capability reference, not the current implementation target.
 
-Bounty Mythos-Lite should evolve into a lawful, auditable AI vulnerability research factory:
+**SRC/HackerOne-first autonomous vulnerability discovery system.**
+
+- Autonomously turn explicitly authorized program material into a few high-quality, evidence-traceable vulnerability candidates and report drafts.
+- Optimize for automated discovery quality, refutation quality, report readiness, and accepted bounty per human hour, not generic platform completeness or unrestricted live execution.
+
+The active research loop is:
 
 ```text
-authorized policy/API/HAR/local code
+program policy / scope / user-provided authorized artifacts
 -> Scope Guard
 -> target intake
 -> API/code attack-surface modeling
--> static analysis
--> semantic code audit
--> vulnerability hypotheses
--> refutation and deduplication
--> safe validation planning
+-> autonomous semantic audit and vulnerability hypotheses
+-> automated refutation, deduplication, and ranking
+-> automated safe validation planning, then human approval where required
 -> evidence review
 -> submission-blocked report draft
--> human review
+-> manual platform outcome intake
 ```
 
-The immediate implementation priority is A+B: policy/scope/API/HAR plus authorized local code, producing top high-quality vulnerability candidates with affected endpoints, affected code paths, evidence needs, refutation questions, safe validation plans, and report draft readiness.
+Immediate implementation priority is the **H1/SRC Autonomous Candidate Discovery Track**: policy/scope/API/HAR plus authorized local code or operator-provided research artifacts should automatically produce a short, ranked candidate queue with affected surfaces, evidence needs, refutation questions, safe validation plans, and report draft readiness.
 
-Do not optimize for dashboard completeness before the autonomous candidate-hunter loop works.
+Do not optimize for dashboard completeness or generic live-operation infrastructure before the autonomous candidate-hunter loop proves it can improve research outcomes. Automation that directly advances discovery is part of the current product axis; autonomous live validation, sensitive actions, and report submission remain behind Scope Guard and human gates.
 
 ## Expected Working Style
 

@@ -1,42 +1,56 @@
 # Bounty Mythos-Lite North Star
 
-## Long-Term Goal
+## Product Direction
 
-Bounty Mythos-Lite should become a lawful, safe, verifiable, reproducible, and auditable AI vulnerability research factory with real Mythos / XBOW style high-quality vulnerability discovery capability.
+**SRC/HackerOne-first autonomous vulnerability discovery system.**
 
-The long-term reference is `私人 AI 漏洞研究系统最终方案.md`.
+Bounty Mythos-Lite exists to autonomously turn explicitly authorized program material into a few strong, evidence-traceable vulnerability candidates and submission-ready report drafts. Its primary measure is automated discovery quality, candidate quality, and better bounty outcomes per human hour, not generic platform completeness or unrestricted live execution.
 
-The final system should accept an authorized target package and autonomously run a bounded research loop:
+The long-form `私人 AI 漏洞研究系统最终方案.md` is retained as a reference for possible future capabilities. It does not set the active implementation priority.
+
+## Active Research Loop
+
+For an explicitly authorized program, the product should autonomously run this bounded research loop:
 
 ```text
-authorized policy / scope / API / HAR / local code
+program policy / scope / operator-provided authorized artifacts
 -> Scope Guard
--> target and attack-surface modeling
--> semantic code and API audit
--> vulnerability hypothesis generation
--> refutation, deduplication, and ranking
--> safe validation work queue
+-> autonomous target and attack-surface modeling
+-> autonomous semantic code and API audit
+-> automated vulnerability hypothesis generation
+-> automated refutation, deduplication, and ranking
+-> automated safe validation planning
 -> redacted evidence review
 -> submission-blocked report draft
--> human review
+-> manual outcome intake and learning
 ```
 
-The intended capability is not "summarize scanner output." It is to discover a small number of high-impact, evidence-traceable vulnerability candidates that a human bounty researcher would consider worth validating.
+The intended capability is not "summarize scanner output" or "build an unrestricted attack platform." It is to automatically discover a short list of high-impact, evidence-traceable candidates, then explain what would disprove each one before validation. Human approval remains the gate for live validation, sensitive actions, and report submission.
 
 ## Current Stage Goal
 
-The current implementation target is A+B Autonomous Candidate Hunter:
+The current implementation target is the **H1/SRC Autonomous Candidate Discovery Track**:
 
 ```text
-authorized program policy/scope
-+ API or HAR artifacts
-+ authorized local code
--> top high-quality vulnerability candidates
+explicit program policy and scope
++ API, HAR, documentation, notes, or authorized local code
+-> automatic target modeling, hypothesis generation, refutation, and ranking
+-> a short, ranked candidate queue
+-> refutation questions and evidence gaps
+-> safe validation plan for human review
+-> submission-blocked report draft when evidence supports it
 ```
 
-This stage is not a generic dashboard effort. It should prove that the system can read authorized target materials, understand API and code surfaces together, and produce a small set of candidates worth human validation.
+This stage is not a generic dashboard or live-execution-platform effort. It should prove that:
 
-Current implementation note: Mythos-Lite has the safety, artifact, candidate, report-readiness, and review-loop foundation, plus a bounded durable Candidate Hunter execution loop. It advances one persisted read-only task at a time through observation and surface mapping, then computes a snapshot-bound attack-surface priority queue from traceable route, authorization, sink, object-identifier, and state-change facts before security-invariant and hypothesis generation. It continues through optional bounded cross-source model advice, plan-only Exploit Chain, Variant Analysis, and Deep Code Reasoning specialist tasks, refutation/evidence review, deduplication/ranking, and submission-blocked report review, then stops at the human validation boundary. Each queue and specialist projection is snapshot-bound and recomputed or revalidated before downstream use. The model advisory persists only a config-bound, existing-hypothesis-only projection and cannot create a candidate, retain raw model content, or grant execution, validation, promotion, or submission permission. Compact Finding Dedup Risk, Variant Analysis, and Deep Code Reasoning projections are advisory inputs to report review under the same false safety gates. Snapshot-bound, redacted SARIF route signals and directly imported SBOM dependency advisories can support cross-source review but cannot independently create a candidate validation target. It should not be described as already having final Mythos/XBOW-grade autonomous discovery execution; the next gaps are broader semantic coverage and calibrated candidate quality on authorized benchmarks.
+- program rules, exclusions, and automation posture become visible before research starts;
+- the system can autonomously connect target surfaces, code paths, roles, objects, and business flows to a small set of candidates worth human validation;
+- each retained candidate has concrete refutation questions, evidence requirements, a program-aware safe validation plan, and report readiness state;
+- manual platform outcomes improve future ranking without becoming execution permission.
+
+The current foundation for policy, artifacts, candidate generation, report readiness, and review loops remains useful. The next work is to make the candidate-hunter loop more autonomous and validate it on a small number of chosen in-scope programs, with emphasis on semantic coverage, impact calibration, duplicate avoidance, and report quality.
+
+Existing Autopilot, scheduler, and execution-plane work should serve the autonomous discovery loop. New generic control-plane infrastructure, broad dashboard work, and autonomous live-operation features are deferred until outcome data shows that they remove a demonstrated discovery bottleneck.
 
 ## Preferred Product Form
 
@@ -44,7 +58,7 @@ The preferred user experience is Mythos Studio: a local, desktop-style, chat-fir
 
 The first implementation milestone is the local `/studio` workspace plus the Electron launcher in `apps/studio`.
 
-The studio should let an operator create a local workspace, import authorized materials, direct the research agent through conversation, review candidate cards, approve or reject validation plans, attach redacted evidence, and export submission-blocked report drafts.
+The studio should let an operator create a local workspace, import authorized materials, start and observe the autonomous research loop, review candidate cards, approve or reject validation plans, attach redacted evidence, and export submission-blocked report drafts. It should make autonomous research decisions and the next human gate clear without requiring a generic operations console.
 
 ## Expected Inputs
 
@@ -81,14 +95,15 @@ The system must not:
 - Bypass Scope Guard, human approval, redaction review, or report submission gates.
 - Submit reports automatically.
 
+Automation on the execution plane may schedule, resume, and prepare work; it must not grant itself validation, promotion, or submission authority.
+
 ## Capability Path
 
-1. A+B Candidate Hunter: correlate policy/API/HAR/local code and produce high-value candidates.
-2. Autonomous Candidate-Hunter Loop: repeatedly generate, refute, deduplicate, rank, and improve candidates from traceable local evidence.
-3. Static Analyzer Integration: ingest Semgrep, CodeQL, dependency, and language scanner results as advisory signals.
-4. Verifier Workspace: support local or human-approved non-destructive validation, evidence review, and finding promotion.
-5. Report and Patch Loop: produce submission-blocked reports, root-cause summaries, fix guidance, and regression test suggestions.
-6. Learning and Deep Research: use accepted, duplicate, rejected, and triager feedback to improve future ranking without granting execution permission.
+1. **Program intake**: normalize policy, scope, exclusions, automation posture, and operator-provided research artifacts for an SRC or HackerOne program.
+2. **Autonomous candidate hunter**: model surfaces, roles, objects, and business flows; generate high-value hypotheses; actively refute weak and duplicate candidates; rank the retained queue without step-by-step operator steering.
+3. **Research handoff**: automatically prepare evidence requirements, safe validation plans, and platform-style report drafts for human review.
+4. **Outcome learning**: use accepted, duplicate, informative, N/A, rejected, severity, and triager feedback to improve ranking and explanation.
+5. **Validated automation expansion**: add durable scheduling or execution support where it directly improves proven discovery workflows, while retaining Scope Guard and human gates for live validation, sensitive actions, and submission.
 
 ## Success Criteria
 
@@ -100,3 +115,5 @@ Given an authorized policy, API/HAR artifact, and local code sample, the system 
 - Include refutation questions before validation.
 - Stay inside Scope Guard and human-review boundaries.
 - Produce a submission-blocked report preview only after evidence and safety blockers are explicit.
+
+Across a portfolio of chosen programs, progress is measured by autonomous useful-candidate yield per human hour, manual validation and report readiness quality, duplicate and N/A rates, and eventually accepted outcomes. The autonomous candidate-hunter loop is the current priority; generic automation features must still remove a demonstrated bottleneck in that loop.

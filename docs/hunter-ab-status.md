@@ -1,3 +1,6 @@
+> **状态（2026-07-24）**：本文是 2026-07-13 前后的 A+B/工厂阶段性操作日志与百分比估计，**不作为现役产品能力声明**。
+> 现役实现快照见 `docs/product/requirements-and-features.md` 与根 `README.md`；产品阶段目标见 `docs/product/north-star.md`。
+> 文中 “this session / Distance ~xx% / Latest package intake” 仅保留历史上下文。
 # Bounty Mythos-Lite — A+B / Factory Current Status
 
 Updated: 2026-07-13T01:38:22Z

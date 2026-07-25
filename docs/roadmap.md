@@ -1,3 +1,6 @@
+> **状态（2026-07-24）**：本文为早期 scaffold 推荐路线图，**不作为现役路线图**。
+> 现役优先级以 `docs/product/north-star.md`、`AGENTS.md` 与 `docs/superpowers/plans/` 最新计划为准。
+
 # 推荐路线图
 
 ## 1. 提交基线

@@ -1,3 +1,5 @@
+> **状态（2026-07-25）**：本文保留为长期能力与架构参考，不是现役产品北极星或近期实现路线图。现役方向以 `docs/product/north-star.md` 的 SRC/HackerOne Autonomous Candidate Discovery Track 为准。
+
 0. 总目标
 
 你的目标不是做一个“自动黑客工具”，而是做一个：
