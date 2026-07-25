@@ -166,6 +166,17 @@ def test_projection_fails_closed_for_malformed_candidate_queue():
         ("vuln_type", "中文Authorization: unicode-secret", "unicode-secret"),
         ("vuln_type", "备注Cookie: unicode-cookie-secret", "unicode-cookie-secret"),
         ("vuln_type", "x_authorization: underscore-secret", "underscore-secret"),
+        (
+            "vuln_type",
+            '{"Authorization":"ApiKey json-secret"}',
+            "json-secret",
+        ),
+        (
+            "vuln_type",
+            '{"Cookie":"json-cookie-secret"}',
+            "json-cookie-secret",
+        ),
+        ("vuln_type", "Authorization： fullwidth-secret", "fullwidth-secret"),
         ("route_path", "/records?access_token=query-secret", "query-secret"),
         (
             "route_path",

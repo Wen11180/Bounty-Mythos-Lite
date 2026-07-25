@@ -170,10 +170,10 @@ _SENSITIVE_QUERY_KEYS = frozenset(
 )
 _SENSITIVE_METADATA_PATTERNS = (
     re.compile(
-        r"(?i)(?<![A-Za-z0-9_-])(?:x[_-]?authorization|authorization|proxy[_-]authorization|cookie|set[_-]cookie|x[_-]api[_-]?key|x[_-]auth[_-]?token|x[_-]access[_-]?token|x[_-]csrf[_-]?token|x[_-]session[_-]?token)\s*[:=]\s*\S+"
+        r"(?i)(?<![A-Za-z0-9_-])(?:x[_-]?authorization|authorization|proxy[_-]authorization|cookie|set[_-]cookie|x[_-]api[_-]?key|x[_-]auth[_-]?token|x[_-]access[_-]?token|x[_-]csrf[_-]?token|x[_-]session[_-]?token)(?:[\"']|\\[\"'])?\s*[:=：]\s*\S+"
     ),
     re.compile(
-        r"(?i)\b(?:access[_-]?token|api[_-]?key|authorization|cookie|password|passwd|secret|session|token)\s*=\s*\S+"
+        r"(?i)(?<![A-Za-z0-9_-])(?:access[_-]?token|api[_-]?key|authorization|cookie|password|passwd|secret|session|token)(?:[\"']|\\[\"'])?\s*[:=：]\s*\S+"
     ),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"(?i)\bbasic\s+[A-Za-z0-9+/=]{8,}"),
