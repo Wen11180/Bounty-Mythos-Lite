@@ -83,6 +83,11 @@ from app.intelligence_benchmark.prepare_research_session_package import (
 from app.intelligence_benchmark.track_record_path_resolver import (
     resolve_attached_track_record_paths,
 )
+from app.intelligence_benchmark.corpus_provenance import (
+    CAPABILITY_LEVELS,
+    audit_candidate_hunter_corpus,
+    capability_level_meets,
+)
 from app.black_box_hunter.remote_observe_gate import (
     run_browser_demo_remote_fail_closed_pipeline,
     run_har_remote_fail_closed_pipeline,
@@ -159,6 +164,16 @@ def main(argv: list[str] | None = None) -> int:
     candidate_hunter_release_eval.add_argument("--hunter-output", required=True)
     candidate_hunter_release_eval.add_argument("--gold", required=True)
     candidate_hunter_release_eval.add_argument("--output")
+    candidate_hunter_corpus_audit = subparsers.add_parser(
+        "candidate-hunter-corpus-audit"
+    )
+    candidate_hunter_corpus_audit.add_argument("--fixture-root", required=True)
+    candidate_hunter_corpus_audit.add_argument(
+        "--require-level",
+        choices=CAPABILITY_LEVELS,
+        default="lab",
+    )
+    candidate_hunter_corpus_audit.add_argument("--output")
     black_box_lab = subparsers.add_parser(
         "black-box-lab",
         help="Run dual-role HAR through local-lab observation only (no remote).",
@@ -652,6 +667,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_studio_eval_template_command(args)
     if args.command == "candidate-hunter-release-eval":
         return run_candidate_hunter_release_eval_command(args)
+    if args.command == "candidate-hunter-corpus-audit":
+        return run_candidate_hunter_corpus_audit_command(args)
     if args.command == "black-box-lab":
         return run_black_box_lab_command(args)
     if args.command == "black-box-golden":
@@ -863,6 +880,29 @@ def run_candidate_hunter_release_eval_command(args) -> int:
         print("Candidate Hunter release benchmark passed")
         return 0
     print("Candidate Hunter release benchmark failed", file=sys.stderr)
+    return 1
+
+
+def run_candidate_hunter_corpus_audit_command(args) -> int:
+    report = audit_candidate_hunter_corpus(args.fixture_root)
+    requirement_met = (
+        report["status"] == "passed"
+        and capability_level_meets(report["proven_level"], args.require_level)
+    )
+    report = {
+        **report,
+        "required_level": args.require_level,
+        "requirement_met": requirement_met,
+    }
+    report_json = json.dumps(report, indent=2)
+    if args.output:
+        Path(args.output).write_text(report_json, encoding="utf-8")
+    else:
+        print(report_json)
+    if requirement_met:
+        print("Candidate Hunter corpus audit passed", file=sys.stderr)
+        return 0
+    print("Candidate Hunter corpus audit failed", file=sys.stderr)
     return 1
 
 

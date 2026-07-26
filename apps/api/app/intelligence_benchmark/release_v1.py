@@ -191,6 +191,9 @@ def _evaluate_candidate_hunter_release_v1(
     )
     return {
         "version": VERSION,
+        "metric_scope": "lab",
+        "capability_level": "lab",
+        "benchmark_claim_allowed": False,
         "status": "passed" if passed else "failed",
         "metrics": metrics,
         "matches": matches,
@@ -304,6 +307,9 @@ def evaluate_candidate_hunter_release_suite_v1(cases: Any) -> dict[str, Any]:
     )
     return {
         "version": SUITE_VERSION,
+        "metric_scope": "lab",
+        "capability_level": "lab",
+        "benchmark_claim_allowed": False,
         "status": "passed" if passed else "failed",
         "metrics": metrics,
         "case_diagnostics": case_diagnostics,

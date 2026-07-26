@@ -385,6 +385,10 @@ def _typescript_gold_outcome(gold: dict[str, Any]) -> str:
 def _manifest_entries(manifest: Any) -> list[dict[str, str]]:
     if not isinstance(manifest, dict) or not isinstance(manifest.get("cases"), list):
         raise ReleaseFixtureError("suite_manifest:cases_missing")
+    if set(manifest) != {"version", "capability_level", "cases"}:
+        raise ReleaseFixtureError("suite_manifest:unexpected_keys")
+    if manifest.get("capability_level") != "lab":
+        raise ReleaseFixtureError("suite_manifest:capability_level_must_be_lab")
     entries: list[dict[str, str]] = []
     for index, value in enumerate(manifest["cases"]):
         if not isinstance(value, dict):
@@ -400,8 +404,10 @@ def _manifest_entries(manifest: Any) -> list[dict[str, str]]:
 def _typescript_manifest_entries(manifest: Any) -> list[dict[str, str]]:
     if not isinstance(manifest, dict) or not isinstance(manifest.get("cases"), list):
         raise ReleaseFixtureError("suite_manifest:cases_missing")
-    if set(manifest) != {"profile", "version", "cases"}:
+    if set(manifest) != {"profile", "version", "capability_level", "cases"}:
         raise ReleaseFixtureError("suite_manifest:unexpected_keys")
+    if manifest.get("capability_level") != "lab":
+        raise ReleaseFixtureError("suite_manifest:capability_level_must_be_lab")
     entries: list[dict[str, str]] = []
     for index, value in enumerate(manifest["cases"]):
         if not isinstance(value, dict):

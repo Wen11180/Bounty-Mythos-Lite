@@ -1,0 +1,12 @@
+{
+  "version": "candidate_hunter_repository_history_fixture_v1",
+  "capability_level": "lab",
+  "cases": [
+    {
+      "case_id": "rhp-a7c9",
+      "suite": "release",
+      "repository_lineage_id": "R_kgDOGP5HDg",
+      "path": "cases/rhp-a7c9"
+    }
+  ]
+}

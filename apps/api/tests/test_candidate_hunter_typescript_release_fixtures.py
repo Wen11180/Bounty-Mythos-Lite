@@ -35,14 +35,14 @@ TYPESCRIPT_V2_FIXTURE_ROOT = (
     Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release_v2"
 )
 LEGACY_FIXTURE_TREE_DIGEST = (
-    "ebd86ece232d40286f99be4765fcfd0c1f07fb31363bf4a4b9a626f25db993a0"
+    "eea0bc8a2ace1a4a6fceac591673017f8730782f0a91889ccc92364e9c07e441"
 )
 TYPESCRIPT_PROFILE = "candidate_hunter_typescript_express"
 TYPESCRIPT_VERSION = "candidate_hunter_typescript_express_fixture_v1"
 TYPESCRIPT_V2_PROFILE = "candidate_hunter_typescript_express_v2"
 TYPESCRIPT_V2_VERSION = "candidate_hunter_typescript_express_fixture_v2"
 TYPESCRIPT_V2_TREE_DIGEST = (
-    "9488795e54486d0f3564777b4afcff3a078976828335aaa9eadc9175b7460db6"
+    "a90da8373f9e151db6ce3b14f67da4cfd020fa565f11e0a81b016929f953485a"
 )
 
 
@@ -106,6 +106,7 @@ def _typescript_fixture_root(tmp_path: Path) -> Path:
         {
             "profile": TYPESCRIPT_PROFILE,
             "version": TYPESCRIPT_VERSION,
+            "capability_level": "lab",
             "cases": cases,
         },
     )
@@ -231,6 +232,20 @@ def test_typescript_fixture_loader_rejects_unknown_profile(tmp_path: Path):
     _write_json(manifest_path, manifest)
 
     with pytest.raises(ReleaseFixtureError, match="suite_manifest:unsupported_profile"):
+        load_release_fixture_suite(fixture_root, "development")
+
+
+def test_typescript_fixture_loader_rejects_benchmark_self_claim(tmp_path: Path):
+    fixture_root = _typescript_fixture_root(tmp_path)
+    manifest_path = fixture_root / "suite-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["capability_level"] = "benchmark"
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(
+        ReleaseFixtureError,
+        match="suite_manifest:capability_level_must_be_lab",
+    ):
         load_release_fixture_suite(fixture_root, "development")
 
 

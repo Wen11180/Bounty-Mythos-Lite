@@ -50,7 +50,11 @@ jobs:
         working-directory: apps/api
         run: |
           . ../../.venv/bin/activate
-          python -m pytest tests/test_candidate_hunter_release_benchmark.py tests/test_candidate_hunter_release_fixtures.py tests/test_candidate_hunter_release_runner.py tests/test_candidate_hunter_typescript_release_fixtures.py tests/test_candidate_hunter_typescript_release_gate.py -q
+          python -m pytest tests/test_candidate_hunter_release_benchmark.py tests/test_candidate_hunter_release_fixtures.py tests/test_candidate_hunter_release_runner.py tests/test_candidate_hunter_typescript_release_fixtures.py tests/test_candidate_hunter_typescript_release_gate.py tests/test_candidate_hunter_corpus_provenance.py -q
+          python -m app candidate-hunter-corpus-audit --fixture-root tests/fixtures/candidate_hunter_release --require-level lab --output "$RUNNER_TEMP/candidate-hunter-release-corpus-audit.json"
+          python -m app candidate-hunter-corpus-audit --fixture-root tests/fixtures/candidate_hunter_typescript_release --require-level lab --output "$RUNNER_TEMP/candidate-hunter-typescript-release-corpus-audit.json"
+          python -m app candidate-hunter-corpus-audit --fixture-root tests/fixtures/candidate_hunter_typescript_release_v2 --require-level lab --output "$RUNNER_TEMP/candidate-hunter-typescript-release-v2-corpus-audit.json"
+          python -m app candidate-hunter-corpus-audit --fixture-root tests/fixtures/candidate_hunter_repository_history_pilot --require-level lab --output "$RUNNER_TEMP/candidate-hunter-repository-history-pilot-audit.json"
       - name: Candidate discovery production breadth gate
         working-directory: apps/api
         run: |

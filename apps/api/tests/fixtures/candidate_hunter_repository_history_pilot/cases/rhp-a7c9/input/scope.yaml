@@ -1,0 +1,8 @@
+version: candidate_hunter_offline_scope_v1
+authorization_basis: public_open_source_historical_snapshot
+authorized_repository: https://github.com/fastify/fast-uri
+authorized_revision: dcdf690b71a7bb3a19887ada65a9ab160d83bcc0
+network_access_allowed: false
+live_validation_allowed: false
+report_submission_allowed: false
+real_user_data_allowed: false

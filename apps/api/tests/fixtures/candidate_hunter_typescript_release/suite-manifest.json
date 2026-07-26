@@ -1,6 +1,7 @@
 {
   "profile": "candidate_hunter_typescript_express",
   "version": "candidate_hunter_typescript_express_fixture_v1",
+  "capability_level": "lab",
   "cases": [
     {
       "case_id": "tse-001",

@@ -1,2 +1,6 @@
 # This corpus has a byte-for-byte digest guard and must checkout identically.
 apps/api/tests/fixtures/candidate_hunter_release/** text eol=lf
+apps/api/tests/fixtures/candidate_hunter_repository_history_pilot/** text eol=lf
+apps/api/tests/fixtures/candidate_hunter_repository_history_pilot/**/*.bundle binary
+# Canonical upstream diff bytes may include whitespace-only added lines.
+apps/api/tests/fixtures/candidate_hunter_repository_history_pilot/**/oracle/patch.diff -whitespace

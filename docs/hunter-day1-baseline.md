@@ -60,9 +60,32 @@ From `apps/api/app/intelligence_benchmark/release_v1.py`:
 
 Suite layout (`suite-manifest.json`):
 
-- development: 12 cases (authorization / injection / data_exposure)
-- release held-out: 12 cases (authentication / workflow / configuration)
+- synthetic development partition: 12 cases (authorization / injection / data_exposure)
+- synthetic release partition: 12 cases (authentication / workflow / configuration)
 - each suite covers retain / refute / deduplicate / suppress
+
+These metrics are **Lab-only**. The release partition is hidden from the
+development partition, but it is not repository-isolated historical evidence
+and must not be presented as a Benchmark result.
+
+## Capability provenance update (2026-07-26)
+
+- All three committed synthetic Candidate Hunter corpora explicitly claim and
+  prove only `lab`.
+- Release evaluator output now carries `metric_scope: lab`,
+  `capability_level: lab`, and `benchmark_claim_allowed: false`.
+- The first real historical pilot case uses the vulnerable and fixed source
+  trees for `fastify/fast-uri` GHSA-q3j6-qgpj-74h6.
+- Its offline Git bundle proves commit ancestry and reproduces both tree
+  digests and the patch digest. Oracle artifacts are physically separated and
+  protected by a leak canary.
+- The individual case has reproducible historical Git evidence, but its
+  repository binding is still operator-attested and runtime isolation is not
+  assessed. It cannot authorize Benchmark evaluation.
+- The corpus remains `lab`; `benchmark_evaluation_allowed` is fixed to `false`.
+
+The full level contract and promotion requirements are documented in
+`docs/product/candidate-hunter-capability-levels.md`.
 
 ## Critical path map
 

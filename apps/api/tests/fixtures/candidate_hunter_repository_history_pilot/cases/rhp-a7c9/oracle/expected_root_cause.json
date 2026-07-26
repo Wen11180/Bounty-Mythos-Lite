@@ -1,0 +1,17 @@
+{
+  "version": "candidate_hunter_historical_gold_v1",
+  "case_id": "rhp-a7c9",
+  "risk_family": "path_traversal",
+  "root_cause_id": "encoded-dot-segments-decoded-before-safe-path-normalization",
+  "vulnerability_type": "CWE-22",
+  "affected_files": [
+    "index.js",
+    "lib/utils.js"
+  ],
+  "root_cause": "The vulnerable parser decodes percent-encoded reserved path characters and then re-encodes them, allowing encoded dot segments to become active path syntax instead of remaining escaped.",
+  "required_evidence": [
+    "Trace percent-encoded path bytes through parse and serialization.",
+    "Show that reserved dot or slash escapes can become live path delimiters.",
+    "Distinguish the issue from ordinary URI canonicalization."
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "version": "candidate_hunter_historical_evaluation_v1",
+  "case_id": "rhp-a7c9",
+  "gold_visibility": "evaluator_only",
+  "candidate_limit": 5,
+  "expected_disposition": "retain",
+  "worth_local_validation": true,
+  "network_validation_allowed": false,
+  "report_submission_allowed": false
+}

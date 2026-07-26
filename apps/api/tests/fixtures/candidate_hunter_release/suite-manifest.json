@@ -1,5 +1,6 @@
 {
     "version":  "candidate_hunter_release_fixture_v1",
+    "capability_level":  "lab",
     "cases":  [
                   {
                       "case_id":  "dev-001",

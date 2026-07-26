@@ -61,6 +61,20 @@ def test_fixture_manifest_defines_complete_balanced_corpus():
     }
 
 
+def test_fixture_loader_rejects_a_benchmark_self_claim(tmp_path: Path):
+    fixture_root = _copied_fixture_root(tmp_path)
+    manifest_path = fixture_root / "suite-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["capability_level"] = "benchmark"
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(
+        ReleaseFixtureError,
+        match="suite_manifest:capability_level_must_be_lab",
+    ):
+        load_release_fixture_suite(fixture_root, "development")
+
+
 def test_release_corpus_uses_opaque_typescript_express_inputs():
     cases = (
         *load_release_fixture_suite(FIXTURE_ROOT, "development"),
