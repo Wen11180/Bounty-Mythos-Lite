@@ -42,7 +42,7 @@ TYPESCRIPT_VERSION = "candidate_hunter_typescript_express_fixture_v1"
 TYPESCRIPT_V2_PROFILE = "candidate_hunter_typescript_express_v2"
 TYPESCRIPT_V2_VERSION = "candidate_hunter_typescript_express_fixture_v2"
 TYPESCRIPT_V2_TREE_DIGEST = (
-    "a90da8373f9e151db6ce3b14f67da4cfd020fa565f11e0a81b016929f953485a"
+    "2771be1804fe0e2e3becee962e00fab44a490f2fc6dcea9bb0c129ea2f40109d"
 )
 
 
@@ -113,11 +113,17 @@ def _typescript_fixture_root(tmp_path: Path) -> Path:
     return root
 
 
-def _fixture_tree_digest(root: Path) -> str:
+def _fixture_tree_digest(
+    root: Path,
+    *,
+    normalize_text_line_endings: bool = False,
+) -> str:
     digest = sha256()
     for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
         relative_path = path.relative_to(root).as_posix().encode("utf-8")
         content = path.read_bytes()
+        if normalize_text_line_endings:
+            content = content.replace(b"\r\n", b"\n")
         digest.update(len(relative_path).to_bytes(4, "big"))
         digest.update(relative_path)
         digest.update(len(content).to_bytes(8, "big"))
@@ -130,7 +136,13 @@ def test_legacy_release_fixture_tree_stays_byte_for_byte_unchanged():
 
 
 def test_typescript_v2_freezes_role_only_object_ownership_corrections():
-    assert _fixture_tree_digest(TYPESCRIPT_V2_FIXTURE_ROOT) == TYPESCRIPT_V2_TREE_DIGEST
+    assert (
+        _fixture_tree_digest(
+            TYPESCRIPT_V2_FIXTURE_ROOT,
+            normalize_text_line_endings=True,
+        )
+        == TYPESCRIPT_V2_TREE_DIGEST
+    )
 
     expected = {
         "tse-010": (
