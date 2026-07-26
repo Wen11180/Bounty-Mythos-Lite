@@ -1,0 +1,11 @@
+{
+  "version": "github_repository_source_v1",
+  "source_api": "https://api.github.com/repos/minimistjs/minimist",
+  "canonical_url": "https://github.com/minimistjs/minimist",
+  "node_id": "R_kgDOILyYbQ",
+  "root_repository_node_id": "R_kgDOILyYbQ",
+  "fork": false,
+  "parent": null,
+  "default_branch": "main",
+  "captured_at": "2026-07-26T08:28:01Z"
+}

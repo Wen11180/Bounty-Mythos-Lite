@@ -1,0 +1,8 @@
+version: candidate_hunter_offline_scope_v1
+authorization_basis: public_open_source_historical_snapshot
+authorized_repository: https://github.com/minimistjs/minimist
+authorized_revision: f904dcc3c28f10eb11840091e9f0bab9d9519b5c
+network_access_allowed: false
+live_validation_allowed: false
+report_submission_allowed: false
+real_user_data_allowed: false

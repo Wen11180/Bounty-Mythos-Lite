@@ -1,0 +1,30 @@
+{
+  "version": "candidate_hunter_historical_gold_v2",
+  "case_id": "rhp-e27b5",
+  "risk_family": "code_injection",
+  "root_cause_id": "escaped-string-placeholder-replaced-as-executable-syntax",
+  "vulnerability_type": "CWE-502",
+  "affected_files": [
+    "index.js"
+  ],
+  "affected_symbols": [
+    "serialize",
+    "PLACE_HOLDER_REGEXP"
+  ],
+  "security_invariant": "Internal serialization placeholders must not collide with attacker-controlled string content or escape string-literal boundaries.",
+  "attacker_controlled_source": "Object values serialized into JavaScript source text.",
+  "missing_or_incorrect_control": "The replacement expression accepts placeholder-looking text preceded by an escape backslash, while the process-wide UID is generated from a small predictable space.",
+  "sensitive_operation": "Replacement of internal markers with raw function, regular expression, date, map, set, or special-value source syntax.",
+  "vulnerable_behavior": "A marker embedded in an escaped string can be mistaken for an internal placeholder and replaced with raw syntax that breaks out of the serialized string.",
+  "fixed_behavior": "Escaped placeholder text is left untouched and the marker UID is generated from higher-entropy random bytes.",
+  "root_cause": "A globally replacing placeholder regex does not distinguish internal markers from escaped attacker-controlled string content, enabling generated-code injection when the UID is guessed.",
+  "required_evidence": [
+    "Trace attacker-controlled values into the serialized JSON.",
+    "Show an escaped placeholder match crossing a string boundary.",
+    "Show raw syntax substituted into the generated source."
+  ],
+  "refutation_checks": [
+    "Check whether generated output is treated only as inert text.",
+    "Check whether the placeholder UID is unguessable per value."
+  ]
+}

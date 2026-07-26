@@ -1,0 +1,27 @@
+diff --git a/index.js b/index.js
+index fac79be6a65a6c0ca30d69f7e6d8d2db2062cd16..0c0df8dde8aff93c58737b7c08544a4710fdf9fb 100644
+--- a/index.js
++++ b/index.js
+@@ -10,7 +10,7 @@ exports.quote = function (xs) {
+             return '"' + s.replace(/(["\\$`!])/g, '\\$1') + '"';
+         }
+         else {
+-            return String(s).replace(/([A-z]:)?([#!"$&'()*,:;<=>?@\[\\\]^`{|}])/g, '$1\\$2');
++            return String(s).replace(/([A-Za-z]:)?([#!"$&'()*,:;<=>?@\[\\\]^`{|}])/g, '$1\\$2');
+         }
+     }).join(' ');
+ };
+diff --git a/test/quote.js b/test/quote.js
+index 7c31f01c215604dcb8dbdd3b9baf55d35ed4f3d9..214773d2279e015fbfe6993397f448c5855ee8aa 100644
+--- a/test/quote.js
++++ b/test/quote.js
+@@ -40,3 +40,9 @@ test('quote windows paths', { skip: 'breaking change, disabled until 2.x' }, fun
+ 
+     t.end()
+ })
++
++test("chars for windows paths don't break out", function (t) {
++    var x = '`:\\a\\b'
++    t.equal(quote([x]), '\\`\\:\\\\a\\\\b')
++    t.end()
++})

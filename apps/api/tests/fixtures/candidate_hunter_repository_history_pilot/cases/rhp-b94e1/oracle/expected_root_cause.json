@@ -1,0 +1,30 @@
+{
+  "version": "candidate_hunter_historical_gold_v2",
+  "case_id": "rhp-b94e1",
+  "risk_family": "authorization_bypass",
+  "root_cause_id": "empty-port-authority-parse-serialize-confusion",
+  "vulnerability_type": "CWE-639",
+  "affected_files": [
+    "index.js"
+  ],
+  "affected_symbols": [
+    "rules",
+    "toString"
+  ],
+  "security_invariant": "A URL authority used for authorization must preserve the same host and port meaning through parsing and serialization.",
+  "attacker_controlled_source": "A URL string whose authority contains a trailing empty port delimiter.",
+  "missing_or_incorrect_control": "The port rule requires at least one digit, so it does not consume an empty port delimiter and leaves the colon in host and hostname.",
+  "sensitive_operation": "Consumers compare parsed host, hostname, origin, or href values at an authorization or allowlist boundary before using the serialized URL.",
+  "vulnerable_behavior": "The parser and serializer disagree about a trailing empty port, allowing an invalid or ambiguous authority to be normalized into a different URL representation across the security decision and later use.",
+  "fixed_behavior": "The parser consumes an empty port delimiter, and the serializer preserves any remaining trailing colon so an invalid URL is not made valid.",
+  "root_cause": "Empty-port authorities are parsed and serialized inconsistently: the port regex accepts digits only, while host serialization does not preserve a remaining trailing colon. This creates URL authority confusion at authorization and allowlist boundaries.",
+  "required_evidence": [
+    "Trace an empty-port authority through the port, host, and hostname rules.",
+    "Compare the parsed origin and serialized href before and after the fix.",
+    "Show where a consumer can authorize one URL representation and use another."
+  ],
+  "refutation_checks": [
+    "Check whether the consuming authorization layer reparses with one canonical parser.",
+    "Check whether empty or non-numeric ports are rejected before any security decision."
+  ]
+}

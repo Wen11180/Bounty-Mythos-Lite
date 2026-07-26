@@ -1,0 +1,42 @@
+{
+  "version": "candidate_hunter_historical_evaluation_v1",
+  "case_id": "rhp-3f6d2",
+  "gold_visibility": "evaluator_only",
+  "candidate_limit": 5,
+  "expected_disposition": "retain",
+  "worth_local_validation": true,
+  "network_validation_allowed": false,
+  "report_submission_allowed": false,
+  "deterministic_grader": {
+    "accepted_vulnerability_families": [
+      "command injection",
+      "command_injection",
+      "CWE-77"
+    ],
+    "affected_files_any_of": [
+      "index.js"
+    ],
+    "root_cause_term_groups": [
+      [
+        "[A-z]",
+        "A-z",
+        "character range",
+        "character class"
+      ],
+      [
+        "windows drive",
+        "drive letter"
+      ],
+      [
+        "metacharacter",
+        "backtick",
+        "shell special"
+      ],
+      [
+        "escape",
+        "escaped",
+        "quoting"
+      ]
+    ]
+  }
+}

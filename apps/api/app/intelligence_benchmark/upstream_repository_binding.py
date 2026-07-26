@@ -20,6 +20,7 @@ GITHUB_API_HOST = "api.github.com"
 GITHUB_API_PORT = 443
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_RESPONSE_BYTES = 1_000_000
+MAX_TRANSIENT_ATTEMPTS = 4
 _REPOSITORY_PATH = re.compile(
     r"^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
@@ -711,11 +712,14 @@ def _fetch_json(
     *,
     token: str | None,
 ) -> dict[str, Any]:
-    for attempt in range(2):
+    for attempt in range(MAX_TRANSIENT_ATTEMPTS):
         try:
             return transport.get_json(path, token=token)
         except GitHubBindingTransportError as error:
-            if error.reason != "github_transport_failed" or attempt == 1:
+            if (
+                error.reason != "github_transport_failed"
+                or attempt == MAX_TRANSIENT_ATTEMPTS - 1
+            ):
                 raise
     raise GitHubBindingTransportError("github_transport_failed")
 

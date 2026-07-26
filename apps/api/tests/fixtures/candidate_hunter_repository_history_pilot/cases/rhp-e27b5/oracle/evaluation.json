@@ -1,0 +1,46 @@
+{
+  "version": "candidate_hunter_historical_evaluation_v1",
+  "case_id": "rhp-e27b5",
+  "gold_visibility": "evaluator_only",
+  "candidate_limit": 5,
+  "expected_disposition": "retain",
+  "worth_local_validation": true,
+  "network_validation_allowed": false,
+  "report_submission_allowed": false,
+  "deterministic_grader": {
+    "accepted_vulnerability_families": [
+      "code injection",
+      "insecure serialization",
+      "deserialization",
+      "CWE-502",
+      "remote code execution"
+    ],
+    "affected_files_any_of": [
+      "index.js"
+    ],
+    "root_cause_term_groups": [
+      [
+        "placeholder",
+        "internal marker"
+      ],
+      [
+        "escaped string",
+        "escaped quote",
+        "backslash",
+        "string literal"
+      ],
+      [
+        "replace",
+        "replacement",
+        "regexp",
+        "regex"
+      ],
+      [
+        "uid",
+        "identifier",
+        "guess",
+        "entropy"
+      ]
+    ]
+  }
+}

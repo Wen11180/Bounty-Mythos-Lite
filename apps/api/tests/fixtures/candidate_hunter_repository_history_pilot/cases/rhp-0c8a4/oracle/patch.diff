@@ -1,0 +1,91 @@
+diff --git a/index.js b/index.js
+index 9549c96fbda2b075c1fea38206a236eb8f1d5b82..6e821754dc745e6aae0ff201c0a9fc7833981354 100644
+--- a/index.js
++++ b/index.js
+@@ -175,12 +175,21 @@ function hasKey (obj, keys) {
+ 
+ function setKey (obj, keys, value) {
+     var o = obj;
+-    keys.slice(0,-1).forEach(function (key) {
++    for (var i = 0; i < keys.length-1; i++) {
++        var key = keys[i];
++        if (key === '__proto__') return;
+         if (o[key] === undefined) o[key] = {};
++        if (o[key] === Object.prototype || o[key] === Number.prototype
++            || o[key] === String.prototype) o[key] = {};
++        if (o[key] === Array.prototype) o[key] = [];
+         o = o[key];
+-    });
+-    
++    }
++
+     var key = keys[keys.length - 1];
++    if (key === '__proto__') return;
++    if (o === Object.prototype || o === Number.prototype
++        || o === String.prototype) o = {};
++    if (o === Array.prototype) o = [];
+     if (o[key] === undefined || typeof o[key] === 'boolean') {
+         o[key] = value;
+     }
+diff --git a/package.json b/package.json
+index 5935fc34ad44feb088ff066c1b95b9be700ce797..3cf58dea05589dc92c37dda4a45f53a39ec68bad 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+     "name": "minimist",
+-    "version": "0.2.0",
++    "version": "0.2.1",
+     "description": "parse argument options",
+     "main": "index.js",
+     "devDependencies": {
+diff --git a/test/proto.js b/test/proto.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..8649107ecba1f0a3c9f7e274482d802289a94768
+--- /dev/null
++++ b/test/proto.js
+@@ -0,0 +1,44 @@
++var parse = require('../');
++var test = require('tape');
++
++test('proto pollution', function (t) {
++    var argv = parse(['--__proto__.x','123']);
++    t.equal({}.x, undefined);
++    t.equal(argv.__proto__.x, undefined);
++    t.equal(argv.x, undefined);
++    t.end();
++});
++
++test('proto pollution (array)', function (t) {
++    var argv = parse(['--x','4','--x','5','--x.__proto__.z','789']);
++    t.equal({}.z, undefined);
++    t.deepEqual(argv.x, [4,5]);
++    t.equal(argv.x.z, undefined);
++    t.equal(argv.x.__proto__.z, undefined);
++    t.end();
++});
++
++test('proto pollution (number)', function (t) {
++    var argv = parse(['--x','5','--x.__proto__.z','100']);
++    t.equal({}.z, undefined);
++    t.equal((4).z, undefined);
++    t.equal(argv.x, 5);
++    t.equal(argv.x.z, undefined);
++    t.end();
++});
++
++test('proto pollution (string)', function (t) {
++    var argv = parse(['--x','abc','--x.__proto__.z','def']);
++    t.equal({}.z, undefined);
++    t.equal('...'.z, undefined);
++    t.equal(argv.x, 'abc');
++    t.equal(argv.x.z, undefined);
++    t.end();
++});
++
++test('proto pollution (constructor)', function (t) {
++    var argv = parse(['--constructor.prototype.y','123']);
++    t.equal({}.y, undefined);
++    t.equal(argv.y, undefined);
++    t.end();
++});

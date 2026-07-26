@@ -1,0 +1,103 @@
+{
+  "case_id": "rhp-3f6d2",
+  "synthetic": false,
+  "authorized_for_local_benchmark": true,
+  "contains_real_user_data": false,
+  "contains_secrets": false,
+  "risk_family": "command_injection",
+  "construction": {
+    "origin": "upstream_historical_snapshot",
+    "manually_injected": false,
+    "template_generated": false,
+    "mutated_from_another_case": false,
+    "minimized_or_rewritten": false,
+    "teaching_fixture": false
+  },
+  "hunter_input": {
+    "artifacts": [
+      {
+        "kind": "vulnerable_snapshot",
+        "path": "input/vulnerable_snapshot",
+        "sha256": "sha256:d30fde2312ab609a2cf6992f69f301ea580d68cf7bb6a7792bb31bc18ce5e35b"
+      },
+      {
+        "kind": "scope",
+        "path": "input/scope.yaml",
+        "sha256": "sha256:f5eb1e237ca7548fcd4597b2d28640d4930d0107239235334e7ccb0d79ff37d8"
+      },
+      {
+        "kind": "policy",
+        "path": "input/policy.md",
+        "sha256": "sha256:2fdf0f0c7815c4e2cdb6e5401208602dfae0064881afe74e11de39f89587cf47"
+      }
+    ]
+  },
+  "oracle": {
+    "artifacts": [
+      {
+        "kind": "fixed_snapshot",
+        "path": "oracle/fixed_snapshot",
+        "sha256": "sha256:80b00714cfc0e70e128c9a2ca6f4bb22f68417287430dc6ed360b365091ec720"
+      },
+      {
+        "kind": "patch",
+        "path": "oracle/patch.diff",
+        "sha256": "sha256:201d7ffcacabb4a0a4422eda1a72054fc5d6d5f2b6bbd9742e5dd80f1e41b6a1"
+      },
+      {
+        "kind": "advisory",
+        "path": "oracle/advisory.json",
+        "sha256": "sha256:485e33c42bf47fcae7d9b2686364dcf67ce1d0e76644aff8181f55081f0bfce7"
+      },
+      {
+        "kind": "expected_root_cause",
+        "path": "oracle/expected_root_cause.json",
+        "sha256": "sha256:3521d6f5ab81ceb817e34de2906962602212da67e67b6cdbbc748a0f892c7d7d"
+      },
+      {
+        "kind": "evaluation",
+        "path": "oracle/evaluation.json",
+        "sha256": "sha256:da783531a1ca16301bc69841903e4a6867407243c74d897ddb2a5c8d40525af1"
+      },
+      {
+        "kind": "leak_canary",
+        "path": "oracle/leak-canary.txt",
+        "sha256": "sha256:e42ba20106d4418875c50732942b47726a641d378ebb17f2f7d4eab4dcd7f5f8"
+      }
+    ]
+  },
+  "provenance": {
+    "source_kind": "historical_patch",
+    "repository": {
+      "canonical_url": "https://github.com/ljharb/shell-quote",
+      "lineage_id": "R_kgDOILjAtA",
+      "source_reference": {
+        "path": "provenance/repository-source.json",
+        "sha256": "sha256:32921fb1b0befdddc49b35e2b3b0e54228ee13ac04ea5bb6e3801a3d15a8b464"
+      }
+    },
+    "license_spdx": "MIT",
+    "advisory_id": "GHSA-g4rg-993r-mgx7",
+    "advisory_url": "https://github.com/advisories/GHSA-g4rg-993r-mgx7",
+    "vulnerable_revision": "c7de931fa4ed0975ea9756983c88334fe4b8cde5",
+    "fixed_revision": "5799416ed454aa4ec9afafc895b4e31760ea1abe",
+    "vulnerable_tree_oid": "34a8afb7fe47c42fcbde47382cf67f1cba14b910",
+    "fixed_tree_oid": "6d2a21b8836ecac5b57e0763259967b4ad009599",
+    "retrieved_at": "2026-07-26T08:28:01Z",
+    "history_bundle": {
+      "path": "provenance/history.bundle",
+      "sha256": "sha256:a59ebee59a7e727a000e295d854f96de9d64081768752b6424e5bfbdbdb776c0"
+    },
+    "review": {
+      "status": "approved",
+      "reviewer": "codex-evidence-curator",
+      "reviewed_at": "2026-07-26T08:28:01Z",
+      "evidence_refs": [
+        "https://github.com/advisories/GHSA-g4rg-993r-mgx7",
+        "patch:sha256:201d7ffcacabb4a0a4422eda1a72054fc5d6d5f2b6bbd9742e5dd80f1e41b6a1",
+        "bundle:sha256:a59ebee59a7e727a000e295d854f96de9d64081768752b6424e5bfbdbdb776c0",
+        "repository-source:sha256:32921fb1b0befdddc49b35e2b3b0e54228ee13ac04ea5bb6e3801a3d15a8b464"
+      ]
+    }
+  }
+}

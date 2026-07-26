@@ -3,10 +3,34 @@
   "capability_level": "lab",
   "cases": [
     {
+      "case_id": "rhp-0c8a4",
+      "suite": "release",
+      "repository_lineage_id": "R_kgDOILyYbQ",
+      "path": "cases/rhp-0c8a4"
+    },
+    {
+      "case_id": "rhp-3f6d2",
+      "suite": "release",
+      "repository_lineage_id": "R_kgDOILjAtA",
+      "path": "cases/rhp-3f6d2"
+    },
+    {
       "case_id": "rhp-a7c9",
       "suite": "release",
       "repository_lineage_id": "R_kgDOGP5HDg",
       "path": "cases/rhp-a7c9"
+    },
+    {
+      "case_id": "rhp-b94e1",
+      "suite": "release",
+      "repository_lineage_id": "MDEwOlJlcG9zaXRvcnkyNTE2MDU3Ng==",
+      "path": "cases/rhp-b94e1"
+    },
+    {
+      "case_id": "rhp-e27b5",
+      "suite": "release",
+      "repository_lineage_id": "MDEwOlJlcG9zaXRvcnkyNDEwNjk0NA==",
+      "path": "cases/rhp-e27b5"
     }
   ]
 }

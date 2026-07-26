@@ -1,0 +1,44 @@
+{
+  "version": "candidate_hunter_historical_evaluation_v1",
+  "case_id": "rhp-0c8a4",
+  "gold_visibility": "evaluator_only",
+  "candidate_limit": 5,
+  "expected_disposition": "retain",
+  "worth_local_validation": true,
+  "network_validation_allowed": false,
+  "report_submission_allowed": false,
+  "deterministic_grader": {
+    "accepted_vulnerability_families": [
+      "prototype pollution",
+      "prototype_pollution",
+      "CWE-1321"
+    ],
+    "affected_files_any_of": [
+      "index.js"
+    ],
+    "root_cause_term_groups": [
+      [
+        "__proto__",
+        "prototype"
+      ],
+      [
+        "nested key",
+        "dotted key",
+        "key path",
+        "path segment"
+      ],
+      [
+        "object.prototype",
+        "shared prototype",
+        "all objects"
+      ],
+      [
+        "sanitize",
+        "reject",
+        "filter",
+        "guard",
+        "unchecked"
+      ]
+    ]
+  }
+}

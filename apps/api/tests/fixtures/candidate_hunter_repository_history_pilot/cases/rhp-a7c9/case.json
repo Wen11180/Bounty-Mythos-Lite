@@ -52,7 +52,7 @@
       {
         "kind": "expected_root_cause",
         "path": "oracle/expected_root_cause.json",
-        "sha256": "sha256:b2eb1e93935be19f603b4b7496559996def82cd791e21deca0efde23da966775"
+        "sha256": "sha256:9cff9026eb2d63fc2d37bb6892c77701b52f639001c484d716bdb15f0bbd9649"
       },
       {
         "kind": "evaluation",

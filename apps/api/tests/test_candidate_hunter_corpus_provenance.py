@@ -96,25 +96,56 @@ def test_flipping_a_lab_case_to_non_synthetic_cannot_self_upgrade(
     assert "must_be_object" in _reasons(report)
 
 
-def test_committed_historical_pilot_is_case_eligible_but_corpus_remains_lab():
+def test_committed_historical_pilot_is_cross_repository_but_remains_lab():
     report = audit_candidate_hunter_corpus(PILOT_CORPUS)
 
     assert report["status"] == "passed"
     assert report["claimed_level"] == "lab"
     assert report["proven_level"] == "lab"
-    assert report["case_counts"]["historical_patch"] == 1
-    assert report["case_results"] == [
-        {
-            "case_id": "rhp-a7c9",
-            "suite": "release",
-            "provenance_classification": "historical_evidence_verified",
-            "historical_evidence_verified": True,
-            "source_repository_binding": "operator_attested",
-            "runtime_isolation_verified": False,
-            "benchmark_evaluation_allowed": False,
-            "failure_reasons": [],
-        }
-    ]
+    assert report["case_counts"]["historical_patch"] == 5
+    assert {
+        result["case_id"] for result in report["case_results"]
+    } == {
+        "rhp-0c8a4",
+        "rhp-3f6d2",
+        "rhp-a7c9",
+        "rhp-b94e1",
+        "rhp-e27b5",
+    }
+    assert all(
+        result["historical_evidence_verified"]
+        and result["provenance_classification"]
+        == "historical_evidence_verified"
+        and result["failure_reasons"] == []
+        for result in report["case_results"]
+    )
+    for result in report["case_results"]:
+        gold = _read_json(
+            PILOT_CORPUS
+            / "cases"
+            / result["case_id"]
+            / "oracle"
+            / "expected_root_cause.json"
+        )
+        assert gold["version"] == "candidate_hunter_historical_gold_v2"
+        assert gold["case_id"] == result["case_id"]
+        assert gold["security_invariant"]
+        assert gold["attacker_controlled_source"]
+        assert gold["missing_or_incorrect_control"]
+        assert gold["sensitive_operation"]
+        assert gold["fixed_behavior"]
+        assert gold["refutation_checks"]
+    assert report["historical_pilot"] == {
+        "corpus_ready": True,
+        "evidence_scope": "offline_historical_corpus_only",
+        "minimum_verified_cases": 5,
+        "minimum_repository_lineages": 5,
+        "minimum_risk_families": 4,
+        "verified_cases": 5,
+        "repository_lineages": 5,
+        "risk_families": 5,
+        "blind_model_evaluation_completed": False,
+    }
     assert report["source_repository_binding_verified"] is False
     assert report["benchmark_evaluation_allowed"] is False
     assert report["external_source_verification"] == (
@@ -330,6 +361,33 @@ def test_historical_case_rejects_symlinked_artifact(tmp_path: Path):
 
     assert report["status"] == "failed"
     assert "symlink_not_allowed" in _reasons(report)
+
+
+def test_historical_case_rejects_secret_shaped_artifact_material(
+    tmp_path: Path,
+):
+    corpus_root = Path(shutil.copytree(PILOT_CORPUS, tmp_path / "pilot"))
+    case_root = corpus_root / "cases" / "rhp-a7c9"
+    case_path = case_root / "case.json"
+    metadata = _read_json(case_path)
+    policy_path = case_root / "input" / "policy.md"
+    policy_path.write_text(
+        policy_path.read_text(encoding="utf-8")
+        + "\n-----BEGIN PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
+    policy_spec = next(
+        spec
+        for spec in metadata["hunter_input"]["artifacts"]
+        if spec["kind"] == "policy"
+    )
+    policy_spec["sha256"] = _file_digest(policy_path)
+    _write_json(case_path, metadata)
+
+    report = audit_candidate_hunter_corpus(corpus_root)
+
+    assert report["status"] == "failed"
+    assert "secret_shaped_material_not_allowed" in _reasons(report)
 
 
 def test_benchmark_claim_fails_when_declared_patch_digest_is_stale(

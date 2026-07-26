@@ -17,12 +17,18 @@ from app.cli import main
 
 
 ORACLE_CANARY = "oracle-canary-must-never-reach-the-model"
-PILOT_CASE_ROOT = (
+PILOT_CORPUS_ROOT = (
     Path(__file__).parent
     / "fixtures"
     / "candidate_hunter_repository_history_pilot"
-    / "cases"
-    / "rhp-a7c9"
+)
+PILOT_CASE_ROOT = PILOT_CORPUS_ROOT / "cases" / "rhp-a7c9"
+PILOT_CASE_IDS = (
+    "rhp-0c8a4",
+    "rhp-3f6d2",
+    "rhp-a7c9",
+    "rhp-b94e1",
+    "rhp-e27b5",
 )
 
 
@@ -137,6 +143,9 @@ def _finish_action(
     *,
     support_ref: str,
     falsification_ref: str,
+    vulnerability_family: str = "path traversal",
+    affected_file: str = "index.js",
+    affected_symbol: str = "parse",
     root_cause_summary: str = (
         "Percent-encoded dot segments are decoded by unescape before "
         "path normalization."
@@ -148,9 +157,9 @@ def _finish_action(
         "candidates": [
             {
                 "disposition": "unverified",
-                "vulnerability_family": "path traversal",
-                "affected_files": ["index.js"],
-                "affected_symbols": ["parse"],
+                "vulnerability_family": vulnerability_family,
+                "affected_files": [affected_file],
+                "affected_symbols": [affected_symbol],
                 "root_cause_summary": root_cause_summary,
                 "impact_rationale": (
                     "A caller that trusts normalized paths could resolve outside "
@@ -174,8 +183,18 @@ def _finish_action(
 
 
 class _ScriptedRegistry:
-    def __init__(self, *, root_cause_summary: str | None = None):
+    def __init__(
+        self,
+        *,
+        vulnerability_family: str = "path traversal",
+        affected_file: str = "index.js",
+        affected_symbol: str = "parse",
+        root_cause_summary: str | None = None,
+    ):
         self.requests = []
+        self.vulnerability_family = vulnerability_family
+        self.affected_file = affected_file
+        self.affected_symbol = affected_symbol
         self.root_cause_summary = root_cause_summary
 
     async def generate(self, request):
@@ -189,7 +208,7 @@ class _ScriptedRegistry:
                 "read_file_range",
                 purpose="support",
                 arguments={
-                    "source_path": "index.js",
+                    "source_path": self.affected_file,
                     "start_line": 1,
                     "end_line": 4,
                 },
@@ -205,6 +224,9 @@ class _ScriptedRegistry:
             payload = _finish_action(
                 support_ref=support["evidence_ref"],
                 falsification_ref=falsification["evidence_ref"],
+                vulnerability_family=self.vulnerability_family,
+                affected_file=self.affected_file,
+                affected_symbol=self.affected_symbol,
                 **(
                     {"root_cause_summary": self.root_cause_summary}
                     if self.root_cause_summary is not None
@@ -420,6 +442,78 @@ def test_real_model_wrapper_is_the_only_path_to_real_model_label(
 
     assert envelope["prediction"]["evidence_kind"] == "real_model"
     assert envelope["prediction"]["status"] == "completed"
+
+
+@pytest.mark.parametrize("case_id", PILOT_CASE_IDS)
+def test_each_committed_historical_case_fits_blind_input_without_oracle(
+    case_id: str,
+):
+    case_root = PILOT_CORPUS_ROOT / "cases" / case_id
+    blind_input = load_blind_repository_input(
+        case_root / "input",
+        case_id=case_id,
+        suite="release",
+    )
+    advisory = json.loads(
+        (case_root / "oracle" / "advisory.json").read_text(encoding="utf-8")
+    )
+    canary = (case_root / "oracle" / "leak-canary.txt").read_text(
+        encoding="utf-8"
+    )
+    hunter_material = blind_input.model_dump_json()
+
+    assert 1 <= len(blind_input.source_files) <= 200
+    assert len(
+        {source.source_path for source in blind_input.source_files}
+    ) == len(blind_input.source_files)
+    assert canary not in hunter_material
+    assert advisory["id"] not in hunter_material
+    assert advisory["cve_id"] not in hunter_material
+    assert "/oracle/" not in hunter_material.replace("\\", "/")
+
+
+@pytest.mark.parametrize("case_id", PILOT_CASE_IDS)
+def test_each_committed_historical_grader_accepts_its_structured_gold(
+    case_id: str,
+):
+    case_root = PILOT_CORPUS_ROOT / "cases" / case_id
+    blind_input = load_blind_repository_input(
+        case_root / "input",
+        case_id=case_id,
+        suite="release",
+    )
+    gold = json.loads(
+        (case_root / "oracle" / "expected_root_cause.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    evaluation = json.loads(
+        (case_root / "oracle" / "evaluation.json").read_text(encoding="utf-8")
+    )
+    grader = evaluation["deterministic_grader"]
+    registry = _ScriptedRegistry(
+        vulnerability_family=grader["accepted_vulnerability_families"][0],
+        affected_file=grader["affected_files_any_of"][0],
+        affected_symbol=gold["affected_symbols"][0],
+        root_cause_summary=" ".join(
+            group[0] for group in grader["root_cause_term_groups"]
+        ),
+    )
+
+    envelope = asyncio.run(
+        run_blind_mechanism_eval(
+            blind_input,
+            model_config=_model_config(),
+            registry=registry,
+        )
+    )
+    score = score_blind_prediction(case_root, envelope)
+
+    assert score["metrics"]["found_at_k"] is True
+    assert score["metrics"]["first_match_rank"] == 1
+    assert score["evidence_kind"] == "mechanism_only"
+    assert score["pilot_evidence_ready"] is False
+    assert score["benchmark_claim_allowed"] is False
 
 
 def test_committed_historical_case_runs_blind_then_scores_after_seal():

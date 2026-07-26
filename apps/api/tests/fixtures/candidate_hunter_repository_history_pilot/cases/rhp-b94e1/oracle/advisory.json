@@ -1,0 +1,15 @@
+{
+  "id": "GHSA-hgjh-723h-mx2j",
+  "cve_id": "CVE-2022-0686",
+  "source_url": "https://github.com/advisories/GHSA-hgjh-723h-mx2j",
+  "published_at": "2022-02-21T00:00:21Z",
+  "updated_at": "2023-11-29T22:39:50Z",
+  "package": "url-parse",
+  "affected_ranges": [
+    "< 1.5.8"
+  ],
+  "patched_versions": [
+    "1.5.8"
+  ],
+  "summary": "Authorization bypass through inconsistent empty-port URL normalization."
+}

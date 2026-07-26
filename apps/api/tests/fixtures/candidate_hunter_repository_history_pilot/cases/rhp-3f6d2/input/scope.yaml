@@ -1,0 +1,8 @@
+version: candidate_hunter_offline_scope_v1
+authorization_basis: public_open_source_historical_snapshot
+authorized_repository: https://github.com/ljharb/shell-quote
+authorized_revision: c7de931fa4ed0975ea9756983c88334fe4b8cde5
+network_access_allowed: false
+live_validation_allowed: false
+report_submission_allowed: false
+real_user_data_allowed: false

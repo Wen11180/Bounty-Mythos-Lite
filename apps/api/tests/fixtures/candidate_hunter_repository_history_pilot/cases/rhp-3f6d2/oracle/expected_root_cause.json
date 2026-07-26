@@ -1,0 +1,29 @@
+{
+  "version": "candidate_hunter_historical_gold_v2",
+  "case_id": "rhp-3f6d2",
+  "risk_family": "command_injection",
+  "root_cause_id": "windows-drive-letter-range-admits-shell-metacharacters",
+  "vulnerability_type": "CWE-77",
+  "affected_files": [
+    "index.js"
+  ],
+  "affected_symbols": [
+    "exports.quote"
+  ],
+  "security_invariant": "Every shell metacharacter in an untrusted argument must be escaped before the quoted value is passed to a command shell.",
+  "attacker_controlled_source": "String elements supplied to the exported quote function.",
+  "missing_or_incorrect_control": "The optional Windows drive-letter prefix uses the broad [A-z] character range instead of [A-Za-z].",
+  "sensitive_operation": "A consumer passes the returned quoted command text to a real shell.",
+  "vulnerable_behavior": "Characters between Z and a, including the backtick shell metacharacter, can be consumed by the drive-letter branch instead of being escaped.",
+  "fixed_behavior": "The drive-letter prefix accepts ASCII letters only, so shell metacharacters remain subject to escaping.",
+  "root_cause": "An over-broad regular-expression character class in the Windows drive-letter special case suppresses escaping for shell metacharacters such as backticks.",
+  "required_evidence": [
+    "Trace an attacker-controlled quote input through index.js.",
+    "Show how [A-z] includes non-letter ASCII metacharacters.",
+    "Show that the affected character is not escaped in output."
+  ],
+  "refutation_checks": [
+    "Check whether the returned value is ever executed by a shell.",
+    "Distinguish shell execution from argv-based process spawning."
+  ]
+}

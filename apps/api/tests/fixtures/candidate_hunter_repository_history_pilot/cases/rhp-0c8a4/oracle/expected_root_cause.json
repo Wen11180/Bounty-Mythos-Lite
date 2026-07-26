@@ -1,0 +1,29 @@
+{
+  "version": "candidate_hunter_historical_gold_v2",
+  "case_id": "rhp-0c8a4",
+  "risk_family": "prototype_pollution",
+  "root_cause_id": "nested-proto-key-traverses-shared-prototype",
+  "vulnerability_type": "CWE-1321",
+  "affected_files": [
+    "index.js"
+  ],
+  "affected_symbols": [
+    "setKey"
+  ],
+  "security_invariant": "Untrusted argument paths must never traverse or write shared built-in object prototypes.",
+  "attacker_controlled_source": "Nested or dotted command-line argument keys parsed by minimist.",
+  "missing_or_incorrect_control": "setKey follows every path segment without rejecting __proto__ or detaching inherited built-in prototype objects.",
+  "sensitive_operation": "Assignment of the parsed argument value to a nested object key.",
+  "vulnerable_behavior": "A crafted key path reaches Object.prototype or another built-in prototype and adds properties inherited by unrelated objects.",
+  "fixed_behavior": "__proto__ segments are rejected and inherited built-in prototype containers are replaced with fresh local objects or arrays before assignment.",
+  "root_cause": "The nested-key setter trusts attacker-controlled property segments and can traverse into shared JavaScript prototypes.",
+  "required_evidence": [
+    "Trace a nested argument key into setKey.",
+    "Show traversal through __proto__ or an inherited constructor.",
+    "Show that the assignment affects objects outside the result."
+  ],
+  "refutation_checks": [
+    "Check whether upstream parsing removes prototype-related keys.",
+    "Check whether all containers use null prototypes."
+  ]
+}

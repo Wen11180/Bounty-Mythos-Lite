@@ -1,0 +1,17 @@
+{
+  "id": "GHSA-vh95-rmgr-6w4m",
+  "cve_id": "CVE-2020-7598",
+  "source_url": "https://github.com/advisories/GHSA-vh95-rmgr-6w4m",
+  "published_at": "2020-04-03T21:48:32Z",
+  "updated_at": "2024-02-13T20:00:55Z",
+  "package": "minimist",
+  "affected_ranges": [
+    "< 0.2.1",
+    ">= 1.0.0, < 1.2.3"
+  ],
+  "patched_versions": [
+    "0.2.1",
+    "1.2.3"
+  ],
+  "summary": "Prototype pollution through unsanitized nested argument keys."
+}

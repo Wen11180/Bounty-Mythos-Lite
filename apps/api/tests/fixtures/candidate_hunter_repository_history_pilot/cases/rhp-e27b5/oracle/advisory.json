@@ -1,0 +1,15 @@
+{
+  "id": "GHSA-hxcc-f52p-wc94",
+  "cve_id": "CVE-2020-7660",
+  "source_url": "https://github.com/advisories/GHSA-hxcc-f52p-wc94",
+  "published_at": "2020-08-11T17:21:13Z",
+  "updated_at": "2023-11-29T22:19:43Z",
+  "package": "serialize-javascript",
+  "affected_ranges": [
+    "< 3.1.0"
+  ],
+  "patched_versions": [
+    "3.1.0"
+  ],
+  "summary": "Insecure placeholder replacement can produce attacker-controlled JavaScript code during serialization."
+}

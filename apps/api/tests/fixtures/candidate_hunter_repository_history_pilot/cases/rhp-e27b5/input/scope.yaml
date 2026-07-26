@@ -1,0 +1,8 @@
+version: candidate_hunter_offline_scope_v1
+authorization_basis: public_open_source_historical_snapshot
+authorized_repository: https://github.com/yahoo/serialize-javascript
+authorized_revision: 1ac487ed828762eb490ad87022b6b354e0772284
+network_access_allowed: false
+live_validation_allowed: false
+report_submission_allowed: false
+real_user_data_allowed: false

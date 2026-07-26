@@ -188,6 +188,41 @@ def test_live_binding_retries_one_transient_transport_failure(
     ) == 2
 
 
+def test_live_binding_retries_three_transient_transport_failures(
+    offline_provenance_pass: dict,
+):
+    class TransientTransport(FakeTransport):
+        def __init__(self, responses: dict[str, dict]):
+            super().__init__(responses)
+            self.remaining_failures = 3
+
+        def get_json(
+            self,
+            path: str,
+            *,
+            token: str | None = None,
+        ) -> dict:
+            if self.remaining_failures:
+                self.remaining_failures -= 1
+                self.calls.append((path, token))
+                raise GitHubBindingTransportError(
+                    "github_transport_failed"
+                )
+            return super().get_json(path, token=token)
+
+    transport = TransientTransport(_pilot_responses())
+
+    report = audit_candidate_hunter_upstream_binding(
+        PILOT_CORPUS,
+        transport=transport,
+    )
+
+    assert report["status"] == "passed"
+    assert [path for path, _token in transport.calls].count(
+        "/repos/fastify/fast-uri"
+    ) == 4
+
+
 def test_live_binding_fails_when_commit_url_points_at_another_repository(
     offline_provenance_pass: dict,
 ):

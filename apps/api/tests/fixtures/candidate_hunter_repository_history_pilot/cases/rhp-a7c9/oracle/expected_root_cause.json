@@ -1,5 +1,5 @@
 {
-  "version": "candidate_hunter_historical_gold_v1",
+  "version": "candidate_hunter_historical_gold_v2",
   "case_id": "rhp-a7c9",
   "risk_family": "path_traversal",
   "root_cause_id": "encoded-dot-segments-decoded-before-safe-path-normalization",
@@ -8,10 +8,26 @@
     "index.js",
     "lib/utils.js"
   ],
+  "affected_symbols": [
+    "parse",
+    "serialize",
+    "equal",
+    "normalizeComponentEncoding"
+  ],
+  "security_invariant": "Percent-encoded reserved path bytes must remain escaped until they can be interpreted without becoming live path syntax.",
+  "attacker_controlled_source": "Percent-encoded bytes in a URI path supplied for parsing, normalization, or equality comparison.",
+  "missing_or_incorrect_control": "The vulnerable flow decodes the whole path and later re-encodes it, allowing encoded dot or slash bytes to become reserved path delimiters.",
+  "sensitive_operation": "Path normalization and serialization used for URI comparison or downstream routing decisions.",
+  "vulnerable_behavior": "Encoded dot segments can become active traversal syntax during parse, normalization, or equality processing.",
+  "fixed_behavior": "Percent escapes are normalized while reserved delimiters stay escaped; only context-safe unreserved bytes are decoded.",
   "root_cause": "The vulnerable parser decodes percent-encoded reserved path characters and then re-encodes them, allowing encoded dot segments to become active path syntax instead of remaining escaped.",
   "required_evidence": [
     "Trace percent-encoded path bytes through parse and serialization.",
-    "Show that reserved dot or slash escapes can become live path delimiters.",
+    "Show that reserved dot or slash escapes become path delimiters.",
     "Distinguish the issue from ordinary URI canonicalization."
+  ],
+  "refutation_checks": [
+    "Check whether encoded reserved bytes remain escaped end to end.",
+    "Check whether downstream consumers treat the result as a path."
   ]
 }

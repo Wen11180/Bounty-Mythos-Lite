@@ -18,6 +18,9 @@ LEVEL_RANK = {level: index for index, level in enumerate(CAPABILITY_LEVELS)}
 MIN_BENCHMARK_CASES = 30
 MIN_BENCHMARK_CASES_PER_SUITE = 15
 MIN_BENCHMARK_REPOSITORIES_PER_SUITE = 3
+MIN_HISTORICAL_PILOT_CASES = 5
+MIN_HISTORICAL_PILOT_REPOSITORIES = 5
+MIN_HISTORICAL_PILOT_RISK_FAMILIES = 4
 SUITES = ("development", "release")
 SUPPORTED_MANIFEST_VERSIONS = {
     "candidate_hunter_release_fixture_v1",
@@ -58,6 +61,17 @@ DIRECTORY_ARTIFACT_KINDS = {"vulnerable_snapshot", "fixed_snapshot"}
 REVISION_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 TREE_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 OPAQUE_HISTORICAL_CASE_ID_PATTERN = re.compile(r"^rhp-[a-z0-9]{3,16}$")
+SECRET_MATERIAL_PATTERNS = (
+    re.compile(rb"-----BEGIN(?: [A-Z]+){0,3} PRIVATE KEY-----"),
+    re.compile(rb"(?<![A-Za-z0-9_-])(?:AKIA|ASIA)[0-9A-Z]{16}"),
+    re.compile(rb"(?i)(?<![A-Za-z0-9_-])gh[pousr]_[A-Za-z0-9_]{20,}"),
+    re.compile(rb"(?i)(?<![A-Za-z0-9_-])github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(rb"(?i)(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}"),
+    re.compile(
+        rb"(?<![A-Za-z0-9_-])"
+        rb"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    ),
+)
 
 
 def audit_candidate_hunter_corpus(fixture_root: str | Path) -> dict[str, Any]:
@@ -101,6 +115,7 @@ def audit_candidate_hunter_corpus(fixture_root: str | Path) -> dict[str, Any]:
     patch_sets = {suite: set() for suite in SUITES}
     advisory_event_sets = {suite: set() for suite in SUITES}
     advisory_event_counts: dict[str, int] = {}
+    verified_risk_families: set[str] = set()
     seen_case_ids: set[str] = set()
     seen_paths: set[str] = set()
     bundle_cache: dict[tuple[str, str, str], tuple[dict[str, str] | None, str]] = {}
@@ -235,6 +250,7 @@ def audit_candidate_hunter_corpus(fixture_root: str | Path) -> dict[str, Any]:
         )
         if verified_facts is not None and not case_provenance_failures:
             lineage_sets[suite].add(verified_facts["repository_lineage_id"])
+            verified_risk_families.add(_text(metadata.get("risk_family")))
             vulnerable_tree_sets[suite].add(
                 verified_facts["vulnerable_tree_digest"]
             )
@@ -292,6 +308,15 @@ def audit_candidate_hunter_corpus(fixture_root: str | Path) -> dict[str, Any]:
             _issue("corpus.advisory_events", "advisory_event_must_be_unique")
         )
 
+    verified_lineages = set().union(*lineage_sets.values())
+    historical_pilot_corpus_ready = not (
+        schema_failures or safety_failures or provenance_failures
+    ) and (
+        verified_historical_cases >= MIN_HISTORICAL_PILOT_CASES
+        and len(verified_lineages) >= MIN_HISTORICAL_PILOT_REPOSITORIES
+        and len(verified_risk_families) >= MIN_HISTORICAL_PILOT_RISK_FAMILIES
+        and len(advisory_event_counts) == verified_historical_cases
+    )
     historical_corpus_evidence_complete = not (
         schema_failures
         or safety_failures
@@ -358,6 +383,17 @@ def audit_candidate_hunter_corpus(fixture_root: str | Path) -> dict[str, Any]:
         "benchmark_evaluation_allowed": False,
         "case_counts": counts,
         "case_results": case_results,
+        "historical_pilot": {
+            "corpus_ready": historical_pilot_corpus_ready,
+            "evidence_scope": "offline_historical_corpus_only",
+            "minimum_verified_cases": MIN_HISTORICAL_PILOT_CASES,
+            "minimum_repository_lineages": MIN_HISTORICAL_PILOT_REPOSITORIES,
+            "minimum_risk_families": MIN_HISTORICAL_PILOT_RISK_FAMILIES,
+            "verified_cases": verified_historical_cases,
+            "repository_lineages": len(verified_lineages),
+            "risk_families": len(verified_risk_families),
+            "blind_model_evaluation_completed": False,
+        },
         "repository_split": {
             "development": sorted(lineage_sets["development"]),
             "release": sorted(lineage_sets["release"]),
@@ -478,6 +514,10 @@ def _audit_historical_case(
                 f"{case_id}.case_metadata.synthetic",
                 "benchmark_requires_non_synthetic_cases",
             )
+        )
+    if not _text(metadata.get("risk_family")):
+        failures.append(
+            _issue(f"{case_id}.case_metadata.risk_family", "required")
         )
     _audit_construction(metadata.get("construction"), case_id, failures)
     provenance = metadata.get("provenance")
@@ -834,6 +874,18 @@ def _audit_artifact_group(
         declared_digest = _text(spec.get("sha256")).lower()
         if declared_digest != actual_digest:
             failures.append(_issue(f"{spec_label}.sha256", f"{kind}_digest_mismatch"))
+        try:
+            contains_secret_material = _artifact_contains_secret_material(resolved)
+        except OSError:
+            failures.append(_issue(f"{spec_label}.path", "artifact_unreadable"))
+            continue
+        if contains_secret_material:
+            failures.append(
+                _issue(
+                    f"{spec_label}.path",
+                    "secret_shaped_material_not_allowed",
+                )
+            )
         artifacts[kind] = (resolved, actual_digest)
     for kind in sorted(required_kinds - set(artifacts)):
         failures.append(_issue(f"{label}.artifacts", f"missing_artifact:{kind}"))
@@ -1213,6 +1265,19 @@ def _artifact_contains(path: Path, needle: bytes) -> bool:
         for candidate in path.rglob("*")
         if candidate.is_file()
     )
+
+
+def _artifact_contains_secret_material(path: Path) -> bool:
+    candidates = (
+        (path,)
+        if path.is_file()
+        else tuple(candidate for candidate in path.rglob("*") if candidate.is_file())
+    )
+    for candidate in candidates:
+        content = candidate.read_bytes()
+        if any(pattern.search(content) is not None for pattern in SECRET_MATERIAL_PATTERNS):
+            return True
+    return False
 
 
 def _paths_overlap(first: Path, second: Path) -> bool:

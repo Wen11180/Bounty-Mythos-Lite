@@ -31,9 +31,34 @@ reported with:
 }
 ```
 
-The repository-history pilot contains one offline evidence-verified historical
-case:
-[`fastify/fast-uri` GHSA-q3j6-qgpj-74h6](https://github.com/fastify/fast-uri/security/advisories/GHSA-q3j6-qgpj-74h6).
+The repository-history pilot contains five offline evidence-verified historical
+cases from five repository lineages and five risk families:
+
+- [`fastify/fast-uri` GHSA-q3j6-qgpj-74h6](https://github.com/fastify/fast-uri/security/advisories/GHSA-q3j6-qgpj-74h6);
+- [`ljharb/shell-quote` GHSA-g4rg-993r-mgx7](https://github.com/advisories/GHSA-g4rg-993r-mgx7);
+- [`unshiftio/url-parse` GHSA-hgjh-723h-mx2j](https://github.com/advisories/GHSA-hgjh-723h-mx2j);
+- [`minimistjs/minimist` GHSA-vh95-rmgr-6w4m](https://github.com/advisories/GHSA-vh95-rmgr-6w4m);
+- [`yahoo/serialize-javascript` GHSA-hxcc-f52p-wc94](https://github.com/advisories/GHSA-hxcc-f52p-wc94).
+
+Each case has a full vulnerable tree, fixed tree, canonical binary diff,
+evaluator-only structured root cause, and an offline Git bundle that proves the
+fixed commit descends from the vulnerable commit. The corpus audit now reports
+`historical_pilot.corpus_ready: true` only after at least five verified cases,
+five repository lineages, four risk families, and one unique advisory event per
+case are present. This is corpus readiness, not model evidence:
+
+```json
+{
+  "historical_pilot": {
+    "corpus_ready": true,
+    "verified_cases": 5,
+    "repository_lineages": 5,
+    "risk_families": 5,
+    "blind_model_evaluation_completed": false
+  }
+}
+```
+
 The local Git evidence is internally reproducible. The opt-in live gate can
 upgrade only its independent binding result from `operator_attested` to
 `live_github_verified`; runtime isolation is not assessed. Its output remains
@@ -59,8 +84,8 @@ and every proposal must bind separate support and falsification evidence from
 the current run. Repository content is redacted, marked untrusted, and never
 persisted in the pipeline audit. This proves the bounded research mechanism,
 not discovery quality: the current 20-file/20,000-character Studio intake cap,
-single historical case, and unverified runtime-oracle isolation keep the
-capability at `lab`.
+absence of a committed multi-case real-model run, and unverified
+runtime-oracle isolation keep the capability at `lab`.
 
 The repository-history pilot also has a two-phase blind evaluation path. The
 model-run command accepts only the case's `input/` directory and produces a
@@ -68,7 +93,7 @@ SHA-256-sealed prediction. The separate scoring command verifies that seal
 before it opens `oracle/expected_root_cause.json` or
 `oracle/evaluation.json`. Scripted or injected providers are always labelled
 `mechanism_only`; only the default configured live-provider wrapper can emit
-`real_model`. A single result still sets `pilot_evidence_ready`,
+`real_model`. Every per-case result still sets `pilot_evidence_ready`,
 `benchmark_claim_allowed`, `unknown_vulnerability_claim_allowed`, and
 `bounty_outcome_claim_allowed` to `false`.
 
@@ -176,7 +201,8 @@ python -m app candidate-hunter-blind-score `
   --output candidate-hunter-blind-evaluation.json
 ```
 
-The one-case output is an observation, not a benchmark. A blind real-model
-pilot still requires at least 5–10 independent historical cases; benchmark
-claims remain subject to the 30-case repository-isolated corpus gate and human
-review.
+Each per-case output is an observation, not a benchmark. The committed corpus
+now meets the five-case curation floor, but the blind real-model pilot is not
+complete until every case is run under one locked provider/model configuration
+and the sealed scores are aggregated. Benchmark claims remain subject to the
+30-case repository-isolated corpus gate and human review.

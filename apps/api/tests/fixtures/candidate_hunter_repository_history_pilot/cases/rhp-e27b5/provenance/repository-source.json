@@ -1,0 +1,11 @@
+{
+  "version": "github_repository_source_v1",
+  "source_api": "https://api.github.com/repos/yahoo/serialize-javascript",
+  "canonical_url": "https://github.com/yahoo/serialize-javascript",
+  "node_id": "MDEwOlJlcG9zaXRvcnkyNDEwNjk0NA==",
+  "root_repository_node_id": "MDEwOlJlcG9zaXRvcnkyNDEwNjk0NA==",
+  "fork": false,
+  "parent": null,
+  "default_branch": "main",
+  "captured_at": "2026-07-26T08:28:01Z"
+}

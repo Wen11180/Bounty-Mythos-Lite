@@ -1,0 +1,11 @@
+{
+  "version": "github_repository_source_v1",
+  "source_api": "https://api.github.com/repos/unshiftio/url-parse",
+  "canonical_url": "https://github.com/unshiftio/url-parse",
+  "node_id": "MDEwOlJlcG9zaXRvcnkyNTE2MDU3Ng==",
+  "root_repository_node_id": "MDEwOlJlcG9zaXRvcnkyNTE2MDU3Ng==",
+  "fork": false,
+  "parent": null,
+  "default_branch": "master",
+  "captured_at": "2026-07-26T09:15:33Z"
+}

@@ -1,0 +1,8 @@
+version: candidate_hunter_offline_scope_v1
+authorization_basis: public_open_source_historical_snapshot
+authorized_repository: https://github.com/unshiftio/url-parse
+authorized_revision: 4f2ae676fe0482eb8354e21b63b080924c84350c
+network_access_allowed: false
+live_validation_allowed: false
+report_submission_allowed: false
+real_user_data_allowed: false
