@@ -102,7 +102,6 @@ from app.codebase_map import SUPPORTED_CODE_SOURCE_SUFFIXES
 from app.cross_source_candidate_generator import (
     CandidateModelConfig,
     CandidateReasoner,
-    RegistryCandidateReasoner,
     build_fact_pack,
     candidate_hunter_inputs,
     generation_stage_payload,
@@ -118,6 +117,10 @@ from app.intelligence_benchmark import (
 from app.llm.base import ProviderName
 from app.llm.registry import build_default_registry
 from app.models import Finding
+from app.repository_research_agent import (
+    AuthorizedRepositoryView,
+    RepositoryResearchCandidateReasoner,
+)
 from app.mythos_brain import (
     LearningEvidenceQuality,
     LearningOutcome,
@@ -7996,7 +7999,13 @@ async def _run_mythos_studio_workspace_research_service(
             model=request.candidate_model.model.strip(),
         )
         if reasoner is None:
-            reasoner = RegistryCandidateReasoner(build_default_registry())
+            reasoner = RepositoryResearchCandidateReasoner(
+                registry=build_default_registry(),
+                repository_view=AuthorizedRepositoryView.from_source_files(
+                    _studio_fact_pack_code_files(code_files),
+                    fact_pack=fact_pack,
+                ),
+            )
     generation = await generate_cross_source_candidates(
         fact_pack=fact_pack,
         baseline_candidates=fact_pack.baseline_candidates,
@@ -8008,6 +8017,9 @@ async def _run_mythos_studio_workspace_research_service(
         result=generation,
         model_config=model_config,
     )
+    reasoner_audit_summary = getattr(reasoner, "audit_summary", None)
+    if callable(reasoner_audit_summary):
+        generation_payload["repository_research"] = reasoner_audit_summary()
     if model_config is not None:
         audit_safety_notes = [
             "prompt_hash_only",

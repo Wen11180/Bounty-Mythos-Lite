@@ -52,6 +52,16 @@ non-authorizing:
 
 The pilot corpus remains `lab`.
 
+The opt-in Studio model path now uses a snapshot-bound, read-only repository
+research loop instead of giving the model only one FactPack turn. The loop can
+call `search_code`, `read_file_range`, and `find_callers` at most three times,
+and every proposal must bind separate support and falsification evidence from
+the current run. Repository content is redacted, marked untrusted, and never
+persisted in the pipeline audit. This proves the bounded research mechanism,
+not discovery quality: the current 20-file/20,000-character Studio intake cap,
+single historical case, and unverified runtime-oracle isolation keep the
+capability at `lab`.
+
 ## Benchmark provenance prerequisites
 
 A corpus can complete the historical-evidence prerequisites only when every

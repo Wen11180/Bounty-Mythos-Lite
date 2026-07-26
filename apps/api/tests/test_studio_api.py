@@ -3875,7 +3875,8 @@ def test_studio_run_routes_explicit_candidate_model_through_registry_reasoner(
 
         async def generate(self, request):
             self.requests.append(request)
-            fact_pack = json.loads(request.prompt)["fact_pack"]
+            prompt = json.loads(request.prompt)
+            fact_pack = prompt["fact_pack"]
             code_fact = next(
                 fact
                 for fact in fact_pack["code_facts"]
@@ -3911,15 +3912,59 @@ def test_studio_run_routes_explicit_candidate_model_through_registry_reasoner(
                     api_fact["fact_ref"],
                 ],
             }
+            if len(self.requests) == 1:
+                payload = {
+                    "schema_version": "repository_research_action_v1",
+                    "action": "tool",
+                    "tool": "read_file_range",
+                    "purpose": "support",
+                    "hypothesis": (
+                        "The export handler may omit object ownership checks."
+                    ),
+                    "arguments": {
+                        "source_path": code_fact["source_path"],
+                        "start_line": 3,
+                        "end_line": 5,
+                    },
+                }
+            elif len(self.requests) == 2:
+                payload = {
+                    "schema_version": "repository_research_action_v1",
+                    "action": "tool",
+                    "tool": "find_callers",
+                    "purpose": "falsification",
+                    "hypothesis": (
+                        "A caller may enforce object ownership before the handler."
+                    ),
+                    "arguments": {"symbol": code_fact["symbol_name"]},
+                }
+            else:
+                payload = {
+                    "schema_version": "repository_research_action_v1",
+                    "action": "finish",
+                    "response": {
+                        "schema_version": "cross_source_candidate_model_v1",
+                        "proposals": [proposal],
+                    },
+                    "evidence_bindings": [
+                        {
+                            "proposal_index": 0,
+                            "support_evidence_refs": [
+                                prompt["tool_history"][0]["evidence_ref"]
+                            ],
+                            "falsification_evidence_refs": [
+                                prompt["tool_history"][1]["evidence_ref"]
+                            ],
+                            "strongest_counter_hypothesis": (
+                                "A caller or middleware may enforce ownership."
+                            ),
+                        }
+                    ],
+                }
             return LLMResponse(
                 provider=request.provider,
                 model=request.model,
-                text=json.dumps(
-                    {
-                        "schema_version": "cross_source_candidate_model_v1",
-                        "proposals": [proposal],
-                    }
-                ),
+                text=json.dumps(payload),
                 mode=request.mode,
                 prompt_hash="provider-placeholder",
                 latency_ms=1,
@@ -3993,7 +4038,7 @@ def test_studio_run_routes_explicit_candidate_model_through_registry_reasoner(
             )
         )
         assert body["submission_blocked"] is True
-        assert len(provider.requests) == 1
+        assert len(provider.requests) == 3
         model_request = provider.requests[0]
         assert model_request.mode == LLMMode.LIVE
         assert model_request.purpose == "cross_source_candidate_generation"
@@ -4031,6 +4076,11 @@ def test_studio_run_routes_explicit_candidate_model_through_registry_reasoner(
                 for stage in repository.list_pipeline_stages_for_run(body["run_id"])
                 if stage.stage_key == "cross_source_candidate_generation"
             )
+            research_audit = generation_stage.payload["repository_research"]
+            assert research_audit["tool_call_count"] == 2
+            assert research_audit["evidence_count"] == 2
+            assert research_audit["repository_content_persisted"] is False
+            assert research_audit["execution_allowed"] is False
             accepted = generation_stage.payload["accepted_candidates"][0]
             assert accepted["origin"] == "model"
             assert accepted["evidence_trace_status"] == "traceable"
@@ -4171,7 +4221,7 @@ def test_studio_run_model_failure_is_audited_and_keeps_baseline_candidates(
         "expected_audit_error",
     ),
     [
-        ("invalid_schema", "needs_model_review", "invalid_schema", {}, "invalid_schema"),
+        ("invalid_schema", "needs_model_review", "invalid_action", {}, "invalid_action"),
         ("sensitive", "completed", None, {"sensitive_content": 1}, None),
     ],
 )
@@ -4193,8 +4243,13 @@ def test_studio_run_rejects_invalid_or_sensitive_model_output_without_persisting
     class InvalidOutputProvider:
         name = ProviderName.OPENAI
 
+        def __init__(self):
+            self.calls = 0
+
         async def generate(self, request):
-            fact_pack = json.loads(request.prompt)["fact_pack"]
+            self.calls += 1
+            prompt = json.loads(request.prompt)
+            fact_pack = prompt["fact_pack"]
             code_fact = next(
                 fact
                 for fact in fact_pack["code_facts"]
@@ -4232,15 +4287,59 @@ def test_studio_run_rejects_invalid_or_sensitive_model_output_without_persisting
                 proposal["unexpected_permission"] = raw_marker
             else:
                 proposal["impact_rationale"] = raw_marker
+            if self.calls == 1:
+                payload = {
+                    "schema_version": "repository_research_action_v1",
+                    "action": "tool",
+                    "tool": "read_file_range",
+                    "purpose": "support",
+                    "hypothesis": (
+                        "The export handler may omit object ownership checks."
+                    ),
+                    "arguments": {
+                        "source_path": code_fact["source_path"],
+                        "start_line": 3,
+                        "end_line": 5,
+                    },
+                }
+            elif self.calls == 2:
+                payload = {
+                    "schema_version": "repository_research_action_v1",
+                    "action": "tool",
+                    "tool": "find_callers",
+                    "purpose": "falsification",
+                    "hypothesis": (
+                        "A caller may enforce ownership before the handler."
+                    ),
+                    "arguments": {"symbol": code_fact["symbol_name"]},
+                }
+            else:
+                payload = {
+                    "schema_version": "repository_research_action_v1",
+                    "action": "finish",
+                    "response": {
+                        "schema_version": "cross_source_candidate_model_v1",
+                        "proposals": [proposal],
+                    },
+                    "evidence_bindings": [
+                        {
+                            "proposal_index": 0,
+                            "support_evidence_refs": [
+                                prompt["tool_history"][0]["evidence_ref"]
+                            ],
+                            "falsification_evidence_refs": [
+                                prompt["tool_history"][1]["evidence_ref"]
+                            ],
+                            "strongest_counter_hypothesis": (
+                                "A caller or middleware may enforce ownership."
+                            ),
+                        }
+                    ],
+                }
             return LLMResponse(
                 provider=request.provider,
                 model=request.model,
-                text=json.dumps(
-                    {
-                        "schema_version": "cross_source_candidate_model_v1",
-                        "proposals": [proposal],
-                    }
-                ),
+                text=json.dumps(payload),
                 mode=request.mode,
                 prompt_hash="provider-placeholder",
                 latency_ms=1,
