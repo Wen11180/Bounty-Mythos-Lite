@@ -1,0 +1,23 @@
+{
+  "authorization_pattern": "role_boundary",
+  "expected_roots": [
+    {
+      "gold_id": "g5p2-primary-root",
+      "root_cause_id": "missing_object_ownership_check:publishreview",
+      "route": {
+        "method": "POST",
+        "path": "/local/reviews/g5p2/{reviewId}/publish"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:publishReview",
+        "api:POST:/local/reviews/g5p2/{reviewId}/publish"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

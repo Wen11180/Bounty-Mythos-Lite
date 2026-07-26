@@ -44,6 +44,7 @@ authorized_packages/**/_upstream/
 /tmp_*.py
 /tmpmythos-pytestbase/
 /apps/api/tmp/
+/apps/api/tmp-gold-audit/
 /apps/api/_pytest_*.log.err
 apps/web/test-results/
 apps/studio/runtime/

@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.cross_source_candidate_generator import ReplayCandidateReasoner
 from app.intelligence_benchmark.release_fixtures import (
     ReleaseFixtureCase,
+    TYPESCRIPT_V2_PROFILE,
+    TYPESCRIPT_V2_VERSION,
     load_release_fixture_replay,
     load_release_fixture_suite,
     preflight_release_fixture_suite,
@@ -19,11 +21,9 @@ from app.intelligence_benchmark.release_runner import (
 from app.llm.base import ProviderName
 
 
-TYPESCRIPT_RELEASE_GATE_VERSION = "candidate_hunter_typescript_release_gate_v1"
-TYPESCRIPT_RELEASE_PROFILE = "candidate_hunter_typescript_express"
-TYPESCRIPT_RELEASE_FIXTURE_VERSION = (
-    "candidate_hunter_typescript_express_fixture_v1"
-)
+TYPESCRIPT_RELEASE_GATE_VERSION = "candidate_hunter_typescript_release_gate_v2"
+TYPESCRIPT_RELEASE_PROFILE = TYPESCRIPT_V2_PROFILE
+TYPESCRIPT_RELEASE_FIXTURE_VERSION = TYPESCRIPT_V2_VERSION
 EXPECTED_SUITE_CASE_COUNT = 12
 HARD_PERMISSION_FIELDS = (
     "execution_allowed",

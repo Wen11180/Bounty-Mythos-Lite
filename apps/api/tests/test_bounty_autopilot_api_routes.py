@@ -350,6 +350,7 @@ def test_autopilot_plan_lease_request_observation_and_stop_flow():
             path="/api/docs/1",
             body_digest=None,
             status_code=200,
+            content_type_class="json",
             byte_length=42,
             sent_at=datetime.now(UTC),
             challenge=auth.json()["transport_challenge"],
@@ -369,6 +370,29 @@ def test_autopilot_plan_lease_request_observation_and_stop_flow():
             json={"reservation_id": "res_api", "outcome": "completed"},
         )
         assert complete.status_code == 200, complete.text
+
+        mismatched_obs = client.post(
+            f"/mythos/campaigns/{campaign_id}/autopilot/observations",
+            json={
+                "observation": {
+                    "observation_id": "obs_api",
+                    "branch_id": "branch_api",
+                    "plan_digest": plan.plan_digest,
+                    "lease_id": "lease_api",
+                    "reservation_id": "res_api",
+                    "receipt_digest": receipt_digest,
+                    "grade": "L2_corroborated",
+                    "outcome_class": "ok",
+                    "summary": "tampered receipt metadata",
+                    "evidence_refs": ["safe_ref"],
+                    "status_class": "5xx",
+                    "content_type_class": "html",
+                    "byte_length": 43,
+                }
+            },
+        )
+        assert mismatched_obs.status_code == 400
+        assert mismatched_obs.json()["detail"] == "observation_metadata_mismatch"
 
         rejected_obs = client.post(
             f"/mythos/campaigns/{campaign_id}/autopilot/observations",
@@ -398,27 +422,42 @@ def test_autopilot_plan_lease_request_observation_and_stop_flow():
             },
         )
         assert rejected_obs.status_code == 422
+        valid_observation = {
+            "observation_id": "obs_api",
+            "branch_id": "branch_api",
+            "plan_digest": plan.plan_digest,
+            "lease_id": "lease_api",
+            "reservation_id": "res_api",
+            "receipt_digest": receipt_digest,
+            "grade": "L2_corroborated",
+            "outcome_class": "ok",
+            "summary": "owned account document read",
+            "evidence_refs": ["safe_ref"],
+            "status_class": "2xx",
+            "content_type_class": "json",
+            "byte_length": 42,
+        }
         obs = client.post(
+            f"/mythos/campaigns/{campaign_id}/autopilot/observations",
+            json={"observation": valid_observation},
+        )
+        assert obs.status_code == 200, obs.text
+        duplicate_obs = client.post(
+            f"/mythos/campaigns/{campaign_id}/autopilot/observations",
+            json={"observation": valid_observation},
+        )
+        assert duplicate_obs.status_code == 200, duplicate_obs.text
+        conflicting_obs = client.post(
             f"/mythos/campaigns/{campaign_id}/autopilot/observations",
             json={
                 "observation": {
-                    "observation_id": "obs_api",
-                    "branch_id": "branch_api",
-                    "plan_digest": plan.plan_digest,
-                    "lease_id": "lease_api",
-                    "reservation_id": "res_api",
-                    "receipt_digest": receipt_digest,
-                    "grade": "L2_corroborated",
-                    "outcome_class": "ok",
-                    "summary": "owned account document read",
-                    "evidence_refs": ["safe_ref"],
-                    "status_class": "2xx",
-                    "content_type_class": "json",
-                    "byte_length": 42,
+                    **valid_observation,
+                    "summary": "conflicting duplicate delivery",
                 }
             },
         )
-        assert obs.status_code == 200, obs.text
+        assert conflicting_obs.status_code == 400
+        assert conflicting_obs.json()["detail"] == "observation_idempotency_conflict"
         listed_obs = client.get(
             f"/mythos/campaigns/{campaign_id}/autopilot/observations"
         )

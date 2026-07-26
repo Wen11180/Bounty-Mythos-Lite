@@ -7,6 +7,7 @@ surface.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal
 from urllib.parse import unquote_plus
@@ -154,20 +155,6 @@ _REQUIRED_CANDIDATE_BLOCKERS = (
     "submit_report",
 )
 _REQUIRED_CANDIDATE_BLOCKER_SET = frozenset(_REQUIRED_CANDIDATE_BLOCKERS)
-_SENSITIVE_QUERY_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "apikey",
-        "auth",
-        "authorization",
-        "cookie",
-        "password",
-        "secret",
-        "session",
-        "token",
-    }
-)
 _SENSITIVE_METADATA_PATTERNS = (
     re.compile(
         r"(?i)(?<![A-Za-z0-9_-])(?:x[_-]?authorization|authorization|proxy[_-]authorization|cookie|set[_-]cookie|x[_-]api[_-]?key|x[_-]auth[_-]?token|x[_-]access[_-]?token|x[_-]csrf[_-]?token|x[_-]session[_-]?token)(?:[\"']|\\[\"'])?\s*[:=：]\s*\S+"
@@ -175,24 +162,199 @@ _SENSITIVE_METADATA_PATTERNS = (
     re.compile(
         r"(?i)(?<![A-Za-z0-9_-])(?:access[_-]?token|api[_-]?key|authorization|cookie|password|passwd|secret|session|token)(?:[\"']|\\[\"'])?\s*[:=：]\s*\S+"
     ),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
-    re.compile(r"(?i)\bbasic\s+[A-Za-z0-9+/=]{8,}"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_-])bearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_-])basic\s+[A-Za-z0-9+/=]{8,}"),
+    re.compile(
+        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    ),
+    re.compile(r"(?i)(?<![A-Za-z0-9_-])gh[pousr]_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_-])"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_-])github_pat_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_-])"),
+    re.compile(r"(?<![A-Za-z0-9_-])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9_-])"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_-])sk_(?:live|test)_[A-Za-z0-9]{16,}(?![A-Za-z0-9_-])"),
+    re.compile(r"-----BEGIN(?: [A-Z]+){0,3} PRIVATE KEY-----"),
+)
+_METADATA_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])(?P<key>(?:x[_-])?[A-Za-z][A-Za-z0-9_-]*)(?:[\"']|\\[\"'])?\s*[:=：]\s*\S+"
 )
 _MAX_METADATA_DECODE_PASSES = 8
+_SENSITIVE_METADATA_KEYS = frozenset(
+    {
+        "access_token",
+        "accesstoken",
+        "api_key",
+        "apikey",
+        "auth",
+        "auth_token",
+        "authorization",
+        "bearer",
+        "client_key",
+        "client_secret",
+        "clientsecret",
+        "credential",
+        "credentials",
+        "cookie",
+        "csrf_token",
+        "id_token",
+        "idtoken",
+        "key",
+        "password",
+        "passwd",
+        "private_key",
+        "privatekey",
+        "proxy_authorization",
+        "refresh_token",
+        "refreshtoken",
+        "secret",
+        "secret_key",
+        "session",
+        "session_token",
+        "set_cookie",
+        "signing_key",
+        "token",
+    }
+)
+_ALLOWED_CANDIDATE_VULN_TYPES = frozenset(
+    {
+        "agent_tool_authz_gap",
+        "authentication_bypass",
+        "authorization",
+        "authorization_boundary",
+        "bola_idor",
+        "broken_access_control",
+        "business_logic",
+        "command_injection",
+        "csrf",
+        "file_upload",
+        "idor",
+        "injection",
+        "information_disclosure",
+        "insecure_configuration",
+        "jwt_authentication_bypass",
+        "mass_assignment",
+        "open_redirect",
+        "path_traversal",
+        "race_condition",
+        "sensitive_data_exposure",
+        "ssrf",
+        "static-analysis",
+        "static_analysis",
+        "unsafe_deserialization",
+        "xxe",
+        "xss",
+    }
+)
+_PIPELINE_RUN_ID_PATTERN = re.compile(r"pipeline_run_[0-9a-f]{1,64}", re.ASCII)
+_PIPELINE_STAGE_ID_PATTERN = re.compile(r"pipeline_stage_[0-9a-f]{1,64}", re.ASCII)
+_CANDIDATE_ID_PATTERN = re.compile(
+    r"(?:H-\d{3,6}|campaign_worker_hypothesis_\d{1,6}|codebase_fact_hypothesis_\d{1,6})",
+    re.ASCII,
+)
+_ROUTE_METHODS = frozenset({"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"})
+_ROUTE_STATIC_SEGMENT_PATTERN = re.compile(r"[A-Za-z][A-Za-z_-]{0,15}", re.ASCII)
+_ROUTE_NUMERIC_SEGMENT_PATTERN = re.compile(r"\d{1,6}", re.ASCII)
+_ROUTE_VERSION_SEGMENT_PATTERN = re.compile(r"v\d{1,3}", re.ASCII)
+_ROUTE_PARAMETER_SEGMENT_PATTERN = re.compile(
+    r"\{[A-Za-z][A-Za-z0-9_]{0,63}\}",
+    re.ASCII,
+)
+_CODE_PATH_PATTERN = re.compile(
+    r"code:(?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\.[A-Za-z0-9]{1,10}:[A-Za-z_][A-Za-z0-9_:.]{0,255}",
+    re.ASCII,
+)
+_SOURCE_FACT_REF_KINDS = frozenset(
+    {"api", "code", "har", "policy", "sarif", "sbom_artifact", "scope", "static_advisory"}
+)
+
+
+def _is_sensitive_metadata_key(value: str) -> bool:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized.startswith("x_"):
+        normalized = normalized[2:]
+    return normalized in _SENSITIVE_METADATA_KEYS
+
+
+def _source_fact_ref_labels(refs: list[str]) -> tuple[str, ...]:
+    return tuple(
+        f"{ref.partition(':')[0].lower() if ref.partition(':')[0].lower() in _SOURCE_FACT_REF_KINDS else 'source'}_ref_{index}"
+        for index, ref in enumerate(refs, start=1)
+    )
+
+
+def _safe_route_path(value: str) -> str | None:
+    if not value.startswith("/") or len(value) > 256:
+        return None
+    if value == "/":
+        return value
+    normalized_segments: list[str] = []
+    for segment in value[1:].split("/"):
+        if _ROUTE_PARAMETER_SEGMENT_PATTERN.fullmatch(segment) is not None:
+            normalized_segments.append(segment)
+        elif _ROUTE_NUMERIC_SEGMENT_PATTERN.fullmatch(segment) is not None:
+            normalized_segments.append("{id}")
+        elif _ROUTE_VERSION_SEGMENT_PATTERN.fullmatch(segment) is not None:
+            normalized_segments.append(segment)
+        elif _ROUTE_STATIC_SEGMENT_PATTERN.fullmatch(segment) is not None:
+            normalized_segments.append(segment)
+        else:
+            return None
+    return "/" + "/".join(normalized_segments)
+
+
+def _contains_sensitive_decoded_text(value: str) -> bool:
+    return (
+        "=" in value
+        or "＝" in value
+        or "?" in value
+        or "#" in value
+        or any(pattern.search(value) for pattern in _SENSITIVE_METADATA_PATTERNS)
+        or any(
+            _is_sensitive_metadata_key(match.group("key"))
+            for match in _METADATA_ASSIGNMENT_PATTERN.finditer(value)
+        )
+    )
+
+
+def _json_contains_sensitive_metadata(value: str) -> bool:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return False
+    return _json_value_contains_sensitive_metadata(parsed, depth=0)
+
+
+def _json_value_contains_sensitive_metadata(value: Any, *, depth: int) -> bool:
+    if isinstance(value, dict):
+        return any(
+            (isinstance(key, str) and _is_sensitive_metadata_key(key))
+            or _json_value_contains_sensitive_metadata(nested, depth=depth + 1)
+            for key, nested in value.items()
+        )
+    if isinstance(value, list):
+        return any(
+            _json_value_contains_sensitive_metadata(item, depth=depth + 1)
+            for item in value
+        )
+    if not isinstance(value, str):
+        return False
+    if _contains_sensitive_decoded_text(value):
+        return True
+    if depth >= 3:
+        return False
+    try:
+        nested = json.loads(value)
+    except (TypeError, ValueError):
+        return False
+    return _json_value_contains_sensitive_metadata(nested, depth=depth + 1)
 
 
 def _contains_sensitive_metadata(value: str) -> bool:
+    if len(value) > 512:
+        return True
     decoded = value
     for _ in range(_MAX_METADATA_DECODE_PASSES):
-        if any(pattern.search(decoded) for pattern in _SENSITIVE_METADATA_PATTERNS):
-            return True
-        query = decoded.partition("?")[2].partition("#")[0]
-        if any(
-            unquote_plus(item.partition("=")[0]).strip().lower()
-            in _SENSITIVE_QUERY_KEYS
-            for item in re.split(r"[&;]", query)
-            if item
+        if _contains_sensitive_decoded_text(decoded) or _json_contains_sensitive_metadata(
+            decoded
         ):
             return True
         next_decoded = unquote_plus(decoded)
@@ -224,6 +386,7 @@ def _candidate_queue_projection(
         if (
             isinstance(raw_pipeline_run_id, str)
             and len(raw_pipeline_run_id) <= 128
+            and _PIPELINE_RUN_ID_PATTERN.fullmatch(raw_pipeline_run_id) is not None
             and not _contains_sensitive_metadata(raw_pipeline_run_id)
         )
         else None
@@ -248,6 +411,7 @@ def _candidate_queue_projection(
             not isinstance(stage_id, str)
             or not stage_id
             or len(stage_id) > 128
+            or _PIPELINE_STAGE_ID_PATTERN.fullmatch(stage_id) is None
             or _contains_sensitive_metadata(stage_id)
             for stage_id in source_stage_ids
         )
@@ -262,6 +426,11 @@ def _candidate_queue_projection(
         if not isinstance(item, dict):
             return _invalid_candidate_queue(pipeline_run_id)
         route = item.get("route")
+        safe_route_path = (
+            _safe_route_path(route["path"])
+            if isinstance(route, dict) and isinstance(route.get("path"), str)
+            else None
+        )
         refs = item.get("source_fact_refs")
         blockers = item.get("safety_blockers")
         code_path = item.get("affected_code_path")
@@ -270,7 +439,8 @@ def _candidate_queue_projection(
             or not isinstance(route.get("method"), str)
             or not isinstance(route.get("path"), str)
             or not route["method"]
-            or not route["path"].startswith("/")
+            or route["method"].upper() not in _ROUTE_METHODS
+            or safe_route_path is None
             or not isinstance(refs, list)
             or not refs
             or any(
@@ -281,7 +451,7 @@ def _candidate_queue_projection(
                 for ref in refs
             )
             or not isinstance(code_path, str)
-            or not code_path.startswith("code:")
+            or _CODE_PATH_PATTERN.fullmatch(code_path) is None
             or code_path not in refs
             or not isinstance(blockers, list)
             or not all(
@@ -291,7 +461,7 @@ def _candidate_queue_projection(
                 and not _contains_sensitive_metadata(blocker)
                 for blocker in blockers
             )
-            or not _REQUIRED_CANDIDATE_BLOCKER_SET.issubset(set(blockers))
+            or set(blockers) != _REQUIRED_CANDIDATE_BLOCKER_SET
             or item.get("evidence_trace_status") != "traceable"
             or item.get("human_validation_readiness") != "ready"
             or any(
@@ -319,15 +489,20 @@ def _candidate_queue_projection(
             for candidate_string in candidate_strings
         ):
             return _invalid_candidate_queue(pipeline_run_id)
+        if (
+            _CANDIDATE_ID_PATTERN.fullmatch(item["candidate_id"]) is None
+            or item["vuln_type"] not in _ALLOWED_CANDIDATE_VULN_TYPES
+        ):
+            return _invalid_candidate_queue(pipeline_run_id)
         try:
             projected.append(
                 AutopilotCandidateProjection(
                     candidate_id=item.get("candidate_id"),
                     rank=item.get("rank"),
                     vuln_type=item.get("vuln_type"),
-                    affected_endpoint=f"{route['method'].upper()} {route['path']}",
+                    affected_endpoint=f"{route['method'].upper()} {safe_route_path}",
                     affected_code_path=code_path,
-                    source_fact_refs=tuple(refs),
+                    source_fact_refs=_source_fact_ref_labels(refs),
                     safety_blockers=_REQUIRED_CANDIDATE_BLOCKERS,
                 )
             )

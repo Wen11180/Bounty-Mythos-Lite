@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import re
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from threading import Barrier, Event, Thread, get_ident
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -28,6 +33,7 @@ from app.bounty_autopilot.contracts import (
     RiskTier,
 )
 from app.bounty_autopilot.plans import build_validation_plan
+from app.bounty_autopilot.observations import AutopilotObservationInput
 from app.bounty_autopilot.transport import TransportReceipt, sign_transport_receipt
 from app.db import Base
 from app.repository import DatabaseRepository, seed_sample_data
@@ -134,6 +140,25 @@ def _session_repo(**authorization_overrides):
         **authorization_overrides,
     )
     return session, repo, campaign, authorization
+
+
+def _local_postgresql_autopilot_test_url():
+    database_url = os.getenv("AUTONOMOUS_RESEARCH_POSTGRES_TEST_URL")
+    if not database_url:
+        return None
+    try:
+        url = make_url(database_url)
+    except Exception:
+        return None
+    if (
+        url.drivername != "postgresql+psycopg"
+        or url.host not in {"127.0.0.1", "localhost"}
+        or not isinstance(url.database, str)
+        or not url.database.startswith("phase6_")
+        or url.query
+    ):
+        return None
+    return url
 
 
 def _plan_dict(
@@ -371,7 +396,7 @@ def test_repository_rejects_receipt_after_lease_expiry():
             path="/api",
             status_code=200,
             byte_length=42,
-            sent_at=issued_at + timedelta(seconds=11),
+            sent_at=issued_at + timedelta(seconds=10),
             challenge=challenge,
         )
 
@@ -393,6 +418,508 @@ def test_repository_rejects_receipt_after_lease_expiry():
         assert repo.list_execution_request_ledger(campaign.id)[0].status == "expired"
     finally:
         session.close()
+
+
+def test_repository_rejects_receipt_declared_at_lease_expiry():
+    """A clock-skew allowance must not extend the signed lease window."""
+
+    session, repo, campaign, authorization = _session_repo()
+    try:
+        issued_at = datetime.now(UTC).replace(microsecond=0)
+        plan_payload, plan = _plan_dict(
+            campaign.id,
+            authorization_digest=authorization.authorization_digest,
+            scope_snapshot_digest=authorization.scope_snapshot_digest,
+            max_duration_seconds=10,
+        )
+        repo.create_validation_plan(campaign_id=campaign.id, plan_payload=plan_payload)
+        issued, reason, lease = repo.issue_execution_lease(
+            campaign_id=campaign.id,
+            plan_id=plan.plan_id,
+            lease_id="lease_receipt_sent_at_expiry",
+            authorization_digest=plan.authorization_digest,
+            scope_snapshot_digest=plan.scope_snapshot_digest,
+            authorization_recipe_allowed=True,
+            policy_mode=PolicyMode.AUTHORIZED_LOCAL_LAB.value,
+            now=issued_at,
+        )
+        assert issued is True, reason
+        assert lease is not None
+        reservation = repo.reserve_execution_request(
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_payload={
+                "reservation_id": "res_receipt_sent_at_expiry",
+                "lease_id": lease.lease_id,
+                "plan_id": plan.plan_id,
+                "plan_digest": plan.plan_digest,
+                "destination_host": "127.0.0.1",
+                "destination_port": 8080,
+                "destination_path": "/api",
+                "method": "GET",
+                "mutation_class": "none",
+                "idempotency_key": "idem_receipt_sent_at_expiry",
+                "remaining_request_budget": 2,
+            },
+            now=issued_at + timedelta(seconds=1),
+        )
+        _record, challenge = repo.authorize_execution_request(
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_id=reservation.reservation_id,
+            destination_host="127.0.0.1",
+            destination_port=8080,
+            destination_path="/api",
+            method="GET",
+            now=issued_at + timedelta(seconds=2),
+        )
+        receipt = TransportReceipt(
+            receipt_id="receipt_sent_at_expiry",
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_id=reservation.reservation_id,
+            plan_id=plan.plan_id,
+            plan_digest=plan.plan_digest,
+            branch_id=plan.branch_id,
+            method="GET",
+            scheme="http",
+            host="127.0.0.1",
+            port=8080,
+            path="/api",
+            status_code=200,
+            byte_length=42,
+            sent_at=issued_at + timedelta(seconds=10),
+            challenge=challenge,
+        )
+
+        # The API accepts a small transport/server clock skew. It must still
+        # reject a receipt whose trusted sent time reaches the lease boundary.
+        with pytest.raises(ValueError, match="transport_receipt_lease_expired"):
+            repo.record_transport_receipt(
+                campaign_id=campaign.id,
+                receipt=receipt,
+                signature=sign_transport_receipt(receipt, "x" * 43),
+                capability="x" * 43,
+                now=issued_at + timedelta(seconds=7),
+            )
+
+        stored = repo.list_execution_request_ledger(campaign.id)
+        assert len(stored) == 1
+        assert stored[0].status == "reserved"
+    finally:
+        session.close()
+
+
+def _assert_parallel_receipt_delivery_is_idempotent(engine):
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    setup_session = Session()
+    try:
+        seed_sample_data(setup_session)
+        repository = DatabaseRepository(setup_session)
+        program = repository.list_programs()[0]
+        campaign = repository.create_campaign(
+            program_id=program.id,
+            name="parallel-receipt-delivery",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="policy",
+            default_asset="127.0.0.1",
+            created_by="operator_alice",
+            campaign_mode="bounty_autopilot",
+        )
+        authorization = _authorize_lab_campaign(repository, campaign)
+        now = datetime.now(UTC).replace(microsecond=0)
+        plan_payload, plan = _plan_dict(
+            campaign.id,
+            authorization_digest=authorization.authorization_digest,
+            scope_snapshot_digest=authorization.scope_snapshot_digest,
+        )
+        repository.create_validation_plan(
+            campaign_id=campaign.id,
+            plan_payload=plan_payload,
+        )
+        issued, reason, lease = repository.issue_execution_lease(
+            campaign_id=campaign.id,
+            plan_id=plan.plan_id,
+            lease_id="lease_parallel_receipt",
+            authorization_digest=plan.authorization_digest,
+            scope_snapshot_digest=plan.scope_snapshot_digest,
+            authorization_recipe_allowed=True,
+            policy_mode=PolicyMode.AUTHORIZED_LOCAL_LAB.value,
+            now=now,
+        )
+        assert issued is True, reason
+        assert lease is not None
+        reservation = repository.reserve_execution_request(
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_payload={
+                "reservation_id": "res_parallel_receipt",
+                "lease_id": lease.lease_id,
+                "plan_id": plan.plan_id,
+                "plan_digest": plan.plan_digest,
+                "destination_host": "127.0.0.1",
+                "destination_port": 8080,
+                "destination_path": "/api",
+                "method": "GET",
+                "mutation_class": "none",
+                "idempotency_key": "idem_parallel_receipt",
+                "remaining_request_budget": 2,
+            },
+            now=now + timedelta(seconds=1),
+        )
+        _record, challenge = repository.authorize_execution_request(
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_id=reservation.reservation_id,
+            destination_host="127.0.0.1",
+            destination_port=8080,
+            destination_path="/api",
+            method="GET",
+            now=now + timedelta(seconds=2),
+        )
+        receipt = TransportReceipt(
+            receipt_id="receipt_parallel_delivery",
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_id=reservation.reservation_id,
+            plan_id=plan.plan_id,
+            plan_digest=plan.plan_digest,
+            branch_id=plan.branch_id,
+            method="GET",
+            scheme="http",
+            host="127.0.0.1",
+            port=8080,
+            path="/api",
+            status_code=200,
+            content_type_class="json",
+            byte_length=42,
+            sent_at=now + timedelta(seconds=3),
+            challenge=challenge,
+        )
+        campaign_id = campaign.id
+    finally:
+        setup_session.close()
+
+    first_campaign_lock_acquired = Event()
+    release_first_campaign_lock = Event()
+    second_campaign_read_attempted = Event()
+    second_finished = Event()
+    first_thread_ident = None
+    results = []
+    errors = []
+
+    def coordinate_campaign_lock(
+        _conn,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        normalized_statement = " ".join(statement.lower().split())
+        if (
+            re.search(
+                r"update (?:[a-z0-9_]+\.)?campaigns set status=(?:[a-z0-9_]+\.)?campaigns.status",
+                normalized_statement,
+            )
+            and not first_campaign_lock_acquired.is_set()
+        ):
+            first_campaign_lock_acquired.set()
+            if not release_first_campaign_lock.wait(timeout=10):
+                raise RuntimeError("parallel_receipt_lock_release_timeout")
+
+    def observe_second_campaign_read(
+        _conn,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        normalized_statement = " ".join(statement.lower().split())
+        if (
+            first_campaign_lock_acquired.is_set()
+            and get_ident() != first_thread_ident
+            and normalized_statement.startswith("select")
+            and re.search(r" from (?:[a-z0-9_]+\.)?campaigns", normalized_statement)
+        ):
+            second_campaign_read_attempted.set()
+
+    def deliver_receipt(*, second: bool):
+        nonlocal first_thread_ident
+        session = Session()
+        try:
+            if not second:
+                first_thread_ident = get_ident()
+            record = DatabaseRepository(session).record_transport_receipt(
+                campaign_id=campaign_id,
+                receipt=receipt,
+                signature=sign_transport_receipt(receipt, "x" * 43),
+                capability="x" * 43,
+                now=now + timedelta(seconds=3),
+            )
+            results.append(record.id)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            session.close()
+            if second:
+                second_finished.set()
+
+    event.listen(engine, "after_cursor_execute", coordinate_campaign_lock)
+    event.listen(engine, "before_cursor_execute", observe_second_campaign_read)
+    first_thread = Thread(target=deliver_receipt, kwargs={"second": False})
+    second_thread = Thread(target=deliver_receipt, kwargs={"second": True})
+    threads = [first_thread, second_thread]
+    try:
+        first_thread.start()
+        assert first_campaign_lock_acquired.wait(timeout=10)
+        second_thread.start()
+        assert second_campaign_read_attempted.wait(timeout=10)
+        assert not second_finished.wait(timeout=0.25)
+    finally:
+        release_first_campaign_lock.set()
+        for thread in threads:
+            thread.join(timeout=10)
+        event.remove(engine, "after_cursor_execute", coordinate_campaign_lock)
+        event.remove(engine, "before_cursor_execute", observe_second_campaign_read)
+
+    verification_session = Session()
+    try:
+        persisted = DatabaseRepository(verification_session).list_execution_request_ledger(
+            campaign_id
+        )
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == []
+        assert len(results) == 2
+        assert len(set(results)) == 1
+        assert len(persisted) == 1
+        assert persisted[0].status == "sent"
+        assert persisted[0].payload["transport_receipt_id"] == receipt.receipt_id
+    finally:
+        verification_session.close()
+
+
+def test_repository_parallel_receipt_delivery_is_idempotent(tmp_path):
+    database_path = tmp_path / "autopilot-receipt-retry.sqlite"
+    engine = create_engine(
+        f"sqlite+pysqlite:///{database_path.as_posix()}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+    try:
+        _assert_parallel_receipt_delivery_is_idempotent(engine)
+    finally:
+        engine.dispose()
+
+
+def test_repository_parallel_receipt_delivery_is_idempotent_on_postgresql():
+    url = _local_postgresql_autopilot_test_url()
+    if url is None:
+        pytest.skip("postgres_runtime_test_not_configured")
+
+    engine = create_engine(url)
+    schema_name = f"phase6_autopilot_receipt_{uuid4().hex}"
+    scoped_engine = engine.execution_options(schema_translate_map={None: schema_name})
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+        _assert_parallel_receipt_delivery_is_idempotent(scoped_engine)
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+        engine.dispose()
+
+
+def _assert_parallel_observation_delivery_is_idempotent(engine):
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    setup_session = Session()
+    try:
+        seed_sample_data(setup_session)
+        repository = DatabaseRepository(setup_session)
+        program = repository.list_programs()[0]
+        campaign = repository.create_campaign(
+            program_id=program.id,
+            name="parallel-observation-delivery",
+            autonomy_level="level_0_read_only",
+            scope_status="in_scope",
+            policy_text="policy",
+            default_asset="127.0.0.1",
+            created_by="operator_alice",
+            campaign_mode="bounty_autopilot",
+        )
+        authorization = _authorize_lab_campaign(repository, campaign)
+        now = datetime.now(UTC).replace(microsecond=0)
+        plan_payload, plan = _plan_dict(
+            campaign.id,
+            authorization_digest=authorization.authorization_digest,
+            scope_snapshot_digest=authorization.scope_snapshot_digest,
+        )
+        repository.create_validation_plan(
+            campaign_id=campaign.id,
+            plan_payload=plan_payload,
+        )
+        issued, reason, lease = repository.issue_execution_lease(
+            campaign_id=campaign.id,
+            plan_id=plan.plan_id,
+            lease_id="lease_parallel_observation",
+            authorization_digest=plan.authorization_digest,
+            scope_snapshot_digest=plan.scope_snapshot_digest,
+            authorization_recipe_allowed=True,
+            policy_mode=PolicyMode.AUTHORIZED_LOCAL_LAB.value,
+            now=now,
+        )
+        assert issued is True, reason
+        assert lease is not None
+        reservation = repository.reserve_execution_request(
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_payload={
+                "reservation_id": "res_parallel_observation",
+                "lease_id": lease.lease_id,
+                "plan_id": plan.plan_id,
+                "plan_digest": plan.plan_digest,
+                "destination_host": "127.0.0.1",
+                "destination_port": 8080,
+                "destination_path": "/api",
+                "method": "GET",
+                "mutation_class": "none",
+                "idempotency_key": "idem_parallel_observation",
+                "remaining_request_budget": 2,
+            },
+            now=now + timedelta(seconds=1),
+        )
+        _record, challenge = repository.authorize_execution_request(
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_id=reservation.reservation_id,
+            destination_host="127.0.0.1",
+            destination_port=8080,
+            destination_path="/api",
+            method="GET",
+            now=now + timedelta(seconds=2),
+        )
+        receipt = TransportReceipt(
+            receipt_id="receipt_parallel_observation",
+            campaign_id=campaign.id,
+            lease_id=lease.lease_id,
+            reservation_id=reservation.reservation_id,
+            plan_id=plan.plan_id,
+            plan_digest=plan.plan_digest,
+            branch_id=plan.branch_id,
+            method="GET",
+            scheme="http",
+            host="127.0.0.1",
+            port=8080,
+            path="/api",
+            status_code=200,
+            content_type_class="json",
+            byte_length=42,
+            sent_at=now + timedelta(seconds=3),
+            challenge=challenge,
+        )
+        receipt_record = repository.record_transport_receipt(
+            campaign_id=campaign.id,
+            receipt=receipt,
+            signature=sign_transport_receipt(receipt, "x" * 43),
+            capability="x" * 43,
+            now=now + timedelta(seconds=3),
+        )
+        repository.complete_execution_request(
+            campaign_id=campaign.id,
+            reservation_id=reservation.reservation_id,
+            outcome="completed",
+            now=now + timedelta(seconds=4),
+        )
+        receipt_digest = receipt_record.payload["transport_receipt_digest"]
+        observation = AutopilotObservationInput(
+            observation_id="obs_parallel_delivery",
+            branch_id=plan.branch_id,
+            plan_digest=plan.plan_digest,
+            lease_id=lease.lease_id,
+            reservation_id=reservation.reservation_id,
+            receipt_digest=receipt_digest,
+            outcome_class="ok",
+            grade="L2_corroborated",
+            summary="metadata-only duplicate delivery check",
+            evidence_refs=("safe_ref",),
+            status_class="2xx",
+            content_type_class="json",
+            byte_length=42,
+        )
+        campaign_id = campaign.id
+    finally:
+        setup_session.close()
+
+    barrier = Barrier(2)
+    results = []
+    errors = []
+
+    def deliver_observation():
+        session = Session()
+        try:
+            barrier.wait(timeout=10)
+            record = DatabaseRepository(session).create_autopilot_observation(
+                campaign_id=campaign_id,
+                observation=observation,
+            )
+            results.append(record.id)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            session.close()
+
+    threads = [Thread(target=deliver_observation), Thread(target=deliver_observation)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    verification_session = Session()
+    try:
+        persisted = DatabaseRepository(verification_session).list_autopilot_observations(
+            campaign_id
+        )
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == []
+        assert len(results) == 2
+        assert len(set(results)) == 1
+        assert len(persisted) == 1
+        assert persisted[0].observation_id == observation.observation_id
+    finally:
+        verification_session.close()
+
+
+def test_repository_parallel_observation_delivery_is_idempotent(tmp_path):
+    database_path = tmp_path / "autopilot-observation-retry.sqlite"
+    engine = create_engine(
+        f"sqlite+pysqlite:///{database_path.as_posix()}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+    try:
+        _assert_parallel_observation_delivery_is_idempotent(engine)
+    finally:
+        engine.dispose()
+
+
+def test_repository_parallel_observation_delivery_is_idempotent_on_postgresql():
+    url = _local_postgresql_autopilot_test_url()
+    if url is None:
+        pytest.skip("postgres_runtime_test_not_configured")
+
+    engine = create_engine(url)
+    schema_name = f"phase6_autopilot_observation_{uuid4().hex}"
+    scoped_engine = engine.execution_options(schema_translate_map={None: schema_name})
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+        _assert_parallel_observation_delivery_is_idempotent(scoped_engine)
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+        engine.dispose()
 
 
 def test_repository_r3_approval_single_use_cas():

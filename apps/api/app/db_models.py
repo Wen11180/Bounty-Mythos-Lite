@@ -1092,9 +1092,10 @@ class AutopilotObservationRecord(Base):
             "branch_id",
         ),
         Index(
-            "ix_autopilot_observations_campaign_comparison_reservation",
+            "uq_autopilot_observations_campaign_comparison_reservation",
             "campaign_id",
             "comparison_reservation_id",
+            unique=True,
         ),
     )
 

@@ -58,3 +58,18 @@ def test_r2_differential_observation_binds_two_reservations_with_only_metadata()
     ]
     assert "body" not in dumped
     assert "headers" not in dumped
+
+
+def test_observation_allows_the_bounded_size_ceiling_sentinel():
+    observation = AutopilotObservationInput(
+        observation_id="obs_size_ceiling",
+        branch_id="branch_size_ceiling",
+        plan_digest="sha256:" + ("a" * 64),
+        lease_id="lease_size_ceiling",
+        reservation_id="res_size_ceiling",
+        outcome_class=GatewayOutcomeClass.SIZE_CEILING,
+        summary="response exceeded bounded ceiling",
+        byte_length=5_000_001,
+    )
+
+    assert observation.byte_length == 5_000_001

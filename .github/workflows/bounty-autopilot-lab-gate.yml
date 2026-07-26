@@ -14,6 +14,22 @@ on:
 jobs:
   lab-gate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: phase6_autopilot
+          POSTGRES_PASSWORD: mythos
+          POSTGRES_USER: mythos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mythos -d phase6_autopilot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AUTONOMOUS_RESEARCH_POSTGRES_TEST_URL: postgresql+psycopg://mythos:mythos@127.0.0.1:5432/phase6_autopilot
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,7 +45,18 @@ jobs:
         working-directory: apps/api
         run: |
           . ../../.venv/bin/activate
-          python -m pytest tests/test_bounty_autopilot_*.py tests/test_migrations.py -q
+          python -m pytest tests/test_bounty_autopilot_*.py tests/test_migrations.py tests/test_autonomous_research_wakeup.py::test_retry_claim_is_atomic_on_local_postgresql -q
+      - name: Candidate discovery release gate
+        working-directory: apps/api
+        run: |
+          . ../../.venv/bin/activate
+          python -m pytest tests/test_candidate_hunter_release_benchmark.py tests/test_candidate_hunter_release_fixtures.py tests/test_candidate_hunter_release_runner.py tests/test_candidate_hunter_typescript_release_fixtures.py tests/test_candidate_hunter_typescript_release_gate.py -q
+      - name: Candidate discovery production breadth gate
+        working-directory: apps/api
+        run: |
+          . ../../.venv/bin/activate
+          python -m pytest tests/test_multilang_production_breadth.py -q
+          python -m app multilang-production-breadth --out "$RUNNER_TEMP/multilang-production-breadth.json"
       - name: Clean database migration check
         working-directory: apps/api
         run: |
@@ -38,18 +65,30 @@ jobs:
           export DATABASE_URL="sqlite:///$database_path"
           python -m alembic upgrade head
           python -m alembic check
+      - name: PostgreSQL database migration check
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+psycopg://mythos:mythos@127.0.0.1:5432/phase6_autopilot
+        run: |
+          . ../../.venv/bin/activate
+          python -m alembic upgrade head
+          python -m alembic check
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - name: Install Studio deps
         working-directory: apps/studio
-        run: npm ci
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
       - name: Studio Autopilot unit tests
         working-directory: apps/studio
         run: npm test
       - name: Install Web deps
         working-directory: apps/web
-        run: npm ci
+        run: |
+          npm ci
+          npm run audit:prod
       - name: Web unit, lint, and build
         working-directory: apps/web
         run: |
@@ -66,3 +105,38 @@ jobs:
         run: npx playwright test --project=chromium
       - name: Compose config
         run: docker compose -f infra/docker-compose.yml config --quiet
+  windows-desktop-package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install frozen API runtime dependencies
+        working-directory: apps/api
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r requirements-desktop.txt
+      - name: Install Web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Install Studio dependencies
+        working-directory: apps/studio
+        run: npm ci
+      - name: Package and smoke test Windows Studio
+        working-directory: apps/studio
+        shell: pwsh
+        env:
+          MYTHOS_DESKTOP_PYTHON: ${{ github.workspace }}\apps\api\.venv\Scripts\python.exe
+        run: |
+          npm run make -- --platform=win32 --arch=x64
+          node -e "require('./package-runtime.cjs').validateStagedRuntime()"
+          & ".\runtime\api\mythos-api.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "packaged_api_smoke_failed" }
+          if (!(Test-Path -LiteralPath "out\make\squirrel.windows\x64\BountyMythosLite Setup.exe")) { throw "installer_missing" }

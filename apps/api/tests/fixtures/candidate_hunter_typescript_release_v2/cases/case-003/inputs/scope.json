@@ -1,0 +1,11 @@
+{
+  "fixture_id": "fixture-p8x3",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/packets/p8x3/{packetId}",
+    "/local/packets/p8x3/{packetId}/preview"
+  ],
+  "local_only": true
+}

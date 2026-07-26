@@ -320,6 +320,25 @@ def _safe_transport_receipt_projection(value: Any) -> dict[str, Any] | None:
     }
 
 
+def _autopilot_observation_matches(
+    existing: AutopilotObservationRecord,
+    *,
+    observation: Any,
+    payload: dict[str, Any],
+) -> bool:
+    return (
+        existing.observation_id == observation.observation_id
+        and existing.branch_id == observation.branch_id
+        and existing.plan_digest == observation.plan_digest
+        and existing.lease_id == observation.lease_id
+        and existing.reservation_id == observation.reservation_id
+        and existing.comparison_reservation_id == observation.comparison_reservation_id
+        and existing.grade == observation.grade.value
+        and existing.outcome_class == observation.outcome_class.value
+        and existing.payload == payload
+    )
+
+
 class DatabaseRepository:
     def __init__(self, session: Session):
         self.session = session
@@ -3416,6 +3435,9 @@ class DatabaseRepository:
             )
         except ValueError as exc:
             raise ValueError(str(exc)) from None
+        lease_expires_at = self._lease_expiry(lease, lease_row)
+        if lease_expires_at is None:
+            raise ValueError("lease_expiry_integrity_invalid")
         if lease.plan_id != receipt.plan_id or lease.branch_id != receipt.branch_id:
             raise ValueError("transport_receipt_lease_mismatch")
         plan_row = self.session.scalar(
@@ -3441,6 +3463,8 @@ class DatabaseRepository:
         sent_at = _as_utc(receipt.sent_at)
         if authorized_at is None or sent_at < authorized_at - timedelta(seconds=60):
             raise ValueError("transport_receipt_time_invalid")
+        if sent_at >= lease_expires_at:
+            raise ValueError("transport_receipt_lease_expired")
         if sent_at > timestamp + timedelta(seconds=5):
             raise ValueError("transport_receipt_time_invalid")
         max_window = max(60, int(plan.max_duration_seconds) + 60)
@@ -3610,6 +3634,20 @@ class DatabaseRepository:
         if not isinstance(observation, AutopilotObservationInput):
             raise ValueError("observation_contract_invalid")
         timestamp = now or datetime.now(UTC)
+        campaign = self.session.scalar(
+            select(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .with_for_update()
+        )
+        if campaign is None:
+            raise ValueError("campaign_not_found")
+        # SQLite ignores SELECT FOR UPDATE; serialize observation consumption
+        # with the same campaign writer lock used by receipts and emergency stop.
+        self.session.execute(
+            update(CampaignRecord)
+            .where(CampaignRecord.id == campaign_id)
+            .values(status=CampaignRecord.status)
+        )
         reservation = self.session.scalar(
             select(ExecutionRequestLedgerRecord)
             .where(
@@ -3639,6 +3677,23 @@ class DatabaseRepository:
                 raise ValueError("observation_transport_receipt_required")
             if observation.receipt_digest != receipt_digest:
                 raise ValueError("observation_receipt_mismatch")
+            receipt_projection = _safe_transport_receipt_projection(
+                reservation.payload.get("transport_receipt")
+            )
+            if receipt_projection is None:
+                raise ValueError("observation_transport_receipt_projection_required")
+            expected_byte_length = (
+                0
+                if observation.outcome_class.value == "third_party_data"
+                else receipt_projection["byte_length"]
+            )
+            if (
+                observation.status_class != receipt_projection["status_class"]
+                or observation.content_type_class
+                != receipt_projection["content_type_class"]
+                or observation.byte_length != expected_byte_length
+            ):
+                raise ValueError("observation_metadata_mismatch")
         elif observation.receipt_digest is not None and observation.receipt_digest != receipt_digest:
             raise ValueError("observation_receipt_mismatch")
         lease_row = self.session.scalar(
@@ -3750,28 +3805,6 @@ class DatabaseRepository:
         elif observation.comparison_reservation_id is not None:
             raise ValueError("comparison_not_supported_for_plan")
 
-        reservation_ids = [observation.reservation_id]
-        if observation.comparison_reservation_id is not None:
-            reservation_ids.append(observation.comparison_reservation_id)
-        existing = self.session.scalar(
-            select(AutopilotObservationRecord).where(
-                AutopilotObservationRecord.campaign_id == campaign_id,
-                or_(
-                    AutopilotObservationRecord.reservation_id.in_(reservation_ids),
-                    AutopilotObservationRecord.comparison_reservation_id.in_(reservation_ids),
-                ),
-            )
-        )
-        if existing is not None:
-            if (
-                existing.observation_id == observation.observation_id
-                and existing.reservation_id == observation.reservation_id
-                and existing.comparison_reservation_id
-                == observation.comparison_reservation_id
-            ):
-                return existing
-            raise ValueError("observation_reservation_already_recorded")
-
         safe_summary = _safe_display_value(observation.summary)
         safe_payload: dict[str, Any] = {
             "observation_id": observation.observation_id,
@@ -3812,6 +3845,31 @@ class DatabaseRepository:
         safe_payload["raw_content_retained"] = False
         safe_payload["candidate_promotion_allowed"] = False
         safe_payload["report_submission_allowed"] = False
+        reservation_ids = [observation.reservation_id]
+        if observation.comparison_reservation_id is not None:
+            reservation_ids.append(observation.comparison_reservation_id)
+        existing = self.session.scalar(
+            select(AutopilotObservationRecord)
+            .where(
+                AutopilotObservationRecord.campaign_id == campaign_id,
+                or_(
+                    AutopilotObservationRecord.observation_id == observation.observation_id,
+                    AutopilotObservationRecord.reservation_id.in_(reservation_ids),
+                    AutopilotObservationRecord.comparison_reservation_id.in_(reservation_ids),
+                ),
+            )
+            .with_for_update()
+        )
+        if existing is not None:
+            if _autopilot_observation_matches(
+                existing,
+                observation=observation,
+                payload=safe_payload,
+            ):
+                return existing
+            if existing.observation_id == observation.observation_id:
+                raise ValueError("observation_idempotency_conflict")
+            raise ValueError("observation_reservation_already_recorded")
         record = AutopilotObservationRecord(
             id=f"obs_row_{uuid4().hex}",
             campaign_id=campaign_id,
@@ -3827,7 +3885,34 @@ class DatabaseRepository:
             created_at=timestamp,
         )
         self.session.add(record)
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(AutopilotObservationRecord).where(
+                    AutopilotObservationRecord.campaign_id == campaign_id,
+                    or_(
+                        AutopilotObservationRecord.observation_id
+                        == observation.observation_id,
+                        AutopilotObservationRecord.reservation_id.in_(reservation_ids),
+                        AutopilotObservationRecord.comparison_reservation_id.in_(
+                            reservation_ids
+                        ),
+                    ),
+                )
+            )
+            if existing is None:
+                raise
+            if _autopilot_observation_matches(
+                existing,
+                observation=observation,
+                payload=safe_payload,
+            ):
+                return existing
+            if existing.observation_id == observation.observation_id:
+                raise ValueError("observation_idempotency_conflict") from None
+            raise ValueError("observation_reservation_already_recorded") from None
         self.session.refresh(record)
         return record
 
@@ -7794,7 +7879,7 @@ def _learning_signal_identity_hash(
         candidate_alias = field_pilot_feedback.get("candidate_alias")
         if (
             field_pilot_feedback.get("schema_version")
-            != "black_box_field_pilot_v1"
+            not in {"black_box_field_pilot_v1", "black_box_field_pilot_v2"}
             or not isinstance(engagement_alias, str)
             or not isinstance(candidate_alias, str)
         ):

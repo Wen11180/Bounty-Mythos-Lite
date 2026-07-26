@@ -1,12 +1,12 @@
-# Local fuzz runner (human-gated in-process)
+# Local fuzz target planner
 
 ## Purpose
 
 V1 residual after CRS harness export + local fuzz sandbox plan/export:
 
-- **Default:** plan-only (no in-process run)
-- **Human flag:** `human_allow_local_fuzz_run` / bridge `--allow-local-fuzz-run`
-- **Execution model:** in-process Python only (AST-extracted top-level functions; restricted builtins)
+- **Always:** plan-only target discovery
+- **Compatibility flag:** `human_allow_local_fuzz_run` / bridge `--allow-local-fuzz-run` records operator intent but cannot enable execution
+- **Execution model:** target code is never loaded into the API process; an independently isolated runner is required
 - **Never:** spawn AFL++ / libFuzzer / external fuzzer processes
 - **Never:** promote crashes, unlock validation, or submit reports
 
@@ -23,16 +23,7 @@ Always forced false / blocked:
 - `external_fuzzer_spawn_allowed`
 - `network_access`
 
-Crash artifacts (when any) land under:
-
-```text
-{package}/_export/fuzz_runs/<stamp>/<crash_id>/
-  meta.json
-  traceback.txt
-  README.md
-```
-
-Each artifact states `promotion_allowed=false` and is local triage material only.
+No crash artifacts are produced by this module because it does not execute target code.
 
 ## Pipeline position
 
@@ -40,7 +31,7 @@ Each artifact states `promotion_allowed=false` and is local triage material only
 CRS plan (T-003)
   -> optional harness export (T-003b)
   -> optional sandbox recipes (T-003c)
-  -> optional in-process Python fuzz run (T-003d)  [this module]
+  -> plan-only fuzz target discovery (T-003d)  [this module]
   -> multi-engine deepen (includes local_fuzz_runner signal)
 ```
 
@@ -51,7 +42,7 @@ python apps/api/scripts/run_ab_report_bridge.py --package-root <authorized_pkg>
 # plan-only by default: lfr=skipped_no_human_local_fuzz_flag lfre=False lfrc=0
 
 python apps/api/scripts/run_ab_report_bridge.py --package-root <authorized_pkg> --allow-local-fuzz-run
-# in-process only; still never promotes/submits
+# compatibility flag only; still plan-only and never loads target code
 ```
 
 Console fields: `lfr`, `lfre`, `lfrc`.
@@ -70,9 +61,9 @@ Unsafe promotion/spawn flags force a blocked signal. Crash counts are advisory e
 
 ## Limits (intentional)
 
-- Python only for auto-run; other languages stay external-preview
-- Seed corpus is small/synthetic; not coverage-guided mutation
-- No AFL++/libFuzzer auto-spawn even with the human flag
+- Target discovery is advisory and does not prove harness viability
+- No in-process Python, AFL++, or libFuzzer execution even with the compatibility flag
+- A future runner must provide OS/process isolation, bounded resources, and blocked network/filesystem access
 - Crashes never enter hunter retain/promotion path automatically
 
 ## Related

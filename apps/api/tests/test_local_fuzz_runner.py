@@ -1,8 +1,7 @@
+import ast
 from pathlib import Path
 
 from app.local_fuzz_runner import (
-    STATUS_COMPLETED,
-    STATUS_CRASHES,
     STATUS_PLANNED,
     STATUS_SKIPPED_NO_FLAG,
     attach_local_fuzz_runner_to_bridge_result,
@@ -44,7 +43,7 @@ def test_default_off_is_plan_only():
     assert "no_external_fuzzer_process_spawn" in plan.safety_invariants
 
 
-def test_flag_runs_in_process_and_records_crash(tmp_path: Path):
+def test_flag_cannot_enable_in_process_execution(tmp_path: Path):
     code = tmp_path / "src"
     code.mkdir()
     (code / "parser.py").write_text(
@@ -61,10 +60,15 @@ def test_flag_runs_in_process_and_records_crash(tmp_path: Path):
         human_allow_local_fuzz_run=True,
     )
     assert result.human_allow_local_fuzz_run is True
-    assert result.in_process_run_executed is True
-    assert result.execution_mode == "in_process_python"
-    assert result.status in {STATUS_COMPLETED, STATUS_CRASHES}
-    assert result.iterations_total >= 1
+    assert result.in_process_run_executed is False
+    assert result.execution_mode == "plan_only"
+    assert result.status == STATUS_PLANNED
+    assert result.iterations_total == 0
+    assert result.crash_count == 0
+    assert result.crash_export_written is False
+    assert result.runnable_target_count == 0
+    assert "in_process_execution_disabled" in result.notes
+    assert not (tmp_path / "_export" / "fuzz_runs").exists()
     assert result.execution_allowed is False
     assert result.process_spawn_allowed is False
     assert result.external_fuzzer_spawn_allowed is False
@@ -72,14 +76,17 @@ def test_flag_runs_in_process_and_records_crash(tmp_path: Path):
     assert result.report_submission_allowed is False
     assert result.finding_promotion_allowed is False
     assert result.confirmed_vulnerability is False
-    if result.crash_count:
-        assert result.status == STATUS_CRASHES
-        assert result.crash_export_written is True
-        assert result.crash_export_count >= 1
-        assert (tmp_path / "_export" / "fuzz_runs").is_dir()
-        for c in result.crash_candidates:
-            assert c.promotion_allowed is False
-            assert c.confirmed_vulnerability is False
+
+
+def test_local_fuzz_runner_has_no_dynamic_python_execution():
+    module_path = ROOT / "apps" / "api" / "app" / "local_fuzz_runner" / "__init__.py"
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    called_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert called_names.isdisjoint({"compile", "eval", "exec"})
 
 
 def test_without_flag_does_not_execute(tmp_path: Path):
@@ -135,7 +142,9 @@ def test_attach_strips_promotion_flags(tmp_path: Path):
         human_allow_local_fuzz_run=True,
     )
     assert out["local_fuzz_runner_present"] is True
-    assert out["local_fuzz_runner_executed"] is True
+    assert out["local_fuzz_runner_executed"] is False
+    assert out["local_fuzz_runner"]["execution_mode"] == "plan_only"
+    assert "in_process_execution_disabled" in out["local_fuzz_runner"]["notes"]
     assert out["execution_allowed"] is False
     assert out["validation_allowed"] is False
     assert out["report_submission_allowed"] is False

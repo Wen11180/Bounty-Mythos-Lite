@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-x9g2",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/releases/x9g2/{releaseId}/approve"
+  ],
+  "local_only": true
+}

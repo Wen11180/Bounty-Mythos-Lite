@@ -1,0 +1,11 @@
+{
+  "fixture_id": "fixture-q9h5",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/bundles/q9h5/{bundleId}/open",
+    "/internal/bundles/q9h5/{bundleId}/raw"
+  ],
+  "local_only": true
+}

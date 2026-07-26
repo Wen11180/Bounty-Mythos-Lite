@@ -114,7 +114,7 @@ function createAutopilotBrowserRunner({
     });
     if (!destination.allowed || !isCurrent() || abortController.signal.aborted) {
       await completeQuietly(binding.campaign_id, binding.reservation_id, 'no_send_failure');
-      const outcome = destination.reason === 'dns_rebind_or_public_ip'
+      const outcome = destination.reason === 'dns_rebind_or_non_loopback_ip'
         || destination.reason === 'dns_admission_mismatch'
         ? 'dns_rebind'
         : 'scope_escape';
@@ -509,11 +509,15 @@ function executeBoundHttpRequest(binding, resolvedIp, { signal, sessionCookie = 
         return;
       }
       response.on('data', (chunk) => {
-        metadata.byteLength += Buffer.byteLength(chunk);
-        if (metadata.byteLength > binding.max_response_bytes) {
+        if (settled) return;
+        const chunkLength = Buffer.byteLength(chunk);
+        if (metadata.byteLength + chunkLength > binding.max_response_bytes) {
+          metadata.byteLength = binding.max_response_bytes + 1;
           response.destroy();
           settle(null, metadata);
+          return;
         }
+        metadata.byteLength += chunkLength;
       });
       response.once('end', () => settle(null, metadata));
       response.once('error', (error) => settle(error));

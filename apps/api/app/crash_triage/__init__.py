@@ -1,9 +1,8 @@
-"""Crash triage: dedupe, minimize, reproducibility, advisory root-cause.
+"""Plan-only crash triage and advisory root-cause classification.
 
 Final-scheme V1 residual after local fuzz runner collects crashes:
 - Dedupe crash candidates by signature
-- Attempt seed minimization (delta-debug) against in-process Python harness
-- Mark reproducible when the same exception family re-triggers
+- Never load or re-run target code in the API process
 - Emit advisory root-cause notes (never confirmed vulnerability)
 - Never promote crashes, never spawn external fuzzers, never submit reports
 """
@@ -16,7 +15,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 STATUS_READY = "crash_triage_ready"
@@ -35,13 +34,12 @@ SAFETY_INVARIANTS = [
     "no_crash_promotion",
     "no_report_submission",
     "advisory_root_cause_only",
-    "minimization_local_in_process_only",
+    "no_in_process_target_execution",
+    "isolated_runner_required_for_reproduction",
     "human_review_required_before_any_promotion",
 ]
 
 _MAX_CRASHES = 40
-_MAX_MINIMIZE_STEPS = 64
-_MAX_SEED_BYTES = 8192
 
 
 class CrashTriageError(ValueError):
@@ -157,11 +155,11 @@ def run_crash_triage(
     force_plan_only: bool = False,
     write_export: bool = True,
 ) -> CrashTriageResult:
-    """Dedupe/minimize/classify local fuzz crashes under human gate."""
+    """Dedupe and classify crash metadata without executing target code."""
     notes: list[str] = [
         "advisory_only",
         "no_crash_promotion",
-        "in_process_minimize_only",
+        "in_process_execution_disabled",
     ]
     root: Path | None = None
     if package_root is not None and str(package_root).strip():
@@ -216,111 +214,38 @@ def run_crash_triage(
         local_fuzz_runner_status=runner_status,
         run_stamp=stamp,
         next_allowed_action=(
-            "Plan-only. Re-run with human_allow_crash_triage=True "
-            "(or bridge --allow-crash-triage) for minimize/repro only."
+            "Export crash metadata to a separately isolated runner for "
+            "reproduction or minimization."
         ),
     )
 
-    if not human_allow_crash_triage or force_plan_only:
-        # Plan preview: classify + dedupe signatures without re-execution
-        preview = _plan_preview(crashes)
-        status = STATUS_READY
-        if not human_allow_crash_triage:
-            notes = list(notes) + ["triage_not_requested"]
-        if force_plan_only and human_allow_crash_triage:
-            notes = list(notes) + ["force_plan_only"]
-        return _force_safety(
-            CrashTriageResult(
-                stage=base.stage,
-                inspirations=list(base.inspirations),
-                execution_mode="plan_only",
-                status=status,
-                package_id=resolved_id,
-                package_root=str(root or ""),
-                input_crash_count=len(crashes),
-                triaged=preview,
-                triaged_count=len(preview),
-                unique_cluster_count=len({t.cluster_id for t in preview}),
-                deduped_away_count=max(0, len(crashes) - len(preview)),
-                human_allow_crash_triage=bool(human_allow_crash_triage),
-                triage_executed=False,
-                safety_invariants=list(SAFETY_INVARIANTS),
-                notes=notes,
-                local_fuzz_runner_status=runner_status,
-                run_stamp=stamp,
-                next_allowed_action=base.next_allowed_action,
-            )
-        )
-
-    if root is None:
-        return _force_safety(
-            CrashTriageResult(
-                stage=base.stage,
-                inspirations=list(base.inspirations),
-                execution_mode="plan_only",
-                status=STATUS_SKIPPED,
-                package_id=resolved_id,
-                package_root="",
-                input_crash_count=len(crashes),
-                human_allow_crash_triage=True,
-                safety_invariants=list(SAFETY_INVARIANTS),
-                notes=list(notes) + ["triage_requested_but_package_root_missing"],
-                local_fuzz_runner_status=runner_status,
-                run_stamp=stamp,
-                next_allowed_action="Provide authorized package_root for minimize/repro.",
-            )
-        )
-
-    started = datetime.now(timezone.utc)
-    triaged = _triage_execute(root=root, crashes=crashes, package_id=resolved_id)
-    export_written = False
-    export_count = 0
-    if write_export and triaged:
-        triaged, export_count = _write_exports(
-            root=root, stamp=stamp, triaged=triaged, package_id=resolved_id
-        )
-        export_written = export_count > 0
-
-    elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-    clusters = {t.cluster_id for t in triaged}
-    repro = sum(1 for t in triaged if t.reproducible is True)
-    mini = sum(1 for t in triaged if t.minimized)
-    run_notes = list(notes) + [
-        "triage_executed",
-        f"clusters={len(clusters)}",
-        f"reproducible={repro}",
-        f"minimized={mini}",
-        "crash_promotion_blocked",
-    ]
-    status = STATUS_EXPORT_WRITTEN if export_written else STATUS_COMPLETED
+    preview = _plan_preview(crashes)
+    if not human_allow_crash_triage:
+        notes = list(notes) + ["triage_not_requested"]
+    else:
+        notes = list(notes) + ["human_flag_recorded_without_execution"]
+    if force_plan_only:
+        notes = list(notes) + ["force_plan_only"]
     return _force_safety(
         CrashTriageResult(
-            stage="v1_crash_triage_and_minimization",
-            inspirations=["AFL++", "libFuzzer", "OSS-Fuzz", "Buttercup"],
-            execution_mode="in_process_triage",
-            status=status,
+            stage=base.stage,
+            inspirations=list(base.inspirations),
+            execution_mode="plan_only",
+            status=STATUS_READY,
             package_id=resolved_id,
-            package_root=str(root),
+            package_root=str(root or ""),
             input_crash_count=len(crashes),
-            triaged=triaged,
-            triaged_count=len(triaged),
-            unique_cluster_count=len(clusters),
-            reproducible_count=repro,
-            minimized_count=mini,
-            deduped_away_count=max(0, len(crashes) - len(triaged)),
-            human_allow_crash_triage=True,
-            triage_executed=True,
-            triage_export_written=export_written,
-            triage_export_count=export_count,
+            triaged=preview,
+            triaged_count=len(preview),
+            unique_cluster_count=len({t.cluster_id for t in preview}),
+            deduped_away_count=max(0, len(crashes) - len(preview)),
+            human_allow_crash_triage=bool(human_allow_crash_triage),
+            triage_executed=False,
             run_stamp=stamp,
             safety_invariants=list(SAFETY_INVARIANTS),
-            notes=run_notes,
+            notes=notes,
             local_fuzz_runner_status=runner_status,
-            duration_ms=elapsed,
-            next_allowed_action=(
-                "Human reviews triaged clusters and root-cause notes; "
-                "Mythos never promotes crashes or submits reports."
-            ),
+            next_allowed_action=base.next_allowed_action,
         )
     )
 
@@ -536,368 +461,10 @@ def _triage_execute(
     crashes: list[dict[str, Any]],
     package_id: str,
 ) -> list[TriagedCrash]:
-    # Import harness loader from local_fuzz_runner
-    from app.local_fuzz_runner import (
-        FuzzTarget,
-        _invoke_seed,
-        _load_in_process_callable,
-    )
+    """Compatibility shim: target re-execution is permanently disabled."""
 
-    # Group by signature; keep first of each cluster with seed recovery
-    clusters: dict[str, dict[str, Any]] = {}
-    for c in crashes:
-        sig = _signature(c)
-        if sig not in clusters:
-            clusters[sig] = c
-
-    results: list[TriagedCrash] = []
-    for sig, c in clusters.items():
-        target = str(c.get("target_symbol") or "")
-        source = str(c.get("source_path") or "")
-        et = str(c.get("exception_type") or "")
-        em = str(c.get("exception_message") or "")
-        ctype = _crash_type(et, em)
-        seed = _recover_seed(root, c)
-        original_len = len(seed) if seed is not None else 0
-        notes: list[str] = ["cluster_representative"]
-
-        fn = None
-        if target and source:
-            fn = _load_in_process_callable(root, source, target)
-
-        reproducible: bool | None = None
-        repro_count = 0
-        minimized = False
-        mini_seed = seed
-        mini_len: int | None = None
-        mini_sha = ""
-        mini_prev = ""
-
-        ft = FuzzTarget(
-            target_symbol=target,
-            source_path=source,
-            language="python",
-            harness_kind="local_unit_harness",
-            runnable_in_process=fn is not None,
-        )
-
-        if fn is None or seed is None:
-            notes.append("harness_or_seed_unavailable")
-            reproducible = None
-        else:
-            # Confirm reproducibility with original seed
-            crash = _invoke_seed(fn, seed=seed, target=ft)
-            if crash is not None and _same_family(crash.exception_type, et):
-                reproducible = True
-                repro_count = 1
-                notes.append("reproduced_original_seed")
-                # Minimize
-                mini_seed, steps = _minimize_seed(fn, seed=seed, target=ft, want_type=et)
-                if mini_seed is not None and len(mini_seed) < len(seed):
-                    minimized = True
-                    notes.append(f"minimized_steps={steps}")
-                elif mini_seed is not None:
-                    notes.append("minimize_no_smaller_seed")
-                # Re-check minimized
-                if mini_seed is not None:
-                    crash2 = _invoke_seed(fn, seed=mini_seed, target=ft)
-                    if crash2 is not None and _same_family(crash2.exception_type, et):
-                        repro_count += 1
-                        notes.append("reproduced_minimized_seed")
-            else:
-                reproducible = False
-                notes.append("failed_to_reproduce")
-
-        if mini_seed is not None:
-            mini_len = len(mini_seed)
-            mini_sha = hashlib.sha256(mini_seed).hexdigest()
-            try:
-                mini_prev = mini_seed[:48].decode("utf-8", errors="replace")
-            except Exception:
-                mini_prev = repr(mini_seed[:48])
-
-        seed_prev = str(c.get("seed_preview") or "")
-        if seed is not None and not seed_prev:
-            try:
-                seed_prev = seed[:48].decode("utf-8", errors="replace")
-            except Exception:
-                seed_prev = repr(seed[:48])
-
-        rc = _root_cause_note(
-            exception_type=et,
-            exception_message=em,
-            target_symbol=target,
-            source_path=source,
-            crash_type=ctype,
-            reproducible=reproducible,
-        )
-        results.append(
-            TriagedCrash(
-                crash_id=str(c.get("crash_id") or f"crash-{sig}"),
-                cluster_id=f"cluster-{sig}",
-                target_symbol=target,
-                source_path=source,
-                exception_type=et,
-                exception_message=em[:400],
-                crash_type=ctype,
-                signature=sig,
-                seed_sha256=str(c.get("seed_sha256") or (hashlib.sha256(seed).hexdigest() if seed else "")),
-                seed_preview=seed_prev[:120],
-                original_seed_len=original_len,
-                minimized_seed_len=mini_len,
-                minimized_seed_sha256=mini_sha,
-                minimized_seed_preview=mini_prev[:120],
-                minimized=minimized,
-                reproducible=reproducible,
-                reproduction_count=repro_count,
-                artifact_relative_path=str(c.get("artifact_relative_path") or ""),
-                promotion_allowed=False,
-                confirmed_vulnerability=False,
-                root_cause=rc,
-                notes=notes,
-            )
-        )
-    return results
-
-
-def _same_family(a: str, b: str) -> bool:
-    return (a or "").strip().lower() == (b or "").strip().lower()
-
-
-def _recover_seed(root: Path, crash: dict[str, Any]) -> bytes | None:
-    # Prefer artifact meta seed_preview + seed_sha256; try common seed files
-    art = str(crash.get("artifact_relative_path") or "").strip()
-    if art:
-        art_path = (root / art).resolve()
-        try:
-            art_path.relative_to(root.resolve())
-        except ValueError:
-            art_path = None  # type: ignore[assignment]
-        if art_path is not None and art_path.is_dir():
-            for name in ("seed.bin", "seed.input", "input.bin", "minimized.bin"):
-                p = art_path / name
-                if p.is_file() and p.stat().st_size <= _MAX_SEED_BYTES:
-                    try:
-                        return p.read_bytes()
-                    except OSError:
-                        pass
-            meta = art_path / "meta.json"
-            if meta.is_file():
-                try:
-                    data = json.loads(meta.read_text(encoding="utf-8"))
-                    if isinstance(data, dict) and data.get("seed_hex"):
-                        return bytes.fromhex(str(data["seed_hex"]))
-                except Exception:
-                    pass
-
-    hex_s = str(crash.get("seed_hex") or "").strip()
-    if hex_s:
-        try:
-            data = bytes.fromhex(hex_s)
-            if data:
-                return data[:_MAX_SEED_BYTES]
-        except ValueError:
-            pass
-
-    preview = str(crash.get("seed_preview") or "")
-    if preview:
-        # Best-effort: preview is lossy for binary; still useful for text crashes
-        return preview.encode("utf-8", errors="replace")[:_MAX_SEED_BYTES]
-    return None
-
-
-def _minimize_seed(
-    fn: Callable[[bytes], Any],
-    *,
-    seed: bytes,
-    target: Any,
-    want_type: str,
-) -> tuple[bytes | None, int]:
-    from app.local_fuzz_runner import _invoke_seed
-
-    if not seed:
-        return seed, 0
-
-    def still_crashes(candidate: bytes) -> bool:
-        crash = _invoke_seed(fn, seed=candidate, target=target)
-        return crash is not None and _same_family(crash.exception_type, want_type)
-
-    current = seed[:_MAX_SEED_BYTES]
-    if not still_crashes(current):
-        return None, 0
-
-    steps = 0
-    # Byte-delete delta debug (coarse then fine)
-    changed = True
-    while changed and steps < _MAX_MINIMIZE_STEPS and len(current) > 1:
-        changed = False
-        # try remove halves / chunks
-        chunk = max(1, len(current) // 2)
-        i = 0
-        while i < len(current) and steps < _MAX_MINIMIZE_STEPS and len(current) > 1:
-            nxt = current[:i] + current[i + chunk :]
-            steps += 1
-            if nxt != current and still_crashes(nxt):
-                current = nxt
-                changed = True
-                # restart from beginning with same chunk size
-                i = 0
-                continue
-            i += chunk
-        if not changed and chunk > 1:
-            # finer grain: single-byte deletion pass
-            i = 0
-            while i < len(current) and steps < _MAX_MINIMIZE_STEPS and len(current) > 1:
-                nxt = current[:i] + current[i + 1 :]
-                steps += 1
-                if still_crashes(nxt):
-                    current = nxt
-                    changed = True
-                    # stay at i (next byte shifted into place)
-                    continue
-                i += 1
-    return current, steps
-
-
-def _write_exports(
-    *,
-    root: Path,
-    stamp: str,
-    triaged: list[TriagedCrash],
-    package_id: str,
-) -> tuple[list[TriagedCrash], int]:
-    export_root = (root / "_export" / "crash_triage" / stamp).resolve()
-    try:
-        export_root.relative_to(root.resolve())
-    except ValueError:
-        return triaged, 0
-    export_root.mkdir(parents=True, exist_ok=True)
-
-    # cluster index
-    index = {
-        "package_id": package_id,
-        "stamp": stamp,
-        "cluster_count": len(triaged),
-        "crash_promotion_allowed": False,
-        "confirmed_vulnerability": False,
-        "report_submission_allowed": False,
-        "clusters": [
-            {
-                "cluster_id": t.cluster_id,
-                "crash_id": t.crash_id,
-                "target_symbol": t.target_symbol,
-                "crash_type": t.crash_type,
-                "reproducible": t.reproducible,
-                "minimized": t.minimized,
-            }
-            for t in triaged
-        ],
-    }
-    (export_root / "index.json").write_text(
-        json.dumps(index, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    written: list[TriagedCrash] = []
-    count = 0
-    for t in triaged:
-        rel = f"_export/crash_triage/{stamp}/{t.cluster_id}"
-        out_dir = (root / rel).resolve()
-        try:
-            out_dir.relative_to(root.resolve())
-        except ValueError:
-            written.append(t)
-            continue
-        out_dir.mkdir(parents=True, exist_ok=True)
-        meta = {
-            "cluster_id": t.cluster_id,
-            "crash_id": t.crash_id,
-            "package_id": package_id,
-            "target_symbol": t.target_symbol,
-            "source_path": t.source_path,
-            "exception_type": t.exception_type,
-            "exception_message": t.exception_message,
-            "crash_type": t.crash_type,
-            "signature": t.signature,
-            "seed_sha256": t.seed_sha256,
-            "seed_preview": t.seed_preview,
-            "original_seed_len": t.original_seed_len,
-            "minimized": t.minimized,
-            "minimized_seed_len": t.minimized_seed_len,
-            "minimized_seed_sha256": t.minimized_seed_sha256,
-            "minimized_seed_preview": t.minimized_seed_preview,
-            "reproducible": t.reproducible,
-            "reproduction_count": t.reproduction_count,
-            "promotion_allowed": False,
-            "confirmed_vulnerability": False,
-            "finding_promotion_allowed": False,
-            "report_submission_allowed": False,
-            "crash_promotion_allowed": False,
-            "root_cause": asdict(t.root_cause) if t.root_cause else None,
-            "notes": list(t.notes),
-        }
-        (out_dir / "triage.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        if t.minimized_seed_preview:
-            (out_dir / "minimized_seed_preview.txt").write_text(
-                t.minimized_seed_preview, encoding="utf-8"
-            )
-        (out_dir / "README.md").write_text(
-            "\n".join(
-                [
-                    f"# Crash cluster {t.cluster_id}",
-                    "",
-                    f"- crash_id: `{t.crash_id}`",
-                    f"- crash_type: `{t.crash_type}`",
-                    f"- reproducible: `{t.reproducible}`",
-                    f"- minimized: `{t.minimized}`",
-                    "- promotion_allowed: false",
-                    "- confirmed_vulnerability: false",
-                    "- report_submission_allowed: false",
-                    "",
-                    "## Advisory root cause",
-                    "",
-                    (t.root_cause.summary if t.root_cause else "n/a"),
-                    "",
-                    "Human triage only. Mythos never auto-promotes this cluster.",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        count += 1
-        written.append(
-            TriagedCrash(
-                crash_id=t.crash_id,
-                cluster_id=t.cluster_id,
-                target_symbol=t.target_symbol,
-                source_path=t.source_path,
-                exception_type=t.exception_type,
-                exception_message=t.exception_message,
-                crash_type=t.crash_type,
-                signature=t.signature,
-                seed_sha256=t.seed_sha256,
-                seed_preview=t.seed_preview,
-                original_seed_len=t.original_seed_len,
-                minimized_seed_len=t.minimized_seed_len,
-                minimized_seed_sha256=t.minimized_seed_sha256,
-                minimized_seed_preview=t.minimized_seed_preview,
-                minimized=t.minimized,
-                reproducible=t.reproducible,
-                reproduction_count=t.reproduction_count,
-                artifact_relative_path=t.artifact_relative_path,
-                triage_export_relative_path=rel.replace("\\", "/"),
-                written=True,
-                promotion_allowed=False,
-                confirmed_vulnerability=False,
-                root_cause=t.root_cause,
-                notes=list(t.notes) + ["triage_export_written"],
-            )
-        )
-    return written, count
-
+    del root, package_id
+    return _plan_preview(crashes)
 
 def _empty(
     *,

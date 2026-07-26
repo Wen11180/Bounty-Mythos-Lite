@@ -1,0 +1,38 @@
+{
+  "schema_version": "cross_source_candidate_fixture_replay_v1",
+  "fact_pack_input_digest": "0ab2353a70e3d2607d2053adfc97deb18168f09b4a81265e668f9cfa3b54e389",
+  "provider": "openai",
+  "model": "fixture-replay-v1",
+  "response": {
+    "schema_version": "cross_source_candidate_model_v1",
+    "proposals": [
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "GET",
+          "path": "/local/invoices/b9q4/:invoiceId/export"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "exportInvoice"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "high",
+        "cited_fact_refs": [
+          "code:code.ts:exportInvoice",
+          "api:GET:/local/invoices/b9q4/{invoiceId}/export"
+        ]
+      }
+    ]
+  },
+  "response_digest": "deb8e034c8784d1d9be0c020b26fd741abb134bfe8ed2a4a2f5785abe1d81ea1"
+}

@@ -20,7 +20,7 @@ import app.main as main_module
 
 
 FIXTURE_ROOT = (
-    Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release"
+    Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release_v2"
 )
 
 
@@ -380,6 +380,9 @@ def test_actual_typescript_replay_gate_passes_without_registry_or_network(
     finally:
         session.close()
 
+    assert result["gate_version"] == "candidate_hunter_typescript_release_gate_v2"
+    assert result["profile"] == "candidate_hunter_typescript_express_v2"
+    assert result["fixture_version"] == "candidate_hunter_typescript_express_fixture_v2"
     assert result["status"] == "passed", {
         "development_status": result["development"]["status"],
         "evaluation_status": result["development"]["evaluation"].get("status"),

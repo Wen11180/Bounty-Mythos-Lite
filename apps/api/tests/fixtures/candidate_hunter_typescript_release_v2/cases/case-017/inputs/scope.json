@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-f8m1",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/exports/f8m1/{exportId}/download"
+  ],
+  "local_only": true
+}

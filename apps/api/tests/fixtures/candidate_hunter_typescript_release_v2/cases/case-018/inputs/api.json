@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/archives/w5d9/{archiveId}/unpack": {
+      "post": {
+        "operationId": "unpackArchive_w5d9"
+      }
+    }
+  }
+}

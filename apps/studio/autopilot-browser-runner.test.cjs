@@ -287,6 +287,32 @@ test('bound HTTP execution streams and discards bytes without returning response
   }
 });
 
+test('bound HTTP execution reports one sentinel byte for an oversized chunked response', async () => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('x'.repeat(128));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  try {
+    const result = await executeBoundHttpRequest(
+      binding({ port, max_response_bytes: 10 }),
+      '127.0.0.1',
+    );
+    assert.deepEqual(result, {
+      statusCode: 200,
+      contentType: 'application/json',
+      byteLength: 11,
+      isRedirect: false,
+      wafDetected: false,
+      thirdPartyDetected: false,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('full Loopback trace uses gateway binding and persists only response metadata', async () => {
   const targetBody = '{"authorization":"Bearer body-must-not-persist"}';
   let targetRequests = 0;

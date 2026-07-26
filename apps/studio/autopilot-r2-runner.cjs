@@ -184,7 +184,7 @@ function createAutopilotR2Runner({
       await completeQuietly(request.campaignId, reservationId, 'no_send_failure');
       return {
         terminal: true,
-        outcomeClass: destination.reason === 'dns_rebind_or_public_ip'
+        outcomeClass: destination.reason === 'dns_rebind_or_non_loopback_ip'
           || destination.reason === 'dns_admission_mismatch'
           ? 'dns_rebind'
           : 'scope_escape',

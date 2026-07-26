@@ -1,8 +1,6 @@
 from pathlib import Path
 
 from app.crash_triage import (
-    STATUS_COMPLETED,
-    STATUS_EXPORT_WRITTEN,
     STATUS_READY,
     STATUS_SKIPPED_NO_CRASHES,
     attach_crash_triage_to_bridge_result,
@@ -65,7 +63,7 @@ def test_plan_only_default_classifies_without_execute(tmp_path: Path):
     assert plan.process_spawn_allowed is False
 
 
-def test_flag_dedupes_minimizes_and_marks_reproducible(tmp_path: Path):
+def test_flag_keeps_crash_triage_plan_only(tmp_path: Path):
     root = _crashy_pkg(tmp_path)
     long_seed = b"PREFIX_" + b"BOOM" + b"_SUFFIX_EXTRA"
     runner = {
@@ -99,26 +97,26 @@ def test_flag_dedupes_minimizes_and_marks_reproducible(tmp_path: Path):
         local_fuzz_runner=runner,
         human_allow_crash_triage=True,
     )
-    assert result.triage_executed is True
-    assert result.status in {STATUS_COMPLETED, STATUS_EXPORT_WRITTEN}
+    assert result.triage_executed is False
+    assert result.execution_mode == "plan_only"
+    assert result.status == STATUS_READY
     assert result.unique_cluster_count == 1
     assert result.deduped_away_count == 1
-    assert result.reproducible_count >= 1
-    assert result.minimized_count >= 1
+    assert result.reproducible_count == 0
+    assert result.minimized_count == 0
+    assert "in_process_execution_disabled" in result.notes
     assert result.execution_allowed is False
     assert result.crash_promotion_allowed is False
     assert result.finding_promotion_allowed is False
     assert result.confirmed_vulnerability is False
     t0 = result.triaged[0]
-    assert t0.reproducible is True
-    assert t0.minimized is True
-    assert t0.minimized_seed_len is not None
-    assert t0.minimized_seed_len < t0.original_seed_len
+    assert t0.reproducible is None
+    assert t0.minimized is False
     assert t0.root_cause is not None
     assert t0.root_cause.confirmed_vulnerability is False
     assert t0.root_cause.needs_human_review is True
-    assert result.triage_export_written is True
-    assert (root / "_export" / "crash_triage").is_dir()
+    assert result.triage_export_written is False
+    assert not (root / "_export" / "crash_triage").exists()
 
 
 def test_no_crashes_status():
@@ -163,7 +161,9 @@ def test_attach_strips_flags(tmp_path: Path):
         human_allow_crash_triage=True,
     )
     assert out["crash_triage_present"] is True
-    assert out["crash_triage_executed"] is True
+    assert out["crash_triage_executed"] is False
+    assert out["crash_triage"]["execution_mode"] == "plan_only"
+    assert "in_process_execution_disabled" in out["crash_triage"]["notes"]
     assert out["execution_allowed"] is False
     assert out["report_submission_allowed"] is False
     assert out["confirmed_vulnerability"] is False

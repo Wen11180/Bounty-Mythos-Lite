@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/jobs/n7s9/{jobId}/run": {
+      "post": {
+        "operationId": "runJob_n7s9"
+      }
+    },
+    "/local/jobs/n7s9/{jobId}/retry": {
+      "post": {
+        "operationId": "retryJob_n7s9"
+      }
+    }
+  }
+}

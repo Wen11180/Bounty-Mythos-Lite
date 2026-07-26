@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.cross_source_candidate_generator import ReplayCandidateReasoner
 from app.intelligence_benchmark.release_fixtures import (
+    load_release_fixture_gold,
     load_release_fixture_replay,
     load_release_fixture_suite,
 )
@@ -29,7 +30,7 @@ from app.repository import DatabaseRepository
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "candidate_hunter_release"
 TYPESCRIPT_FIXTURE_ROOT = (
-    Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release"
+    Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release_v2"
 )
 AUTHORIZED_LAB_FIXTURE_ROOT = (
     Path(__file__).parent
@@ -469,7 +470,7 @@ def test_runner_keeps_invalid_replay_safe_and_marks_model_review(tmp_path: Path)
     assert llm_runs[0].error == "invalid_schema"
 
 
-def test_runner_records_current_semantics_for_legacy_role_only_gold(tmp_path: Path):
+def test_runner_surfaces_legacy_role_only_gold_mismatch(tmp_path: Path):
     case = next(
         case
         for case in load_release_fixture_suite(FIXTURE_ROOT, "development")
@@ -485,23 +486,20 @@ def test_runner_records_current_semantics_for_legacy_role_only_gold(tmp_path: Pa
     finally:
         session.close()
 
+    gold = load_release_fixture_gold(case)
+    assert gold["expected_roots"][0]["disposition"] == (
+        "refute"
+    )
     assert result["normalized_output"]["candidate_decisions"][0]["disposition"] == (
         "retained"
     )
-    assert result["evaluation"]["legacy_gold_adjustments"] == [
-        {
-            "gold_id": "observed-primary-root",
-            "original_disposition": "refute",
-            "effective_disposition": "retain",
-            "reason": "role_only_does_not_close_object_ownership_gap",
-        }
-    ]
-    assert result["evaluation"]["invalid_refutations"] == []
-    assert result["evaluation"]["false_positives"] == []
+    assert "legacy_gold_adjustments" not in result["evaluation"]
+    assert result["evaluation"]["status"] == "failed"
+    assert result["evaluation"]["invalid_refutations"]
 
 
 @pytest.mark.parametrize("suite", ["development", "release"])
-def test_suite_runner_aggregates_complete_suite_only_after_all_captures(
+def test_suite_runner_aggregates_legacy_mismatches_only_after_all_captures(
     suite: str,
     tmp_path: Path,
 ):
@@ -523,12 +521,12 @@ def test_suite_runner_aggregates_complete_suite_only_after_all_captures(
         for case_run in result["case_runs"]
     )
     assert result["evaluation"]["version"] == "candidate_hunter_release_suite_v1"
-    assert result["evaluation"]["status"] == "passed"
+    assert result["evaluation"]["status"] == "failed"
     assert len(result["evaluation"]["case_diagnostics"]) == 12
-    assert all(
-        metric["passed"] is True
-        for metric in result["evaluation"]["metrics"].values()
-    )
+    assert result["evaluation"]["metrics"]["effective_refutation_rate"][
+        "passed"
+    ] is False
+    assert result["evaluation"]["invalid_refutations"]
     assert not any(
         failure["reason"] == "zero_denominator"
         for failure in result["evaluation"]["schema_failures"]

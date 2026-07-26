@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/packets/p8x3/{packetId}": {
+      "get": {
+        "operationId": "readPacket_p8x3"
+      }
+    },
+    "/local/packets/p8x3/{packetId}/preview": {
+      "get": {
+        "operationId": "previewPacket_p8x3"
+      }
+    }
+  }
+}

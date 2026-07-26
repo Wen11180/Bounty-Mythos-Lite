@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/bundles/q9h5/{bundleId}/open": {
+      "get": {
+        "operationId": "openBundle_q9h5"
+      }
+    },
+    "/internal/bundles/q9h5/{bundleId}/raw": {
+      "get": {
+        "operationId": "readBundleRaw_q9h5"
+      }
+    }
+  }
+}

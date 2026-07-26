@@ -68,12 +68,14 @@ jobs:
         working-directory: apps/studio
         run: |
           npm ci
+          npm audit --omit=dev --audit-level=high
           npm test
 
       - name: Install Web and Chromium
         working-directory: apps/web
         run: |
           npm ci
+          npm run audit:prod
           npx playwright install --with-deps chromium
       - name: Web unit, lint, and production build
         working-directory: apps/web

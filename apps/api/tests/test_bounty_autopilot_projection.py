@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.bounty_autopilot.projection import build_autopilot_projection
+from app.bounty_autopilot.projection import _safe_route_path, build_autopilot_projection
 
 
 def test_projection_is_safe_and_submission_blocked():
@@ -80,7 +80,12 @@ def test_projection_exposes_only_verified_candidate_hunter_metadata():
         candidate_queue={
             "status": "ready",
             "pipeline_run_id": "pipeline_run_1",
-            "source_stage_ids": ["stage_1", "stage_2", "stage_3", "stage_4"],
+            "source_stage_ids": [
+                "pipeline_stage_1",
+                "pipeline_stage_2",
+                "pipeline_stage_3",
+                "pipeline_stage_4",
+            ],
             "candidates": [
                 {
                     "candidate_id": "H-001",
@@ -115,11 +120,22 @@ def test_projection_exposes_only_verified_candidate_hunter_metadata():
     candidate = proj.candidate_queue.candidates[0]
     assert proj.candidate_queue.status == "ready"
     assert candidate.affected_endpoint == "GET /records/{record_id}"
+    assert candidate.source_fact_refs == (
+        "scope_ref_1",
+        "policy_ref_2",
+        "code_ref_3",
+        "api_ref_4",
+        "har_ref_5",
+    )
     assert candidate.refutation_status == "retained"
     assert candidate.validation_allowed is False
     assert candidate.validation_requires_human_approval is True
     assert candidate.candidate_promotion_allowed is False
     assert candidate.report_submission_allowed is False
+
+
+def test_projection_normalizes_numeric_route_segments():
+    assert _safe_route_path("/api/v1/records/42") == "/api/v1/records/{id}"
 
 
 def test_projection_fails_closed_for_malformed_candidate_queue():
@@ -176,12 +192,107 @@ def test_projection_fails_closed_for_malformed_candidate_queue():
             '{"Cookie":"json-cookie-secret"}',
             "json-cookie-secret",
         ),
+        (
+            "vuln_type",
+            r'{"\u0041uthorization":"unicode-escaped-json-secret"}',
+            "unicode-escaped-json-secret",
+        ),
         ("vuln_type", "Authorization： fullwidth-secret", "fullwidth-secret"),
         ("route_path", "/records?access_token=query-secret", "query-secret"),
         (
             "route_path",
+            "/records?access_token[]=nested-query-secret",
+            "nested-query-secret",
+        ),
+        (
+            "route_path",
+            "/records?token[primary]=nested-token-secret",
+            "nested-token-secret",
+        ),
+        (
+            "route_path",
+            "/records?api_key.value=nested-api-key-secret",
+            "nested-api-key-secret",
+        ),
+        (
+            "route_path",
+            "/oauth?client_secret=client-secret",
+            "client-secret",
+        ),
+        (
+            "route_path",
+            "/records?x_api_key[]=nested-x-api-key-secret",
+            "nested-x-api-key-secret",
+        ),
+        (
+            "vuln_type",
+            "client_secret=plain-client-secret",
+            "plain-client-secret",
+        ),
+        (
+            "vuln_type",
+            "refresh_token: plain-refresh-token",
+            "plain-refresh-token",
+        ),
+        (
+            "vuln_type",
+            "private_key: plain-private-key",
+            "plain-private-key",
+        ),
+        (
+            "vuln_type",
+            "中文Bearer unicode-bearer-secret",
+            "unicode-bearer-secret",
+        ),
+        (
+            "vuln_type",
+            "中文eyJabcdefgh.abcdefgh.abcdefgh",
+            "eyJabcdefgh",
+        ),
+        (
+            "source_fact_ref",
+            "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+            "ghp_",
+        ),
+        (
+            "source_fact_ref",
+            "AKIA" + "ABCDEFGHIJKLMNOP",
+            "AKIA",
+        ),
+        (
+            "source_fact_ref",
+            "-----BEGIN PRIVATE KEY-----",
+            "PRIVATE KEY",
+        ),
+        (
+            "candidate_id",
+            "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+            "ghp_",
+        ),
+        (
+            "route_path",
             "/records%253Faccess_token%253Ddouble-query-secret",
             "double-query-secret",
+        ),
+        (
+            "route_path",
+            "/download/" + "sk_" + "live_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+            "sk_" + "live_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+        ),
+        (
+            "route_path",
+            "/download/abc123def456ghi789",
+            "abc123def456ghi789",
+        ),
+        (
+            "route_path",
+            "/download/abcdefghijklmnopqrstuvwxyzabcde",
+            "abcdefghijklmnopqrstuvwxyzabcde",
+        ),
+        (
+            "route_path",
+            "/download/abC123defGHI456jklMNO789pqrSTU012vwxYZ",
+            "abC123defGHI456jklMNO789pqrSTU012vwxYZ",
         ),
         (
             "vuln_type",
@@ -222,6 +333,8 @@ def test_projection_discards_candidate_metadata_with_secrets(
     }
     if field == "route_path":
         candidate["route"]["path"] = value
+    elif field == "source_fact_ref":
+        candidate["source_fact_refs"].append(value)
     else:
         candidate[field] = value
 
@@ -230,7 +343,12 @@ def test_projection_discards_candidate_metadata_with_secrets(
         candidate_queue={
             "status": "ready",
             "pipeline_run_id": "pipeline_run_1",
-            "source_stage_ids": ["stage_1", "stage_2", "stage_3", "stage_4"],
+            "source_stage_ids": [
+                "pipeline_stage_1",
+                "pipeline_stage_2",
+                "pipeline_stage_3",
+                "pipeline_stage_4",
+            ],
             "candidates": [candidate],
         },
     )
@@ -246,7 +364,7 @@ def test_projection_discards_secret_stage_metadata():
         candidate_queue={
             "status": "ready",
             "pipeline_run_id": "pipeline_run_1",
-            "source_stage_ids": ["stage_1?token=stage-secret"],
+            "source_stage_ids": ["pipeline_stage_1?token=stage-secret"],
             "candidates": [],
         },
     )

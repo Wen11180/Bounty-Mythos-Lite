@@ -19,7 +19,7 @@ def _digest(n="a"):
     return "sha256:" + (n * 64)
 
 
-def _plan():
+def _plan(destination_host="127.0.0.1"):
     return build_validation_plan(
         plan_id="plan_1",
         campaign_id="campaign_1",
@@ -27,7 +27,7 @@ def _plan():
         scope_snapshot_digest=_digest("b"),
         asset_id="asset_loopback",
         destination_scheme="http",
-        destination_host="127.0.0.1",
+        destination_host=destination_host,
         destination_port=8080,
         destination_path="/api",
         branch_id="branch_1",
@@ -143,6 +143,27 @@ def test_gateway_blocks_cross_scope_redirect_and_public_ip():
         GatewayOutcomeClass.SCOPE_ESCAPE,
         GatewayOutcomeClass.DNS_REBIND,
     }
+
+
+def test_gateway_blocks_private_network_destination_in_loopback_lab():
+    plan = _plan(destination_host="192.168.1.10")
+    decision = authorize_gateway_request(
+        plan=plan,
+        lease=_lease(plan),
+        request=GatewayAuthorizeRequest(
+            url="http://192.168.1.10:8080/api/items",
+            method="GET",
+            resolved_ips=("192.168.1.10",),
+        ),
+        policy_mode=PolicyMode.AUTHORIZED_LOCAL_LAB,
+        admitted_asset_id="asset_loopback",
+        current_scope_snapshot_digest=plan.scope_snapshot_digest,
+        asset_identity_digest_current=True,
+    )
+
+    assert decision.status is GatewayDecisionStatus.BLOCKED
+    assert decision.reason == "non_loopback_destination"
+    assert decision.outcome_class is GatewayOutcomeClass.SCOPE_ESCAPE
 
 
 def test_waf_parks_branch_only():

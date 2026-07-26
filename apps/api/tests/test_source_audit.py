@@ -348,7 +348,7 @@ def test_run_source_audit_raises_authorization_hypothesis_for_flask_add_url_rule
     assert "traceable_source_fact" in result.hypotheses[0].ranking_reasons
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_add_url_rule_function_decorator_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_flask_add_url_rule_function_authentication(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -383,11 +383,9 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_add_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
 def test_run_source_audit_raises_authorization_hypothesis_for_flask_method_view_without_authz(
@@ -431,7 +429,7 @@ def test_run_source_audit_raises_authorization_hypothesis_for_flask_method_view_
     assert "traceable_source_fact" in result.hypotheses[0].ranking_reasons
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_method_view_decorator_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_flask_method_view_authentication(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -468,14 +466,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_meth
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_method_view_tuple_decorator_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_flask_method_view_tuple_authentication(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -512,14 +508,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_meth
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_method_view_method_decorator_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_flask_method_view_method_authentication(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -555,11 +549,9 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_flask_meth
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
 def test_run_source_audit_does_not_raise_authorization_hypothesis_for_service_layer_authz(
@@ -2733,7 +2725,7 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_chained_sa
     )
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_dependency_authentication(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -2760,14 +2752,13 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
+    assert result.finding_json[0]["root_cause"] == "missing_object_ownership_check"
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_keyword_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_keyword_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -2794,14 +2785,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_keyword_de
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_decorator_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -2828,14 +2817,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_router_level_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_router_level_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -2862,14 +2849,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_router_lev
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_qualified_router_level_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_qualified_router_level_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -2897,14 +2882,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_qualified_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_aliased_router_level_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_aliased_router_level_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -2931,14 +2914,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_aliased_ro
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_security_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_security_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -2965,14 +2946,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_security_a
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_multiline_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3002,14 +2981,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_router_level_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_multiline_router_level_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3042,14 +3019,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_decorator_dependency_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_multiline_decorator_dependency_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3079,14 +3054,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_dependency_wrapper_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_decorator_dependency_wrapper_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3129,14 +3102,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_decorator_dependency_wrapper_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_multiline_decorator_dependency_wrapper_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3186,14 +3157,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_scoped_security_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_multiline_scoped_security_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3228,14 +3197,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_multiline_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_imported_authz_alias(
+def test_run_source_audit_raises_authorization_hypothesis_for_imported_authz_alias(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3263,14 +3230,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_imported_a
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency_alias_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_dependency_alias_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3298,14 +3263,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_keyword_dependency_alias_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_keyword_dependency_alias_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3333,14 +3296,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_keyword_de
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency_wrapper_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_dependency_wrapper_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3380,14 +3341,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency_wrapper_chain_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_dependency_wrapper_chain_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3430,14 +3389,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_deeper_dependency_wrapper_chain_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_deeper_dependency_wrapper_chain_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3483,14 +3440,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_deeper_dep
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency_alias_to_wrapper_chain_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_dependency_alias_to_wrapper_chain_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3538,14 +3493,12 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_dependency
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
-def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_dependency_alias_to_wrapper_chain_authz(
+def test_run_source_audit_raises_authorization_hypothesis_for_decorator_dependency_alias_to_wrapper_chain_authz(
     tmp_path,
 ):
     repo = tmp_path / "target"
@@ -3593,11 +3546,9 @@ def test_run_source_audit_does_not_raise_authorization_hypothesis_for_decorator_
         semgrep_runner=lambda _: {"status": "completed", "results": []},
     )
 
-    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == []
-    assert (
-        "- No high-signal vulnerability hypotheses generated from the current inputs."
-        in result.report_markdown
-    )
+    assert [hypothesis.vuln_type for hypothesis in result.hypotheses] == [
+        "authorization"
+    ]
 
 
 def test_run_source_audit_uses_injected_codeql_runner_and_reports_safe_summary(tmp_path):

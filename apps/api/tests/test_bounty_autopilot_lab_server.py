@@ -408,9 +408,10 @@ def test_live_api_trace_recovers_after_restart_without_duplicate_loopback_send()
                 scheme="http",
                 host="127.0.0.1",
                 port=server.port,
-                path="/api/docs/1",
-                status_code=200,
-                byte_length=len(response_body.encode("utf-8")),
+                    path="/api/docs/1",
+                    status_code=200,
+                    content_type_class="json",
+                    byte_length=len(response_body.encode("utf-8")),
                 sent_at=datetime.now(UTC),
                 challenge=authorized.json()["transport_challenge"],
             )
@@ -460,10 +461,13 @@ def test_live_api_trace_recovers_after_restart_without_duplicate_loopback_send()
                         "reservation_id": "res_live_loopback",
                         "receipt_digest": receipt_digest,
                         "outcome_class": "ok",
-                        "grade": "L2_corroborated",
-                        "summary": "owned account document read",
-                        "evidence_refs": ["sanitized_document_owner"],
-                    }
+                            "grade": "L2_corroborated",
+                            "summary": "owned account document read",
+                            "evidence_refs": ["sanitized_document_owner"],
+                            "status_class": "2xx",
+                            "content_type_class": "json",
+                            "byte_length": len(response_body.encode("utf-8")),
+                        }
                 },
             )
             assert observation.status_code == 200, observation.text

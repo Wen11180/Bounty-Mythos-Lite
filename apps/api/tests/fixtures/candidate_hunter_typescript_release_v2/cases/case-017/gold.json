@@ -1,0 +1,23 @@
+{
+  "authorization_pattern": "tenant_boundary",
+  "expected_roots": [
+    {
+      "gold_id": "f8m1-primary-root",
+      "root_cause_id": "missing_object_ownership_check:downloadexport",
+      "route": {
+        "method": "POST",
+        "path": "/internal/exports/f8m1/{exportId}/download"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:downloadExport",
+        "api:POST:/internal/exports/f8m1/{exportId}/download"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

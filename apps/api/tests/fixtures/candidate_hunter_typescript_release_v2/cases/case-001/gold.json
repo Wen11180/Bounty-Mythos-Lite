@@ -1,0 +1,23 @@
+{
+  "authorization_pattern": "object_ownership",
+  "expected_roots": [
+    {
+      "gold_id": "a7m2-primary-root",
+      "root_cause_id": "missing_object_ownership_check:readfolio",
+      "route": {
+        "method": "GET",
+        "path": "/local/folios/a7m2/{folioId}"
+      },
+      "vuln_type": "authorization",
+      "disposition": "retain",
+      "worth_validation": true,
+      "required_evidence_refs": [
+        "code:code.ts:readFolio",
+        "api:GET:/local/folios/a7m2/{folioId}"
+      ],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

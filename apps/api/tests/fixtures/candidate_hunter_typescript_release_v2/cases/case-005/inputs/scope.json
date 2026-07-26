@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-b9q4",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/local/invoices/b9q4/{invoiceId}/export"
+  ],
+  "local_only": true
+}

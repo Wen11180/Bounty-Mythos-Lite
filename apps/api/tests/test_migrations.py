@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select, text
@@ -37,7 +38,7 @@ AUTOPILOT_TABLES = {
     "execution_request_ledger",
     "autopilot_observations",
 }
-HEAD_REVISION = "0029_bounty_autopilot_schema_alignment"
+HEAD_REVISION = "0030_bounty_autopilot_observation_replay_guard"
 
 def _insert_pre_autopilot_campaign(session, *, campaign_id, name, status, payload, allowed_tools):
     """Insert a campaigns row against pre-0020 schema (no campaign_mode column)."""
@@ -286,6 +287,13 @@ def test_alembic_head_includes_learning_relationships_and_campaign_core(tmp_path
         and index["column_names"] == ["campaign_id", "branch_id"]
         for index in observation_indexes
     )
+    assert any(
+        index["name"]
+        == "uq_autopilot_observations_campaign_comparison_reservation"
+        and index["column_names"] == ["campaign_id", "comparison_reservation_id"]
+        and index.get("unique")
+        for index in observation_indexes
+    )
 
     source_unique = {
         tuple(constraint["column_names"])
@@ -386,6 +394,105 @@ def test_schema_alignment_migration_backfills_legacy_llm_run_timestamp(tmp_path,
     )
     assert created_at_column["nullable"] is False
     engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "rows",
+    (
+        (
+            ("one", "reservation_one", "reservation_replayed_comparison"),
+            ("two", "reservation_two", "reservation_replayed_comparison"),
+        ),
+        (
+            ("one", "reservation_one", "reservation_replayed_cross_role"),
+            ("two", "reservation_replayed_cross_role", "reservation_two"),
+        ),
+    ),
+    ids=("comparison_reuse", "cross_role_reuse"),
+)
+def test_observation_replay_guard_rejects_legacy_reservation_reuse(
+    tmp_path,
+    monkeypatch,
+    rows,
+):
+    database_path = tmp_path / "observation-replay-guard.db"
+    database_url = f"sqlite:///{database_path}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(str(api_root / "alembic.ini"))
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0029_bounty_autopilot_schema_alignment")
+
+    engine = create_engine(database_url)
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO campaigns (
+                    id, name, autonomy_level, scope_status, policy_text_hash,
+                    default_asset, target_classes, allowed_tools, created_by,
+                    status, payload, created_at
+                ) VALUES (
+                    :id, :name, :autonomy_level, :scope_status, :policy_text_hash,
+                    :default_asset, :target_classes, :allowed_tools, :created_by,
+                    :status, :payload, :created_at
+                )
+                """
+            ),
+            {
+                "id": "campaign_replayed_comparison",
+                "name": "Replayed comparison migration fixture",
+                "autonomy_level": "level_0_read_only",
+                "scope_status": "in_scope",
+                "policy_text_hash": "sha256:" + ("a" * 64),
+                "default_asset": "127.0.0.1",
+                "target_classes": "[]",
+                "allowed_tools": "[]",
+                "created_by": "operator",
+                "status": "running",
+                "payload": "{}",
+                "created_at": now,
+            },
+        )
+        for suffix, reservation_id, comparison_reservation_id in rows:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO autopilot_observations (
+                        id, campaign_id, observation_id, branch_id, plan_digest,
+                        lease_id, reservation_id, comparison_reservation_id,
+                        grade, outcome_class, payload, created_at
+                    ) VALUES (
+                        :id, :campaign_id, :observation_id, :branch_id, :plan_digest,
+                        :lease_id, :reservation_id, :comparison_reservation_id,
+                        :grade, :outcome_class, :payload, :created_at
+                    )
+                    """
+                ),
+                {
+                    "id": f"obs_row_replay_{suffix}",
+                    "campaign_id": "campaign_replayed_comparison",
+                    "observation_id": f"obs_replay_{suffix}",
+                    "branch_id": "branch_replay",
+                    "plan_digest": "sha256:" + ("b" * 64),
+                    "lease_id": "lease_replay",
+                    "reservation_id": reservation_id,
+                    "comparison_reservation_id": comparison_reservation_id,
+                    "grade": "L2_corroborated",
+                    "outcome_class": "ok",
+                    "payload": "{}",
+                    "created_at": now,
+                },
+            )
+    engine.dispose()
+
+    with pytest.raises(
+        RuntimeError,
+        match="autopilot_observation_reservation_replay",
+    ):
+        command.upgrade(config, "head")
 
 
 def test_program_rule_migration_downgrade_removes_only_new_tables(tmp_path, monkeypatch):

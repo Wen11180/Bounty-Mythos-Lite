@@ -144,7 +144,7 @@ Local fuzz sandbox (plan/export only; never auto-run):
 - execution_allowed: False
 - confirmed_vulnerability: False
 
-Local fuzz runner (human-gated in-process Python only; never promote):
+Local fuzz target plan (in-process execution disabled; never promote):
 - status: skipped_no_human_local_fuzz_flag
 - targets: 1
 - runnable: 0
@@ -499,7 +499,7 @@ Local fuzz sandbox (plan/export only; never auto-run):
 - execution_allowed: False
 - confirmed_vulnerability: False
 
-Local fuzz runner (human-gated in-process Python only; never promote):
+Local fuzz target plan (in-process execution disabled; never promote):
 - status: skipped_no_human_local_fuzz_flag
 - targets: 4
 - runnable: 0

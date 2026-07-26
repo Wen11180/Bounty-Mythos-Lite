@@ -1,0 +1,64 @@
+{
+  "schema_version": "cross_source_candidate_fixture_replay_v1",
+  "fact_pack_input_digest": "796f3e357d9de0c27ad7ff0538a6e794e99db653401c1bc59c836b25a24961ef",
+  "provider": "openai",
+  "model": "fixture-replay-v1",
+  "response": {
+    "schema_version": "cross_source_candidate_model_v1",
+    "proposals": [
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "GET",
+          "path": "/internal/bundles/q9h5/:bundleId/open"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "openBundle"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "critical",
+        "cited_fact_refs": [
+          "code:code.ts:openBundle",
+          "api:GET:/internal/bundles/q9h5/{bundleId}/open"
+        ]
+      },
+      {
+        "vulnerability_family": "authorization",
+        "affected_endpoint": {
+          "method": "GET",
+          "path": "/internal/bundles/q9h5/:bundleId/raw"
+        },
+        "affected_code_path": {
+          "source_path": "code.ts",
+          "symbol_name": "readBundleRaw"
+        },
+        "missing_link_reason": null,
+        "suspected_broken_invariant": "Object-level actions should enforce the applicable requester boundary before a sensitive operation.",
+        "impact_rationale": "A mismatched local requester could reach a sensitive operation if the observed gap remains unresolved.",
+        "evidence_requirements": [
+          "Review the cited route and handler boundary."
+        ],
+        "refutation_questions": [
+          "Does an observed upstream control enforce the applicable boundary?"
+        ],
+        "root_cause_summary": "missing_object_ownership_check",
+        "risk_estimate": "high",
+        "cited_fact_refs": [
+          "code:code.ts:readBundleRaw",
+          "api:GET:/internal/bundles/q9h5/{bundleId}/raw"
+        ]
+      }
+    ]
+  },
+  "response_digest": "8b77fafbf43f4ae20c3b2f7c469c96b29fb0bdc6168fa841be5103166a8b2554"
+}

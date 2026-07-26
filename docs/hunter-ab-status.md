@@ -21,8 +21,8 @@ authorized package (scope/policy/api/har/code [+ optional advisory + residual ch
 -> optional local CodeQL CLI (explicit human flag; pre-built local DB+suite; no remote packs)
 -> CRS/fuzz planner (package ingest; plan-only harness/fuzzer; never auto-execute)
 -> optional local fuzz sandbox recipes (human flag; plan/export only; never execute)
--> optional local fuzz runner (human flag; in-process Python only; never AFL spawn/promote)
--> optional crash triage + minimize (human flag; in-process only; never promote)
+-> plan-only local fuzz target discovery (in-process execution disabled)
+-> plan-only crash metadata triage (reproduction requires isolated runner)
 -> optional crash residual regression plan (plan-only tests from clusters; never auto-run)
 -> optional crash code-path linking (static source read only; never execute/promote)
 -> optional human-gate dry-run (offline e2e checkpoints; never H1 probe/submit)
@@ -68,8 +68,8 @@ authorized package (scope/policy/api/har/code [+ optional advisory + residual ch
 | Local CodeQL CLI runner | **Package-ingest green** | human flag only; local DB+suite; no remote packs |
 | CRS/fuzz planner (V1) | **Package-ingest green** | plan-only multi-lang; never execute/promote |
 | Local fuzz sandbox (V1) | **Package-ingest green** | plan/export recipes under human flag; never spawn/promote |
-| Local fuzz runner (V1) | **Package-ingest green** | human-flagged in-process Python only; never AFL spawn/promote |
-| Crash triage + minimize (V1) | **Package-ingest green** | human-flagged classify/dedupe/minimize/repro; advisory root-cause; never promote |
+| Local fuzz runner (V1) | **Package-ingest green** | plan-only target discovery; in-process execution disabled |
+| Crash triage + minimize (V1) | **Package-ingest green** | plan-only classify/dedupe; reproduction requires isolated runner |
 | Crash residual regression (V1) | **Package-ingest green** | plan-only regression suggestions from triaged clusters; never auto-run/promote |
 | Crash code-path linking (V1) | **Package-ingest green** | static links from triaged clusters to file/function/symbol; never execute package code/promote |
 | Protocol-aware fuzzing (V4) | **Package-ingest green** | plan/export grammar+seeds; T-003h/B-002j; MEV protocol_aware_fuzzing; never spawn/promote |

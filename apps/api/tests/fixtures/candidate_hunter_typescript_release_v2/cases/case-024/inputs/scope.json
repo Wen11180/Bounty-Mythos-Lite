@@ -1,0 +1,10 @@
+{
+  "fixture_id": "fixture-z3p7",
+  "allowed_repos": [
+    "${STAGED_CODE_ROOT}"
+  ],
+  "allowed_routes": [
+    "/internal/guides/z3p7/{guideId}"
+  ],
+  "local_only": true
+}

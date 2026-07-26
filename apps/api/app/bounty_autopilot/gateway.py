@@ -103,12 +103,12 @@ _R2_ACCOUNT_ALIASES = frozenset({"account_a", "account_b"})
 _R2_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-def _is_lab_ip(ip: str) -> bool:
+def _is_loopback_ip(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    return bool(addr.is_loopback or addr.is_private)
+    return bool(addr.is_loopback)
 
 
 def authorize_gateway_request(
@@ -247,18 +247,18 @@ def authorize_gateway_request(
             outcome_class=GatewayOutcomeClass.SCOPE_ESCAPE,
         )
     if host not in _LAB_HOSTS and policy_mode is PolicyMode.AUTHORIZED_LOCAL_LAB:
-        # lab mode requires loopback/private destinations only
-        if not any(_is_lab_ip(ip) for ip in request.resolved_ips) and host not in _LAB_HOSTS:
+        # Lab mode permits only loopback destinations, never the surrounding LAN.
+        if not any(_is_loopback_ip(ip) for ip in request.resolved_ips):
             return GatewayAuthorizeDecision(
                 status=GatewayDecisionStatus.BLOCKED,
-                reason="non_lab_destination",
+                reason="non_loopback_destination",
                 outcome_class=GatewayOutcomeClass.SCOPE_ESCAPE,
             )
     for ip in request.resolved_ips:
-        if not _is_lab_ip(ip):
+        if not _is_loopback_ip(ip):
             return GatewayAuthorizeDecision(
                 status=GatewayDecisionStatus.BLOCKED,
-                reason="dns_rebind_or_public_ip",
+                reason="dns_rebind_or_non_loopback_ip",
                 outcome_class=GatewayOutcomeClass.DNS_REBIND,
             )
 

@@ -65,54 +65,6 @@ class ReleaseCaseModelRuntime:
     audit_mode: Literal["live", "replay"]
 
 
-def _effective_release_gold(
-    gold_oracle: dict[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    expected_roots = gold_oracle.get("expected_roots")
-    if not isinstance(expected_roots, list):
-        return gold_oracle, []
-
-    adjusted_roots: list[Any] = []
-    adjustments: list[dict[str, str]] = []
-    for root in expected_roots:
-        if not isinstance(root, dict):
-            adjusted_roots.append(root)
-            continue
-        root_cause = root.get("root_cause_id")
-        refutation_refs = root.get("decisive_refutation_refs")
-        role_only_refutation = (
-            root.get("disposition") == "refute"
-            and isinstance(root_cause, str)
-            and "object_ownership" in root_cause
-            and isinstance(refutation_refs, list)
-            and bool(refutation_refs)
-            and all(
-                isinstance(ref, str) and ref.endswith(":role_check")
-                for ref in refutation_refs
-            )
-        )
-        if not role_only_refutation:
-            adjusted_roots.append(root)
-            continue
-        adjusted_roots.append(
-            {
-                **root,
-                "disposition": "retain",
-                "worth_validation": True,
-                "decisive_refutation_refs": [],
-            }
-        )
-        adjustments.append(
-            {
-                "gold_id": str(root.get("gold_id") or "unknown"),
-                "original_disposition": "refute",
-                "effective_disposition": "retain",
-                "reason": "role_only_does_not_close_object_ownership_gap",
-            }
-        )
-    return {**gold_oracle, "expected_roots": adjusted_roots}, adjustments
-
-
 def run_candidate_hunter_release_fixture(
     case: ReleaseFixtureCase,
     *,
@@ -126,9 +78,7 @@ def run_candidate_hunter_release_fixture(
         session=session,
         model_runtime=model_runtime,
     )
-    gold_oracle, legacy_gold_adjustments = _effective_release_gold(
-        load_release_fixture_gold(case)
-    )
+    gold_oracle = load_release_fixture_gold(case)
     evaluation = _apply_loop_audit_gate(
         evaluate_candidate_hunter_release_v1(
             capture["normalized_output"],
@@ -136,10 +86,6 @@ def run_candidate_hunter_release_fixture(
         ),
         capture["loop_audit"],
     )
-    evaluation = {
-        **evaluation,
-        "legacy_gold_adjustments": legacy_gold_adjustments,
-    }
     return {
         **capture,
         "evaluation": evaluation,
@@ -252,16 +198,7 @@ def run_candidate_hunter_release_suite(
         )
         for case in cases
     ]
-    effective_gold = [
-        _effective_release_gold(gold_oracle)
-        for gold_oracle in load_release_fixture_gold_suite(tuple(cases))
-    ]
-    gold_oracles = [gold_oracle for gold_oracle, _ in effective_gold]
-    legacy_gold_adjustments = [
-        {"case_id": case.case_id, **adjustment}
-        for case, (_, adjustments) in zip(cases, effective_gold, strict=True)
-        for adjustment in adjustments
-    ]
+    gold_oracles = list(load_release_fixture_gold_suite(tuple(cases)))
     evaluation = evaluate_candidate_hunter_release_suite_v1(
         [
             {
@@ -290,7 +227,6 @@ def run_candidate_hunter_release_suite(
         **evaluation,
         "status": "failed" if stage_audit_failures else evaluation["status"],
         "stage_audit_failures": stage_audit_failures,
-        "legacy_gold_adjustments": legacy_gold_adjustments,
     }
     return {
         "case_runs": case_runs,

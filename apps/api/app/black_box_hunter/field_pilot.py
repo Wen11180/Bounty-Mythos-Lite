@@ -8,7 +8,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-FIELD_PILOT_SCHEMA_VERSION = "black_box_field_pilot_v1"
+FIELD_PILOT_SCHEMA_VERSION = "black_box_field_pilot_v2"
+FIELD_PILOT_LEGACY_SCHEMA_VERSION = "black_box_field_pilot_v1"
 SAFE_ALIAS_PATTERN = r"^[a-z][a-z0-9_-]{0,99}$"
 FIELD_PILOT_SAFETY_NOTES = [
     "redacted_aggregate_only",
@@ -18,7 +19,7 @@ FIELD_PILOT_SAFETY_NOTES = [
     "no_review_bypass",
     "no_report_submission",
 ]
-FIELD_PILOT_METADATA_KEYS = {
+FIELD_PILOT_LEGACY_METADATA_KEYS = {
     "schema_version",
     "engagement_alias",
     "candidate_alias",
@@ -29,6 +30,11 @@ FIELD_PILOT_METADATA_KEYS = {
     "safety_incident",
     "operator_confirmed",
 }
+FIELD_PILOT_METADATA_KEYS = FIELD_PILOT_LEGACY_METADATA_KEYS | {"report_ready"}
+FIELD_PILOT_SCHEMA_VERSIONS = frozenset(
+    {FIELD_PILOT_LEGACY_SCHEMA_VERSION, FIELD_PILOT_SCHEMA_VERSION}
+)
+TERMINAL_CANDIDATE_LABELS = frozenset({"valid", "duplicate", "invalid"})
 
 FieldPilotLabel = Literal[
     "valid",
@@ -66,6 +72,7 @@ class FieldPilotFeedbackRequest(BaseModel):
     bounty_amount: int | None = Field(default=None, ge=0, le=1_000_000_000)
     externally_valid_report: bool = False
     safety_incident: bool = False
+    report_ready: bool | None = None
     operator_confirmed: Literal[True]
 
     @model_validator(mode="after")
@@ -74,6 +81,10 @@ class FieldPilotFeedbackRequest(BaseModel):
             raise ValueError("external_report_requires_valid_label")
         if self.bounty_amount is not None and not self.externally_valid_report:
             raise ValueError("bounty_requires_externally_valid_report")
+        if self.report_ready is not None and self.label != "valid":
+            raise ValueError("report_readiness_requires_valid_label")
+        if self.externally_valid_report and self.report_ready is False:
+            raise ValueError("external_report_requires_ready_report")
         return self
 
     def metadata(self) -> dict[str, Any]:
@@ -86,6 +97,7 @@ class FieldPilotFeedbackRequest(BaseModel):
             "researcher_minutes": self.researcher_minutes,
             "externally_valid_report": self.externally_valid_report,
             "safety_incident": self.safety_incident,
+            "report_ready": self.report_ready,
             "operator_confirmed": self.operator_confirmed,
         }
 
@@ -104,6 +116,7 @@ class FieldPilotFeedbackEntry(BaseModel):
     bounty_amount: int | None = Field(default=None, ge=0, le=1_000_000_000)
     externally_valid_report: bool = False
     safety_incident: bool = False
+    report_ready: bool | None = None
     operator_confirmed: Literal[True]
     created_at: str | None = None
 
@@ -113,6 +126,10 @@ class FieldPilotFeedbackEntry(BaseModel):
             raise ValueError("external_report_requires_valid_label")
         if self.bounty_amount is not None and not self.externally_valid_report:
             raise ValueError("bounty_requires_externally_valid_report")
+        if self.report_ready is not None and self.label != "valid":
+            raise ValueError("report_readiness_requires_valid_label")
+        if self.externally_valid_report and self.report_ready is False:
+            raise ValueError("external_report_requires_ready_report")
         return self
 
 
@@ -135,6 +152,13 @@ class FieldPilotMetrics(BaseModel):
     top_10_reviewed_count: int = Field(ge=0)
     top_10_valid_count: int = Field(ge=0)
     top_10_submit_worthy_precision: float = Field(ge=0, le=1)
+    terminal_candidate_count: int = Field(ge=0)
+    valid_candidate_count: int = Field(ge=0)
+    false_positive_rate: float | None = Field(default=None, ge=0, le=1)
+    duplicate_rate: float | None = Field(default=None, ge=0, le=1)
+    report_readiness_rate: float | None = Field(default=None, ge=0, le=1)
+    valid_report_rate: float | None = Field(default=None, ge=0, le=1)
+    outcome_metric_availability: dict[str, str]
     safety_incident_count: int = Field(ge=0)
     externally_valid_report_count: int = Field(ge=0)
     externally_valid_program_count: int = Field(ge=0)
@@ -174,7 +198,7 @@ def record_field_pilot_feedback(
         if not isinstance(existing_metadata, dict):
             continue
         if (
-            existing_metadata.get("schema_version") != FIELD_PILOT_SCHEMA_VERSION
+            existing_metadata.get("schema_version") not in FIELD_PILOT_SCHEMA_VERSIONS
             or existing_metadata.get("engagement_alias") != request.engagement_alias
             or existing_metadata.get("candidate_alias") != request.candidate_alias
         ):
@@ -224,6 +248,59 @@ def evaluate_field_pilot_status(
     top_10 = [entry for entry in reviewed if entry.candidate_rank <= 10]
     top_10_valid_count = sum(entry.label == "valid" for entry in top_10)
     precision = round(top_10_valid_count / len(top_10), 4) if top_10 else 0.0
+    terminal_candidates = [
+        entry for entry in reviewed if entry.label in TERMINAL_CANDIDATE_LABELS
+    ]
+    valid_candidates = [entry for entry in reviewed if entry.label == "valid"]
+    outcome_metric_availability: dict[str, str] = {}
+    if terminal_candidates:
+        false_positive_rate = round(
+            sum(entry.label == "invalid" for entry in terminal_candidates)
+            / len(terminal_candidates),
+            4,
+        )
+        duplicate_rate = round(
+            sum(entry.label == "duplicate" for entry in terminal_candidates)
+            / len(terminal_candidates),
+            4,
+        )
+        outcome_metric_availability["false_positive_rate"] = "available"
+        outcome_metric_availability["duplicate_rate"] = "available"
+    else:
+        false_positive_rate = None
+        duplicate_rate = None
+        outcome_metric_availability["false_positive_rate"] = (
+            "terminal_candidate_outcomes_required"
+        )
+        outcome_metric_availability["duplicate_rate"] = (
+            "terminal_candidate_outcomes_required"
+        )
+    if not valid_candidates:
+        report_readiness_rate = None
+        valid_report_rate = None
+        outcome_metric_availability["report_readiness_rate"] = (
+            "valid_candidates_required"
+        )
+        outcome_metric_availability["valid_report_rate"] = "valid_candidates_required"
+    else:
+        valid_report_rate = round(
+            sum(entry.externally_valid_report for entry in valid_candidates)
+            / len(valid_candidates),
+            4,
+        )
+        outcome_metric_availability["valid_report_rate"] = "available"
+        if any(entry.report_ready is None for entry in valid_candidates):
+            report_readiness_rate = None
+            outcome_metric_availability["report_readiness_rate"] = (
+                "report_ready_required_for_all_valid_candidates"
+            )
+        else:
+            report_readiness_rate = round(
+                sum(entry.report_ready for entry in valid_candidates)
+                / len(valid_candidates),
+                4,
+            )
+            outcome_metric_availability["report_readiness_rate"] = "available"
     safety_incident_count = sum(entry.safety_incident for entry in reviewed)
     externally_valid_report_count = sum(
         entry.externally_valid_report for entry in reviewed
@@ -281,6 +358,13 @@ def evaluate_field_pilot_status(
             top_10_reviewed_count=len(top_10),
             top_10_valid_count=top_10_valid_count,
             top_10_submit_worthy_precision=precision,
+            terminal_candidate_count=len(terminal_candidates),
+            valid_candidate_count=len(valid_candidates),
+            false_positive_rate=false_positive_rate,
+            duplicate_rate=duplicate_rate,
+            report_readiness_rate=report_readiness_rate,
+            valid_report_rate=valid_report_rate,
+            outcome_metric_availability=outcome_metric_availability,
             safety_incident_count=safety_incident_count,
             externally_valid_report_count=externally_valid_report_count,
             externally_valid_program_count=externally_valid_program_count,
@@ -298,9 +382,16 @@ def evaluate_field_pilot_status(
 
 def _entry_from_record(record: Any) -> FieldPilotFeedbackEntry | None:
     metadata = getattr(record, "field_pilot_feedback", None)
-    if not isinstance(metadata, dict) or set(metadata) != FIELD_PILOT_METADATA_KEYS:
+    if not isinstance(metadata, dict):
         return None
-    if metadata.get("schema_version") != FIELD_PILOT_SCHEMA_VERSION:
+    schema_version = metadata.get("schema_version")
+    if schema_version == FIELD_PILOT_LEGACY_SCHEMA_VERSION:
+        expected_keys = FIELD_PILOT_LEGACY_METADATA_KEYS
+    elif schema_version == FIELD_PILOT_SCHEMA_VERSION:
+        expected_keys = FIELD_PILOT_METADATA_KEYS
+    else:
+        return None
+    if set(metadata) != expected_keys:
         return None
     try:
         entry = FieldPilotFeedbackEntry(
@@ -315,6 +406,7 @@ def _entry_from_record(record: Any) -> FieldPilotFeedbackEntry | None:
             bounty_amount=record.bounty_amount,
             externally_valid_report=metadata["externally_valid_report"],
             safety_incident=metadata["safety_incident"],
+            report_ready=metadata.get("report_ready"),
             operator_confirmed=metadata["operator_confirmed"],
             created_at=record.created_at.isoformat(),
         )
@@ -348,6 +440,7 @@ def _entry_matches_request(
         and entry.bounty_amount == request.bounty_amount
         and entry.externally_valid_report == request.externally_valid_report
         and entry.safety_incident == request.safety_incident
+        and entry.report_ready == request.report_ready
         and entry.operator_confirmed is request.operator_confirmed
     )
 

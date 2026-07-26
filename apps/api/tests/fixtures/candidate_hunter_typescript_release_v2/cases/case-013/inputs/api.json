@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/capsules/e2r8/{capsuleId}/download": {
+      "post": {
+        "operationId": "downloadCapsule_e2r8"
+      }
+    }
+  }
+}

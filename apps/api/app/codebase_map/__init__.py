@@ -46,14 +46,53 @@ STRING_LITERAL_PATTERN = re.compile(r"[\"']([^\"']+)[\"']")
 FUNCTION_PATTERN = re.compile(r"\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MODEL_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
 CLASS_PATTERN = re.compile(r"\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+FASTAPI_DEPENDENCY_FACTORY_NAMES = frozenset({"Depends", "Security"})
+TYPING_ANNOTATED_MODULES = frozenset({"typing", "typing_extensions"})
+TYPING_ANNOTATED_NAME = "Annotated"
 DEPENDENCY_CALL_PATTERN = re.compile(
-    r"\b(?:Depends|Security)\(\s*(?:dependency\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)"
+    r"\b(?P<factory>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"\(\s*(?:dependency\s*=\s*)?"
+    r"(?P<dependency>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
 )
 DEPENDENCY_ALIAS_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
-    r"(?:Depends|Security)\(\s*(?:dependency\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P<factory>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"\(\s*(?:dependency\s*=\s*)?"
+    r"(?P<dependency>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
 )
-IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(.+)$")
+IMPORT_AUTHZ_ALIAS_PATTERN = re.compile(
+    r"^\s*from\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(.+)$",
+    re.DOTALL,
+)
+DEPENDENCY_FACTORY_FROM_IMPORT_PATTERN = re.compile(
+    r"^\s*from\s+(?P<module>\.*[A-Za-z_][A-Za-z0-9_.]*)\s+import\s+"
+    r"(?P<items>.*)$",
+    re.DOTALL,
+)
+DEPENDENCY_FACTORY_MODULE_IMPORT_PATTERN = re.compile(
+    r"^\s*import\s+(?P<items>[^#]+?)\s*(?:#.*)?$"
+)
+DEPENDENCY_FACTORY_MODULE_IMPORT_ITEM_PATTERN = re.compile(
+    r"^\s*(?P<module>[A-Za-z_][A-Za-z0-9_.]*)"
+    r"(?:\s+as\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*))?\s*$"
+)
+DEPENDENCY_FACTORY_REBIND_ASSIGNMENT_PATTERN = re.compile(
+    r"^\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"(?:\s*:\s*[^=]+)?\s*=(?!=)"
+)
+FASTAPI_DEPENDENCY_FACTORY_IMPORT_PATTERN = re.compile(
+    r"^\s*from\s+fastapi(?:\.params)?\s+import\s+"
+    r"(?:\((?P<items>.*?)\)|(?P<single_items>.*))\s*$",
+    re.DOTALL,
+)
+FASTAPI_DEPENDENCY_FACTORY_MODULE_IMPORT_PATTERN = re.compile(
+    r"^\s*import\s+(?P<module>fastapi(?:\.params)?)"
+    r"(?:\s+as\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*))?\s*(?:#.*)?$"
+)
+DEPENDENCY_FACTORY_IMPORT_OPEN_PATTERN = re.compile(
+    r"^\s*from\s+\.*[A-Za-z_][A-Za-z0-9_.]*\s+import\s*\("
+)
 IMPORT_ALIAS_ITEM_PATTERN = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
 )
@@ -154,6 +193,7 @@ AUTHZ_NAME_MARKERS = (
     "assert_access",
     "login_required",
 )
+AUTHENTICATION_ONLY_CHECK_NAMES = frozenset({"login_required", "require_user"})
 SENSITIVE_SINK_NAMES = {
     "apply_user_update",
     "db_select",
@@ -5363,11 +5403,14 @@ def _map_file(
     pending_router_assignment: tuple[str, int, list[str], str] | None = None
     pending_add_url_rule: tuple[int, list[str]] | None = None
     pending_signature_authz: tuple[str, int] | None = None
+    pending_dependency_factory_import: list[str] | None = None
     pending_membership_filter: tuple[str, str, int] | None = None
     pending_kwarg_membership_filter: tuple[str, str, int] | None = None
     function_stack: list[tuple[str, int]] = []
     class_stack: list[tuple[str, int]] = []
     dependency_aliases: dict[str, str] = {}
+    dependency_factory_aliases = set(FASTAPI_DEPENDENCY_FACTORY_NAMES)
+    annotated_wrapper_aliases: set[str] = set()
     dependency_wrapper_aliases: dict[str, str] = {}
     router_authz_refs: dict[str, list[tuple[str, int]]] = {}
     router_dependency_refs: dict[str, list[tuple[str, int]]] = {}
@@ -5398,6 +5441,9 @@ def _map_file(
     method_view_methods: dict[str, set[str]] = {}
     method_view_authz_refs: dict[str, list[tuple[str, int]]] = {}
     method_view_method_authz_refs: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    annotated_dependency_aliases_by_line = _annotated_dependency_aliases_by_line(
+        content
+    )
 
     def add_method_decorator_authz(
         method_decorator_authz: tuple[str | None, list[tuple[str, int]]] | None,
@@ -5416,6 +5462,27 @@ def _map_file(
         pending_class_method_decorator_authz_refs.append(
             (method_name, authz_refs)
         )
+
+    def register_import_aliases(value: str) -> bool:
+        imported_aliases = _imported_aliases(value)
+        dependency_imported_aliases = _dependency_imported_aliases(value)
+        if (
+            (not imported_aliases and not dependency_imported_aliases)
+            or function_stack
+            or class_stack
+        ):
+            return False
+        for alias_name, call_name in imported_aliases:
+            if alias_name in yaml_load_aliases:
+                continue
+            import_aliases[alias_name] = call_name
+            if call_name == "APIRouter":
+                router_constructor_aliases.add(alias_name)
+            if _is_authz_call(call_name):
+                dependency_aliases[alias_name] = call_name
+        for alias_name, call_name in dependency_imported_aliases:
+            dependency_wrapper_aliases[alias_name] = call_name
+        return True
 
     for line_number, line in enumerate(content.splitlines(), start=1):
         if pending_method_decorator is not None:
@@ -5475,6 +5542,7 @@ def _map_file(
                         router_lines,
                         router_line,
                         dependency_aliases,
+                        dependency_factory_aliases,
                     )
                 )
                 router_dependency_refs[router_name] = _dedupe_refs(
@@ -5483,6 +5551,7 @@ def _map_file(
                         router_line,
                         dependency_aliases,
                         dependency_wrapper_aliases,
+                        dependency_factory_aliases,
                     )
                 )
                 pending_router_assignment = None
@@ -5510,6 +5579,7 @@ def _map_file(
                     line,
                     line_number,
                     dependency_aliases,
+                    dependency_factory_aliases,
                 ),
             ]
             dependency_calls = [
@@ -5519,6 +5589,7 @@ def _map_file(
                     line_number,
                     dependency_aliases,
                     dependency_wrapper_aliases,
+                    dependency_factory_aliases,
                 ),
             ]
             if _route_decorator_closed(line):
@@ -5529,6 +5600,7 @@ def _map_file(
                             decorator_lines,
                             decorator_line,
                             dependency_aliases,
+                            dependency_factory_aliases,
                         ),
                     ]
                 )
@@ -5540,6 +5612,7 @@ def _map_file(
                             decorator_line,
                             dependency_aliases,
                             dependency_wrapper_aliases,
+                            dependency_factory_aliases,
                         ),
                     ]
                 )
@@ -5619,12 +5692,14 @@ def _map_file(
                     line,
                     line_number,
                     dependency_aliases,
+                    dependency_factory_aliases,
                 )
                 router_dependency_refs[router_name] = _dependency_wrapper_refs(
                     line,
                     line_number,
                     dependency_aliases,
                     dependency_wrapper_aliases,
+                    dependency_factory_aliases,
                 )
             else:
                 pending_router_assignment = (
@@ -5646,7 +5721,12 @@ def _map_file(
                     [
                         *pending_decorator_authz_refs,
                         *router_authz_refs.get(router_name, []),
-                        *_dependency_authz_refs(line, line_number, dependency_aliases),
+                        *_dependency_authz_refs(
+                            line,
+                            line_number,
+                            dependency_aliases,
+                            dependency_factory_aliases,
+                        ),
                     ]
                 ),
                 _dedupe_refs(
@@ -5657,6 +5737,7 @@ def _map_file(
                             line_number,
                             dependency_aliases,
                             dependency_wrapper_aliases,
+                            dependency_factory_aliases,
                         ),
                     ]
                 ),
@@ -5685,7 +5766,12 @@ def _map_file(
                     [
                         *pending_decorator_authz_refs,
                         *router_authz_refs.get(router_name, []),
-                        *_dependency_authz_refs(line, line_number, dependency_aliases),
+                        *_dependency_authz_refs(
+                            line,
+                            line_number,
+                            dependency_aliases,
+                            dependency_factory_aliases,
+                        ),
                     ]
                 ),
                 _dedupe_refs(
@@ -5696,6 +5782,7 @@ def _map_file(
                             line_number,
                             dependency_aliases,
                             dependency_wrapper_aliases,
+                            dependency_factory_aliases,
                         ),
                     ]
                 ),
@@ -5730,6 +5817,65 @@ def _map_file(
                 )
             ]
 
+        if pending_dependency_factory_import is not None:
+            pending_dependency_factory_import.append(line)
+            if _dependency_factory_import_is_closed(
+                pending_dependency_factory_import
+            ):
+                import_block = "\n".join(pending_dependency_factory_import)
+                if not function_stack and not class_stack:
+                    rebound_aliases = _dependency_factory_rebound_aliases(import_block)
+                    _discard_rebound_dependency_factory_aliases(
+                        dependency_factory_aliases,
+                        rebound_aliases,
+                    )
+                    _discard_rebound_annotated_wrapper_aliases(
+                        annotated_wrapper_aliases,
+                        rebound_aliases,
+                    )
+                    _discard_rebound_dependency_aliases(
+                        dependency_aliases,
+                        dependency_wrapper_aliases,
+                        rebound_aliases,
+                    )
+                    dependency_factory_aliases.update(
+                        _fastapi_dependency_factory_aliases(import_block)
+                    )
+                    annotated_wrapper_aliases.update(
+                        _typing_annotated_wrapper_aliases(import_block)
+                    )
+                    register_import_aliases(import_block)
+                pending_dependency_factory_import = None
+            continue
+
+        if DEPENDENCY_FACTORY_IMPORT_OPEN_PATTERN.match(line):
+            if _dependency_factory_import_is_closed([line]):
+                if not function_stack and not class_stack:
+                    rebound_aliases = _dependency_factory_rebound_aliases(line)
+                    _discard_rebound_dependency_factory_aliases(
+                        dependency_factory_aliases,
+                        rebound_aliases,
+                    )
+                    _discard_rebound_annotated_wrapper_aliases(
+                        annotated_wrapper_aliases,
+                        rebound_aliases,
+                    )
+                    _discard_rebound_dependency_aliases(
+                        dependency_aliases,
+                        dependency_wrapper_aliases,
+                        rebound_aliases,
+                    )
+                    dependency_factory_aliases.update(
+                        _fastapi_dependency_factory_aliases(line)
+                    )
+                    annotated_wrapper_aliases.update(
+                        _typing_annotated_wrapper_aliases(line)
+                    )
+                    register_import_aliases(line)
+            elif not function_stack and not class_stack:
+                pending_dependency_factory_import = [line]
+            continue
+
         if not function_stack:
             (
                 imported_yaml_modules,
@@ -5740,44 +5886,97 @@ def _map_file(
             yaml_load_aliases.update(imported_yaml_loads)
             yaml_safe_loader_aliases.update(imported_yaml_safe_loaders)
 
-        imported_aliases = _imported_aliases(line)
-        dependency_imported_aliases = _dependency_imported_aliases(line)
-        if (imported_aliases or dependency_imported_aliases) and not function_stack:
-            for alias_name, call_name in imported_aliases:
-                if alias_name in yaml_load_aliases:
-                    continue
-                import_aliases[alias_name] = call_name
-                if call_name == "APIRouter":
-                    router_constructor_aliases.add(alias_name)
-                if _is_authz_call(call_name):
-                    dependency_aliases[alias_name] = call_name
-            for alias_name, call_name in dependency_imported_aliases:
-                dependency_wrapper_aliases[alias_name] = call_name
+        if not function_stack and not class_stack:
+            rebound_aliases = _dependency_factory_rebound_aliases(line)
+            _discard_rebound_dependency_factory_aliases(
+                dependency_factory_aliases,
+                rebound_aliases,
+            )
+            _discard_rebound_annotated_wrapper_aliases(
+                annotated_wrapper_aliases,
+                rebound_aliases,
+            )
+            _discard_rebound_dependency_aliases(
+                dependency_aliases,
+                dependency_wrapper_aliases,
+                rebound_aliases,
+            )
+            dependency_factory_aliases.update(
+                _fastapi_dependency_factory_aliases(line)
+            )
+            annotated_wrapper_aliases.update(_typing_annotated_wrapper_aliases(line))
+            rebound_aliases = _dependency_factory_rebound_assignments(line)
+            _discard_rebound_dependency_factory_aliases(
+                dependency_factory_aliases,
+                rebound_aliases,
+            )
+            _discard_rebound_annotated_wrapper_aliases(
+                annotated_wrapper_aliases,
+                rebound_aliases,
+            )
+            _discard_rebound_dependency_aliases(
+                dependency_aliases,
+                dependency_wrapper_aliases,
+                rebound_aliases,
+            )
+            rebound_aliases = _dependency_factory_rebound_definitions(line)
+            _discard_rebound_dependency_factory_aliases(
+                dependency_factory_aliases,
+                rebound_aliases,
+            )
+            _discard_rebound_annotated_wrapper_aliases(
+                annotated_wrapper_aliases,
+                rebound_aliases,
+            )
+            _discard_rebound_dependency_aliases(
+                dependency_aliases,
+                dependency_wrapper_aliases,
+                rebound_aliases,
+            )
+        if register_import_aliases(line):
             continue
 
-        alias = _dependency_alias(line)
-        if alias is not None and not function_stack:
+        alias = _dependency_alias(line, dependency_factory_aliases)
+        if alias is not None and not function_stack and not class_stack:
             alias_name, call_name = alias
-            if _is_authz_call(call_name):
-                dependency_aliases[alias_name] = call_name
-            else:
-                dependency_wrapper_aliases[alias_name] = call_name
-                facts.append(
-                    CodebaseFactCandidate(
-                        fact_type="dependency_call",
-                        source_path=source_path,
-                        symbol_name=call_name,
-                        route_method=None,
-                        route_path=None,
-                        authz_hint=None,
-                        sensitivity_label="low",
-                        payload={
-                            "caller": alias_name,
-                            "line": line_number,
-                            "mapping_mode": "static_code_snippet_analysis",
-                        },
+            _register_dependency_alias(
+                alias_name=alias_name,
+                call_name=call_name,
+                dependency_aliases=dependency_aliases,
+                dependency_wrapper_aliases=dependency_wrapper_aliases,
+                facts=facts,
+                source_path=source_path,
+                line_number=line_number,
+            )
+            continue
+
+        registered_annotated_dependency_alias = False
+        if not function_stack and not class_stack:
+            for (
+                alias_name,
+                annotation_wrapper,
+                dependency_factory,
+                call_name,
+            ) in annotated_dependency_aliases_by_line.get(line_number, []):
+                if (
+                    annotation_wrapper not in annotated_wrapper_aliases
+                    or not _is_dependency_factory(
+                        dependency_factory,
+                        dependency_factory_aliases,
                     )
+                ):
+                    continue
+                _register_dependency_alias(
+                    alias_name=alias_name,
+                    call_name=call_name,
+                    dependency_aliases=dependency_aliases,
+                    dependency_wrapper_aliases=dependency_wrapper_aliases,
+                    facts=facts,
+                    source_path=source_path,
+                    line_number=line_number,
                 )
+                registered_annotated_dependency_alias = True
+        if registered_annotated_dependency_alias:
             continue
 
         if FLASK_ADD_URL_RULE_PATTERN.search(line) is not None and not function_stack:
@@ -5884,6 +6083,7 @@ def _map_file(
                 line,
                 line_number,
                 dependency_aliases,
+                dependency_factory_aliases,
             ):
                 facts.append(
                     CodebaseFactCandidate(
@@ -5906,6 +6106,7 @@ def _map_file(
                 line_number,
                 dependency_aliases,
                 dependency_wrapper_aliases,
+                dependency_factory_aliases,
             ):
                 facts.append(
                     CodebaseFactCandidate(
@@ -5954,6 +6155,7 @@ def _map_file(
                     line,
                     line_number,
                     dependency_aliases,
+                    dependency_factory_aliases,
                 ),
             ]:
                 facts.append(
@@ -5979,6 +6181,7 @@ def _map_file(
                     line_number,
                     dependency_aliases,
                     dependency_wrapper_aliases,
+                    dependency_factory_aliases,
                 ),
             ]:
                 facts.append(
@@ -6007,6 +6210,7 @@ def _map_file(
                 line,
                 line_number,
                 dependency_aliases,
+                dependency_factory_aliases,
             ):
                 facts.append(
                     CodebaseFactCandidate(
@@ -6029,6 +6233,7 @@ def _map_file(
                 line_number,
                 dependency_aliases,
                 dependency_wrapper_aliases,
+                dependency_factory_aliases,
             ):
                 facts.append(
                     CodebaseFactCandidate(
@@ -8277,6 +8482,8 @@ def _typescript_authz_hint(call_name: str) -> str:
         return "agent_tool_authorization_check"
     if _is_injection_guard_name(normalized):
         return "injection_validation_check"
+    if normalized in AUTHENTICATION_ONLY_CHECK_NAMES:
+        return "authentication_check"
     if "owner_or_admin" in normalized:
         return "owner_or_admin_check"
     if any(
@@ -11838,11 +12045,15 @@ def _self_called_names(line: str) -> set[str]:
     return set(SELF_CALL_PATTERN.findall(line))
 
 
-def _dependency_authz_calls(line: str) -> list[str]:
+def _dependency_authz_calls(
+    line: str,
+    dependency_factory_aliases: set[str],
+) -> list[str]:
     return [
-        call_name
-        for call_name in DEPENDENCY_CALL_PATTERN.findall(line)
-        if _is_authz_call(call_name)
+        match.group("dependency")
+        for match in _dependency_call_matches(line, dependency_factory_aliases)
+        if (call_name := match.group("dependency"))
+        and _is_authz_call(call_name)
     ]
 
 
@@ -11850,8 +12061,15 @@ def _dependency_authz_refs(
     line: str,
     line_number: int,
     dependency_aliases: dict[str, str],
+    dependency_factory_aliases: set[str],
 ) -> list[tuple[str, int]]:
-    refs = [(call_name, line_number) for call_name in _dependency_authz_calls(line)]
+    refs = [
+        (call_name, line_number)
+        for call_name in _dependency_authz_calls(
+            line,
+            dependency_factory_aliases,
+        )
+    ]
     refs.extend(
         (call_name, line_number)
         for alias_name, call_name in dependency_aliases.items()
@@ -11864,12 +12082,17 @@ def _dependency_authz_refs_from_lines(
     lines: list[str],
     start_line: int,
     dependency_aliases: dict[str, str],
+    dependency_factory_aliases: set[str],
 ) -> list[tuple[str, int]]:
     block = "\n".join(lines)
     refs = [
-        (match.group(1), start_line + block.count("\n", 0, match.start(1)))
-        for match in DEPENDENCY_CALL_PATTERN.finditer(block)
-        if _is_authz_call(match.group(1))
+        (
+            call_name,
+            start_line + block.count("\n", 0, match.start("dependency")),
+        )
+        for match in _dependency_call_matches(block, dependency_factory_aliases)
+        if (call_name := match.group("dependency"))
+        and _is_authz_call(call_name)
     ]
     refs.extend(
         (call_name, start_line + line_index)
@@ -11885,15 +12108,17 @@ def _dependency_wrapper_refs(
     line_number: int,
     dependency_aliases: dict[str, str],
     dependency_wrapper_aliases: dict[str, str],
+    dependency_factory_aliases: set[str],
 ) -> list[tuple[str, int]]:
     authz_names = {call_name for call_name, _ in _dependency_authz_refs(
         line,
         line_number,
         dependency_aliases,
+        dependency_factory_aliases,
     )}
     refs = [
         (call_name, line_number)
-        for call_name in _dependency_calls(line)
+        for call_name in _dependency_calls(line, dependency_factory_aliases)
         if call_name not in authz_names
     ]
     refs.extend(
@@ -11909,6 +12134,7 @@ def _dependency_wrapper_refs_from_lines(
     start_line: int,
     dependency_aliases: dict[str, str],
     dependency_wrapper_aliases: dict[str, str],
+    dependency_factory_aliases: set[str],
 ) -> list[tuple[str, int]]:
     block = "\n".join(lines)
     authz_names = {
@@ -11917,12 +12143,16 @@ def _dependency_wrapper_refs_from_lines(
             lines,
             start_line,
             dependency_aliases,
+            dependency_factory_aliases,
         )
     }
     refs = [
-        (match.group(1), start_line + block.count("\n", 0, match.start(1)))
-        for match in DEPENDENCY_CALL_PATTERN.finditer(block)
-        if match.group(1) not in authz_names
+        (
+            call_name,
+            start_line + block.count("\n", 0, match.start("dependency")),
+        )
+        for match in _dependency_call_matches(block, dependency_factory_aliases)
+        if (call_name := match.group("dependency")) not in authz_names
     ]
     refs.extend(
         (call_name, start_line + line_index)
@@ -11933,17 +12163,324 @@ def _dependency_wrapper_refs_from_lines(
     return _dedupe_refs(refs)
 
 
-def _dependency_calls(line: str) -> list[str]:
-    return DEPENDENCY_CALL_PATTERN.findall(line)
+def _dependency_calls(
+    line: str,
+    dependency_factory_aliases: set[str],
+) -> list[str]:
+    return [
+        match.group("dependency")
+        for match in _dependency_call_matches(line, dependency_factory_aliases)
+    ]
 
 
-def _dependency_alias(line: str) -> tuple[str, str] | None:
+def _annotated_dependency_aliases_by_line(
+    content: str,
+) -> dict[int, list[tuple[str, str, str, str]]]:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return {}
+
+    aliases_by_line: dict[int, list[tuple[str, str, str, str]]] = {}
+    for statement in tree.body:
+        alias = _annotated_dependency_alias_from_statement(statement)
+        if alias is None:
+            continue
+        aliases_by_line.setdefault(statement.lineno, []).append(alias)
+    return aliases_by_line
+
+
+def _annotated_dependency_alias_from_statement(
+    statement: ast.stmt,
+) -> tuple[str, str, str, str] | None:
+    target: ast.expr | None = None
+    value: ast.expr | None = None
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target = statement.targets[0]
+        value = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        target = statement.target
+        value = statement.value
+    if not isinstance(target, ast.Name) or not isinstance(value, ast.Subscript):
+        return None
+
+    annotation_wrapper = _dependency_expression_name(value.value)
+    if annotation_wrapper is None or not isinstance(value.slice, ast.Tuple):
+        return None
+
+    dependency_calls = [
+        call
+        for metadata in value.slice.elts[1:]
+        if (call := _annotated_dependency_call(metadata)) is not None
+    ]
+    if len(dependency_calls) != 1:
+        return None
+    dependency_factory, call_name = dependency_calls[0]
+    return target.id, annotation_wrapper, dependency_factory, call_name
+
+
+def _annotated_dependency_call(value: ast.expr) -> tuple[str, str] | None:
+    if not isinstance(value, ast.Call):
+        return None
+    dependency_factory = _dependency_expression_name(value.func)
+    if dependency_factory is None:
+        return None
+
+    positional = value.args[0] if value.args else None
+    keyword_values = [
+        keyword.value for keyword in value.keywords if keyword.arg == "dependency"
+    ]
+    if positional is not None and keyword_values:
+        return None
+    dependency = positional if positional is not None else (
+        keyword_values[0] if len(keyword_values) == 1 else None
+    )
+    call_name = _dependency_expression_name(dependency) if dependency is not None else None
+    return (dependency_factory, call_name) if call_name is not None else None
+
+
+def _dependency_expression_name(value: ast.expr) -> str | None:
+    if isinstance(value, ast.Name):
+        return value.id
+    if not isinstance(value, ast.Attribute):
+        return None
+    prefix = _dependency_expression_name(value.value)
+    return f"{prefix}.{value.attr}" if prefix is not None else None
+
+
+def _dependency_alias(
+    line: str,
+    dependency_factory_aliases: set[str],
+) -> tuple[str, str] | None:
     match = DEPENDENCY_ALIAS_PATTERN.match(line)
-    if match is None:
+    if match is None or not _is_dependency_factory(
+        match.group("factory"),
+        dependency_factory_aliases,
+    ):
         return None
     alias_name = match.group(1)
-    call_name = match.group(2)
+    call_name = match.group("dependency")
     return alias_name, call_name
+
+
+def _register_dependency_alias(
+    *,
+    alias_name: str,
+    call_name: str,
+    dependency_aliases: dict[str, str],
+    dependency_wrapper_aliases: dict[str, str],
+    facts: list[CodebaseFactCandidate],
+    source_path: str,
+    line_number: int,
+) -> None:
+    if _is_authz_call(call_name):
+        dependency_aliases[alias_name] = call_name
+        return
+    dependency_wrapper_aliases[alias_name] = call_name
+    facts.append(
+        CodebaseFactCandidate(
+            fact_type="dependency_call",
+            source_path=source_path,
+            symbol_name=call_name,
+            route_method=None,
+            route_path=None,
+            authz_hint=None,
+            sensitivity_label="low",
+            payload={
+                "caller": alias_name,
+                "line": line_number,
+                "mapping_mode": "static_code_snippet_analysis",
+            },
+        )
+    )
+
+
+def _dependency_call_matches(
+    value: str,
+    dependency_factory_aliases: set[str],
+) -> list[re.Match[str]]:
+    return [
+        match
+        for match in DEPENDENCY_CALL_PATTERN.finditer(value)
+        if _is_dependency_factory(match.group("factory"), dependency_factory_aliases)
+    ]
+
+
+def _is_dependency_factory(
+    value: str,
+    dependency_factory_aliases: set[str],
+) -> bool:
+    return value in dependency_factory_aliases
+
+
+def _fastapi_dependency_factory_aliases(line: str) -> set[str]:
+    match = FASTAPI_DEPENDENCY_FACTORY_IMPORT_PATTERN.match(line)
+    aliases: set[str] = set()
+    if match is not None:
+        items = match.group("items") or match.group("single_items") or ""
+        for item in _python_import_items(items):
+            item_match = IMPORT_ALIAS_ITEM_PATTERN.match(item)
+            imported_name = item_match.group(1) if item_match is not None else item
+            local_name = item_match.group(2) if item_match is not None else item
+            if imported_name in FASTAPI_DEPENDENCY_FACTORY_NAMES and re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*",
+                local_name,
+            ):
+                aliases.add(local_name)
+
+    module_match = FASTAPI_DEPENDENCY_FACTORY_MODULE_IMPORT_PATTERN.match(line)
+    if module_match is None:
+        return aliases
+    module = module_match.group("module")
+    alias = module_match.group("alias")
+    prefix = alias or "fastapi"
+    for factory_name in FASTAPI_DEPENDENCY_FACTORY_NAMES:
+        aliases.add(f"{prefix}.{factory_name}")
+        if module == "fastapi.params" and alias is None:
+            aliases.add(f"fastapi.params.{factory_name}")
+    return aliases
+
+
+def _typing_annotated_wrapper_aliases(value: str) -> set[str]:
+    stripped = value.lstrip()
+    if not (
+        stripped.startswith("from typing")
+        or stripped.startswith("import typing")
+    ):
+        return set()
+    try:
+        tree = ast.parse(value)
+    except SyntaxError:
+        return set()
+
+    aliases: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom):
+            if statement.level != 0 or statement.module not in TYPING_ANNOTATED_MODULES:
+                continue
+            aliases.update(
+                imported.asname or imported.name
+                for imported in statement.names
+                if imported.name == TYPING_ANNOTATED_NAME
+            )
+        elif isinstance(statement, ast.Import):
+            aliases.update(
+                f"{imported.asname or imported.name}.{TYPING_ANNOTATED_NAME}"
+                for imported in statement.names
+                if imported.name in TYPING_ANNOTATED_MODULES
+            )
+    return aliases
+
+
+def _dependency_factory_rebound_aliases(line: str) -> set[str]:
+    match = DEPENDENCY_FACTORY_FROM_IMPORT_PATTERN.match(line)
+    if match is not None:
+        return _dependency_factory_imported_names(match.group("items"))
+
+    module_match = DEPENDENCY_FACTORY_MODULE_IMPORT_PATTERN.match(line)
+    if module_match is None:
+        return set()
+    aliases: set[str] = set()
+    for item in module_match.group("items").split(","):
+        item_match = DEPENDENCY_FACTORY_MODULE_IMPORT_ITEM_PATTERN.match(item)
+        if item_match is None:
+            continue
+        aliases.add(
+            item_match.group("alias")
+            or item_match.group("module").split(".", 1)[0]
+        )
+    return aliases
+
+
+def _dependency_factory_rebound_assignments(line: str) -> set[str]:
+    match = DEPENDENCY_FACTORY_REBIND_ASSIGNMENT_PATTERN.match(line)
+    return {match.group("name")} if match is not None else set()
+
+
+def _dependency_factory_rebound_definitions(line: str) -> set[str]:
+    names: set[str] = set()
+    function_match = FUNCTION_PATTERN.match(line)
+    if function_match is not None:
+        names.add(function_match.group(1))
+    class_match = CLASS_PATTERN.match(line)
+    if class_match is not None:
+        names.add(class_match.group(1))
+    return names
+
+
+def _discard_rebound_dependency_factory_aliases(
+    dependency_factory_aliases: set[str],
+    rebound_aliases: set[str],
+) -> None:
+    if not rebound_aliases:
+        return
+    dependency_factory_aliases.difference_update(
+        alias
+        for alias in tuple(dependency_factory_aliases)
+        if alias in rebound_aliases
+        or any(alias.startswith(f"{name}.") for name in rebound_aliases)
+    )
+
+
+def _discard_rebound_annotated_wrapper_aliases(
+    annotated_wrapper_aliases: set[str],
+    rebound_aliases: set[str],
+) -> None:
+    _discard_rebound_dependency_factory_aliases(
+        annotated_wrapper_aliases,
+        rebound_aliases,
+    )
+
+
+def _discard_rebound_dependency_aliases(
+    dependency_aliases: dict[str, str],
+    dependency_wrapper_aliases: dict[str, str],
+    rebound_aliases: set[str],
+) -> None:
+    if not rebound_aliases:
+        return
+    for aliases in (dependency_aliases, dependency_wrapper_aliases):
+        for alias_name in tuple(aliases):
+            if alias_name in rebound_aliases or any(
+                alias_name.startswith(f"{name}.") for name in rebound_aliases
+            ):
+                aliases.pop(alias_name, None)
+
+
+def _dependency_factory_imported_names(items: str) -> set[str]:
+    aliases: set[str] = set()
+    for item in _python_import_items(items):
+        if item == "*":
+            aliases.update(FASTAPI_DEPENDENCY_FACTORY_NAMES)
+            continue
+        item_match = IMPORT_ALIAS_ITEM_PATTERN.match(item)
+        local_name = item_match.group(2) if item_match is not None else item
+        if re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*",
+            local_name,
+        ):
+            aliases.add(local_name)
+    return aliases
+
+
+def _dependency_factory_import_is_closed(lines: list[str]) -> bool:
+    source = _python_import_source_without_comments("\n".join(lines))
+    return source.count("(") <= source.count(")")
+
+
+def _python_import_source_without_comments(value: str) -> str:
+    return "\n".join(line.split("#", 1)[0] for line in value.splitlines())
+
+
+def _python_import_items(items: str) -> list[str]:
+    uncommented = _python_import_source_without_comments(items).strip()
+    if uncommented.startswith("(") and uncommented.endswith(")"):
+        uncommented = uncommented[1:-1]
+    return [item.strip() for item in uncommented.split(",") if item.strip()]
+
+
+def _imported_alias_items(match: re.Match[str]) -> list[str]:
+    return _python_import_items(match.group(1))
 
 
 def _dependency_imported_aliases(line: str) -> list[tuple[str, str]]:
@@ -11951,7 +12488,7 @@ def _dependency_imported_aliases(line: str) -> list[tuple[str, str]]:
     if match is None or "dependencies" not in line:
         return []
     aliases: list[tuple[str, str]] = []
-    for item in match.group(1).split(","):
+    for item in _imported_alias_items(match):
         item_match = IMPORT_ALIAS_ITEM_PATTERN.match(item)
         if item_match is None:
             call_name = item.strip()
@@ -11970,7 +12507,7 @@ def _imported_aliases(line: str) -> list[tuple[str, str]]:
     if match is None:
         return []
     aliases: list[tuple[str, str]] = []
-    for item in match.group(1).split(","):
+    for item in _imported_alias_items(match):
         item_match = IMPORT_ALIAS_ITEM_PATTERN.match(item)
         if item_match is None:
             continue
@@ -13311,6 +13848,8 @@ def _authz_hint(call_name: str) -> str:
         return "agent_tool_authorization_check"
     if _is_injection_guard_name(normalized):
         return "injection_validation_check"
+    if _normalized_typescript_name(call_name) in AUTHENTICATION_ONLY_CHECK_NAMES:
+        return "authentication_check"
     if "owner_or_admin" in normalized:
         return "owner_or_admin_check"
     if any(

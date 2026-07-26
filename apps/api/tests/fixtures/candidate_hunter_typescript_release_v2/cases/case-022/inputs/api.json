@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/releases/x9g2/{releaseId}/approve": {
+      "patch": {
+        "operationId": "approveRelease_x9g2"
+      }
+    }
+  }
+}

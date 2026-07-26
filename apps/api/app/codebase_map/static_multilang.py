@@ -851,14 +851,9 @@ def _java_declarative_authz_hint(annotation_name: str, annotation: str) -> str:
         return "role_check"
     if _java_pre_authorize_allows_public_access(expression):
         return "public_access"
-    normalized = re.sub(r"\s+", "", expression).lower()
-    if normalized in {
-        "isauthenticated()",
-        "isfullyauthenticated()",
-        "isrememberme()",
-        "isanonymous()",
-    }:
+    if _java_pre_authorize_allows_authentication_only_access(expression):
         return "authentication_check"
+    normalized = re.sub(r"\s+", "", expression).lower()
     if normalized in {"denyall()", "false", "(false)"}:
         return "access_denied_check"
     if "haspermission(" in normalized:
@@ -890,6 +885,27 @@ def _java_pre_authorize_allows_public_access(expression: str) -> bool:
         )
     normalized = re.sub(r"\s+", "", expression).lower().strip("()")
     return normalized in {"permitall", "true"}
+
+
+def _java_pre_authorize_allows_authentication_only_access(expression: str) -> bool:
+    expression = _java_strip_outer_spel_parentheses(expression.strip())
+    disjunctions = _java_split_top_level_spel_expression(
+        expression,
+        symbol="||",
+        word="or",
+    )
+    if len(disjunctions) > 1:
+        return any(
+            _java_pre_authorize_allows_authentication_only_access(branch)
+            for branch in disjunctions
+        )
+    normalized = re.sub(r"\s+", "", expression).lower()
+    return normalized in {
+        "isauthenticated()",
+        "isfullyauthenticated()",
+        "isrememberme()",
+        "isanonymous()",
+    }
 
 
 def _java_strip_outer_spel_parentheses(expression: str) -> str:
@@ -3296,7 +3312,7 @@ def _csharp_preferred_declarative_authz_attribute(
             if _csharp_declarative_authz_hint(
                 candidate.group("name"), candidate.group(0)
             )
-            == "role_check"
+            in {"role_check", "permission_check"}
         ),
         candidates[-1],
     )
@@ -3305,6 +3321,8 @@ def _csharp_preferred_declarative_authz_attribute(
 def _csharp_declarative_authz_hint(attribute_name: str, attribute: str) -> str:
     if attribute_name.lower() == "allowanonymous":
         return "public_access"
+    if re.search(r"\bpolicy\s*=", attribute, re.IGNORECASE):
+        return "permission_check"
     if re.search(r"\broles\s*=", attribute, re.IGNORECASE):
         return "role_check"
     return "authentication_check"
@@ -3367,7 +3385,7 @@ def _csharp_effective_declarative_authz_attribute(
         if authz is not None and authz[2] == "public_access":
             return authz
     for authz in (method_authz, class_authz):
-        if authz is not None and authz[2] == "role_check":
+        if authz is not None and authz[2] in {"role_check", "permission_check"}:
             return authz
     return method_authz or class_authz
 

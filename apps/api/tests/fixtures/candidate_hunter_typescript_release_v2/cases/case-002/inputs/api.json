@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/ledgers/k4v9/{ledgerId}/file": {
+      "get": {
+        "operationId": "fetchLedger_k4v9"
+      }
+    }
+  }
+}

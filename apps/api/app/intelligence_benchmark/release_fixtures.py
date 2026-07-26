@@ -13,6 +13,12 @@ LEGACY_PROFILE = "candidate_hunter_release_legacy"
 LEGACY_VERSION = "candidate_hunter_release_fixture_v1"
 TYPESCRIPT_PROFILE = "candidate_hunter_typescript_express"
 TYPESCRIPT_VERSION = "candidate_hunter_typescript_express_fixture_v1"
+TYPESCRIPT_V2_PROFILE = "candidate_hunter_typescript_express_v2"
+TYPESCRIPT_V2_VERSION = "candidate_hunter_typescript_express_fixture_v2"
+TYPESCRIPT_VERSIONS = {
+    TYPESCRIPT_PROFILE: TYPESCRIPT_VERSION,
+    TYPESCRIPT_V2_PROFILE: TYPESCRIPT_V2_VERSION,
+}
 AUTHORIZATION_PATTERNS = {"object_ownership", "tenant_boundary", "role_boundary"}
 TYPESCRIPT_ORACLE_FIELDS = {
     "expected_disposition",
@@ -37,10 +43,24 @@ RISK_FAMILIES = {
 }
 DISPOSITIONS = {"retain", "refute", "deduplicate", "suppress"}
 INPUT_KINDS = {"scope", "policy", "api", "har", "code"}
+TYPESCRIPT_GOLD_OUTCOMES = {
+    TYPESCRIPT_PROFILE: {
+        pattern: frozenset(DISPOSITIONS) for pattern in AUTHORIZATION_PATTERNS
+    },
+    TYPESCRIPT_V2_PROFILE: {
+        "object_ownership": frozenset(DISPOSITIONS),
+        "tenant_boundary": frozenset(DISPOSITIONS),
+        "role_boundary": frozenset({"retain", "deduplicate", "suppress"}),
+    },
+}
 
 
 class ReleaseFixtureError(ValueError):
     pass
+
+
+def _is_typescript_profile(profile: str) -> bool:
+    return profile in TYPESCRIPT_VERSIONS
 
 
 @dataclass(frozen=True)
@@ -78,20 +98,23 @@ def load_release_fixture_suite(
     if reason := _fixture_text_violation(manifest_text):
         raise ReleaseFixtureError(f"suite_manifest:{reason}")
     manifest = _parse_json_text(manifest_text, "suite_manifest")
-    if manifest.get("profile") not in {None, TYPESCRIPT_PROFILE}:
+    profile = manifest.get("profile")
+    if profile is not None and not isinstance(profile, str):
+        raise ReleaseFixtureError("suite_manifest:unsupported_profile")
+    if profile not in {None, *TYPESCRIPT_VERSIONS}:
         raise ReleaseFixtureError("suite_manifest:unsupported_profile")
     if (
-        manifest.get("profile") is None
-        and manifest.get("version") == TYPESCRIPT_VERSION
+        profile is None
+        and manifest.get("version") in TYPESCRIPT_VERSIONS.values()
     ):
         raise ReleaseFixtureError("suite_manifest:unsupported_profile")
-    if manifest.get("profile") == TYPESCRIPT_PROFILE:
-        if manifest.get("version") != TYPESCRIPT_VERSION:
+    if isinstance(profile, str) and _is_typescript_profile(profile):
+        if manifest.get("version") != TYPESCRIPT_VERSIONS[profile]:
             raise ReleaseFixtureError("suite_manifest:unsupported_version")
         entries = _typescript_manifest_entries(manifest)
         _validate_typescript_manifest(entries)
         cases = tuple(
-            _load_typescript_case(root, entry)
+            _load_typescript_case(root, entry, profile=profile)
             for entry in entries
             if entry["suite"] == suite
         )
@@ -165,7 +188,7 @@ def stage_release_fixture_inputs(
         text = _read_text(path, f"{case.case_id}:{kind}")
         if reason := _fixture_text_violation(text):
             raise ReleaseFixtureError(f"{case.case_id}:{kind}:{reason}")
-        if case.profile == TYPESCRIPT_PROFILE:
+        if _is_typescript_profile(case.profile):
             if reason := _typescript_oracle_violation(text):
                 raise ReleaseFixtureError(f"{case.case_id}:{kind}:{reason}")
         staged_inputs.append(ReleaseFixtureInput(kind=kind, path=path, text=text))
@@ -188,13 +211,13 @@ def load_release_fixture_gold(case: ReleaseFixtureCase) -> dict[str, Any]:
     if reason := _fixture_text_violation(text):
         raise ReleaseFixtureError(f"{case.case_id}:gold:{reason}")
     gold = _parse_json_text(text, f"{case.case_id}:gold")
-    if case.profile == TYPESCRIPT_PROFILE and set(gold) != {
+    if _is_typescript_profile(case.profile) and set(gold) != {
         "authorization_pattern",
         "expected_roots",
     }:
         raise ReleaseFixtureError(f"{case.case_id}:gold:unexpected_keys")
     if (
-        case.profile == TYPESCRIPT_PROFILE
+        _is_typescript_profile(case.profile)
         and gold.get("authorization_pattern") != case.authorization_pattern
     ):
         raise ReleaseFixtureError(
@@ -202,7 +225,7 @@ def load_release_fixture_gold(case: ReleaseFixtureCase) -> dict[str, Any]:
         )
     if not isinstance(gold.get("expected_roots"), list):
         raise ReleaseFixtureError(f"{case.case_id}:gold:expected_roots_missing")
-    if case.profile == TYPESCRIPT_PROFILE:
+    if _is_typescript_profile(case.profile):
         if not gold["expected_roots"]:
             raise ReleaseFixtureError(f"{case.case_id}:gold:expected_roots_empty")
         for index, root in enumerate(gold["expected_roots"]):
@@ -296,14 +319,18 @@ def load_release_fixture_gold(case: ReleaseFixtureCase) -> dict[str, Any]:
 def load_release_fixture_gold_suite(
     cases: tuple[ReleaseFixtureCase, ...],
 ) -> tuple[dict[str, Any], ...]:
-    if cases and all(case.profile == TYPESCRIPT_PROFILE for case in cases):
+    if cases and all(_is_typescript_profile(case.profile) for case in cases):
         if len(cases) != EXPECTED_CASE_COUNT // len(SUITES):
             raise ReleaseFixtureError("gold_suite:case_count")
         if len({case.suite for case in cases}) != 1:
             raise ReleaseFixtureError("gold_suite:suite_mismatch")
     gold_suite = tuple(load_release_fixture_gold(case) for case in cases)
-    if not cases or not all(case.profile == TYPESCRIPT_PROFILE for case in cases):
+    if not cases or not all(_is_typescript_profile(case.profile) for case in cases):
         return gold_suite
+    profiles = {case.profile for case in cases}
+    if len(profiles) != 1:
+        raise ReleaseFixtureError("gold_suite:profile_mismatch")
+    profile = profiles.pop()
     suite = cases[0].suite
     for pattern in AUTHORIZATION_PATTERNS:
         outcomes = {
@@ -311,7 +338,7 @@ def load_release_fixture_gold_suite(
             for case, gold in zip(cases, gold_suite, strict=True)
             if case.authorization_pattern == pattern
         }
-        if outcomes != DISPOSITIONS:
+        if outcomes != TYPESCRIPT_GOLD_OUTCOMES[profile][pattern]:
             raise ReleaseFixtureError(
                 f"gold_suite:{suite}:{pattern}:outcome_matrix"
             )
@@ -319,7 +346,7 @@ def load_release_fixture_gold_suite(
 
 
 def load_release_fixture_replay(case: ReleaseFixtureCase) -> dict[str, Any]:
-    if case.profile != TYPESCRIPT_PROFILE:
+    if not _is_typescript_profile(case.profile):
         raise ReleaseFixtureError(f"{case.case_id}:replay:unsupported_profile")
     replay_path = _resolve_under(case.root, "replay/response.json")
     if not replay_path.is_file():
@@ -492,7 +519,12 @@ def _load_case(root: Path, entry: dict[str, str]) -> ReleaseFixtureCase:
     )
 
 
-def _load_typescript_case(root: Path, entry: dict[str, str]) -> ReleaseFixtureCase:
+def _load_typescript_case(
+    root: Path,
+    entry: dict[str, str],
+    *,
+    profile: str,
+) -> ReleaseFixtureCase:
     case_root = _resolve_under(root, entry["path"])
     if not case_root.is_dir():
         raise ReleaseFixtureError(f"{entry['case_id']}:case_missing")
@@ -515,7 +547,7 @@ def _load_typescript_case(root: Path, entry: dict[str, str]) -> ReleaseFixtureCa
         root=case_root,
         metadata=metadata,
         input_specs=_input_specs(metadata, entry["case_id"]),
-        profile=TYPESCRIPT_PROFILE,
+        profile=profile,
         authorization_pattern=entry["authorization_pattern"],
     )
 

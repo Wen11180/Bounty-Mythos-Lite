@@ -7,11 +7,11 @@
 const net = require('net');
 const ipaddr = require('ipaddr.js');
 
-function isLoopbackOrPrivate(ip) {
+function isLoopback(ip) {
   if (!ip || net.isIP(ip) === 0) return false;
   try {
     const range = ipaddr.parse(ip).range();
-    return range === 'loopback' || range === 'private' || range === 'uniqueLocal';
+    return range === 'loopback';
   } catch {
     return false;
   }
@@ -34,8 +34,8 @@ function authorizeDestination({
     return { allowed: false, reason: 'unresolved_or_non_lab_host' };
   }
   for (const ip of normalizedIps) {
-    if (!isLoopbackOrPrivate(ip)) {
-      return { allowed: false, reason: 'dns_rebind_or_public_ip' };
+    if (!isLoopback(ip)) {
+      return { allowed: false, reason: 'dns_rebind_or_non_loopback_ip' };
     }
   }
   if (admittedIps !== null) {
@@ -70,5 +70,5 @@ function normalizeIps(values) {
 
 module.exports = {
   authorizeDestination,
-  isLoopbackOrPrivate,
+  isLoopback,
 };

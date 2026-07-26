@@ -115,12 +115,12 @@ def main() -> int:
     parser.add_argument(
         "--allow-local-fuzz-run",
         action="store_true",
-        help="Human gate: run in-process Python fuzz only (never spawn AFL++/libFuzzer; never promote crashes).",
+        help="Compatibility flag only: records operator intent but remains plan-only; target code never runs in-process.",
     )
     parser.add_argument(
         "--allow-crash-triage",
         action="store_true",
-        help="Human gate: dedupe/minimize/classify local fuzz crashes (never promote/submit).",
+        help="Compatibility flag only: classify/dedupe crash metadata plan-only; reproduction requires an isolated runner.",
     )
     parser.add_argument(
         "--allow-crash-regression-export",
@@ -679,7 +679,7 @@ def _render_md(payload: dict) -> str:
 
         runner = item.get("local_fuzz_runner") if isinstance(item.get("local_fuzz_runner"), dict) else {}
         if runner or item.get("local_fuzz_runner_present"):
-            lines.append("Local fuzz runner (human-gated in-process Python only; never promote):")
+            lines.append("Local fuzz target plan (in-process execution disabled; never promote):")
             lines.append(f"- status: {item.get('local_fuzz_runner_status') or runner.get('status')}")
             lines.append(f"- targets: {item.get('local_fuzz_runner_target_count') or runner.get('target_count')}")
             lines.append(f"- runnable: {item.get('local_fuzz_runner_runnable_count') or runner.get('runnable_target_count')}")

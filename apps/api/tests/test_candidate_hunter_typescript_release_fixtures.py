@@ -20,6 +20,7 @@ from app.intelligence_benchmark import release_fixtures
 from app.intelligence_benchmark.release_fixtures import (
     ReleaseFixtureError,
     load_release_fixture_gold,
+    load_release_fixture_gold_suite,
     load_release_fixture_suite,
     stage_release_fixture_inputs,
 )
@@ -30,11 +31,19 @@ LEGACY_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "candidate_hunter_rel
 TYPESCRIPT_FIXTURE_ROOT = (
     Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release"
 )
+TYPESCRIPT_V2_FIXTURE_ROOT = (
+    Path(__file__).parent / "fixtures" / "candidate_hunter_typescript_release_v2"
+)
 LEGACY_FIXTURE_TREE_DIGEST = (
     "ebd86ece232d40286f99be4765fcfd0c1f07fb31363bf4a4b9a626f25db993a0"
 )
 TYPESCRIPT_PROFILE = "candidate_hunter_typescript_express"
 TYPESCRIPT_VERSION = "candidate_hunter_typescript_express_fixture_v1"
+TYPESCRIPT_V2_PROFILE = "candidate_hunter_typescript_express_v2"
+TYPESCRIPT_V2_VERSION = "candidate_hunter_typescript_express_fixture_v2"
+TYPESCRIPT_V2_TREE_DIGEST = (
+    "9488795e54486d0f3564777b4afcff3a078976828335aaa9eadc9175b7460db6"
+)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -117,6 +126,85 @@ def _fixture_tree_digest(root: Path) -> str:
 
 def test_legacy_release_fixture_tree_stays_byte_for_byte_unchanged():
     assert _fixture_tree_digest(LEGACY_FIXTURE_ROOT) == LEGACY_FIXTURE_TREE_DIGEST
+
+
+def test_typescript_v2_freezes_role_only_object_ownership_corrections():
+    assert _fixture_tree_digest(TYPESCRIPT_V2_FIXTURE_ROOT) == TYPESCRIPT_V2_TREE_DIGEST
+
+    expected = {
+        "tse-010": (
+            "publishReview",
+            "api:POST:/local/reviews/g5p2/{reviewId}/publish",
+        ),
+        "tse-022": (
+            "approveRelease",
+            "api:PATCH:/internal/releases/x9g2/{releaseId}/approve",
+        ),
+    }
+    legacy_cases = {
+        case.case_id: case
+        for suite in ("development", "release")
+        for case in load_release_fixture_suite(TYPESCRIPT_FIXTURE_ROOT, suite)
+    }
+    v2_cases = {
+        case.case_id: case
+        for suite in ("development", "release")
+        for case in load_release_fixture_suite(TYPESCRIPT_V2_FIXTURE_ROOT, suite)
+    }
+
+    for suite in ("development", "release"):
+        cases = load_release_fixture_suite(TYPESCRIPT_V2_FIXTURE_ROOT, suite)
+        assert {case.profile for case in cases} == {TYPESCRIPT_V2_PROFILE}
+        assert load_release_fixture_gold_suite(cases)
+
+    for case_id, (handler, route_ref) in expected.items():
+        legacy_gold = load_release_fixture_gold(legacy_cases[case_id])
+        gold = load_release_fixture_gold(v2_cases[case_id])
+        root = gold["expected_roots"][0]
+        code = next(
+            item
+            for item in stage_release_fixture_inputs(v2_cases[case_id])
+            if item.kind == "code"
+        )
+        facts = map_authorized_code_files(
+            {"authorized_code_files": [{"path": code.path.name, "content": code.text}]}
+        ).facts
+
+        assert legacy_gold["expected_roots"][0]["disposition"] == "refute"
+        assert root["disposition"] == "retain"
+        assert root["worth_validation"] is True
+        assert root["required_evidence_refs"] == [
+            f"code:code.ts:{handler}",
+            route_ref,
+        ]
+        assert root["decisive_refutation_refs"] == []
+        assert "role_check" in {fact.symbol_name for fact in facts}
+
+
+def test_typescript_v2_rejects_role_only_object_ownership_refutation(tmp_path: Path):
+    fixture_root = tmp_path / "candidate_hunter_typescript_release_v2"
+    shutil.copytree(TYPESCRIPT_V2_FIXTURE_ROOT, fixture_root)
+    case = next(
+        item
+        for item in load_release_fixture_suite(fixture_root, "development")
+        if item.case_id == "tse-010"
+    )
+    gold_path = case.root / "gold.json"
+    gold = json.loads(gold_path.read_text(encoding="utf-8"))
+    root = gold["expected_roots"][0]
+    root["disposition"] = "refute"
+    root["worth_validation"] = False
+    root["required_evidence_refs"] = []
+    root["decisive_refutation_refs"] = ["code:code.ts:role_check"]
+    _write_json(gold_path, gold)
+
+    with pytest.raises(
+        ReleaseFixtureError,
+        match="gold_suite:development:role_boundary:outcome_matrix",
+    ):
+        load_release_fixture_gold_suite(
+            load_release_fixture_suite(fixture_root, "development")
+        )
 
 
 def test_typescript_profile_loads_without_pre_capture_oracle_metadata(tmp_path: Path):

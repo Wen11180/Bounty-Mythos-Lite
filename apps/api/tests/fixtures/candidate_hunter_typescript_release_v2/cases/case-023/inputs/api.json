@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/tasks/c6t5/{taskId}/execute": {
+      "post": {
+        "operationId": "executeTask_c6t5"
+      }
+    },
+    "/internal/tasks/c6t5/{taskId}/replay": {
+      "post": {
+        "operationId": "replayTask_c6t5"
+      }
+    }
+  }
+}

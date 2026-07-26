@@ -346,7 +346,7 @@
       "execution_allowed": false,
       "crash_promotion_allowed": false,
       "confirmed_vulnerability": false,
-      "notes": "Human-gated crash classify/dedupe/minimize/repro; advisory root-cause only; never promote/spawn/submit."
+      "notes": "Plan-only crash classify/dedupe; reproduction requires an isolated runner; never promote/spawn/submit."
     },
     "crash_regression": {
       "status": "package_ingest_green",
@@ -1058,7 +1058,7 @@
   ],
   "local_fuzz_runner": {
     "status": "package_ingest_green",
-    "mode": "in_process_python_human_flag_only",
+    "mode": "plan_only_target_discovery_in_process_disabled",
     "external_fuzzer_spawn": false,
     "crash_promotion_allowed": false,
     "scheduler_task": "T-003d",
@@ -1067,7 +1067,7 @@
   },
   "crash_triage": {
     "status": "package_ingest_green",
-    "mode": "human_flag_classify_dedupe_minimize_repro_advisory_root_cause",
+    "mode": "plan_only_classify_dedupe_isolated_reproduction_required",
     "crash_promotion_allowed": false,
     "external_fuzzer_spawn": false,
     "confirmed_vulnerability": false,

@@ -5554,8 +5554,9 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "login_required"
+    assert authz.authz_hint == "authentication_check"
     assert authz.payload == {
         "handler": "export_file",
         "line": 8,
@@ -5636,7 +5637,7 @@ app.add_url_rule(
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "login_required"
     assert authz.payload == {
         "handler": "export_file",
@@ -5721,7 +5722,7 @@ app.add_url_rule(
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "login_required"
     assert authz.payload == {
         "handler": "FileExport.get",
@@ -5765,7 +5766,7 @@ app.add_url_rule(
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "login_required"
     assert authz.payload == {
         "handler": "FileExport.get",
@@ -5808,7 +5809,7 @@ app.add_url_rule(
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "login_required"
     assert authz.payload == {
         "handler": "FileExport.get",
@@ -7076,7 +7077,7 @@ def export_file(file_id: str, current_user):
     }
 
 
-def test_map_authorized_code_files_treats_dependency_injected_authz_as_route_authz():
+def test_map_authorized_code_files_keeps_object_authz_candidate_for_dependency_injected_authentication():
     result = map_authorized_code_files(
         {
             "authorized_code_files": [
@@ -7102,8 +7103,9 @@ def export_file(file_id: str, user=Depends(require_user)):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
+    assert authz.authz_hint == "authentication_check"
     assert authz.payload == {
         "handler": "export_file",
         "line": 7,
@@ -7111,7 +7113,7 @@ def export_file(file_id: str, user=Depends(require_user)):
     }
 
 
-def test_map_authorized_code_files_treats_keyword_dependency_authz_as_route_authz():
+def test_map_authorized_code_files_treats_keyword_dependency_authentication_as_route_authz():
     result = map_authorized_code_files(
         {
             "authorized_code_files": [
@@ -7137,7 +7139,7 @@ def export_file(file_id: str, user=Depends(dependency=require_user)):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7172,7 +7174,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7207,7 +7209,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7243,7 +7245,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7278,7 +7280,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7316,7 +7318,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7357,7 +7359,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7396,7 +7398,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route.route_path == "/files/{file_id}/export"
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
@@ -7450,7 +7452,7 @@ def current_user(user=Depends(require_user)):
 
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route_authz[0].symbol_name == "require_user"
 
 
@@ -7505,7 +7507,7 @@ def current_user(user=Depends(require_user)):
 
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route_authz[0].symbol_name == "require_user"
 
 
@@ -7544,7 +7546,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route.route_path == "/files/{file_id}/export"
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
@@ -7581,7 +7583,7 @@ def export_file(file_id: str, user=Depends(RequireUser)):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7616,13 +7618,546 @@ def export_file(file_id: str, user=Security(require_user)):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
         "line": 7,
         "mapping_mode": "static_code_snippet_analysis",
     }
+
+
+@pytest.mark.parametrize(
+    ("factory_import", "dependency_call", "expected_authz", "expects_gap"),
+    (
+        (
+            "from fastapi import Depends as Dependency",
+            "Dependency(auth.require_user)",
+            "auth.require_user",
+            True,
+        ),
+        (
+            "from fastapi import Security as ScopedSecurity",
+            'ScopedSecurity(dependency=permissions.require_owner, scopes=["files:export"])',
+            "permissions.require_owner",
+            False,
+        ),
+        (
+            "import fastapi as api",
+            "api.Depends(auth.require_user)",
+            "auth.require_user",
+            True,
+        ),
+    ),
+)
+def test_map_authorized_code_files_tracks_aliased_fastapi_dependency_factories(
+    factory_import,
+    dependency_call,
+    expected_authz,
+    expects_gap,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f'''
+from fastapi import APIRouter
+{factory_import}
+
+router = APIRouter()
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user={dependency_call}):
+    return send_file(file_id)
+''',
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+    authz = next(fact for fact in result.facts if fact.fact_type == "authz_check")
+
+    assert fact_types.count("route_handler") == 1
+    assert fact_types.count("authz_check") == 1
+    assert fact_types.count("sensitive_sink") == 1
+    assert ("authorization_gap_candidate" in fact_types) is expects_gap
+    assert authz.symbol_name == expected_authz
+    assert authz.payload == {
+        "handler": "export_file",
+        "line": 8,
+        "mapping_mode": "static_code_snippet_analysis",
+    }
+
+
+@pytest.mark.parametrize(
+    ("factory_import", "factory_name"),
+    (
+        ("from legacy import Depends as Dependency", "Dependency"),
+        ("from legacy import Depends", "Depends"),
+        ("from legacy import Security", "Security"),
+        ("from .legacy import Depends", "Depends"),
+        ("from legacy import client as Depends", "Depends"),
+        ("import legacy as Depends", "Depends"),
+        (
+            "from fastapi import Depends as Dependency\nfrom legacy import client as Dependency",
+            "Dependency",
+        ),
+        (
+            "from fastapi import Depends as Dependency\nimport legacy as Dependency",
+            "Dependency",
+        ),
+        ("from legacy import (\n    Depends,\n)", "Depends"),
+    ),
+)
+def test_map_authorized_code_files_does_not_trust_non_fastapi_dependency_alias(
+    factory_import,
+    factory_name,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from fastapi import APIRouter
+{factory_import}
+
+router = APIRouter()
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user={factory_name}(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_does_not_trust_rebound_fastapi_module_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+import fastapi as api
+import legacy as api
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=api.Depends(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+@pytest.mark.parametrize(
+    ("rebind", "dependency_factory"),
+    (
+        ("import fastapi as api\napi = legacy", "api.Depends"),
+        (
+            "from fastapi import Depends as Dependency\n"
+            "Dependency = legacy.Depends",
+            "Dependency",
+        ),
+    ),
+)
+def test_map_authorized_code_files_does_not_trust_assigned_dependency_factory_rebind(
+    rebind,
+    dependency_factory,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from fastapi import APIRouter
+{rebind}
+
+router = APIRouter()
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user={dependency_factory}(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+@pytest.mark.parametrize(
+    ("definition", "dependency_factory"),
+    (
+        (
+            "def Depends(dependency):\n    return dependency",
+            "Depends",
+        ),
+        (
+            "import fastapi as api\n\nclass api:\n    pass",
+            "api.Depends",
+        ),
+    ),
+)
+def test_map_authorized_code_files_does_not_trust_defined_dependency_factory_rebind(
+    definition,
+    dependency_factory,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from fastapi import APIRouter
+{definition}
+
+router = APIRouter()
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user={dependency_factory}(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_keeps_module_fastapi_dependency_after_local_shadow():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+def helper():
+    from legacy import Depends
+    return Depends
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=Depends(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert fact_types.count("authz_check") == 1
+    assert "authorization_gap_candidate" in fact_types
+
+
+@pytest.mark.parametrize(
+    ("local_import", "dependency_factory"),
+    (
+        ("from fastapi import Depends as LocalDependency", "LocalDependency"),
+        ("import fastapi as api", "api.Depends"),
+    ),
+)
+def test_map_authorized_code_files_does_not_leak_local_fastapi_dependency_alias(
+    local_import,
+    dependency_factory,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from fastapi import APIRouter
+
+router = APIRouter()
+
+def helper():
+    {local_import}
+    return {dependency_factory}
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user={dependency_factory}(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_keeps_module_fastapi_dependency_after_class_shadow():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+class Helpers:
+    from legacy import Depends
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=Depends(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert fact_types.count("authz_check") == 1
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_does_not_leak_class_fastapi_dependency_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+
+router = APIRouter()
+
+class Helpers:
+    from fastapi import Depends as ClassDependency
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=ClassDependency(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_does_not_leak_class_dependency_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter, Depends as Dependency
+
+router = APIRouter()
+CurrentUser = legacy.default_user
+
+class Helpers:
+    CurrentUser = Dependency(require_user)
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=CurrentUser):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_tracks_parenthesized_fastapi_router_and_dependency_aliases():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import (
+    APIRouter as Router,
+    Depends as Dependency,
+)
+
+router = Router(dependencies=[Dependency(require_user)])
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert fact_types.count("authz_check") == 1
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_tracks_commented_parenthesized_fastapi_aliases():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import (
+    # ) router factory
+    APIRouter as Router,
+    # dependency factory
+    Depends as Dependency,
+)
+
+router = Router(dependencies=[Dependency(require_user)])
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert fact_types.count("authz_check") == 1
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_does_not_trust_commented_parenthesized_non_fastapi_import():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from legacy import (
+    # local wrapper
+    Depends,
+)
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=Depends(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+@pytest.mark.parametrize("factory", ("Depends", "Security"))
+def test_map_authorized_code_files_does_not_trust_qualified_non_fastapi_dependency_factory(
+    factory,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from fastapi import APIRouter
+import legacy
+
+router = APIRouter()
+
+@router.get(\"/files/{{file_id}}/export\")
+def export_file(file_id: str, user=legacy.{factory}(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+def test_map_authorized_code_files_tracks_parenthesized_fastapi_dependency_alias():
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": """
+from fastapi import APIRouter
+from fastapi import (
+    Depends as Dependency,
+)
+
+router = APIRouter()
+
+@router.get("/files/{file_id}/export")
+def export_file(file_id: str, user=Dependency(auth.require_user)):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert fact_types.count("authz_check") == 1
+    assert "authorization_gap_candidate" in fact_types
 
 
 def test_map_authorized_code_files_treats_multiline_signature_dependency_authz_as_route_authz():
@@ -7654,7 +8189,7 @@ def export_file(
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7690,13 +8225,167 @@ def export_file(file_id: str, user=CurrentUser):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
         "line": 8,
         "mapping_mode": "static_code_snippet_analysis",
     }
+
+
+@pytest.mark.parametrize(
+    (
+        "annotated_import",
+        "dependency_import",
+        "annotation",
+        "expected_authz",
+        "expects_gap",
+    ),
+    (
+        (
+            "from typing import Annotated",
+            "from fastapi import Depends",
+            "Annotated[User, Depends(require_user)]",
+            "require_user",
+            True,
+        ),
+        (
+            "import typing_extensions as typing_ext",
+            "from fastapi import Security as ScopedSecurity",
+            "typing_ext.Annotated[User, ScopedSecurity(require_owner)]",
+            "require_owner",
+            False,
+        ),
+        (
+            "from typing import Annotated as Marker",
+            "from fastapi import Depends as Dependency",
+            "Marker[\n    User,\n    Dependency(require_user),\n]",
+            "require_user",
+            True,
+        ),
+    ),
+)
+def test_map_authorized_code_files_treats_fastapi_annotated_dependency_alias_as_route_authz(
+    annotated_import,
+    dependency_import,
+    annotation,
+    expected_authz,
+    expects_gap,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from fastapi import APIRouter
+{annotated_import}
+{dependency_import}
+
+router = APIRouter()
+CurrentUser = {annotation}
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user: CurrentUser):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    route_authz = [
+        fact
+        for fact in result.facts
+        if fact.fact_type == "authz_check"
+        and fact.payload.get("handler") == "export_file"
+    ]
+
+    assert [fact.symbol_name for fact in route_authz] == [expected_authz]
+    assert (
+        any(
+            fact.fact_type == "authorization_gap_candidate" for fact in result.facts
+        )
+        is expects_gap
+    )
+
+
+@pytest.mark.parametrize(
+    "annotated_import",
+    (
+        "from legacy import Annotated",
+        "from typing import Annotated\nAnnotated = legacy.Annotated",
+    ),
+)
+def test_map_authorized_code_files_does_not_trust_non_typing_annotated_dependency_alias(
+    annotated_import,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from fastapi import APIRouter, Depends
+{annotated_import}
+
+router = APIRouter()
+CurrentUser = Annotated[User, Depends(require_user)]
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user: CurrentUser):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
+
+
+@pytest.mark.parametrize(
+    "alias_definition",
+    (
+        "CurrentUser = Depends(require_user)\nCurrentUser = legacy.CurrentUser",
+        "CurrentUser = Annotated[User, Depends(require_user)]\nCurrentUser = legacy.CurrentUser",
+        "CurrentUser = Depends(require_user)\ndef CurrentUser():\n    return legacy.CurrentUser",
+        "CurrentUser = Depends(require_user)\nclass CurrentUser:\n    pass",
+        "CurrentUser = Depends(require_user)\nfrom legacy import CurrentUser",
+    ),
+)
+def test_map_authorized_code_files_does_not_trust_rebound_dependency_alias(
+    alias_definition,
+):
+    result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {
+                    "path": "apps/api/routes/files.py",
+                    "content": f"""
+from typing import Annotated
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+{alias_definition}
+
+@router.get("/files/{{file_id}}/export")
+def export_file(file_id: str, user: CurrentUser):
+    return send_file(file_id)
+""",
+                }
+            ]
+        }
+    )
+
+    fact_types = [fact.fact_type for fact in result.facts]
+
+    assert "authz_check" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
 
 
 def test_map_authorized_code_files_treats_keyword_dependency_alias_in_signature_as_route_authz():
@@ -7726,7 +8415,7 @@ def export_file(file_id: str, user=CurrentUser):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7762,7 +8451,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -7812,7 +8501,7 @@ def current_user(user=Depends(require_user)):
 
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route_authz[0].symbol_name == "require_user"
     assert route_authz[0].payload == {
         "handler": "export_file",
@@ -7865,7 +8554,7 @@ def current_user(user=Depends(require_user)):
 
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route_authz[0].symbol_name == "require_user"
 
 
@@ -7916,7 +8605,7 @@ def current_user(user=Depends(require_user)):
 
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route_authz[0].symbol_name == "require_user"
 
 
@@ -7969,7 +8658,7 @@ def current_user(user=Depends(require_user)):
 
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route_authz[0].symbol_name == "require_user"
 
 
@@ -8022,7 +8711,7 @@ def current_user(user=Depends(require_user)):
 
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert route_authz[0].symbol_name == "require_user"
 
 
@@ -8052,7 +8741,7 @@ def export_file(file_id: str):
     assert fact_types.count("route_handler") == 1
     assert fact_types.count("authz_check") == 1
     assert fact_types.count("sensitive_sink") == 1
-    assert "authorization_gap_candidate" not in fact_types
+    assert "authorization_gap_candidate" in fact_types
     assert authz.symbol_name == "require_user"
     assert authz.payload == {
         "handler": "export_file",
@@ -9035,12 +9724,12 @@ async function exportFileForUser(fileId: string) {
     assert route.route_path == "/files/:fileId/export"
     assert route.payload["handler"] == "exportFile"
     assert authz.symbol_name == "requireUser"
-    assert authz.authz_hint == "authorization_boundary_candidate"
+    assert authz.authz_hint == "authentication_check"
     assert authz.payload["handler"] == "exportFile"
     assert service.payload["caller"] == "exportFile"
     assert sink.symbol_name == "sendFile"
     assert sink.payload["handler"] == "exportFileForUser"
-    assert not any(
+    assert any(
         fact.fact_type == "authorization_gap_candidate" for fact in result.facts
     )
 
@@ -9082,7 +9771,7 @@ function exportRecord(req: Request, res: Response) {
         and fact.payload["handler"] == "exportRecord"
         for fact in result.facts
     )
-    assert not any(
+    assert any(
         fact.fact_type == "authorization_gap_candidate" for fact in result.facts
     )
 
@@ -16704,6 +17393,39 @@ public class RecordsController {
     )
 
 
+def test_map_static_multilang_keeps_gap_for_spring_authentication_or_role_check():
+    content = """
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RecordsController {
+  @PreAuthorize("isAuthenticated() || hasRole('RECORD_READER')")
+  @GetMapping("/records/{recordId}")
+  public Object readRecord(String recordId) {
+    return sendFile(loadRecord(recordId).getPath());
+  }
+}
+"""
+
+    result = map_authorized_code_files(
+        {"authorized_code_files": [{"path": "RecordsController.java", "content": content}]}
+    )
+
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "authentication_check"
+        and fact.payload.get("handler") == "readRecord"
+        for fact in result.facts
+    )
+    assert any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "readRecord"
+        for fact in result.facts
+    )
+
+
 def test_map_static_multilang_does_not_leak_spring_class_annotations_to_nested_controller():
     content = """
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -17209,6 +17931,7 @@ public class RecordsController {
     (
         ("[AllowAnonymous]", "public_access", True),
         ("[Authorize]", "authentication_check", True),
+        ('[Authorize(Policy = "CanReadRecord")]', "permission_check", False),
         ('[Authorize(Roles = "RECORD_READER")]', "role_check", False),
         (
             '[Authorize(Roles = "RECORD_READER")]\n  [Authorize]',
@@ -17274,6 +17997,16 @@ public class RecordsController {
   }
 }
 """
+    class_policy_content = """
+[Authorize(Policy = "CanReadRecord")]
+public class RecordsController {
+  [Authorize]
+  [HttpGet("/records/{recordId}")]
+  public IActionResult ReadRecord(string recordId) {
+    return File(loadRecord(recordId).Path);
+  }
+}
+"""
 
     class_role_result = map_authorized_code_files(
         {
@@ -17286,6 +18019,13 @@ public class RecordsController {
         {
             "authorized_code_files": [
                 {"path": "RecordsController.cs", "content": method_override_content}
+            ]
+        }
+    )
+    class_policy_result = map_authorized_code_files(
+        {
+            "authorized_code_files": [
+                {"path": "RecordsController.cs", "content": class_policy_content}
             ]
         }
     )
@@ -17312,6 +18052,17 @@ public class RecordsController {
         fact.fact_type == "authorization_gap_candidate"
         and fact.symbol_name == "ReadRecord"
         for fact in method_override_result.facts
+    )
+    assert any(
+        fact.fact_type == "authz_check"
+        and fact.authz_hint == "permission_check"
+        and fact.payload.get("handler") == "ReadRecord"
+        for fact in class_policy_result.facts
+    )
+    assert not any(
+        fact.fact_type == "authorization_gap_candidate"
+        and fact.symbol_name == "ReadRecord"
+        for fact in class_policy_result.facts
     )
 
 

@@ -1,4 +1,6 @@
 from collections.abc import Iterator
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +12,7 @@ from app.black_box_hunter.field_pilot import (
     FieldPilotFeedbackEntry,
     FieldPilotFeedbackRequest,
     evaluate_field_pilot_status,
+    field_pilot_entries,
 )
 from app.db import Base, get_session
 from app.db_models import ProgramRecord
@@ -67,6 +70,7 @@ def _entry(
     externally_valid_report: bool = False,
     bounty_amount: int | None = None,
     safety_incident: bool = False,
+    report_ready: bool | None = None,
 ) -> FieldPilotFeedbackEntry:
     return FieldPilotFeedbackEntry(
         learning_signal_id=f"learning_signal_{index:02d}",
@@ -80,6 +84,7 @@ def _entry(
         bounty_amount=bounty_amount,
         externally_valid_report=externally_valid_report,
         safety_incident=safety_incident,
+        report_ready=report_ready,
         operator_confirmed=True,
     )
 
@@ -91,7 +96,7 @@ def test_field_pilot_feedback_records_only_redacted_advisory_metadata(
 
     response = client.post(
         "/mythos/black-box/field-pilot/feedback",
-        json=_feedback_payload(),
+        json=_feedback_payload(report_ready=True),
     )
 
     assert response.status_code == 200
@@ -99,6 +104,7 @@ def test_field_pilot_feedback_records_only_redacted_advisory_metadata(
     assert feedback["label"] == "valid"
     assert feedback["learning_outcome"] == "accepted"
     assert feedback["operator_confirmed"] is True
+    assert feedback["report_ready"] is True
     assert feedback["execution_allowed"] is False
     assert feedback["lease_grant_allowed"] is False
     assert feedback["scope_change_allowed"] is False
@@ -121,7 +127,7 @@ def test_field_pilot_feedback_records_only_redacted_advisory_metadata(
         assert signal.outcome == "accepted"
         assert signal.notes == "operator-reviewed field-pilot label: valid"
         assert signal.field_pilot_feedback == {
-            "schema_version": "black_box_field_pilot_v1",
+            "schema_version": "black_box_field_pilot_v2",
             "engagement_alias": "engagement_01",
             "candidate_alias": "candidate_01",
             "candidate_rank": 1,
@@ -129,6 +135,7 @@ def test_field_pilot_feedback_records_only_redacted_advisory_metadata(
             "researcher_minutes": 45,
             "externally_valid_report": True,
             "safety_incident": False,
+            "report_ready": True,
             "operator_confirmed": True,
         }
         assert "Authorization" not in str(signal.field_pilot_feedback)
@@ -194,12 +201,27 @@ def test_field_pilot_feedback_requires_operator_confirmation_and_forbids_raw_con
         "/mythos/black-box/field-pilot/feedback",
         json=_feedback_payload(externally_valid_report=False),
     )
+    readiness_for_non_valid = client.post(
+        "/mythos/black-box/field-pilot/feedback",
+        json=_feedback_payload(
+            label="duplicate",
+            bounty_amount=None,
+            externally_valid_report=False,
+            report_ready=True,
+        ),
+    )
+    invalid_ready_report = client.post(
+        "/mythos/black-box/field-pilot/feedback",
+        json=_feedback_payload(report_ready=False),
+    )
 
     assert not_confirmed.status_code == 422
     assert raw_content.status_code == 422
     assert unsafe_alias.status_code == 422
     assert inconsistent_external_result.status_code == 422
     assert bounty_without_external_result.status_code == 422
+    assert readiness_for_non_valid.status_code == 422
+    assert invalid_ready_report.status_code == 422
     with testing_session() as session:
         assert DatabaseRepository(session).list_learning_signals("program_example") == []
 
@@ -208,7 +230,7 @@ def test_field_pilot_feedback_is_idempotent_and_rejects_conflicting_relabels(
     field_pilot_client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     client, testing_session = field_pilot_client
-    payload = _feedback_payload()
+    payload = _feedback_payload(report_ready=True)
 
     first = client.post("/mythos/black-box/field-pilot/feedback", json=payload)
     repeated = client.post("/mythos/black-box/field-pilot/feedback", json=payload)
@@ -220,12 +242,58 @@ def test_field_pilot_feedback_is_idempotent_and_rejects_conflicting_relabels(
             externally_valid_report=False,
         ),
     )
+    conflicting_readiness = client.post(
+        "/mythos/black-box/field-pilot/feedback",
+        json=_feedback_payload(),
+    )
 
     assert first.status_code == 200
     assert repeated.status_code == 200
     assert repeated.json()["learning_signal_id"] == first.json()["learning_signal_id"]
     assert conflicting.status_code == 409
     assert conflicting.json()["detail"] == "field_pilot_feedback_already_recorded"
+    assert conflicting_readiness.status_code == 409
+    assert (
+        conflicting_readiness.json()["detail"]
+        == "field_pilot_feedback_already_recorded"
+    )
+    with testing_session() as session:
+        assert len(DatabaseRepository(session).list_learning_signals("program_example")) == 1
+
+
+def test_field_pilot_feedback_reuses_matching_v1_candidate_identity(
+    field_pilot_client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    client, testing_session = field_pilot_client
+    request = FieldPilotFeedbackRequest(**_feedback_payload())
+    legacy_metadata = request.metadata()
+    legacy_metadata["schema_version"] = "black_box_field_pilot_v1"
+    legacy_metadata.pop("report_ready")
+
+    with testing_session() as session:
+        repository = DatabaseRepository(session)
+        legacy = repository.save_learning_signal(
+            program_id=request.program_id,
+            playbook_id=request.playbook_id,
+            outcome="accepted",
+            surface_key=request.candidate_alias,
+            notes="operator-reviewed field-pilot label: valid",
+            bounty_amount=request.bounty_amount,
+            severity_delta=None,
+            evidence_quality=None,
+            triager_feedback=None,
+            target_relationships=[],
+            field_pilot_feedback=legacy_metadata,
+        )
+
+    response = client.post(
+        "/mythos/black-box/field-pilot/feedback",
+        json=_feedback_payload(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["learning_signal_id"] == legacy.id
+    assert response.json()["report_ready"] is None
     with testing_session() as session:
         assert len(DatabaseRepository(session).list_learning_signals("program_example")) == 1
 
@@ -345,6 +413,89 @@ def test_field_pilot_status_reserves_outcome_proven_for_external_results() -> No
     assert result.report_submission_allowed is False
 
 
+def test_field_pilot_status_reports_explicit_outcome_rates() -> None:
+    entries = [
+        _entry(
+            0,
+            label="valid",
+            externally_valid_report=True,
+            bounty_amount=100,
+            report_ready=True,
+        ),
+        _entry(1, label="invalid"),
+        _entry(2, label="duplicate"),
+        _entry(3, label="needs_evidence"),
+    ]
+
+    result = evaluate_field_pilot_status(entries)
+
+    assert result.metrics.terminal_candidate_count == 3
+    assert result.metrics.valid_candidate_count == 1
+    assert result.metrics.false_positive_rate == 0.3333
+    assert result.metrics.duplicate_rate == 0.3333
+    assert result.metrics.report_readiness_rate == 1.0
+    assert result.metrics.valid_report_rate == 1.0
+    assert result.metrics.outcome_metric_availability == {
+        "false_positive_rate": "available",
+        "duplicate_rate": "available",
+        "report_readiness_rate": "available",
+        "valid_report_rate": "available",
+    }
+
+
+def test_field_pilot_status_does_not_infer_missing_report_readiness() -> None:
+    result = evaluate_field_pilot_status(
+        [
+            _entry(0, label="valid", externally_valid_report=False),
+            _entry(1, label="invalid"),
+        ]
+    )
+
+    assert result.metrics.false_positive_rate == 0.5
+    assert result.metrics.duplicate_rate == 0.0
+    assert result.metrics.report_readiness_rate is None
+    assert result.metrics.valid_report_rate == 0.0
+    assert result.metrics.outcome_metric_availability == {
+        "false_positive_rate": "available",
+        "duplicate_rate": "available",
+        "report_readiness_rate": "report_ready_required_for_all_valid_candidates",
+        "valid_report_rate": "available",
+    }
+
+
+def test_field_pilot_entries_reads_v1_feedback_without_inventing_readiness() -> None:
+    record = SimpleNamespace(
+        id="learning_signal_legacy",
+        program_id="program_example",
+        playbook_id="bola_idor",
+        outcome="accepted",
+        surface_key="candidate_legacy",
+        notes="operator-reviewed field-pilot label: valid",
+        bounty_amount=None,
+        severity_delta=None,
+        evidence_quality=None,
+        triager_feedback=None,
+        target_relationships=[],
+        created_at=datetime.now(UTC),
+        field_pilot_feedback={
+            "schema_version": "black_box_field_pilot_v1",
+            "engagement_alias": "engagement_legacy",
+            "candidate_alias": "candidate_legacy",
+            "candidate_rank": 1,
+            "label": "valid",
+            "researcher_minutes": 30,
+            "externally_valid_report": False,
+            "safety_incident": False,
+            "operator_confirmed": True,
+        },
+    )
+
+    entries = field_pilot_entries([record])
+
+    assert len(entries) == 1
+    assert entries[0].report_ready is None
+
+
 def test_outcome_proven_requires_external_reports_across_three_programs() -> None:
     entries = [
         _entry(
@@ -396,6 +547,13 @@ def test_field_pilot_status_api_reads_only_field_pilot_learning_signals(
     assert status["metrics"]["bounty_outcome_count"] == 1
     assert status["metrics"]["researcher_minutes"] == 45
     assert status["metrics"]["bounty_total"] == 500
+    assert status["metrics"]["report_readiness_rate"] is None
+    assert status["metrics"]["outcome_metric_availability"] == {
+        "false_positive_rate": "available",
+        "duplicate_rate": "available",
+        "report_readiness_rate": "report_ready_required_for_all_valid_candidates",
+        "valid_report_rate": "available",
+    }
     assert status["requirements"] == {
         "field_pilot": False,
         "outcome_proven": False,

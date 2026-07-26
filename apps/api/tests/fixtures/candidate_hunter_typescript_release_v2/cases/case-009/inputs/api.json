@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/local/consoles/d8j4/{consoleId}": {
+      "delete": {
+        "operationId": "removeConsole_d8j4"
+      }
+    }
+  }
+}

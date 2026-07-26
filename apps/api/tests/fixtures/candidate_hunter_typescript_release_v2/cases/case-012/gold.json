@@ -1,0 +1,20 @@
+{
+  "authorization_pattern": "role_boundary",
+  "expected_roots": [
+    {
+      "gold_id": "v4k6-primary-root",
+      "root_cause_id": "missing_object_ownership_check:readnotice",
+      "route": {
+        "method": "GET",
+        "path": "/local/notices/v4k6/{noticeId}"
+      },
+      "vuln_type": "authorization",
+      "disposition": "suppress",
+      "worth_validation": false,
+      "required_evidence_refs": [],
+      "decisive_refutation_refs": [],
+      "duplicate_of": null,
+      "scope_allowed": true
+    }
+  ]
+}

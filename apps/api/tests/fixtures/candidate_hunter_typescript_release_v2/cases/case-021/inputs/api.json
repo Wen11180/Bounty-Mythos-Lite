@@ -1,0 +1,10 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/workflows/u4n8/{workflowId}/execute": {
+      "post": {
+        "operationId": "executeWorkflow_u4n8"
+      }
+    }
+  }
+}

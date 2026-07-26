@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/internal/metrics/s2v6/{metricId}/detail": {
+      "get": {
+        "operationId": "readMetricDetail_s2v6"
+      }
+    },
+    "/internal/metrics/s2v6/{metricId}/chart": {
+      "get": {
+        "operationId": "readMetricChart_s2v6"
+      }
+    }
+  }
+}

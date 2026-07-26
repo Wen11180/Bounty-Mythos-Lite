@@ -1,19 +1,19 @@
-# Crash triage + minimization (human-gated)
+# Crash metadata triage (plan-only)
 
 ## Purpose
 
 V1 residual after local fuzz runner collects crash candidates:
 
-- **Default:** plan-only classify + signature cluster (no minimize/repro)
-- **Human flag:** `human_allow_crash_triage` / bridge `--allow-crash-triage`
-- **Execute:** cluster by signature; re-run in-process harness; delta-debug minimize; mark `reproducible`; emit advisory `RootCauseNote`
+- **Always:** classify + signature cluster without loading target code
+- **Compatibility flag:** `human_allow_crash_triage` / bridge `--allow-crash-triage` records operator intent but cannot enable execution
+- **Output:** advisory `RootCauseNote`; reproduction and minimization require a separately isolated runner
 - **Never:** promote crashes, spawn AFL++/libFuzzer, open network, submit reports, or mark confirmed vulnerability
 
 ## Safety floor
 
 Always forced false / blocked:
 
-- `execution_allowed` (except local in-process triage under human flag; never external spawn)
+- `execution_allowed`
 - `validation_allowed`
 - `report_submission_allowed`
 - `finding_promotion_allowed`
@@ -32,7 +32,8 @@ Invariants (`SAFETY_INVARIANTS`):
 - no_crash_promotion
 - no_report_submission
 - advisory_root_cause_only
-- minimization_local_in_process_only
+- no_in_process_target_execution
+- isolated_runner_required_for_reproduction
 - human_review_required_before_any_promotion
 
 ## Pipeline position
@@ -41,26 +42,13 @@ Invariants (`SAFETY_INVARIANTS`):
 CRS plan (T-003)
   -> optional harness export (T-003b)
   -> optional sandbox recipes (T-003c)
-  -> optional in-process Python fuzz run (T-003d)
-  -> optional crash triage + minimize (T-003e)  [this module]
+  -> plan-only fuzz target discovery (T-003d)
+  -> plan-only crash metadata triage (T-003e)  [this module]
   -> optional residual regression plan (T-003f)
   -> multi-engine deepen (includes crash_triage / crash_regression signals)
 ```
 
-## Export layout
-
-When triage executes and writes artifacts:
-
-```text
-{package}/_export/crash_triage/<stamp>/
-  index.json
-  <cluster_id>/
-    triage.json
-    README.md
-    minimized seed preview (when applicable)
-```
-
-Each cluster states `promotion_allowed=false` and root-cause is advisory only.
+This module writes no reproduction or minimized-seed artifacts because it does not execute target code.
 
 ## Bridge
 
@@ -69,7 +57,7 @@ python apps/api/scripts/run_ab_report_bridge.py --package-root <authorized_pkg>
 # plan-only by default: ctr=... ctre=False (often no_crashes / ready plan)
 
 python apps/api/scripts/run_ab_report_bridge.py --package-root <authorized_pkg> --allow-crash-triage
-# may minimize/repro when runner crashes exist; still never promotes/submits
+# compatibility flag only; remains plan-only
 ```
 
 Console fields: `ctr`, `ctre`, `ctrc`, `ctrep`.
@@ -98,14 +86,15 @@ assert plan.crash_promotion_allowed is False
 
 result = run_crash_triage(
     package_root="authorized_packages/my-local-ssrf-retain",
-    human_allow_crash_triage=True,  # still never promotes
+    human_allow_crash_triage=True,  # records intent; still never executes
 )
 assert result.confirmed_vulnerability is False
+assert result.triage_executed is False
 ```
 
 ## Limits (intentional)
 
-- Minimization is local in-process delta-debug only (not coverage-guided)
+- Reproduction and minimization are unavailable until an isolated runner exists
 - Root-cause notes are advisory hypotheses for human review
 - No auto-promotion into hunter retain path
 - No external fuzzer spawn even with the human flag

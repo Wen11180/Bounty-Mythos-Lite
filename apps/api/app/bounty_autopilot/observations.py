@@ -47,10 +47,10 @@ class AutopilotObservationInput(StrictContract):
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
     status_class: StatusClass = "unknown"
     content_type_class: ContentTypeClass = "unknown"
-    byte_length: int = Field(default=0, ge=0, le=5_000_000)
+    byte_length: int = Field(default=0, ge=0, le=5_000_001)
     comparison_status_class: StatusClass | None = None
     comparison_content_type_class: ContentTypeClass | None = None
-    comparison_byte_length: int | None = Field(default=None, ge=0, le=5_000_000)
+    comparison_byte_length: int | None = Field(default=None, ge=0, le=5_000_001)
     difference_labels: tuple[DifferenceLabel, ...] = Field(default_factory=tuple, max_length=3)
     third_party_data_discarded: bool = False
 
