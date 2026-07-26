@@ -1,0 +1,40 @@
+name: candidate-hunter-upstream-binding-release
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-binding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: |
+          python -m venv ../../.venv
+          . ../../.venv/bin/activate
+          pip install -r requirements.txt -q
+      - name: Verify Candidate Hunter upstream repository binding
+        working-directory: apps/api
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          . ../../.venv/bin/activate
+          python -m app candidate-hunter-upstream-binding-audit \
+            --fixture-root tests/fixtures/candidate_hunter_repository_history_pilot \
+            --output "$RUNNER_TEMP/candidate-hunter-upstream-binding.json"
+      - name: Retain binding audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-hunter-upstream-binding
+          path: ${{ runner.temp }}/candidate-hunter-upstream-binding.json
+          if-no-files-found: error

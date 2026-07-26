@@ -11,11 +11,12 @@ level, but it cannot grant that level to itself.
 | `benchmark` | Repository-isolated historical vulnerabilities with hidden oracle material and reproducible upstream history | Offline provenance gate |
 | `field_proven` | Externally reviewed outcomes from authorized engagements | Separate human-reviewed outcome record |
 
-The current corpus gate proves provenance prerequisites only. It cannot grant
-`benchmark` until a separate gate binds commits to the declared upstream
-repository and verifies runtime isolation across prompt, trace, output, cache,
-and logs. It always rejects `field_proven` because a fixture cannot prove
-accepted reports or bounty outcomes.
+The corpus gate proves offline provenance prerequisites only. A separate,
+opt-in GitHub gate now binds public repositories, commits, and trees to the
+declared upstream identity. Neither gate can grant `benchmark` until runtime
+isolation is also verified across prompt, trace, output, cache, and logs. Both
+always reject `field_proven` because fixtures cannot prove accepted reports or
+bounty outcomes.
 
 ## Current status
 
@@ -33,14 +34,17 @@ reported with:
 The repository-history pilot contains one offline evidence-verified historical
 case:
 [`fastify/fast-uri` GHSA-q3j6-qgpj-74h6](https://github.com/fastify/fast-uri/security/advisories/GHSA-q3j6-qgpj-74h6).
-The local Git evidence is internally reproducible, but repository binding is
-currently operator-attested and runtime isolation is not assessed. Its output
-therefore remains non-authorizing:
+The local Git evidence is internally reproducible. The opt-in live gate can
+upgrade only its independent binding result from `operator_attested` to
+`live_github_verified`; runtime isolation is not assessed. Its output remains
+non-authorizing:
 
 ```json
 {
   "provenance_classification": "historical_evidence_verified",
-  "source_repository_binding": "operator_attested",
+  "binding_level": "live_github_verified",
+  "capability_level": "lab",
+  "source_repository_binding_verified": true,
   "runtime_isolation_verified": false,
   "benchmark_evaluation_allowed": false
 }
@@ -106,3 +110,17 @@ python -m app candidate-hunter-corpus-audit `
 CI recomputes audits for all committed Candidate Hunter corpora. Audit JSON is
 diagnostic evidence, not a permission token for validation, promotion, or
 submission.
+
+The ordinary pull-request gate tests upstream binding with an offline fake
+transport and never depends on GitHub availability. A manual or published
+release gate performs the bounded live check:
+
+```powershell
+python -m app candidate-hunter-upstream-binding-audit `
+  --fixture-root tests/fixtures/candidate_hunter_repository_history_pilot `
+  --output candidate-hunter-upstream-binding.json
+```
+
+The command reads `GITHUB_TOKEN` only from the environment when available. It
+uses a fixed `api.github.com:443` origin, rejects redirects and non-JSON or
+oversized responses, and never writes the token into the audit artifact.

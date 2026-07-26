@@ -79,9 +79,12 @@ and must not be presented as a Benchmark result.
 - Its offline Git bundle proves commit ancestry and reproduces both tree
   digests and the patch digest. Oracle artifacts are physically separated and
   protected by a leak canary.
-- The individual case has reproducible historical Git evidence, but its
-  repository binding is still operator-attested and runtime isolation is not
-  assessed. It cannot authorize Benchmark evaluation.
+- The individual case has reproducible historical Git evidence. An independent
+  opt-in GitHub gate now verifies the public repository node identity plus both
+  commit and tree identities. A passing live check upgrades only the binding
+  result to `live_github_verified`.
+- Runtime oracle isolation is still not assessed, so the binding gate cannot
+  authorize Benchmark evaluation.
 - The corpus remains `lab`; `benchmark_evaluation_allowed` is fixed to `false`.
 
 The full level contract and promotion requirements are documented in
