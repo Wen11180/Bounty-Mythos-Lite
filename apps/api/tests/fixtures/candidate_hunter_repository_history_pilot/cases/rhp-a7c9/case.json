@@ -57,7 +57,7 @@
       {
         "kind": "evaluation",
         "path": "oracle/evaluation.json",
-        "sha256": "sha256:2ef6dc9f7167c0f575200f7494782de70b3a00695cf7a9ce1b6ad06ff3c4bcfa"
+        "sha256": "sha256:bef0d1ebbfa3f3fd1c1d8ae35ce98a5388bf777a1b4120554b8ee516a65b4ffc"
       },
       {
         "kind": "leak_canary",

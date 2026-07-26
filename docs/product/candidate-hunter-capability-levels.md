@@ -62,6 +62,22 @@ not discovery quality: the current 20-file/20,000-character Studio intake cap,
 single historical case, and unverified runtime-oracle isolation keep the
 capability at `lab`.
 
+The repository-history pilot also has a two-phase blind evaluation path. The
+model-run command accepts only the case's `input/` directory and produces a
+SHA-256-sealed prediction. The separate scoring command verifies that seal
+before it opens `oracle/expected_root_cause.json` or
+`oracle/evaluation.json`. Scripted or injected providers are always labelled
+`mechanism_only`; only the default configured live-provider wrapper can emit
+`real_model`. A single result still sets `pilot_evidence_ready`,
+`benchmark_claim_allowed`, `unknown_vulnerability_claim_allowed`, and
+`bounty_outcome_claim_allowed` to `false`.
+
+This verifies the in-process prompt/tool boundary and oracle-read ordering. It
+does not yet prove provider-side cache/log isolation, operating-system process
+isolation, multi-repository discovery quality, an unknown vulnerability, an
+accepted report, or a bounty outcome. No committed real-model result exists
+yet.
+
 ## Benchmark provenance prerequisites
 
 A corpus can complete the historical-evidence prerequisites only when every
@@ -134,3 +150,33 @@ python -m app candidate-hunter-upstream-binding-audit `
 The command reads `GITHUB_TOKEN` only from the environment when available. It
 uses a fixed `api.github.com:443` origin, rejects redirects and non-JSON or
 oversized responses, and never writes the token into the audit artifact.
+
+Run the live model phase against hunter-visible input only:
+
+```powershell
+python -m app candidate-hunter-blind-run `
+  --input-root tests/fixtures/candidate_hunter_repository_history_pilot/cases/rhp-a7c9/input `
+  --case-id rhp-a7c9 `
+  --suite release `
+  --provider deepseek `
+  --model deepseek-chat `
+  --output candidate-hunter-blind-prediction.json
+```
+
+This command is opt-in, uses the selected provider's configured API key, and
+may incur provider cost. It does not run in CI.
+
+Only after the prediction file exists, score it with the evaluator-only
+oracle:
+
+```powershell
+python -m app candidate-hunter-blind-score `
+  --case-root tests/fixtures/candidate_hunter_repository_history_pilot/cases/rhp-a7c9 `
+  --prediction candidate-hunter-blind-prediction.json `
+  --output candidate-hunter-blind-evaluation.json
+```
+
+The one-case output is an observation, not a benchmark. A blind real-model
+pilot still requires at least 5–10 independent historical cases; benchmark
+claims remain subject to the 30-case repository-isolated corpus gate and human
+review.

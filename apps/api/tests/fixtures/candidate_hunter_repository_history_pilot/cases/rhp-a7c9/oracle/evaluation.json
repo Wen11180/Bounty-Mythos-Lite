@@ -6,5 +6,39 @@
   "expected_disposition": "retain",
   "worth_local_validation": true,
   "network_validation_allowed": false,
-  "report_submission_allowed": false
+  "report_submission_allowed": false,
+  "deterministic_grader": {
+    "accepted_vulnerability_families": [
+      "path traversal",
+      "path_traversal",
+      "CWE-22"
+    ],
+    "affected_files_any_of": [
+      "index.js",
+      "lib/utils.js"
+    ],
+    "root_cause_term_groups": [
+      [
+        "percent encoded",
+        "percent-encoded",
+        "%2e"
+      ],
+      [
+        "dot segment",
+        "dot-segment"
+      ],
+      [
+        "decode",
+        "decoded",
+        "unescape"
+      ],
+      [
+        "normalize",
+        "normalization",
+        "serialize",
+        "serialization",
+        "re-encode"
+      ]
+    ]
+  }
 }

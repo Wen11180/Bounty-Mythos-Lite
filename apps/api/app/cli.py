@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -92,6 +93,14 @@ from app.intelligence_benchmark.corpus_provenance import (
 from app.intelligence_benchmark.upstream_repository_binding import (
     audit_candidate_hunter_upstream_binding,
 )
+from app.intelligence_benchmark.blind_repository_eval import (
+    BlindEvaluationError,
+    load_blind_repository_input,
+    run_blind_real_model_eval,
+    score_blind_prediction,
+)
+from app.cross_source_candidate_generator import CandidateModelConfig
+from app.llm.base import ProviderName
 from app.black_box_hunter.remote_observe_gate import (
     run_browser_demo_remote_fail_closed_pipeline,
     run_har_remote_fail_closed_pipeline,
@@ -186,6 +195,29 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
     )
     candidate_hunter_upstream_binding_audit.add_argument("--output")
+    candidate_hunter_blind_run = subparsers.add_parser(
+        "candidate-hunter-blind-run"
+    )
+    candidate_hunter_blind_run.add_argument("--input-root", required=True)
+    candidate_hunter_blind_run.add_argument("--case-id", required=True)
+    candidate_hunter_blind_run.add_argument(
+        "--suite",
+        required=True,
+        choices=["development", "release"],
+    )
+    candidate_hunter_blind_run.add_argument(
+        "--provider",
+        required=True,
+        choices=[provider.value for provider in ProviderName],
+    )
+    candidate_hunter_blind_run.add_argument("--model", required=True)
+    candidate_hunter_blind_run.add_argument("--output", required=True)
+    candidate_hunter_blind_score = subparsers.add_parser(
+        "candidate-hunter-blind-score"
+    )
+    candidate_hunter_blind_score.add_argument("--case-root", required=True)
+    candidate_hunter_blind_score.add_argument("--prediction", required=True)
+    candidate_hunter_blind_score.add_argument("--output", required=True)
     black_box_lab = subparsers.add_parser(
         "black-box-lab",
         help="Run dual-role HAR through local-lab observation only (no remote).",
@@ -683,6 +715,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_candidate_hunter_corpus_audit_command(args)
     if args.command == "candidate-hunter-upstream-binding-audit":
         return run_candidate_hunter_upstream_binding_audit_command(args)
+    if args.command == "candidate-hunter-blind-run":
+        return run_candidate_hunter_blind_run_command(args)
+    if args.command == "candidate-hunter-blind-score":
+        return run_candidate_hunter_blind_score_command(args)
     if args.command == "black-box-lab":
         return run_black_box_lab_command(args)
     if args.command == "black-box-golden":
@@ -944,6 +980,52 @@ def run_candidate_hunter_upstream_binding_audit_command(args) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def run_candidate_hunter_blind_run_command(args) -> int:
+    try:
+        blind_input = load_blind_repository_input(
+            args.input_root,
+            case_id=args.case_id,
+            suite=args.suite,
+        )
+        model_config = CandidateModelConfig(
+            provider=ProviderName(args.provider),
+            model=args.model,
+        )
+        envelope = asyncio.run(
+            run_blind_real_model_eval(
+                blind_input,
+                model_config=model_config,
+            )
+        )
+    except (BlindEvaluationError, ValueError) as exc:
+        print(f"Candidate Hunter blind run failed: {exc}", file=sys.stderr)
+        return 1
+    result_json = json.dumps(envelope, indent=2)
+    Path(args.output).write_text(result_json, encoding="utf-8")
+    if envelope.get("prediction", {}).get("status") == "completed":
+        print("Candidate Hunter blind prediction sealed", file=sys.stderr)
+        return 0
+    print("Candidate Hunter blind model run did not complete", file=sys.stderr)
+    return 1
+
+
+def run_candidate_hunter_blind_score_command(args) -> int:
+    try:
+        evaluation = score_blind_prediction(
+            args.case_root,
+            _read_json_file(args.prediction),
+        )
+    except (BlindEvaluationError, OSError, json.JSONDecodeError) as exc:
+        print(f"Candidate Hunter blind score failed: {exc}", file=sys.stderr)
+        return 1
+    Path(args.output).write_text(
+        json.dumps(evaluation, indent=2),
+        encoding="utf-8",
+    )
+    print("Candidate Hunter blind prediction scored", file=sys.stderr)
+    return 0
 
 
 def run_black_box_remote_gate_command(args) -> int:
