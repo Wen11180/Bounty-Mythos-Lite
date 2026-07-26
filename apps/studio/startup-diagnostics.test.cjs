@@ -71,15 +71,17 @@ test("startup state probe maps an unwritable state location to state_unwritable"
 });
 
 test("development state probing follows only file-backed SQLite database URLs", () => {
-  const apiDirectory = path.join("C:", "mythos", "apps", "api");
+  const apiDirectory = path.resolve("mythos", "apps", "api");
+  const absoluteDatabase = path.resolve("mythos-data", "custom.db");
+  const absoluteDatabaseUrl = `sqlite:///${absoluteDatabase.split(path.sep).join("/")}`;
 
   assert.equal(
     resolveDevelopmentDataDirectory("sqlite:///./bounty_mythos_studio.db", apiDirectory),
     apiDirectory,
   );
   assert.equal(
-    resolveDevelopmentDataDirectory("sqlite:///C:/mythos-data/custom.db", apiDirectory),
-    path.join("C:", "mythos-data"),
+    resolveDevelopmentDataDirectory(absoluteDatabaseUrl, apiDirectory),
+    path.dirname(absoluteDatabase),
   );
   assert.equal(resolveDevelopmentDataDirectory("sqlite:///:memory:", apiDirectory), null);
   assert.equal(resolveDevelopmentDataDirectory("postgresql://localhost/mythos", apiDirectory), null);

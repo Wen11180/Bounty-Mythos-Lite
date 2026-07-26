@@ -48,7 +48,7 @@ jobs:
           cache-dependency-path: |
             apps/studio/package-lock.json
             apps/web/package-lock.json
-          node-version: "22"
+          node-version: "24"
 
       - name: Install backend dependencies
         working-directory: apps/api

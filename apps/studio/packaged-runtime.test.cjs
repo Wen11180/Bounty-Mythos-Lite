@@ -239,6 +239,7 @@ test("packaged runtime stop waits for both service exits", async (t) => {
 
 test("packaged maintenance does not restart services after a child shutdown timeout", async (t) => {
   const fixture = createRuntimeFixture(t);
+  const archive = path.join(fixture.userData, "portable.mythos-backup.zip");
   const originalSetTimeout = global.setTimeout;
   t.after(() => {
     global.setTimeout = originalSetTimeout;
@@ -278,7 +279,7 @@ test("packaged maintenance does not restart services after a child shutdown time
   runtime.start(startupConfig());
 
   await assert.rejects(
-    runtime.createBackup("C:\\backups\\portable.mythos-backup.zip"),
+    runtime.createBackup(archive),
     /desktop_maintenance_failed/,
   );
 
@@ -295,6 +296,7 @@ test("packaged maintenance does not restart services after a child shutdown time
 
 test("packaged maintenance stops children, uses only frozen API, and always restarts", async (t) => {
   const fixture = createRuntimeFixture(t);
+  const archive = path.join(fixture.userData, "portable.mythos-backup.zip");
   const apiChildren = [];
   const webChildren = [];
   const maintenanceCalls = [];
@@ -344,7 +346,7 @@ test("packaged maintenance stops children, uses only frozen API, and always rest
     webPort: 48124,
   });
 
-  const result = await runtime.createBackup("C:\\backups\\portable.mythos-backup.zip");
+  const result = await runtime.createBackup(archive);
 
   assert.deepEqual(result, {
     archive_name: "portable.mythos-backup.zip",
@@ -356,16 +358,16 @@ test("packaged maintenance stops children, uses only frozen API, and always rest
   assert.equal(apiChildren[0].killCalls, 1);
   assert.equal(webChildren[0].killCalls, 1);
   assert.equal(maintenanceCalls.length, 1);
-  assert.equal(maintenanceCalls[0].command, fixture.resources + "\\api\\mythos-api.exe");
+  assert.equal(maintenanceCalls[0].command, path.join(fixture.resources, "api", "mythos-api.exe"));
   assert.deepEqual(maintenanceCalls[0].args, [
     "--host", "127.0.0.1",
     "--port", "48123",
     "--web-port", "48124",
     "--user-data-dir", fixture.userData,
-    "--resources-dir", fixture.resources + "\\api\\_internal",
+    "--resources-dir", path.join(fixture.resources, "api", "_internal"),
     "--application-version", "0.1.0",
     "--maintenance", "backup",
-    "--destination", "C:\\backups\\portable.mythos-backup.zip",
+    "--destination", archive,
     "--overwrite",
   ]);
   assert.equal(maintenanceCalls[0].options.shell, false);
@@ -373,7 +375,7 @@ test("packaged maintenance stops children, uses only frozen API, and always rest
 
   maintenanceFailure = true;
   await assert.rejects(
-    runtime.restoreBackup("C:\\backups\\portable.mythos-backup.zip"),
+    runtime.restoreBackup(archive),
     /desktop_maintenance_failed/,
   );
   assert.equal(apiChildren.length, 3);
@@ -388,6 +390,7 @@ test("packaged maintenance stops children, uses only frozen API, and always rest
 
 test("packaged maintenance waits for a failed restart API child to exit", async (t) => {
   const fixture = createRuntimeFixture(t);
+  const archive = path.join(fixture.userData, "portable.mythos-backup.zip");
   const apiChildren = [];
   let releaseRestart;
   const restartStarted = new Promise((resolve) => {
@@ -430,7 +433,7 @@ test("packaged maintenance waits for a failed restart API child to exit", async 
   runtime.start(startupConfig());
 
   let settled = false;
-  const backup = runtime.createBackup("C:\\backups\\portable.mythos-backup.zip");
+  const backup = runtime.createBackup(archive);
   backup.then(
     () => { settled = true; },
     () => { settled = true; },
@@ -450,6 +453,7 @@ test("packaged maintenance waits for a failed restart API child to exit", async 
 
 test("packaged stop during maintenance does not restart services", async (t) => {
   const fixture = createRuntimeFixture(t);
+  const archive = path.join(fixture.userData, "portable.mythos-backup.zip");
   const apiChildren = [];
   const webChildren = [];
   let releaseMaintenance;
@@ -502,7 +506,7 @@ test("packaged stop during maintenance does not restart services", async (t) => 
     webPort: 48124,
   });
 
-  const backup = runtime.createBackup("C:\\backups\\portable.mythos-backup.zip");
+  const backup = runtime.createBackup(archive);
   await maintenanceStarted;
   runtime.stop();
   releaseMaintenance();

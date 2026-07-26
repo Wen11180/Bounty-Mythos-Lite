@@ -5,6 +5,9 @@
   "author": "赏金神话·轻量版贡献者",
   "private": true,
   "productName": "BountyMythosLite",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "main": "main.cjs",
   "scripts": {
     "make": "node package-runtime.cjs && electron-forge make",

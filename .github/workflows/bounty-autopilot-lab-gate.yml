@@ -79,7 +79,7 @@ jobs:
           python -m alembic check
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Install Studio deps
         working-directory: apps/studio
         run: |
@@ -119,7 +119,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Install frozen API runtime dependencies
         working-directory: apps/api
         shell: pwsh
